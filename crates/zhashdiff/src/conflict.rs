@@ -103,6 +103,70 @@ pub fn recycle(path: &Path) -> Result<(), trash::Error> {
     trash::delete(path)
 }
 
+pub struct SizedFile {
+    pub path: PathBuf,
+    pub size: u64,
+    pub hidden: bool,
+}
+
+/// Visible files sharing their size with another visible file, in input order.
+pub fn size_collisions(files: &[SizedFile]) -> Vec<PathBuf> {
+    let visible = || files.iter().filter(|file| !file.hidden);
+    let mut counts: HashMap<u64, usize> = HashMap::new();
+    for file in visible() {
+        *counts.entry(file.size).or_default() += 1;
+    }
+    visible()
+        .filter(|file| counts[&file.size] > 1)
+        .map(|file| file.path.clone())
+        .collect()
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct DuplicateGroup {
+    pub size: u64,
+    pub hash: String,
+    pub paths: Vec<PathBuf>,
+}
+
+/// A group's id is its index: groups keep the input (tree) order of their first file.
+pub fn group_by_size_and_hash(
+    files: impl IntoIterator<Item = (PathBuf, u64, String)>,
+) -> Vec<DuplicateGroup> {
+    let mut groups: Vec<DuplicateGroup> = Vec::new();
+    let mut group_of: HashMap<(u64, String), usize> = HashMap::new();
+    for (path, size, hash) in files {
+        let index = *group_of.entry((size, hash.clone())).or_insert_with(|| {
+            groups.push(DuplicateGroup {
+                size,
+                hash,
+                paths: Vec::new(),
+            });
+            groups.len() - 1
+        });
+        groups[index].paths.push(path);
+    }
+    groups.retain(|group| group.paths.len() > 1);
+    groups
+}
+
+/// Refused for a file in no group.
+pub fn keep_this(
+    groups: &[DuplicateGroup],
+    keepers: &mut HashMap<String, PathBuf>,
+    path: &Path,
+) -> bool {
+    let Some(group) = groups
+        .iter()
+        .find(|group| group.paths.iter().any(|p| p == path))
+    else {
+        log::error!("Not keeping {path:?}: it is not a file of any duplicate group");
+        return false;
+    };
+    keepers.insert(group.hash.clone(), path.to_path_buf());
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -335,5 +399,163 @@ mod tests {
         assert!(a.exists(), "the keeper is never touched");
         assert!(b.exists(), "a failed removal leaves the file in place");
         assert!(!c.exists());
+    }
+
+    fn sized(path: &str, size: u64) -> SizedFile {
+        SizedFile {
+            path: PathBuf::from(path),
+            size,
+            hidden: false,
+        }
+    }
+
+    fn hidden(path: &str, size: u64) -> SizedFile {
+        SizedFile {
+            hidden: true,
+            ..sized(path, size)
+        }
+    }
+
+    #[test]
+    fn size_collisions_skips_unique_sizes() {
+        let files = [sized("a", 1), sized("b", 2), sized("c", 3)];
+
+        assert!(size_collisions(&files).is_empty());
+    }
+
+    #[test]
+    fn size_collisions_queues_files_sharing_a_size_in_input_order() {
+        let files = [
+            sized("a", 10),
+            sized("b", 20),
+            sized("c", 10),
+            sized("d", 30),
+            sized("e", 20),
+            sized("f", 10),
+        ];
+
+        assert_eq!(size_collisions(&files), paths(&["a", "b", "c", "e", "f"]));
+    }
+
+    #[test]
+    fn size_collisions_excludes_hidden_files() {
+        let files = [
+            sized("a", 10),
+            hidden("b", 10),
+            sized("c", 20),
+            sized("d", 20),
+            hidden("e", 20),
+        ];
+
+        assert_eq!(size_collisions(&files), paths(&["c", "d"]));
+    }
+
+    fn hashed(path: &str, size: u64, hash: &str) -> (PathBuf, u64, String) {
+        (PathBuf::from(path), size, hash.to_string())
+    }
+
+    fn duplicate_group(size: u64, hash: &str, members: &[&str]) -> DuplicateGroup {
+        DuplicateGroup {
+            size,
+            hash: hash.to_string(),
+            paths: paths(members),
+        }
+    }
+
+    #[test]
+    fn equal_hashes_group() {
+        let files = vec![
+            hashed("a", 5, "h"),
+            hashed("b", 5, "h"),
+            hashed("c", 5, "h"),
+        ];
+
+        assert_eq!(
+            group_by_size_and_hash(files),
+            vec![duplicate_group(5, "h", &["a", "b", "c"])]
+        );
+    }
+
+    #[test]
+    fn equal_size_with_different_hashes_does_not_group() {
+        let files = vec![hashed("a", 5, "h1"), hashed("b", 5, "h2")];
+
+        assert!(group_by_size_and_hash(files).is_empty());
+    }
+
+    #[test]
+    fn groups_are_ordered_by_first_appearance() {
+        let files = vec![
+            hashed("x/1", 7, "hz"),
+            hashed("x/2", 3, "ha"),
+            hashed("x/3", 9, "single"),
+            hashed("y/1", 3, "ha"),
+            hashed("y/2", 7, "hz"),
+            hashed("z/1", 7, "hz"),
+        ];
+
+        assert_eq!(
+            group_by_size_and_hash(files),
+            vec![
+                duplicate_group(7, "hz", &["x/1", "y/2", "z/1"]),
+                duplicate_group(3, "ha", &["x/2", "y/1"]),
+            ]
+        );
+    }
+
+    #[test]
+    fn group_ids_are_stable_across_a_rebuild() {
+        let files = vec![
+            hashed("b", 1, "h2"),
+            hashed("a", 2, "h1"),
+            hashed("c", 1, "h2"),
+            hashed("d", 2, "h1"),
+            hashed("e", 3, "h3"),
+            hashed("f", 3, "h3"),
+        ];
+
+        let first = group_by_size_and_hash(files.clone());
+
+        assert_eq!(first.len(), 3);
+        assert_eq!(group_by_size_and_hash(files), first);
+    }
+
+    fn two_groups() -> Vec<DuplicateGroup> {
+        vec![
+            duplicate_group(1, "h1", &["a", "b", "c"]),
+            duplicate_group(2, "h2", &["d", "e"]),
+        ]
+    }
+
+    #[test]
+    fn keep_this_sets_the_keeper_of_the_members_group() {
+        let groups = two_groups();
+        let mut kept = HashMap::new();
+
+        assert!(keep_this(&groups, &mut kept, Path::new("b")));
+        assert!(keep_this(&groups, &mut kept, Path::new("e")));
+
+        assert_eq!(kept, keepers(&[("h1", "b"), ("h2", "e")]));
+    }
+
+    #[test]
+    fn keep_this_replaces_the_groups_keeper() {
+        let groups = two_groups();
+        let mut kept = keepers(&[("h1", "a")]);
+
+        assert!(keep_this(&groups, &mut kept, Path::new("c")));
+
+        assert_eq!(kept, keepers(&[("h1", "c")]));
+    }
+
+    #[test]
+    fn keep_this_on_a_non_member_is_refused() {
+        let groups = two_groups();
+        let mut kept = keepers(&[("h1", "a")]);
+
+        assert!(!keep_this(&groups, &mut kept, Path::new("elsewhere")));
+        assert!(!keep_this(&groups, &mut kept, Path::new("")));
+
+        assert_eq!(kept, keepers(&[("h1", "a")]));
     }
 }
