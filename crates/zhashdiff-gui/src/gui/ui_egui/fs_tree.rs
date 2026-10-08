@@ -453,6 +453,9 @@ pub fn two_folder_cursor_rows<'a>(
 }
 
 pub const PENDING_DELETION_COLOR: egui::Color32 = egui::Color32::LIGHT_RED;
+const FOLDER_ROW_TINT: egui::Color32 =
+    egui::Color32::from_rgba_unmultiplied_const(120, 150, 255, 14);
+const DIMMED_TEXT_COLOR: egui::Color32 = egui::Color32::from_gray(105);
 
 pub fn draw_ui_folder_tree_with_checkbox(
     ui: &mut egui::Ui,
@@ -822,12 +825,14 @@ pub fn draw_ui_two_folder_tree_with_diff(
                 .body(|body| {
                     body.rows(row_height, row_count, |mut row| {
                         let entry = &visible_rows[drawn_rows[row.index()]];
-                        row.set_selected(cursor.is_at(&entry.rel_path));
+                        let is_cursor = cursor.is_at(&entry.rel_path);
+                        row.set_selected(is_cursor);
                         let clicked = render_row_folder_tree_diff_column(
                             file_system_1_view.as_mut(),
                             file_system_2_view.as_mut(),
                             &mut row,
                             entry,
+                            is_cursor,
                             row_height,
                             diff_tool_config,
                             layout,
@@ -1141,6 +1146,7 @@ fn render_diff_side(
     depth: FsNodeDepth,
     is_dir: bool,
     is_collapsed: bool,
+    dimmed: bool,
     row_height: f32,
     flat_rel_path: Option<&str>,
     list_rel_path: Option<&str>,
@@ -1148,6 +1154,15 @@ fn render_diff_side(
     mut on_open: impl FnMut(),
     mut on_toggle: impl FnMut(),
 ) {
+    let name_text = |text: String| {
+        let text = RichText::new(text);
+        let text = if is_dir { text.strong() } else { text };
+        if dimmed {
+            text.color(DIMMED_TEXT_COLOR)
+        } else {
+            text
+        }
+    };
     ui.horizontal(|ui| {
         if let Some(rel_path) = flat_rel_path {
             if let (Some(v), Some(id)) = (view, node_id) {
@@ -1157,7 +1172,7 @@ fn render_diff_side(
                     } else {
                         rel_path.to_owned()
                     };
-                    let label_resp = ui.label(text).interact(egui::Sense::click());
+                    let label_resp = ui.label(name_text(text)).interact(egui::Sense::click());
                     if label_resp.clicked() {
                         on_select();
                     }
@@ -1185,7 +1200,7 @@ fn render_diff_side(
                     }
 
                     let label_resp = ui
-                        .label(format!("📁 {}", node.display_name()))
+                        .label(name_text(format!("📁 {}", node.display_name())))
                         .interact(egui::Sense::click());
 
                     if label_resp.clicked() {
@@ -1195,8 +1210,9 @@ fn render_diff_side(
                         on_toggle();
                     }
                 } else {
-                    let mut label_resp =
-                        ui.label(node.display_name()).interact(egui::Sense::click());
+                    let mut label_resp = ui
+                        .label(name_text(node.display_name().to_string()))
+                        .interact(egui::Sense::click());
                     if let Some(rel_path) = list_rel_path {
                         label_resp = label_resp.on_hover_text(rel_path);
                     }
@@ -1229,6 +1245,7 @@ fn render_row_folder_tree_diff_column(
     mut file_system_2_view: Option<&mut FileSystemView>,
     row: &mut egui_extras::TableRow,
     entry: &VisibleRowTwoFolderDiff,
+    is_cursor: bool,
     row_height: f32,
     diff_tool_config: &DiffToolConfig,
     layout: RowLayout,
@@ -1252,9 +1269,18 @@ fn render_row_folder_tree_diff_column(
     };
     let is_collapsed_1 = is_collapsed(file_system_1_view.as_deref(), first_node_id);
     let is_collapsed_2 = is_collapsed(file_system_2_view.as_deref(), second_node_id);
+    // Selected cells get their text color from egui_extras; an explicit color would override it.
+    let dimmed = !is_cursor && matches!(entry.diff_state, DiffState::Same(..));
+    let tint = |ui: &egui::Ui| {
+        if entry.is_dir {
+            let rect = ui.max_rect().expand2(0.5 * ui.spacing().item_spacing);
+            ui.painter().rect_filled(rect, 0.0, FOLDER_ROW_TINT);
+        }
+    };
 
     // --- Left Column (Folder 1) ---
     row.col(|ui| {
+        tint(ui);
         render_diff_side(
             ui,
             file_system_1_view.as_deref(),
@@ -1262,6 +1288,7 @@ fn render_row_folder_tree_diff_column(
             depth,
             entry.is_dir,
             is_collapsed_1,
+            dimmed,
             row_height,
             flat_rel_path,
             list_rel_path,
@@ -1279,12 +1306,17 @@ fn render_row_folder_tree_diff_column(
     });
     // --- Middle Column (Diff Status) ---
     row.col(|ui| {
+        tint(ui);
+        if dimmed {
+            ui.multiply_opacity(0.5);
+        }
         ui.horizontal(|ui| {
             ui_custom_diff_state(ui, &entry.diff_state);
         });
     });
     // --- Right Column (Folder 2) ---
     row.col(|ui| {
+        tint(ui);
         render_diff_side(
             ui,
             file_system_2_view.as_deref(),
@@ -1292,6 +1324,7 @@ fn render_row_folder_tree_diff_column(
             depth,
             entry.is_dir,
             is_collapsed_2,
+            dimmed,
             row_height,
             flat_rel_path,
             list_rel_path,
