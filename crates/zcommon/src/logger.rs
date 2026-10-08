@@ -32,7 +32,7 @@ fn build_env_logger() -> env_logger::Logger {
     builder.build()
 }
 
-/// Loads `.env` from the cwd (real environment variables win), then installs the [`LogCollector`].
+/// Also loads `.env`; variables already in the real environment win.
 pub fn init_logging() -> Result<LogBuffer, SetLoggerError> {
     dotenvy::dotenv().ok();
     LogCollector::init()
@@ -59,6 +59,7 @@ impl LogCollector {
         }
 
         let env_logger = build_env_logger();
+        let max_level = env_logger.filter();
 
         let buffer = LogBuffer::default();
 
@@ -69,7 +70,7 @@ impl LogCollector {
 
         // Set our collector as the logger
         log::set_boxed_logger(Box::new(collector))?;
-        log::set_max_level(log::LevelFilter::Trace);
+        log::set_max_level(max_level);
 
         GLOBAL_LOG_BUFFER.set(buffer.clone()).unwrap();
 
