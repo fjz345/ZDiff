@@ -15,7 +15,7 @@ GUI for zdiff crate
     - Next conflict
     - Search for text
     - Goto line
-    - Line Pivot
+    - Line pins (align chosen line pairs)
     - Lexer modes
     - P4 depot paths
     - Diff Options

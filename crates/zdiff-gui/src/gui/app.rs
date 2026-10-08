@@ -7,7 +7,7 @@ use std::{
 };
 use zcommon::ui_egui::common::show_custom_popup;
 use zdiff::{
-    diff_builder::{DiffBuilderOptions, PivotLines},
+    diff_builder::DiffBuilderOptions,
     lexer::{LEXER_MODE_DEFAULT, LEXER_MODE_GREEDY, LEXER_MODE_NEWLINE, LEXER_MODE_TOKENIZE},
     myers::{DiffPhases, MyersDiffAlgorithm},
     universal_path::UniversalPath,
@@ -884,7 +884,8 @@ impl<'a> ZApp {
 
             let active_highlights = diff_processor.active_highlights.clone();
             let mut conflict_cursor = diff_processor.conflict_cursor.clone();
-            let mut pivot: (Option<usize>, Option<usize>) = diff_processor.pivot;
+            let pins = diff_processor.pins().to_vec();
+            let mut pins_request = None;
             let mut find_cursor = diff_processor.find_cursor.clone();
             let highlight_side = diff_processor.highlight_side;
             let find_needle = diff_processor.find_ctx.needle().to_owned();
@@ -935,7 +936,8 @@ impl<'a> ZApp {
                     active_highlights: &active_highlights,
                     highlight_side,
                     conflict_cursor: &mut conflict_cursor,
-                    pivot: &mut pivot,
+                    pins: &pins,
+                    pins_request: &mut pins_request,
                     find_cursor: &mut find_cursor,
                     find_needle: &find_needle,
                     find_case_sensitive: searched_case_sensitive,
@@ -958,23 +960,10 @@ impl<'a> ZApp {
                 self.tree.ui(&mut behavior, ui);
             });
 
-            if let (Some(pivot_left), Some(pivot_right)) = (
-                behavior.ctx_file_diff.pivot.0,
-                behavior.ctx_file_diff.pivot.1,
-            ) {
-                if pivot_left > 0 && pivot_right > 0 {
-                    behavior.ctx_file_diff.diff_options.pivot_lines = Some(PivotLines {
-                        left: pivot_left,
-                        right: pivot_right,
-                    });
-                }
-            }
-
             // TODO: Remove clones
             let clone_find = behavior.ctx_file_diff.find_cursor.clone();
             let clone_active_side = *behavior.ctx_file_diff.active_side;
             let clone_conflict = behavior.ctx_file_diff.conflict_cursor.clone();
-            let clone_pivot = behavior.ctx_file_diff.pivot.clone();
 
             if let Some(file_path) = behavior.ctx_file_diff.set_file_1_root_request.take() {
                 log::debug!("Set new root from root_request_1: {}", file_path);
@@ -1098,7 +1087,9 @@ impl<'a> ZApp {
             }
 
             drop(behavior);
-            diff_processor.pivot = clone_pivot;
+            if let Some(pins) = pins_request {
+                diff_processor.set_pins(pins);
+            }
             diff_processor.find_cursor = clone_find;
             diff_processor.active_side = clone_active_side;
             diff_processor.conflict_cursor = clone_conflict;
@@ -1508,6 +1499,7 @@ impl eframe::App for ZApp {
                     file_2: state.file_2.get_cached_file().clone(),
                     options: state.diff_options.clone(),
                     myers_diff_algorithm: state.myers_diff_algorithm.clone(),
+                    pins: state.diff_processor.pins().to_vec(),
                 };
 
                 let diff_ctx_invalidated = if state.file_1.get_loading_path().is_some()
@@ -1681,6 +1673,34 @@ mod tests {
             .unwrap();
         let restored: AppStateCtx = serde_json::from_value(json).unwrap();
         assert_eq!(restored.extension_map, ExtensionMap::defaults());
+    }
+
+    #[test]
+    fn pins_are_never_saved() {
+        let mut ctx = AppStateCtx::default();
+        ctx.diff_processor.set_pins(vec![zdiff::myers::Pin {
+            source: 1,
+            target: 2,
+        }]);
+
+        let json = serde_json::to_string(&ctx).unwrap();
+        assert!(!json.contains("pin"), "{json}");
+        let restored: AppStateCtx = serde_json::from_str(&json).unwrap();
+        assert!(restored.diff_processor.pins().is_empty());
+    }
+
+    #[test]
+    fn a_pivot_saved_by_an_older_version_is_discarded() {
+        let mut json = serde_json::to_value(AppStateCtx::default()).unwrap();
+        json["diff_options"].as_object_mut().unwrap().insert(
+            "pivot_lines".into(),
+            serde_json::json!({"left": 2, "right": 3}),
+        );
+        let restored: AppStateCtx = serde_json::from_value(json).unwrap();
+        assert_eq!(restored.diff_options, DiffBuilderOptions::default());
+        assert!(restored.diff_processor.pins().is_empty());
+        let saved_again = serde_json::to_string(&restored).unwrap();
+        assert!(!saved_again.contains("pivot"), "{saved_again}");
     }
 
     #[test]

@@ -41,7 +41,6 @@ pub enum RevertRefusal {
     MissingFile,
     NotLocalTarget,
     TempTarget,
-    PivotActive,
     NoSuchHunk,
 }
 
@@ -51,9 +50,6 @@ impl std::fmt::Display for RevertRefusal {
             RevertRefusal::MissingFile => "both files must be loaded",
             RevertRefusal::NotLocalTarget => "the target is not a local file",
             RevertRefusal::TempTarget => "the target is a temporary file",
-            RevertRefusal::PivotActive => {
-                "pivot lines are set, so rows don't pair the files by the diff"
-            }
             RevertRefusal::NoSuchHunk => "the hunk is not in the current diff",
         })
     }
@@ -162,11 +158,6 @@ pub fn check_revert(
     }
     if target_file.path.is_temp(temp_root) {
         return Err(RevertRefusal::TempTarget);
-    }
-    // Same condition as the pivot alignment in the rows stage. Pivoted rows shift one side,
-    // so a span pairs unrelated parts of the files.
-    if matches!(ctx.input.options.pivot_lines, Some(p) if p.left > 0 && p.right > 0) {
-        return Err(RevertRefusal::PivotActive);
     }
     Ok(())
 }
@@ -472,8 +463,9 @@ mod tests {
 
     use zcommon::hash::hash_file_mmap;
     use zdiff::{
-        diff_builder::{DiffBuilderOptions, PivotLines},
+        diff_builder::DiffBuilderOptions,
         lexer::{LEXER_MODE_DEFAULT, LEXER_MODE_GREEDY, LEXER_MODE_NEWLINE, LEXER_MODE_TOKENIZE},
+        myers::Pin,
         universal_path::UniversalPath,
     };
 
@@ -500,22 +492,40 @@ mod tests {
         right: Arc<CachedFile<RawToken>>,
         options: DiffBuilderOptions,
     ) -> MinimalDiffCtx {
-        let mut processor = DiffProcessor::default();
-        processor.request_update(UpdateDiffRowsInput {
+        diff_pinned_files(left, right, options, Vec::new())
+    }
+
+    fn diff_pinned_files(
+        left: Arc<CachedFile<RawToken>>,
+        right: Arc<CachedFile<RawToken>>,
+        options: DiffBuilderOptions,
+        pins: Vec<Pin>,
+    ) -> MinimalDiffCtx {
+        let input = UpdateDiffRowsInput {
             file_1: Some(left),
             file_2: Some(right),
             options,
             ..Default::default()
-        });
-        let start = Instant::now();
-        loop {
-            processor.update();
-            if !processor.is_in_progress() {
-                return processor.get_minimal_diff_ctx().expect("diff failed");
+        };
+        let mut processor = DiffProcessor::default();
+        let settle = |processor: &mut DiffProcessor| {
+            processor.request_update(input.clone());
+            let start = Instant::now();
+            loop {
+                processor.update();
+                if !processor.is_in_progress() {
+                    return processor.get_minimal_diff_ctx().expect("diff failed");
+                }
+                assert!(start.elapsed() < SETTLE_TIMEOUT, "diff never completed");
+                std::thread::sleep(Duration::from_millis(1));
             }
-            assert!(start.elapsed() < SETTLE_TIMEOUT, "diff never completed");
-            std::thread::sleep(Duration::from_millis(1));
+        };
+        let ctx = settle(&mut processor);
+        if pins.is_empty() {
+            return ctx;
         }
+        processor.set_pins(pins);
+        settle(&mut processor)
     }
 
     /// A pair of files on disk, diffed like the app does.
@@ -525,6 +535,7 @@ mod tests {
         right: PathBuf,
         options: DiffBuilderOptions,
         lexer_mode: u8,
+        pins: Vec<Pin>,
     }
 
     impl Pair {
@@ -543,11 +554,12 @@ mod tests {
                 right: r,
                 options,
                 lexer_mode: LEXER_MODE_DEFAULT,
+                pins: Vec::new(),
             }
         }
 
         fn diff(&self) -> MinimalDiffCtx {
-            diff_files(
+            diff_pinned_files(
                 cached(
                     UniversalPath::from(self.left.clone()),
                     &self.left,
@@ -559,6 +571,7 @@ mod tests {
                     self.lexer_mode,
                 ),
                 self.options.clone(),
+                self.pins.clone(),
             )
         }
 
@@ -761,24 +774,19 @@ mod tests {
     }
 
     #[test]
-    fn active_pivot_refuses_and_plans_nothing() {
-        let options = DiffBuilderOptions {
-            pivot_lines: Some(PivotLines { left: 2, right: 3 }),
-            ..Default::default()
-        };
-        let pair = Pair::with_options("a\nb\nc\n", "x\na\nb\nC\n", options);
+    fn a_hunk_is_accepted_while_pins_are_set() {
+        let mut pair = Pair::new("a\nb\nc\n", "x\na\nb\nC\n");
+        pair.pins = vec![Pin {
+            source: 0,
+            target: 0,
+        }];
         let ctx = pair.diff();
-        assert!(!ctx.precomputed_diffs.is_empty());
+        assert_eq!(ctx.input.pins, pair.pins);
         for target in [Left, Right] {
-            assert_eq!(
-                check_revert(&ctx, target, no_temp_root()),
-                Err(RevertRefusal::PivotActive)
-            );
-            assert_eq!(
-                plan_hunk_revert(&ctx, RevertRequest { hunk: 0, target }, no_temp_root()),
-                Err(RevertRefusal::PivotActive)
-            );
+            assert_eq!(check_revert(&ctx, target, no_temp_root()), Ok(()));
         }
+        assert_eq!(pair.plan(0, Right), "a\nb\nC\n");
+        assert_eq!(pair.plan(0, Left), "x\na\nb\nc\n");
     }
 
     #[test]

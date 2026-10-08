@@ -46,13 +46,6 @@ pub enum LineContent {
     Collapsed,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct PivotLines {
-    pub left: usize,
-    pub right: usize,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct DiffBuilderOptions {
@@ -60,7 +53,6 @@ pub struct DiffBuilderOptions {
     pub ignore: IgnoreOptions,
     pub highlight_rows: bool,
     pub ghost_rows: bool,
-    pub pivot_lines: Option<PivotLines>,
     pub diff_only_with_extra_rows: Option<usize>,
     #[cfg_attr(feature = "serde", serde(default))]
     pub phases: DiffPhases,
@@ -71,7 +63,6 @@ impl Default for DiffBuilderOptions {
             ignore: IgnoreOptions::default(),
             highlight_rows: true,
             ghost_rows: true,
-            pivot_lines: None,
             diff_only_with_extra_rows: None,
             phases: DiffPhases::default(),
         }
@@ -80,15 +71,9 @@ impl Default for DiffBuilderOptions {
 
 impl DiffBuilderOptions {
     pub fn need_invalidation(old: &Self, new: &Self) -> bool {
-        let mut ret = old.ghost_rows != new.ghost_rows
+        old.ghost_rows != new.ghost_rows
             || old.highlight_rows != new.highlight_rows
-            || old.ignore != new.ignore;
-        if !ret {
-            ret = matches!(new.pivot_lines, Some(PivotLines{left: p1, right: p2 }) if p1 > 0 && p2 > 0)
-                && old.pivot_lines != new.pivot_lines;
-        }
-
-        ret
+            || old.ignore != new.ignore
     }
 }
 

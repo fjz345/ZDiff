@@ -9,18 +9,17 @@ use std::{
     time::{Duration, Instant},
 };
 
-#[cfg(debug_assertions)]
 use zdiff::universal_path::UniversalPath;
 use zdiff::{
     cached_file::CachedFile,
     char_diff::{CharRanges, character_diff},
-    diff_builder::{DiffBuilderOptions, DiffRow, LineContent, PivotLines, build_diff_rows},
+    diff_builder::{DiffBuilderOptions, DiffRow, LineContent, build_diff_rows},
     diff_ir::{DiffIR, DiffOp},
     ignore::IgnoreOptions,
-    lexer::RawToken,
+    lexer::{RawToken, TokenKind},
     myers::{
-        DiffPhases, MyersDiffAlgorithm, MyersNumAddDelete, MyersPath, line_diff,
-        myers_count_add_deletes, myers_diff_path, token_diff,
+        DiffPhases, MyersDiffAlgorithm, MyersNumAddDelete, MyersPath, Pin, PinError, line_diff,
+        myers_count_add_deletes, myers_diff_path, token_diff, validate_pins,
     },
     row_text::build_row_text,
 };
@@ -40,6 +39,9 @@ pub struct UpdateDiffRowsInput {
     pub file_2: Option<Arc<CachedFile<RawToken>>>,
     pub options: DiffBuilderOptions,
     pub myers_diff_algorithm: MyersDiffAlgorithm,
+    /// `DiffProcessor::request_update` overwrites it with the processor's pins.
+    #[cfg_attr(feature = "serde", serde(skip))]
+    pub pins: Vec<Pin>,
 }
 impl PartialEq for UpdateDiffRowsInput {
     fn eq(&self, other: &Self) -> bool {
@@ -47,6 +49,7 @@ impl PartialEq for UpdateDiffRowsInput {
             && self.file_2.as_ref().map(|f| &f.hash) == other.file_2.as_ref().map(|f| &f.hash)
             && self.options == other.options
             && self.myers_diff_algorithm == other.myers_diff_algorithm
+            && self.pins == other.pins
             && self.file_1.as_ref().map(|f| &f.lexer_mode)
                 == other.file_1.as_ref().map(|f| &f.lexer_mode)
             && self.file_2.as_ref().map(|f| &f.lexer_mode)
@@ -210,6 +213,7 @@ pub struct MyersCtxInput {
     /// Ignore options decide line equality, so changing them recomputes this stage.
     pub ignore: IgnoreOptions,
     pub phases: DiffPhases,
+    pub pins: Vec<Pin>,
 }
 impl From<UpdateDiffRowsInput> for MyersCtxInput {
     fn from(input: UpdateDiffRowsInput) -> Self {
@@ -219,6 +223,7 @@ impl From<UpdateDiffRowsInput> for MyersCtxInput {
             algo: input.myers_diff_algorithm,
             ignore: input.options.ignore,
             phases: input.options.phases,
+            pins: input.pins,
         }
     }
 }
@@ -231,6 +236,7 @@ impl From<&UpdateDiffRowsInput> for MyersCtxInput {
             algo: input.myers_diff_algorithm,
             ignore: input.options.ignore.clone(),
             phases: input.options.phases,
+            pins: input.pins.clone(),
         }
     }
 }
@@ -253,6 +259,7 @@ pub struct MyersCtx {
     num_add_delete: MyersNumAddDelete,
     path: MyersPath,
     char_ranges: Arc<CharRanges>,
+    ignored_pins: Option<PinError>,
     line_elapsed: Duration,
     token_elapsed: Duration,
 }
@@ -300,6 +307,8 @@ pub struct MinimalDiffCtx {
     pub input: UpdateDiffRowsInput,
 
     pub num_add_deletes: MyersNumAddDelete,
+    /// Why the input's pins don't fit its files; the diff then ran without them.
+    pub ignored_pins: Option<PinError>,
     pub stage_times: DiffStageTimes,
     pub precomputed_diffs: Arc<PrecomputedDiffs>,
     pub precomputed_file_rows: Arc<PrecomputedFileRows>,
@@ -394,6 +403,7 @@ impl Default for DiffCtx {
             file_2: None,
             options: Default::default(),
             myers_diff_algorithm: Default::default(),
+            pins: Vec::new(),
         })
     }
 }
@@ -546,14 +556,26 @@ impl DiffCtx {
                 .name("MyersCtxTHREAD".into())
                 .spawn(move || {
                     let start = Instant::now();
-                    let (c1, c2, _) = resolve_files(&input.file_1, &input.file_2);
+                    let (c1, c2, one_sided) = resolve_files(&input.file_1, &input.file_2);
                     let cmp = |a: &RawToken, b: &RawToken| compare_tokens(a, b, c1, c2);
 
                     let (t1, t2) = (&c1.tokens, &c2.tokens);
                     let ignore = input.ignore.mask(t1, &c1.contents, t2, &c2.contents);
+                    let pins: &[Pin] = if one_sided.is_some() {
+                        &[]
+                    } else {
+                        &input.pins
+                    };
+                    let ignored_pins =
+                        validate_pins(pins, pin_line_count(t1), pin_line_count(t2)).err();
+                    if let Some(err) = &ignored_pins {
+                        log::warn!("Diffing without pins: {err}");
+                    }
+                    let pins: &[Pin] = if ignored_pins.is_some() { &[] } else { pins };
                     let phases = input.phases;
-                    // The default phases run as the driver does, but timed separately.
-                    let result = if phases.line && phases.token && !phases.scope {
+                    // The default phases without pins run as the driver does, but timed separately.
+                    let result = if pins.is_empty() && phases.line && phases.token && !phases.scope
+                    {
                         line_diff(input.algo, t1, t2, &cmp, &ignore, cancel.clone()).and_then(
                             |hunks| {
                                 let line_elapsed = start.elapsed();
@@ -580,7 +602,7 @@ impl DiffCtx {
                             cmp,
                             &ignore,
                             phases,
-                            &[],
+                            pins,
                             cancel.clone(),
                         )
                         .map(|path| {
@@ -616,6 +638,7 @@ impl DiffCtx {
                             num_add_delete,
                             path,
                             char_ranges: Arc::new(char_ranges),
+                            ignored_pins,
                             line_elapsed,
                             token_elapsed,
                         }));
@@ -731,13 +754,9 @@ impl DiffCtx {
                         return;
                     }
 
-                    if let Some((rows, precomputed_diffs, collapsed_blocks)) = finalize_diff_rows(
-                        diff_rows,
-                        &input.diff_options,
-                        c1.metadata.line_starts.len(),
-                        c2.metadata.line_starts.len(),
-                        &cancel,
-                    ) {
+                    if let Some((rows, precomputed_diffs, collapsed_blocks)) =
+                        finalize_diff_rows(diff_rows, &input.diff_options, &cancel)
+                    {
                         let precomputed_file_rows = precompute_file_rows(
                             &rows,
                             c1.metadata.line_starts.len(),
@@ -768,6 +787,7 @@ impl DiffCtx {
     ) -> Option<MinimalDiffCtx> {
         let myers_ctx = self.request_myers(cancel_flag.clone())?;
         let num_add_deletes = myers_ctx.num_add_delete;
+        let ignored_pins = myers_ctx.ignored_pins.clone();
         let (line_elapsed, token_elapsed) = (myers_ctx.line_elapsed, myers_ctx.token_elapsed);
         let diff_row_ctx = self.request_diff_rows(cancel_flag)?;
 
@@ -799,6 +819,7 @@ impl DiffCtx {
             debug_file_2_path: self.debug_file_2_path.clone(),
             input: self.update_diff_rows_input.clone(),
             num_add_deletes,
+            ignored_pins,
             stage_times,
             precomputed_diffs,
             precomputed_file_rows,
@@ -821,7 +842,10 @@ pub struct DiffProcessor {
     pub active_highlights: Vec<usize>,
     /// `None`: both sides.
     pub highlight_side: Option<ActiveSide>,
-    pub pivot: (Option<usize>, Option<usize>),
+    /// Session only: kept across recomputes of the same paths, cleared when a path changes.
+    pins: Vec<Pin>,
+    /// Sides of the last request. Not reset with the ctx, which a revert or refresh rebuilds.
+    pin_paths: [Option<UniversalPath>; 2],
     pub find_cursor: ClampedCursor,
     pub find_ctx: FindCtx,
     goto_line_number: Option<usize>,
@@ -840,7 +864,8 @@ impl Default for DiffProcessor {
             conflict_cursor: ClampedCursor::default(),
             active_highlights: Vec::new(),
             highlight_side: None,
-            pivot: (None, None),
+            pins: Vec::new(),
+            pin_paths: Default::default(),
             in_progress_input: None,
             cancel_flag: Arc::new(AtomicBool::new(false)),
             find_cursor: ClampedCursor::default(),
@@ -863,7 +888,6 @@ impl DiffProcessor {
         self.update_find(FindCtx::default());
         self.conflict_cursor.set(0);
         self.goto_line_number = None;
-        self.pivot = (None, None);
         self.active_highlights.clear();
         self.highlight_side = None;
         self.last_conflict_scroll_to_row = None;
@@ -882,11 +906,28 @@ impl DiffProcessor {
         }
     }
 
-    pub fn request_update(&mut self, input: UpdateDiffRowsInput) {
+    pub fn pins(&self) -> &[Pin] {
+        &self.pins
+    }
+
+    /// Takes effect on the next `request_update`.
+    pub fn set_pins(&mut self, pins: Vec<Pin>) {
+        self.pins = pins;
+    }
+
+    pub fn request_update(&mut self, mut input: UpdateDiffRowsInput) {
         if input.file_1.is_none() && input.file_2.is_none() {
             log::warn!("request update was called with no file_1 or file_2");
             return;
         }
+
+        // By path, not by the input's hash equality: a reload of the same file keeps its pins.
+        let paths = [&input.file_1, &input.file_2].map(|f| f.as_ref().map(|f| f.path.clone()));
+        if paths != std::mem::replace(&mut self.pin_paths, paths.clone()) && !self.pins.is_empty() {
+            log::info!("File path changed, clearing {} pins", self.pins.len());
+            self.pins.clear();
+        }
+        input.pins = self.pins.clone();
 
         self.cancel_in_progress();
         self.cancel_flag = Arc::new(AtomicBool::new(false));
@@ -1265,75 +1306,32 @@ fn precompute_file_rows(
     (file_1_to_diff, file_2_to_diff)
 }
 
-fn shift_left_content_up(rows: &mut [DiffRow], offset: usize) {
-    for i in 0..rows.len() {
-        rows[i].left = if i + offset < rows.len() {
-            rows[i + offset].left.clone()
-        } else {
-            LineContent::Void
-        };
-    }
+/// Lines as the phase driver splits them, so a last line without a line break counts.
+fn pin_line_count(tokens: &[RawToken]) -> usize {
+    let breaks = tokens
+        .iter()
+        .filter(|t| t.kind == TokenKind::Newline)
+        .count();
+    breaks + usize::from(tokens.last().is_some_and(|t| t.kind != TokenKind::Newline))
 }
 
-fn shift_right_content_up(rows: &mut [DiffRow], offset: usize) {
-    for i in 0..rows.len() {
-        rows[i].right = if i + offset < rows.len() {
-            rows[i + offset].right.clone()
-        } else {
-            LineContent::Void
-        };
-    }
+/// Line counts pins are validated against. `None` unless both sides are loaded.
+pub fn pin_line_counts(input: &UpdateDiffRowsInput) -> Option<(usize, usize)> {
+    let (Some(f1), Some(f2)) = (&input.file_1, &input.file_2) else {
+        return None;
+    };
+    Some((pin_line_count(&f1.tokens), pin_line_count(&f2.tokens)))
 }
 
-fn align_rows_to_pivot(
-    diff_rows: &mut Vec<DiffRow>,
-    pivot_lines: PivotLines,
-    precomputed_file_rows: &PrecomputedFileRows,
-) {
-    log::debug!("pivot: {:?}", pivot_lines);
-    let found_diff_row_pivot_index_1 = precomputed_file_rows
-        .0
-        .get(pivot_lines.left.saturating_sub(1));
-    let found_diff_row_pivot_index_2 = precomputed_file_rows
-        .1
-        .get(pivot_lines.right.saturating_sub(1));
-    log::debug!(
-        "found_diff_row_pivot_index_1: {:?}",
-        found_diff_row_pivot_index_1
-    );
-    log::debug!(
-        "found_diff_row_pivot_index_2: {:?}",
-        found_diff_row_pivot_index_2
-    );
-
-    let (Some(left_pivot_row), Some(right_pivot_row)) =
-        (found_diff_row_pivot_index_1, found_diff_row_pivot_index_2)
-    else {
-        return;
-    };
-    if left_pivot_row == right_pivot_row {
-        return;
-    }
-
-    // +: pad right side
-    // -: pad left side
-    let row_offset = *left_pivot_row as isize - *right_pivot_row as isize;
-    let shift = row_offset.unsigned_abs();
-    log::debug!("pivot diff: {}", row_offset);
-
-    let dummy_diff_row = DiffRow {
-        left: LineContent::Void,
-        right: LineContent::Void,
-    };
-    diff_rows.splice(0..0, std::iter::repeat_n(dummy_diff_row, shift));
-
-    match row_offset.cmp(&0) {
-        std::cmp::Ordering::Greater => shift_left_content_up(diff_rows, shift),
-        std::cmp::Ordering::Less => shift_right_content_up(diff_rows, shift),
-        std::cmp::Ordering::Equal => {
-            panic!("Should early exit out before here")
-        }
-    }
+pub fn insert_pin(
+    pins: &[Pin],
+    pin: Pin,
+    (source_lines, target_lines): (usize, usize),
+) -> Result<Vec<Pin>, PinError> {
+    let mut inserted = pins.to_vec();
+    inserted.insert(pins.partition_point(|p| p.source < pin.source), pin);
+    validate_pins(&inserted, source_lines, target_lines)?;
+    Ok(inserted)
 }
 
 // Initial MinimalDiffCtx code, does not handle partially invalidating the diffctx
@@ -1385,13 +1383,8 @@ fn update_diff_rows_minimal_diff_ctx(
     track_alloc!(reg, "build_diff_rows");
     check_cancel!(cancel_flag, "build_diff_rows");
 
-    let (final_rows, precomputed_diffs, collapsed_blocks) = finalize_diff_rows(
-        diff_rows,
-        &input.options,
-        c1.metadata.line_starts.len(),
-        c2.metadata.line_starts.len(),
-        &cancel_flag,
-    )?;
+    let (final_rows, precomputed_diffs, collapsed_blocks) =
+        finalize_diff_rows(diff_rows, &input.options, &cancel_flag)?;
 
     let precomputed_file_rows = precompute_file_rows(
         &final_rows,
@@ -1411,6 +1404,7 @@ fn update_diff_rows_minimal_diff_ctx(
         debug_file_2_path: c2.path.clone(),
         input: input.clone(),
         num_add_deletes: myers_count_add_deletes(&myers_path),
+        ignored_pins: None,
         stage_times,
         precomputed_diffs: Arc::new(precomputed_diffs),
         precomputed_file_rows: Arc::new(precomputed_file_rows),
@@ -1458,24 +1452,13 @@ fn compare_tokens(
     a_bytes == b_bytes
 }
 
-/// Pivot alignment and diff-only collapsing. A block collapsed with zero context rows leaves no
+/// Diff-only collapsing. A block collapsed with zero context rows leaves no
 /// `Collapsed` row, so it has no `CollapsedBlock` and can't be expanded.
 pub(crate) fn finalize_diff_rows(
     mut diff_rows: DiffRows,
     options: &DiffBuilderOptions,
-    c1_lines: usize,
-    c2_lines: usize,
     cancel_flag: &Arc<AtomicBool>,
 ) -> Option<(DiffRows, PrecomputedDiffs, CollapsedBlocks)> {
-    if let Some(pivot_lines) = &options.pivot_lines {
-        if pivot_lines.left > 0 && pivot_lines.right > 0 {
-            let precomputed = precompute_file_rows(&diff_rows, c1_lines, c2_lines);
-            align_rows_to_pivot(&mut diff_rows, *pivot_lines, &precomputed);
-        }
-    }
-
-    check_cancel!(cancel_flag, "pivot_lines");
-
     let mut precomputed_diffs = precompute_diff_spans(&diff_rows);
     let mut collapsed_blocks = CollapsedBlocks::new();
 
@@ -2615,6 +2598,176 @@ mod tests {
                 processor.update_find(FindCtx::new("bar", true, &ctx));
                 assert_eq!(processor.get_scroll_to_row().map(|s| s.start), Some(1));
                 assert_eq!(processor.highlight_side, None);
+            }
+        }
+
+        mod pins {
+            use zdiff::myers::{Pin, PinError};
+
+            use super::*;
+
+            fn pin(source: usize, target: usize) -> Pin {
+                Pin { source, target }
+            }
+
+            fn write(path: &Path, contents: &str) -> Option<Arc<CachedFile<RawToken>>> {
+                std::fs::write(path, contents).unwrap();
+                load(&UniversalPath::from(path.to_path_buf()))
+            }
+
+            fn same_row(ctx: &MinimalDiffCtx, pin: Pin) -> bool {
+                let (left, right) = &*ctx.precomputed_file_rows;
+                left[pin.source] == right[pin.target]
+            }
+
+            fn diff(processor: &mut DiffProcessor, input: &UpdateDiffRowsInput) -> MinimalDiffCtx {
+                open(processor, input);
+                settle(processor).expect("diff never completed")
+            }
+
+            #[test]
+            fn pins_rerun_the_diff_and_survive_an_option_toggle() {
+                let dir = tempfile::tempdir().unwrap();
+                let left = write(&dir.path().join("l.txt"), "a\nb\nc\nd\n");
+                let right = write(&dir.path().join("r.txt"), "w\nx\na\nb\nc\nd\n");
+                let mut processor = DiffProcessor::default();
+                assert!(!same_row(
+                    &diff(&mut processor, &input(&left, &right)),
+                    pin(0, 0)
+                ));
+
+                processor.set_pins(vec![pin(0, 0)]);
+                let ctx = diff(&mut processor, &input(&left, &right));
+                assert_eq!(ctx.input.pins, [pin(0, 0)]);
+                assert!(same_row(&ctx, pin(0, 0)));
+
+                let mut toggled = input(&left, &right);
+                toggled.options.ghost_rows = !toggled.options.ghost_rows;
+                let ctx = diff(&mut processor, &toggled);
+                assert_eq!(processor.pins(), [pin(0, 0)]);
+                assert!(same_row(&ctx, pin(0, 0)));
+
+                processor.set_pins(Vec::new());
+                let ctx = diff(&mut processor, &toggled);
+                assert!(!same_row(&ctx, pin(0, 0)));
+            }
+
+            #[test]
+            fn pins_are_cleared_on_a_path_change() {
+                let dir = tempfile::tempdir().unwrap();
+                let left = write(&dir.path().join("l.txt"), "a\nb\n");
+                let right = write(&dir.path().join("r.txt"), "x\na\nb\n");
+                let other = write(&dir.path().join("other.txt"), "x\na\nb\n");
+                let mut processor = DiffProcessor::default();
+                diff(&mut processor, &input(&left, &right));
+                processor.set_pins(vec![pin(0, 0)]);
+                diff(&mut processor, &input(&left, &right));
+                assert_eq!(processor.pins(), [pin(0, 0)]);
+
+                let ctx = diff(&mut processor, &input(&left, &other));
+                assert!(processor.pins().is_empty());
+                assert!(ctx.input.pins.is_empty());
+                assert!(!same_row(&ctx, pin(0, 0)));
+            }
+
+            #[test]
+            fn pins_are_kept_when_a_side_reloads_from_the_same_path() {
+                let dir = tempfile::tempdir().unwrap();
+                let left = write(&dir.path().join("l.txt"), "a\nb\n");
+                let right_path = dir.path().join("r.txt");
+                let right = write(&right_path, "x\na\nb\n");
+                let mut processor = DiffProcessor::default();
+                diff(&mut processor, &input(&left, &right));
+                processor.set_pins(vec![pin(0, 0)]);
+                diff(&mut processor, &input(&left, &right));
+
+                let reloaded = write(&right_path, "y\na\nb\n");
+                let ctx = diff(&mut processor, &input(&left, &reloaded));
+                assert_eq!(processor.pins(), [pin(0, 0)]);
+                assert!(same_row(&ctx, pin(0, 0)));
+            }
+
+            #[test]
+            fn pins_survive_the_ctx_reset_of_a_revert_or_refresh() {
+                let dir = tempfile::tempdir().unwrap();
+                let left = write(&dir.path().join("l.txt"), "a\nb\n");
+                let right_path = dir.path().join("r.txt");
+                let right = write(&right_path, "x\na\nb\n");
+                let mut processor = DiffProcessor::default();
+                diff(&mut processor, &input(&left, &right));
+                processor.set_pins(vec![pin(0, 0)]);
+                diff(&mut processor, &input(&left, &right));
+
+                processor.reset_ctx();
+                let ctx = diff(&mut processor, &input(&left, &right));
+                assert_eq!(processor.pins(), [pin(0, 0)]);
+                assert!(same_row(&ctx, pin(0, 0)));
+
+                processor.reset_ctx();
+                let reverted = write(&right_path, "y\na\nb\n");
+                let ctx = diff(&mut processor, &input(&left, &reverted));
+                assert_eq!(processor.pins(), [pin(0, 0)]);
+                assert!(same_row(&ctx, pin(0, 0)));
+            }
+
+            #[test]
+            fn pins_a_reloaded_file_no_longer_fits_are_ignored_with_the_reason() {
+                let dir = tempfile::tempdir().unwrap();
+                let left = write(&dir.path().join("l.txt"), "a\nb\nc\nd\n");
+                let right_path = dir.path().join("r.txt");
+                let right = write(&right_path, "a\nb\nc\nd\n");
+                let mut processor = DiffProcessor::default();
+                diff(&mut processor, &input(&left, &right));
+                processor.set_pins(vec![pin(3, 3)]);
+                assert_eq!(
+                    diff(&mut processor, &input(&left, &right)).ignored_pins,
+                    None
+                );
+
+                let shrunk = write(&right_path, "a\n");
+                let ctx = diff(&mut processor, &input(&left, &shrunk));
+                assert!(
+                    matches!(ctx.ignored_pins, Some(PinError::OutOfRange { .. })),
+                    "{:?}",
+                    ctx.ignored_pins
+                );
+                assert!(!ctx.diff_rows.is_empty());
+            }
+
+            #[test]
+            fn a_pin_is_inserted_in_line_order_or_rejected_with_the_reason() {
+                assert_eq!(insert_pin(&[], pin(2, 3), (5, 5)), Ok(vec![pin(2, 3)]));
+                assert_eq!(
+                    insert_pin(&[pin(0, 0), pin(3, 4)], pin(1, 2), (5, 5)),
+                    Ok(vec![pin(0, 0), pin(1, 2), pin(3, 4)])
+                );
+                assert_eq!(
+                    insert_pin(&[pin(1, 3)], pin(2, 1), (5, 5)),
+                    Err(PinError::NotIncreasing {
+                        pin: pin(2, 1),
+                        previous: pin(1, 3)
+                    })
+                );
+                assert!(matches!(
+                    insert_pin(&[], pin(5, 0), (5, 5)),
+                    Err(PinError::OutOfRange { .. })
+                ));
+            }
+
+            #[test]
+            fn pin_line_counts_include_a_last_line_without_a_line_break() {
+                let dir = tempfile::tempdir().unwrap();
+                let ended = write(&dir.path().join("a.txt"), "a\nb\n");
+                let unended = write(&dir.path().join("b.txt"), "a\nb\nc");
+                assert_eq!(pin_line_counts(&input(&ended, &unended)), Some((2, 3)));
+                assert_eq!(pin_line_counts(&input(&ended, &None)), None);
+
+                let mut processor = DiffProcessor::default();
+                diff(&mut processor, &input(&ended, &unended));
+                processor.set_pins(vec![pin(1, 2)]);
+                let ctx = diff(&mut processor, &input(&ended, &unended));
+                assert_eq!(ctx.ignored_pins, None);
+                assert_eq!(ctx.input.pins, [pin(1, 2)]);
             }
         }
     }
