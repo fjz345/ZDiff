@@ -12,7 +12,6 @@ const RT_GROUP_ICON: u16 = 14;
 const MOVEABLE_DISCARDABLE: u16 = 0x1010;
 const MOVEABLE_PURE_DISCARDABLE: u16 = 0x1030;
 
-/// Embeds `png` (relative to the package dir) as the exe icon resource of the package's bins.
 pub fn embed_exe_icon(png: &str) {
     println!("cargo:rerun-if-changed={png}");
 
