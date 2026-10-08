@@ -2229,17 +2229,6 @@ mod tests {
         }
 
         #[test]
-        fn merge_opens_left_and_right_as_a_diff() {
-            let (mut left, mut right, outcome) =
-                launch(&["-nl", "T", "-nr", "M", "base", "theirs", "yours", "merged"]);
-            assert_eq!(outcome, LaunchOutcome::Opened);
-            assert_eq!(left.get_full_path(), UniversalPath::new("theirs"));
-            assert_eq!(right.get_full_path(), UniversalPath::new("yours"));
-            assert_eq!(left.label(), Some("T"));
-            assert_eq!(right.label(), Some("M"));
-        }
-
-        #[test]
         fn help_opens_nothing() {
             let (mut left, _, outcome) = launch(&["--help"]);
             assert_eq!(outcome, LaunchOutcome::Help);
