@@ -196,6 +196,8 @@ pub struct ZApp {
     /// The diff collects the phase trace while it is open.
     #[serde(skip)]
     open_phase_trace_window: bool,
+    #[serde(skip)]
+    phase_overlay: bool,
     /// A revert waiting on the p4 edit prompt.
     #[serde(skip)]
     pending_p4_edit: Option<(RevertTarget, PendingP4Edit)>,
@@ -266,6 +268,7 @@ impl<'a> ZApp {
             open_universal_path_window: false,
             open_viewers_window: false,
             open_phase_trace_window: false,
+            phase_overlay: false,
             pending_p4_edit: None,
             toggle_active_side: false,
             open_help_window: false,
@@ -599,6 +602,7 @@ impl<'a> ZApp {
                         if ui.button("Phase Trace").clicked() {
                             self.open_phase_trace_window = true;
                         }
+                        ui.checkbox(&mut self.phase_overlay, "Phase Overlay");
                         #[cfg(debug_assertions)]
                         {
                             let load_btn = |ui: &mut egui::Ui,
@@ -984,6 +988,7 @@ impl<'a> ZApp {
                     image_view: is_image.then_some(image_processor),
                     viewer_override: &mut viewer_override.kind,
                     viewer_fallback: viewer_fallback.as_deref(),
+                    phase_overlay: self.phase_overlay,
                 },
             };
 
@@ -1531,7 +1536,7 @@ impl eframe::App for ZApp {
                     options: state.diff_options.clone(),
                     myers_diff_algorithm: state.myers_diff_algorithm.clone(),
                     pins: state.diff_processor.pins().to_vec(),
-                    collect_trace: self.open_phase_trace_window,
+                    collect_trace: self.open_phase_trace_window || self.phase_overlay,
                 };
 
                 let diff_ctx_invalidated = if state.file_1.get_loading_path().is_some()

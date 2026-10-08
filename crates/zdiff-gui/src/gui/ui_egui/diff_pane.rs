@@ -29,12 +29,13 @@ use serde::{Deserialize, Serialize};
 use zcommon::ui_egui::toggle::{TOGGLE_BUTTON_SIZE, toggle_button};
 use zdiff::{
     cached_file::CachedFile,
-    diff_builder::{DIMMED, DiffBuilderOptions, DiffRow, LineContent},
+    diff_builder::{DIMMED, DiffBuilderOptions, DiffRow, IsGhost, LineContent},
     diff_ir::{DiffOp, DiffResult},
     ignore::IgnorePatterns,
     lexer::RawTokenTrait,
     myers::{MyersNumAddDelete, Pin},
     row_text::{GhostInsertion, RowText, build_row_text},
+    trace::{PhaseTrace, TraceSpan},
     universal_path::UniversalPath,
 };
 
@@ -96,6 +97,7 @@ pub struct FileDiffPaneCtx<'a> {
     pub viewer_override: &'a mut Option<ViewerKind>,
     /// Why the pair isn't in the viewer it asked for, if it isn't.
     pub viewer_fallback: Option<&'a str>,
+    pub phase_overlay: bool,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -682,6 +684,10 @@ impl FileDiffPane {
                                         _ => None,
                                     };
                                     let shown_pins = ctx.diff_ctx.map_or(&[][..], shown_pins);
+                                    let overlay = ctx
+                                        .diff_ctx
+                                        .filter(|_| ctx.phase_overlay)
+                                        .and_then(|d| d.phase_trace.as_deref());
                                     let add_row = |mut row: egui_extras::TableRow| {
                                             if let Some(rows) = diff_rows {
                                                 let row_index = row.index();
@@ -728,10 +734,14 @@ impl FileDiffPane {
                                                             ),
                                                             active_side == ActiveSide::Left,
                                                             ctx.code_language,
+                                                            overlay,
                                                         );
                                                     });
                                                     if is_pinned(shown_pins, ActiveSide::Left, &diff_row.left) {
                                                         paint_pin_marker(ui);
+                                                    }
+                                                    if let Some(trace) = overlay {
+                                                        paint_trace_gutter(ui, trace, ActiveSide::Left, &diff_row.left);
                                                     }
                                                     left_rect = left_rect.union(ui.max_rect());
                                                 });
@@ -894,10 +904,14 @@ impl FileDiffPane {
                                                             ),
                                                             active_side == ActiveSide::Right,
                                                             ctx.code_language,
+                                                            overlay,
                                                         );
                                                     });
                                                     if is_pinned(shown_pins, ActiveSide::Right, &diff_row.right) {
                                                         paint_pin_marker(ui);
+                                                    }
+                                                    if let Some(trace) = overlay {
+                                                        paint_trace_gutter(ui, trace, ActiveSide::Right, &diff_row.right);
                                                     }
                                                     right_rect = right_rect.union(ui.max_rect());
                                                 });
@@ -1017,6 +1031,7 @@ impl FileDiffPane {
         find: RowFind,
         selectable: bool,
         code_language: &str,
+        trace: Option<&PhaseTrace>,
     ) {
         let row_h = ui.text_style_height(&egui::TextStyle::Monospace);
         // Wrapped rows fill their cell, which is as tall as the row's taller side.
@@ -1187,6 +1202,22 @@ impl FileDiffPane {
                                 egui::Color32::from_rgba_unmultiplied(255, 255, 0, 40), // Faint yellow
                             );
                         }
+                        if let Some(trace) = trace {
+                            let outlines = token_hunk_outlines(
+                                trace,
+                                tokens,
+                                &row_text,
+                                file_source.as_deref(),
+                                file_target.as_deref(),
+                            );
+                            paint_trace_row(
+                                ui.painter(),
+                                &outlines,
+                                &row_text,
+                                &side_text.galley,
+                                hit_rect.left_top(),
+                            );
+                        }
                     };
                     // A wrapped row's line number stays on its first line.
                     if wrap {
@@ -1312,6 +1343,175 @@ fn paint_pin_marker(ui: &egui::Ui) {
     let rect = ui.max_rect();
     let bar = egui::Rect::from_min_size(rect.min, egui::vec2(3.0, rect.height()));
     ui.painter().rect_filled(bar, 0.0, PIN_MARKER);
+}
+
+const LINE_HUNK_BAR: egui::Color32 = egui::Color32::from_rgb(230, 140, 40);
+const SCOPE_PAIR_COLORS: [egui::Color32; 6] = [
+    egui::Color32::from_rgb(255, 120, 200),
+    egui::Color32::from_rgb(120, 220, 255),
+    egui::Color32::from_rgb(255, 220, 90),
+    egui::Color32::from_rgb(160, 255, 120),
+    egui::Color32::from_rgb(200, 150, 255),
+    egui::Color32::from_rgb(255, 150, 100),
+];
+const TOKEN_DELETE_OUTLINE: egui::Color32 = egui::Color32::from_rgb(255, 90, 90);
+const TOKEN_INSERT_OUTLINE: egui::Color32 = egui::Color32::from_rgb(90, 230, 90);
+const CHAR_UNDERLINE: egui::Color32 = egui::Color32::from_rgb(0, 220, 255);
+
+/// Scope pairs are numbered like the Phase Trace window's table.
+fn paint_trace_gutter(ui: &egui::Ui, trace: &PhaseTrace, side: ActiveSide, content: &LineContent) {
+    let LineContent::Code { line_num, .. } = content else {
+        return;
+    };
+    let Ok(line) = usize::try_from(line_num - 1) else {
+        return;
+    };
+    let lines = |span: &TraceSpan| match side {
+        ActiveSide::Left => span.source_lines.clone(),
+        ActiveSide::Right => span.target_lines.clone(),
+    };
+    let rect = ui.max_rect();
+    let painter = ui.painter();
+    if trace
+        .line_hunks
+        .iter()
+        .any(|hunk| lines(hunk).contains(&line))
+    {
+        let bar = egui::Rect::from_min_size(
+            rect.min + egui::vec2(4.0, 0.0),
+            egui::vec2(2.0, rect.height()),
+        );
+        painter.rect_filled(bar, 0.0, LINE_HUNK_BAR);
+    }
+    let x = rect.left() + GUTTER_WIDTH;
+    for (i, pair) in trace.scope_pairs.iter().enumerate() {
+        let lines = lines(pair);
+        if !lines.contains(&line) {
+            continue;
+        }
+        let stroke = egui::Stroke::new(1.5, SCOPE_PAIR_COLORS[i % SCOPE_PAIR_COLORS.len()]);
+        let (first, last) = (line == lines.start, line + 1 == lines.end);
+        let top = if first { rect.top() + 1.0 } else { rect.top() };
+        let bottom = if last {
+            rect.bottom() - 1.0
+        } else {
+            rect.bottom()
+        };
+        painter.vline(x, top..=bottom, stroke);
+        if first {
+            painter.hline(x..=x + GUTTER_GAP, top, stroke);
+            let number = painter.layout_no_wrap(
+                (i + 1).to_string(),
+                egui::FontId::monospace(9.0),
+                stroke.color,
+            );
+            let pos = egui::pos2(x - 1.0 - number.size().x, rect.top());
+            let behind = egui::Rect::from_min_size(pos, number.size());
+            painter.rect_filled(behind, 0.0, egui::Color32::from_black_alpha(200));
+            painter.galley(pos, number, stroke.color);
+        }
+        if last {
+            painter.hline(x..=x + GUTTER_GAP, bottom, stroke);
+        }
+    }
+}
+
+fn token_hunk_outlines<T: RawTokenTrait>(
+    trace: &PhaseTrace,
+    tokens: &[(DiffResult, zdiff::diff_builder::Color32, IsGhost)],
+    row_text: &RowText,
+    file_source: Option<&CachedFile<T>>,
+    file_target: Option<&CachedFile<T>>,
+) -> Vec<(std::ops::Range<usize>, egui::Color32)> {
+    let in_token_hunk = |idx: Option<u32>, side: fn(&TraceSpan) -> &std::ops::Range<usize>| {
+        idx.is_some_and(|i| {
+            let i = i as usize;
+            trace
+                .token_hunks
+                .iter()
+                .any(|hunk| side(&hunk.span).contains(&i))
+        })
+    };
+    let mut outlines = Vec::new();
+    let mut start = 0;
+    for token in tokens {
+        let result = &token.0;
+        // One token at a time, so each range is exactly what build_row_text adds to the row.
+        let row = build_row_text(std::slice::from_ref(token), &[], file_source, file_target);
+        let len = row.text.len();
+        let range = start..start + len;
+        start += len;
+        if len == 0 || result.hide_in_diff {
+            continue;
+        }
+        match result.operation {
+            DiffOp::Delete if in_token_hunk(result.token_source_idx, |s| &s.source) => {
+                outlines.push((range, TOKEN_DELETE_OUTLINE));
+            }
+            DiffOp::Insert if in_token_hunk(result.token_target_idx, |s| &s.target) => {
+                outlines.push((range, TOKEN_INSERT_OUTLINE));
+            }
+            _ => {}
+        }
+    }
+    debug_assert_eq!(start, row_text.text.len());
+    outlines
+}
+
+/// `origin` is where `galley` was painted.
+fn paint_trace_row(
+    painter: &egui::Painter,
+    outlines: &[(std::ops::Range<usize>, egui::Color32)],
+    row_text: &RowText,
+    galley: &egui::Galley,
+    origin: egui::Pos2,
+) {
+    for (range, color) in outlines {
+        for rect in text_range_rects(galley, &row_text.text, range.clone()) {
+            painter.rect_stroke(
+                rect.translate(origin.to_vec2()),
+                0.0,
+                egui::Stroke::new(1.0, *color),
+                egui::StrokeKind::Inside,
+            );
+        }
+    }
+    for range in &row_text.changed_chars {
+        for rect in text_range_rects(galley, &row_text.text, range.clone()) {
+            let rect = rect.translate(origin.to_vec2());
+            painter.hline(
+                rect.x_range(),
+                rect.bottom() - 1.0,
+                egui::Stroke::new(1.5, CHAR_UNDERLINE),
+            );
+        }
+    }
+}
+
+/// One galley-relative rect per laid-out row that the byte range of `text` covers.
+fn text_range_rects(
+    galley: &egui::Galley,
+    text: &str,
+    range: std::ops::Range<usize>,
+) -> Vec<egui::Rect> {
+    let start = text[..range.start].chars().count();
+    let end = text[..range.end].chars().count();
+    let mut rects = Vec::new();
+    let mut row_start = 0;
+    for row in &galley.rows {
+        let row_end = row_start + row.glyphs.len();
+        let (a, b) = (start.max(row_start), end.min(row_end));
+        if a < b {
+            let first = &row.glyphs[a - row_start];
+            let last = &row.glyphs[b - 1 - row_start];
+            rects.push(egui::Rect::from_x_y_ranges(
+                row.pos.x + first.pos.x..=row.pos.x + last.pos.x + last.advance_width,
+                row.pos.y..=row.pos.y + row.size.y,
+            ));
+        }
+        row_start = row_end;
+    }
+    rects
 }
 
 fn pins_ui(

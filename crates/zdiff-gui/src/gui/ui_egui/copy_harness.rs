@@ -422,6 +422,7 @@ impl CopyHarness {
                                     RowFind::default(),
                                     false,
                                     "rs",
+                                    None,
                                 );
                             });
                         });
@@ -533,6 +534,7 @@ impl CopyHarness {
                                             RowFind::default(),
                                             active_side == active_side_of(side),
                                             "rs",
+                                            None,
                                         );
                                     });
                                 });
