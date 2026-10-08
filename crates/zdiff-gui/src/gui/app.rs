@@ -578,11 +578,21 @@ impl<'a> ZApp {
                                             p2: &str| {
                                 if ui.button(label).clicked() {
                                     let base = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+                                    let (p1, p2) = (base.join(p1), base.join(p2));
+                                    if let Some(missing) =
+                                        [&p1, &p2].into_iter().find(|p| !p.exists())
+                                    {
+                                        log::warn!(
+                                            "{label}: missing fixture {}",
+                                            missing.display()
+                                        );
+                                        return;
+                                    }
 
                                     file_1.set_root("".into());
                                     file_2.set_root("".into());
-                                    file_1.set_path(UniversalPath::from(base.join(p1)));
-                                    file_2.set_path(UniversalPath::from(base.join(p2)));
+                                    file_1.set_path(UniversalPath::from(p1));
+                                    file_2.set_path(UniversalPath::from(p2));
 
                                     diff_processor.reset_ctx();
                                 }
@@ -626,6 +636,48 @@ impl<'a> ZApp {
                                 diff_processor,
                                 "../../test/test_ignore_whitespace_extreme_simple/1.txt",
                                 "../../test/test_ignore_whitespace_extreme_simple/2.txt",
+                            );
+
+                            ui.separator();
+
+                            load_btn(
+                                ui,
+                                "Open Text Logs",
+                                file_1,
+                                file_2,
+                                diff_processor,
+                                "../../test/test_log/1.txt",
+                                "../../test/test_log/2.txt",
+                            );
+
+                            load_btn(
+                                ui,
+                                "Open Hex Binaries",
+                                file_1,
+                                file_2,
+                                diff_processor,
+                                "../../test/1/2/2_battery-crates_all_A1-Mini - Copy (4).3mf",
+                                "../../test/test_similar_2/1/2/AAA.3mf",
+                            );
+
+                            load_btn(
+                                ui,
+                                "Open PNG Pair",
+                                file_1,
+                                file_2,
+                                diff_processor,
+                                "../../test/test_similar_1/different_hash.png",
+                                "../../test/test_similar_2/different_hash.png",
+                            );
+
+                            load_btn(
+                                ui,
+                                "Open PNG vs Text",
+                                file_1,
+                                file_2,
+                                diff_processor,
+                                "../../test/1/admin_icon.png",
+                                "../../test/test_log/1.txt",
                             );
                         }
                     });

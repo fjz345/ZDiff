@@ -240,6 +240,36 @@ impl ZApp {
                         app_ctx.file_system_model_1_view = None;
                         app_ctx.file_system_model_2_view = None;
                     }
+                    #[cfg(debug_assertions)]
+                    {
+                        ui.separator();
+                        for (label, p1, p2) in [
+                            (
+                                "Open test_similar_1 vs test_similar_2",
+                                "test_similar_1",
+                                "test_similar_2",
+                            ),
+                            (
+                                "Open test_similar_2 vs test_similar_2_one_deeper",
+                                "test_similar_2",
+                                "test_similar_2_one_deeper",
+                            ),
+                            ("Open 1 vs test_similar_1/1", "1", "test_similar_1/1"),
+                        ] {
+                            if ui.button(label).clicked() {
+                                let base = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                                    .join("../../test");
+                                let (p1, p2) = (base.join(p1), base.join(p2));
+                                if let Some(missing) = [&p1, &p2].into_iter().find(|p| !p.is_dir())
+                                {
+                                    log::warn!("{label}: missing fixture {}", missing.display());
+                                } else {
+                                    app_ctx.file_system_1_root_path = Some(p1);
+                                    app_ctx.file_system_2_root_path = Some(p2);
+                                }
+                            }
+                        }
+                    }
                 });
             });
         });
