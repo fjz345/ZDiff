@@ -207,7 +207,6 @@ fn scope_line_and_token_phases_return_none_promptly_when_cancelled() {
             assert!(finished, "{algorithm:?} {phases:?}");
             let (finished, cancelled) = run(total / 10);
             assert!(!finished, "{algorithm:?} {phases:?}");
-            // myers_diff_trace has no cancel check, so Trace only stops between Myers runs.
             if algorithm != MyersDiffAlgorithm::Trace {
                 assert!(
                     cancelled < total / 2,
