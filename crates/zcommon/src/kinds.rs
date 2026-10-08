@@ -64,20 +64,17 @@ impl FileKind {
     }
 }
 
-/// Case-insensitive, leading dot ignored: `PNG`, `.png` and `png` are one entry.
 pub fn normalize_extension(extension: &str) -> String {
     extension.trim().trim_start_matches('.').to_lowercase()
 }
 
 fn default_kind(extension: &str) -> FileKind {
-    let extension = normalize_extension(extension);
     FileKind::ALL
         .into_iter()
-        .find(|kind| kind.default_extensions().contains(&extension.as_str()))
+        .find(|kind| kind.default_extensions().contains(&extension))
         .unwrap_or(FileKind::Binary)
 }
 
-/// The default extension map with user overrides on top. Override keys are always normalized.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct KindTable {
     overrides: BTreeMap<String, FileKind>,
@@ -92,7 +89,6 @@ impl KindTable {
             .unwrap_or_else(|| default_kind(&extension))
     }
 
-    /// Returns false, and changes nothing, for an extension that is empty once normalized.
     pub fn set_override(&mut self, extension: &str, kind: FileKind) -> bool {
         let extension = normalize_extension(extension);
         if extension.is_empty() {
