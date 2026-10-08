@@ -27,6 +27,7 @@ Runs the whole pipeline on each fixture and prints one row per fixture: the medi
 * Settings match zdiff-gui's defaults: greedy lexer, `Linear` Myers, default `DiffBuilderOptions`. `rows` is `build_diff_rows` only; zdiff-gui's IR clone and row finalization are not included.
 * `build_diff_rows` builds large diffs in up to 8 parallel chunks on rayon's pool. Run with `RAYON_NUM_THREADS=1` for the single-core cost.
 * `-/+ tokens` and `n rows` describe the fixture. An identical pair must show `0/0`.
+* A second table times phase sets through `myers_diff_path` on the same fixtures: `default` (Line+Token), `scope` (Scope+Line+Token) and `+char` (`character_diff` on the default path, the cost Character adds). It first asserts that the default set gives the same path as `line_diff` -> `token_diff`. The generated fixtures only have one-line `{ ... }` statements, so `scope` there pairs many small scopes rather than functions.
 * `cargo test` doesn't build it, and with `--benches`/`--all-targets` the binary skips itself (cargo passes `--bench` only under `cargo bench`).
 
 ## Design note: phases and hunk independence

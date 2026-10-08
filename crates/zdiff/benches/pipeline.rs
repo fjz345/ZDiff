@@ -10,17 +10,22 @@ use std::{
 
 use zdiff::{
     cached_file::FileMetadata,
+    char_diff::character_diff,
     diff_builder::{DiffBuilderOptions, build_diff_rows},
     diff_ir::DiffIR,
     ignore::IgnoreMask,
     lexer::{LexerGreedy, RawToken},
-    myers::{MyersDiffAlgorithm, line_diff, myers_count_add_deletes, token_diff},
+    myers::{
+        DiffPhases, MyersDiffAlgorithm, MyersPath, line_diff, myers_count_add_deletes,
+        myers_diff_path, token_diff,
+    },
     read_file_contents,
 };
 
 const WARMUP: usize = 1;
 const ITERATIONS: usize = 7;
 const STAGES: [&str; 5] = ["lex", "line", "token", "ir", "rows"];
+const PHASE_RUNS: [&str; 3] = ["default", "scope", "+char"];
 
 const LARGE_LINES: usize = 20_000;
 const DIFFERENT_LINES: usize = 2_000;
@@ -57,6 +62,12 @@ struct Run {
     num_rows: usize,
 }
 
+struct PhaseRun {
+    times: [Duration; PHASE_RUNS.len()],
+    scope_adds_deletes: (u32, u32),
+    char_ranges: (usize, usize),
+}
+
 fn main() {
     // cargo bench passes --bench; cargo test --benches/--all-targets doesn't, so skip there.
     if !std::env::args().any(|arg| arg == "--bench") {
@@ -76,7 +87,11 @@ fn main() {
     }
     println!();
 
-    for fixture in generated_fixtures().into_iter().chain(local_fixtures()) {
+    let fixtures: Vec<Fixture> = generated_fixtures()
+        .into_iter()
+        .chain(local_fixtures())
+        .collect();
+    for fixture in &fixtures {
         let runs: Vec<Run> = (0..WARMUP + ITERATIONS)
             .map(|_| run_once(&fixture.source, &fixture.target))
             .skip(WARMUP)
@@ -102,6 +117,67 @@ fn main() {
         );
         for stage in stages.iter().chain([&total]) {
             print!(" {:>9.2}", stage.as_secs_f64() * 1000.0);
+        }
+        println!();
+    }
+
+    println!();
+    println!(
+        "phase sets through myers_diff_path: default = Line+Token, scope = Scope+Line+Token, \
+         +char = character_diff on the default path"
+    );
+    print!(
+        "{:<28} {:>13} {:>15}",
+        "fixture", "scope -/+", "char ranges L/R"
+    );
+    for run in PHASE_RUNS {
+        print!(" {run:>9}");
+    }
+    println!();
+    for fixture in &fixtures {
+        let tokens_source: Vec<RawToken> = LexerGreedy::new(&fixture.source).parse();
+        let tokens_target: Vec<RawToken> = LexerGreedy::new(&fixture.target).parse();
+        assert_eq!(
+            driver_path(
+                &fixture.source,
+                &fixture.target,
+                &tokens_source,
+                &tokens_target,
+                DiffPhases::default(),
+            ),
+            line_token_path(
+                &fixture.source,
+                &fixture.target,
+                &tokens_source,
+                &tokens_target
+            ),
+            "{}: the default phase set must equal line_diff -> token_diff",
+            fixture.name
+        );
+        let runs: Vec<PhaseRun> = (0..WARMUP + ITERATIONS)
+            .map(|_| {
+                run_phases(
+                    &fixture.source,
+                    &fixture.target,
+                    &tokens_source,
+                    &tokens_target,
+                )
+            })
+            .skip(WARMUP)
+            .collect();
+        let times: [Duration; PHASE_RUNS.len()] =
+            std::array::from_fn(|i| median(runs.iter().map(|run| run.times[i])));
+
+        let last = runs.last().expect("ITERATIONS > 0");
+        let (adds, deletes) = last.scope_adds_deletes;
+        print!(
+            "{:<28} {:>13} {:>15}",
+            fixture.name,
+            format!("{deletes}/{adds}"),
+            format!("{}/{}", last.char_ranges.0, last.char_ranges.1),
+        );
+        for time in times {
+            print!(" {:>9.2}", time.as_secs_f64() * 1000.0);
         }
         println!();
     }
@@ -173,6 +249,111 @@ fn run_once(source: &str, target: &str) -> Run {
         tokens: (tokens_source.len(), tokens_target.len()),
         adds_deletes: myers_count_add_deletes(&path),
         num_rows,
+    }
+}
+
+fn driver_path(
+    source: &str,
+    target: &str,
+    tokens_source: &[RawToken],
+    tokens_target: &[RawToken],
+    phases: DiffPhases,
+) -> MyersPath {
+    let cmp = |a: &RawToken, b: &RawToken| {
+        a.kind == b.kind && source.as_bytes()[a.span.clone()] == target.as_bytes()[b.span.clone()]
+    };
+    myers_diff_path(
+        MyersDiffAlgorithm::Linear,
+        black_box(tokens_source),
+        black_box(tokens_target),
+        source,
+        target,
+        cmp,
+        &IgnoreMask::default(),
+        phases,
+        &[],
+        Arc::default(),
+    )
+    .expect("never cancelled")
+}
+
+fn line_token_path(
+    source: &str,
+    target: &str,
+    tokens_source: &[RawToken],
+    tokens_target: &[RawToken],
+) -> MyersPath {
+    let cmp = |a: &RawToken, b: &RawToken| {
+        a.kind == b.kind && source.as_bytes()[a.span.clone()] == target.as_bytes()[b.span.clone()]
+    };
+    let (algorithm, mask, cancel) = (
+        MyersDiffAlgorithm::Linear,
+        IgnoreMask::default(),
+        Arc::new(AtomicBool::new(false)),
+    );
+    let hunks = line_diff(
+        algorithm,
+        tokens_source,
+        tokens_target,
+        cmp,
+        &mask,
+        cancel.clone(),
+    )
+    .expect("never cancelled");
+    token_diff(
+        algorithm,
+        tokens_source,
+        tokens_target,
+        &hunks,
+        cmp,
+        &mask,
+        cancel,
+    )
+    .expect("never cancelled")
+}
+
+fn run_phases(
+    source: &str,
+    target: &str,
+    tokens_source: &[RawToken],
+    tokens_target: &[RawToken],
+) -> PhaseRun {
+    let start = Instant::now();
+    let path = driver_path(
+        source,
+        target,
+        tokens_source,
+        tokens_target,
+        DiffPhases::default(),
+    );
+    let default = start.elapsed();
+
+    let scope_phases = DiffPhases {
+        scope: true,
+        ..Default::default()
+    };
+    let start = Instant::now();
+    let scope_path = driver_path(source, target, tokens_source, tokens_target, scope_phases);
+    let scope = start.elapsed();
+
+    let start = Instant::now();
+    let char_ranges = character_diff(
+        MyersDiffAlgorithm::Linear,
+        black_box(&path),
+        tokens_source,
+        tokens_target,
+        source,
+        target,
+        &IgnoreMask::default(),
+        Arc::default(),
+    )
+    .expect("never cancelled");
+    let character = start.elapsed();
+
+    PhaseRun {
+        times: [default, scope, character],
+        scope_adds_deletes: myers_count_add_deletes(&scope_path),
+        char_ranges: (char_ranges.source.len(), char_ranges.target.len()),
     }
 }
 
