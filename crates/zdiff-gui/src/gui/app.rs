@@ -197,6 +197,10 @@ pub struct ZApp {
     pending_p4_edit: Option<(RevertTarget, PendingP4Edit)>,
     #[serde(skip)]
     toggle_active_side: bool,
+    #[serde(skip)]
+    open_help_window: bool,
+    #[serde(skip)]
+    launch_error: Option<String>,
 }
 
 fn default_zoom() -> f32 {
@@ -234,28 +238,14 @@ impl<'a> ZApp {
                     if args.is_empty() {
                         return;
                     }
-                    // Labels, merge and help are wired up by the app-integration issue.
-                    match cli::parse_launch_args(args) {
-                        Ok(launch) => {
-                            for warning in &launch.warnings {
-                                log::warn!("{warning}");
-                            }
-                            match launch.request {
-                                LaunchRequest::Diff { left, right } => {
-                                    ctx.file_1.set_path(left.path);
-                                    ctx.file_2.set_path(right.path);
-                                }
-                                LaunchRequest::Merge { left, right, .. } => {
-                                    log::warn!(
-                                        "merge is not supported yet; opening left and right as a diff"
-                                    );
-                                    ctx.file_1.set_path(left.path);
-                                    ctx.file_2.set_path(right.path);
-                                }
-                                LaunchRequest::Help => log::info!("help is not shown yet"),
-                            }
-                        }
-                        Err(err) => log::error!("{err}"),
+                    match apply_launch(
+                        &mut ctx.file_1,
+                        &mut ctx.file_2,
+                        cli::parse_launch_args(args),
+                    ) {
+                        LaunchOutcome::Opened => {}
+                        LaunchOutcome::Help => self.open_help_window = true,
+                        LaunchOutcome::Error(message) => self.launch_error = Some(message),
                     }
                 }
                 _ => {}
@@ -273,6 +263,8 @@ impl<'a> ZApp {
             open_viewers_window: false,
             pending_p4_edit: None,
             toggle_active_side: false,
+            open_help_window: false,
+            launch_error: None,
         }
     }
 
@@ -738,6 +730,17 @@ impl<'a> ZApp {
                 },
             );
         }
+        if self.open_help_window {
+            show_custom_popup(
+                ui.ctx(),
+                &mut self.open_help_window,
+                "Command line",
+                true,
+                |ui| {
+                    ui.add(egui::Label::new(egui::RichText::new(cli::HELP).monospace()));
+                },
+            );
+        }
         if self.open_universal_path_window {
             show_custom_popup(
                 ui.ctx(),
@@ -894,6 +897,11 @@ impl<'a> ZApp {
             let find_count = diff_processor.find_ctx.hits().len();
             let mut active_side = diff_processor.active_side;
 
+            if file_1.get_full_path() != UniversalPath::default()
+                || file_2.get_full_path() != UniversalPath::default()
+            {
+                self.launch_error = None;
+            }
             let diff_ctx = if is_hex || is_image {
                 None
             } else {
@@ -915,6 +923,9 @@ impl<'a> ZApp {
                     set_file_2_root_request: &mut None,
                     file_source_path: file_1.get_path(),
                     file_target_path: file_2.get_path(),
+                    file_source_label: file_1.label().map(str::to_owned),
+                    file_target_label: file_2.label().map(str::to_owned),
+                    launch_error: self.launch_error.as_deref(),
                     file_source_root: file_1.get_root(),
                     file_target_root: file_2.get_root(),
                     file_source_root_valid: file_1.get_loading_path().is_some()
@@ -1100,8 +1111,8 @@ impl<'a> ZApp {
 
             for (_tile_id, tile) in self.tree.tiles.iter() {
                 if let Tile::Pane(Pane::FileDiff(..)) = tile {
-                    let source = app_ctx.file_1.get_path_as_string();
-                    let target = app_ctx.file_2.get_path_as_string();
+                    let source = app_ctx.file_1.display_name();
+                    let target = app_ctx.file_2.display_name();
                     let total_adds = app_ctx
                         .diff_processor
                         .get_minimal_diff_ctx()
@@ -1542,6 +1553,44 @@ impl eframe::App for ZApp {
 
         self.state = Some(next_state);
     }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum LaunchOutcome {
+    Opened,
+    Help,
+    Error(String),
+}
+
+fn apply_launch(
+    file_1: &mut FileProcessor,
+    file_2: &mut FileProcessor,
+    launch: Result<cli::Launch, cli::LaunchError>,
+) -> LaunchOutcome {
+    let launch = match launch {
+        Ok(launch) => launch,
+        Err(err) => {
+            log::error!("{err}");
+            return LaunchOutcome::Error(err.to_string());
+        }
+    };
+    for warning in &launch.warnings {
+        log::warn!("{warning}");
+    }
+    let (left, right) = match launch.request {
+        LaunchRequest::Diff { left, right } => (left, right),
+        LaunchRequest::Merge { left, right, .. } => {
+            log::warn!("merge is not supported yet; opening left and right as a diff");
+            (left, right)
+        }
+        LaunchRequest::Help => return LaunchOutcome::Help,
+    };
+    // set_path clears the label, so the label goes second.
+    for (file, side) in [(file_1, left), (file_2, right)] {
+        file.set_path(side.path);
+        file.set_label(side.label);
+    }
+    LaunchOutcome::Opened
 }
 
 /// Why a Quick Diff left both sides as they were.
@@ -2152,6 +2201,59 @@ mod tests {
                 right.get_full_path(),
                 UniversalPath::new("//depot/main/src/lib.rs")
             );
+        }
+    }
+
+    mod launch {
+        use super::*;
+
+        fn launch(args: &[&str]) -> (FileProcessor, FileProcessor, LaunchOutcome) {
+            let mut left = FileProcessor::new();
+            let mut right = FileProcessor::new();
+            let outcome = apply_launch(
+                &mut left,
+                &mut right,
+                cli::parse_launch_args(args.iter().copied()),
+            );
+            (left, right, outcome)
+        }
+
+        #[test]
+        fn diff_sets_paths_and_labels() {
+            let (mut left, mut right, outcome) = launch(&["-nl", "A", "-nr", "B", "x", "y"]);
+            assert_eq!(outcome, LaunchOutcome::Opened);
+            assert_eq!(left.get_full_path(), UniversalPath::new("x"));
+            assert_eq!(right.get_full_path(), UniversalPath::new("y"));
+            assert_eq!(left.label(), Some("A"));
+            assert_eq!(right.label(), Some("B"));
+        }
+
+        #[test]
+        fn merge_opens_left_and_right_as_a_diff() {
+            let (mut left, mut right, outcome) =
+                launch(&["-nl", "T", "-nr", "M", "base", "theirs", "yours", "merged"]);
+            assert_eq!(outcome, LaunchOutcome::Opened);
+            assert_eq!(left.get_full_path(), UniversalPath::new("theirs"));
+            assert_eq!(right.get_full_path(), UniversalPath::new("yours"));
+            assert_eq!(left.label(), Some("T"));
+            assert_eq!(right.label(), Some("M"));
+        }
+
+        #[test]
+        fn help_opens_nothing() {
+            let (mut left, _, outcome) = launch(&["--help"]);
+            assert_eq!(outcome, LaunchOutcome::Help);
+            assert_eq!(left.get_full_path(), UniversalPath::default());
+        }
+
+        #[test]
+        fn error_is_returned_and_opens_nothing() {
+            let (mut left, _, outcome) = launch(&["a", "b", "c"]);
+            assert_eq!(
+                outcome,
+                LaunchOutcome::Error(cli::LaunchError::PositionalCount(3).to_string())
+            );
+            assert_eq!(left.get_full_path(), UniversalPath::default());
         }
     }
 }

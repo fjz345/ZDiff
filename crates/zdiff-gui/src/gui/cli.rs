@@ -100,6 +100,37 @@ impl std::fmt::Display for LaunchError {
     }
 }
 
+pub const HELP: &str = "\
+Usage:
+  zdiff-gui LEFT RIGHT                  diff two files
+  zdiff-gui BASE LEFT RIGHT OUTPUT      merge (opens LEFT and RIGHT as a diff for now)
+
+Files can be local paths or depot paths (//depot/a.cpp#3).
+
+p4merge labels:
+  -nl LABEL   left       -nr LABEL   right
+  -nb LABEL   base       -nm LABEL   output
+  zdiff-gui -nl \"a.cpp#3\" -nr \"a.cpp (workspace)\" C:\\tmp\\t1.cpp C:\\ws\\a.cpp
+
+git difftool / mergetool:
+  zdiff-gui $LOCAL $REMOTE
+  zdiff-gui $BASE $LOCAL $REMOTE $MERGED
+
+GNU-style flags (--flag VALUE or --flag=VALUE):
+  --left-label  --right-label  --base-label  --base  --output
+  zdiff-gui --left-label=old --right-label=new a.txt b.txt
+  zdiff-gui --base base.txt --output out.txt left.txt right.txt
+
+TortoiseSVN / TortoiseGit:
+  /base:  /mine:  /theirs:  /merged:  with labels /basename:  /minename:  /theirsname:  /mergedname:
+  zdiff-gui /base:%base /mine:%mine /basename:%bname /minename:%yname
+  zdiff-gui /base:%base /theirs:%theirs /mine:%mine /merged:%merged
+
+Help: -h  --help  /?
+
+Labels replace the path in the path bar and window title; the path is in the tooltip.
+Unknown flags are ignored with a warning in the log.";
+
 struct Given {
     value: String,
     source: String,

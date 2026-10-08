@@ -171,6 +171,8 @@ pub struct FileProcessor {
     ),
     #[cfg_attr(feature = "serde", serde(skip))]
     loading_path: Option<UniversalPath>,
+    #[cfg_attr(feature = "serde", serde(skip))]
+    label: Option<String>,
 }
 
 impl Default for FileProcessor {
@@ -184,6 +186,7 @@ impl Default for FileProcessor {
             root_path: None,
             channel_loaded_file: default_channel_loaded_file(),
             loading_path: None,
+            label: None,
         }
     }
 }
@@ -236,6 +239,20 @@ impl FileProcessor {
         self.file_path.to_p4_string()
     }
 
+    pub fn label(&self) -> Option<&str> {
+        self.label.as_deref()
+    }
+
+    pub fn set_label(&mut self, label: Option<String>) {
+        self.label = label;
+    }
+
+    pub fn display_name(&self) -> String {
+        self.label
+            .clone()
+            .unwrap_or_else(|| self.get_path_as_string())
+    }
+
     pub fn set_path(&mut self, path: UniversalPath) {
         let old_path = self.file_path.clone();
         log::debug!(
@@ -262,6 +279,7 @@ impl FileProcessor {
 
         if old_path != self.file_path {
             self.invalidate_cache_file();
+            self.label = None;
         }
     }
 
@@ -601,5 +619,52 @@ mod tests {
         let loaded = load_bytes(bytes);
         assert_eq!(loaded.viewer_kind(), ViewerKind::Hex);
         assert_eq!(loaded.bytes(), bytes);
+    }
+
+    fn labelled(path: &str, label: &str) -> FileProcessor {
+        let mut file = FileProcessor::new();
+        file.set_path(UniversalPath::new(path));
+        file.set_label(Some(label.to_string()));
+        file
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn label_is_not_serialized() {
+        let file = labelled("a.txt", "depot rev 3");
+        let json = serde_json::to_string(&file).unwrap();
+        assert!(!json.contains("depot rev 3"), "{json}");
+        let restored: FileProcessor = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.label(), None);
+    }
+
+    #[test]
+    fn label_is_kept_when_the_same_path_is_set() {
+        let mut file = labelled("a.txt", "A");
+        file.set_path(UniversalPath::new("a.txt"));
+        assert_eq!(file.label(), Some("A"));
+    }
+
+    #[test]
+    fn label_is_cleared_when_the_path_changes() {
+        let mut file = labelled("a.txt", "A");
+        file.set_path(UniversalPath::new("b.txt"));
+        assert_eq!(file.label(), None);
+    }
+
+    #[test]
+    fn label_is_cleared_when_a_new_path_arrives_on_the_channel() {
+        let mut file = labelled("a.txt", "A");
+        file.get_tx().send(UniversalPath::new("b.txt")).unwrap();
+        file.get_path();
+        assert_eq!(file.label(), None);
+    }
+
+    #[test]
+    fn display_name_is_the_label_else_the_path() {
+        let mut file = labelled("a.txt", "A");
+        assert_eq!(file.display_name(), "A");
+        file.set_label(None);
+        assert_eq!(file.display_name(), file.get_path_as_string());
     }
 }

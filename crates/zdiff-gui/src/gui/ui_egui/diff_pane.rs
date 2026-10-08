@@ -43,6 +43,8 @@ pub struct FileDiffPaneCtx<'a> {
     // the text edit with the old path if even if it could not load a cachedfile
     pub file_source_path: UniversalPath,
     pub file_target_path: UniversalPath,
+    pub file_source_label: Option<String>,
+    pub file_target_label: Option<String>,
     pub file_source_root: Option<UniversalPath>,
     pub file_target_root: Option<UniversalPath>,
     pub file_source_root_valid: bool,
@@ -52,6 +54,7 @@ pub struct FileDiffPaneCtx<'a> {
     pub file_source_loading: bool,
     pub file_target_loading: bool,
     pub diff_loading: bool,
+    pub launch_error: Option<&'a str>,
 
     pub diff_ctx: Option<&'a MinimalDiffCtx>,
     pub diff_options: &'a mut DiffBuilderOptions,
@@ -462,15 +465,17 @@ impl FileDiffPane {
                                 |ui: &mut egui::Ui,
                                  id: egui::Id,
                                  file: &UniversalPath,
+                                 label: Option<&str>,
                                  is_valid: bool,
                                  spinner_active: bool|
                                  -> Option<UniversalPath> {
                                     let original_path = file.to_string();
+                                    let shown = label.unwrap_or(&original_path).to_string();
 
                                     let mut text = ui.memory_mut(|mem| {
                                         mem.data
                                             .get_temp::<String>(id)
-                                            .unwrap_or_else(|| original_path.clone())
+                                            .unwrap_or_else(|| shown.clone())
                                     });
 
                                     let response = ui
@@ -527,6 +532,10 @@ impl FileDiffPane {
 
                                     if response.changed() {
                                         ui.memory_mut(|mem| mem.data.insert_temp(id, text.clone()));
+                                    } else if response.gained_focus() && label.is_some() {
+                                        ui.memory_mut(|mem| {
+                                            mem.data.insert_temp(id, original_path.clone())
+                                        });
                                     }
 
                                     // lost_focus not called correctly, quick fix: https://github.com/emilk/egui/issues/2142
@@ -534,13 +543,25 @@ impl FileDiffPane {
                                     if response.lost_focus() || response.clicked_elsewhere() {
                                         ui.memory_mut(|mem| mem.data.remove::<String>(id));
 
-                                        if text != original_path {
+                                        // clicked_elsewhere also fires unfocused, with the label as text.
+                                        if text != original_path && text != shown {
                                             return Some(UniversalPath::from(&text));
                                         }
                                     }
 
-                                    if !is_valid {
-                                        response.on_hover_text("Invalid path");
+                                    match (label.is_some(), is_valid) {
+                                        (true, true) => {
+                                            response.on_hover_text(&original_path);
+                                        }
+                                        (true, false) => {
+                                            response.on_hover_text(format!(
+                                                "{original_path}\nInvalid path"
+                                            ));
+                                        }
+                                        (false, false) => {
+                                            response.on_hover_text("Invalid path");
+                                        }
+                                        (false, true) => {}
                                     }
 
                                     None
@@ -564,6 +585,7 @@ impl FileDiffPane {
                                                 ui,
                                                 "file_1_path_editor_path".into(),
                                                 &ctx.file_source_root.clone().unwrap_or_default(),
+                                                None,
                                                 ctx.file_source_root_valid,
                                                 ctx.file_source_loading,
                                             );
@@ -572,6 +594,7 @@ impl FileDiffPane {
                                                 ui,
                                                 "file_1_path_editor".into(),
                                                 &ctx.file_source_path,
+                                                ctx.file_source_label.as_deref(),
                                                 ctx.file_source_path_valid,
                                                 ctx.file_source_loading,
                                             );
@@ -585,6 +608,7 @@ impl FileDiffPane {
                                                 ui,
                                                 "file_2_path_editor_path".into(),
                                                 &ctx.file_target_root.clone().unwrap_or_default(),
+                                                None,
                                                 ctx.file_target_root_valid,
                                                 ctx.file_target_loading,
                                             );
@@ -593,6 +617,7 @@ impl FileDiffPane {
                                                 ui,
                                                 "file_2_path_editor".into(),
                                                 &ctx.file_target_path,
+                                                ctx.file_target_label.as_deref(),
                                                 ctx.file_target_path_valid,
                                                 ctx.file_target_loading,
                                             );
@@ -903,7 +928,11 @@ impl FileDiffPane {
                 });
             } else if do_not_render_diff {
                 ui.centered_and_justified(|ui| {
-                    ui.label("Load Source & Target files to see diff.");
+                    if let Some(error) = ctx.launch_error {
+                        ui.colored_label(ui.visuals().error_fg_color, error);
+                    } else {
+                        ui.label("Load Source & Target files to see diff.");
+                    }
                 });
             }
 
