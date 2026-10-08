@@ -11,9 +11,7 @@ use serde::{Deserialize, Serialize};
 use zcommon::{hash::HashService, kinds::KindTable};
 use zhashdiff::{
     comparison::PathComparisonResult,
-    external_diff_tool::{
-        DiffPair, DiffToolConfig, find_on_path, folder_labels, open_diff_tool, resolve_exe,
-    },
+    external_diff_tool::{DiffPair, DiffToolConfig, folder_labels, open_diff_tool},
     filter::PathFilter,
     fs::{FileSystemModel, FsNode, FsNodeDepth, FsNodeId, TreeIter},
 };
@@ -22,6 +20,7 @@ use zcommon::ui_egui::common::{
     CheckboxSelectState, draw_persistent_hint_text_edit, hash_to_color, ui_custom_checkbox,
 };
 
+use crate::ui_egui::tools_window::resolve_tool_exe;
 use crate::ui_egui::tree_cursor::{CursorRequest, CursorRow, TreeCursor};
 use crate::ui_egui::tree_filter::DiffFilter;
 use crate::ui_egui::tree_sort::{SortKey, TreeSort};
@@ -1081,16 +1080,7 @@ fn on_row_item_clicked(
                 );
                 return false;
             };
-            let app_dir = std::env::current_exe()
-                .ok()
-                .and_then(|exe| exe.parent().map(Path::to_path_buf));
-            let exe = match resolve_exe(
-                &diff_tool.exe_path,
-                app_dir.as_deref(),
-                Some(Path::new(env!("ZDIFF_BIN_PATH"))),
-                Path::is_file,
-                find_on_path,
-            ) {
+            let exe = match resolve_tool_exe(&diff_tool.exe_path) {
                 Ok(exe) => exe,
                 Err(err) => {
                     log::error!("diffing failed: {err}");

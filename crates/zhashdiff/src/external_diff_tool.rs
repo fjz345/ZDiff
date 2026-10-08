@@ -126,6 +126,116 @@ fn quote_like_command_arg(arg: &str) -> String {
     quoted
 }
 
+pub struct DiffToolPreset {
+    pub name: &'static str,
+    pub install_paths: Vec<PathBuf>,
+    pub bare_name: &'static str,
+    pub template: &'static str,
+    pub kinds: &'static [FileKind],
+}
+
+pub fn presets(local_app_data: Option<&Path>) -> Vec<DiffToolPreset> {
+    let paths = |paths: &[&str]| paths.iter().map(PathBuf::from).collect::<Vec<_>>();
+    let vs_code_user = local_app_data
+        .map(|dir| dir.join(r"Programs\Microsoft VS Code\Code.exe"))
+        .into_iter();
+    vec![
+        DiffToolPreset {
+            name: "zdiff-gui",
+            install_paths: Vec::new(),
+            bare_name: "zdiff-gui.exe",
+            template: r#""{left}" "{right}" -nl "{left_name}" -nr "{right_name}""#,
+            kinds: &[FileKind::Text, FileKind::Image],
+        },
+        DiffToolPreset {
+            name: "TortoiseMerge",
+            install_paths: paths(&[r"C:\Program Files\TortoiseSVN\bin\TortoiseMerge.exe"]),
+            bare_name: "TortoiseMerge.exe",
+            template: r#"/base:"{left}" /mine:"{right}" /basename:"{left_name}" /minename:"{right_name}""#,
+            kinds: &[FileKind::Text],
+        },
+        DiffToolPreset {
+            name: "WinMerge",
+            install_paths: paths(&[r"C:\Program Files\WinMerge\WinMergeU.exe"]),
+            bare_name: "WinMergeU.exe",
+            template: r#"/e /u /dl "{left_name}" /dr "{right_name}" "{left}" "{right}""#,
+            kinds: &[FileKind::Text],
+        },
+        DiffToolPreset {
+            name: "Beyond Compare",
+            install_paths: paths(&[
+                r"C:\Program Files\Beyond Compare 5\BCompare.exe",
+                r"C:\Program Files\Beyond Compare 4\BCompare.exe",
+            ]),
+            bare_name: "BCompare.exe",
+            template: r#""{left}" "{right}" /lefttitle="{left_name}" /righttitle="{right_name}""#,
+            kinds: &[FileKind::Text, FileKind::Image],
+        },
+        DiffToolPreset {
+            name: "p4merge",
+            install_paths: paths(&[r"C:\Program Files\Perforce\p4merge.exe"]),
+            bare_name: "p4merge.exe",
+            template: r#"-nl "{left_name}" -nr "{right_name}" "{left}" "{right}""#,
+            kinds: &[FileKind::Text],
+        },
+        DiffToolPreset {
+            name: "VS Code",
+            install_paths: vs_code_user
+                .chain(paths(&[r"C:\Program Files\Microsoft VS Code\Code.exe"]))
+                .collect(),
+            // The PATH entry is VS Code's bin folder, which holds code.cmd (and a shell script named code).
+            bare_name: "code.cmd",
+            template: r#"--diff "{left}" "{right}""#,
+            kinds: &[FileKind::Text],
+        },
+        DiffToolPreset {
+            name: "Meld",
+            install_paths: paths(&[
+                r"C:\Program Files\Meld\Meld.exe",
+                r"C:\Program Files (x86)\Meld\Meld.exe",
+            ]),
+            bare_name: "Meld.exe",
+            template: r#"--label "{left_name}" --label "{right_name}" "{left}" "{right}""#,
+            kinds: &[FileKind::Text],
+        },
+    ]
+}
+
+impl DiffToolPreset {
+    /// Falls back to the bare name, which `resolve_exe` looks up next to the app and on PATH.
+    pub fn to_tool(&self, is_file: impl Fn(&Path) -> bool) -> DiffTool {
+        let exe_path = self
+            .install_paths
+            .iter()
+            .find(|path| is_file(path))
+            .cloned()
+            .unwrap_or_else(|| PathBuf::from(self.bare_name));
+        DiffTool {
+            name: self.name.to_string(),
+            exe_path,
+            template: self.template.to_string(),
+            kinds: self.kinds.to_vec(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ToolNameError {
+    Empty,
+    Taken(String),
+}
+
+impl fmt::Display for ToolNameError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ToolNameError::Empty => write!(f, "name is empty"),
+            ToolNameError::Taken(name) => write!(f, "a tool named {name:?} already exists"),
+        }
+    }
+}
+
+impl std::error::Error for ToolNameError {}
+
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum DiffToolMatch {
@@ -184,7 +294,7 @@ impl From<PersistedDiffToolConfig> for DiffToolConfig {
 
 impl Default for DiffToolConfig {
     fn default() -> Self {
-        LegacyDiffToolConfig::default_zdiff().into()
+        Self::from_tool(presets(None).remove(0).to_tool(|_| false))
     }
 }
 
@@ -209,6 +319,51 @@ impl DiffToolConfig {
 
     pub fn tool_mut(&mut self, name: &str) -> Option<&mut DiffTool> {
         self.tools.iter_mut().find(|tool| tool.name == name)
+    }
+
+    /// Renames on a clash ("WinMerge 2"), since rules and the default refer to tools by name.
+    pub fn add_tool(&mut self, mut tool: DiffTool) -> String {
+        let base = tool.name.clone();
+        let mut number = 1;
+        while self.tool(&tool.name).is_some() {
+            number += 1;
+            tool.name = format!("{base} {number}");
+        }
+        let name = tool.name.clone();
+        self.tools.push(tool);
+        name
+    }
+
+    pub fn rename_tool(&mut self, old: &str, new: &str) -> Result<(), ToolNameError> {
+        let new = new.trim();
+        if new.is_empty() {
+            return Err(ToolNameError::Empty);
+        }
+        if new != old && self.tool(new).is_some() {
+            return Err(ToolNameError::Taken(new.to_string()));
+        }
+        let tool = self.tool_mut(old).expect("renamed tool exists");
+        tool.name = new.to_string();
+        for rule in self.rules.iter_mut().filter(|rule| rule.tool == old) {
+            rule.tool = new.to_string();
+        }
+        if self.default_tool == old {
+            self.default_tool = new.to_string();
+        }
+        Ok(())
+    }
+
+    /// Drops the rules naming it too; a removed default passes to the first remaining tool.
+    pub fn remove_tool(&mut self, name: &str) {
+        self.tools.retain(|tool| tool.name != name);
+        self.rules.retain(|rule| rule.tool != name);
+        if self.default_tool == name {
+            self.default_tool = self
+                .tools
+                .first()
+                .map(|tool| tool.name.clone())
+                .unwrap_or_default();
+        }
     }
 
     /// First rule whose tool exists wins, else the default tool; `None` if that is missing too.
@@ -309,6 +464,18 @@ pub fn expand_template(template: &str, pair: &DiffPair) -> Result<String, Templa
         return Err(TemplateError::MissingRight);
     }
     Ok(expanded)
+}
+
+pub const SAMPLE_PAIR: DiffPair<'static> = DiffPair {
+    left: r"C:\Temp\Left Folder\sample.txt",
+    right: r"C:\Temp\Right Folder\sample.txt",
+    left_name: "Folder 1: sub/sample.txt",
+    right_name: "Folder 2: sub/sample.txt",
+};
+
+pub fn preview_command(tool: &DiffTool) -> Result<String, TemplateError> {
+    let args = expand_template(&tool.template, &SAMPLE_PAIR)?;
+    Ok(format!("\"{}\" {args}", tool.exe_path.display()))
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -667,6 +834,189 @@ mod tests {
     }
 
     #[cfg(windows)]
+    #[test]
+    fn presets_cover_the_common_diff_tools() {
+        let names: Vec<_> = presets(None).iter().map(|preset| preset.name).collect();
+        assert_eq!(
+            names,
+            [
+                "zdiff-gui",
+                "TortoiseMerge",
+                "WinMerge",
+                "Beyond Compare",
+                "p4merge",
+                "VS Code",
+                "Meld"
+            ]
+        );
+    }
+
+    #[test]
+    fn every_preset_template_validates_and_expands_for_a_sample_pair() {
+        let values = pair(r"C:\My Files\a b.txt", r"D:\Other Dir\a b.txt");
+        for preset in presets(Some(Path::new(r"C:\Users\me\AppData\Local"))) {
+            let expanded = expand_template(preset.template, &values)
+                .unwrap_or_else(|err| panic!("{}: {err}", preset.name));
+            assert!(
+                expanded.contains(r#""C:\My Files\a b.txt""#)
+                    && expanded.contains(r#""D:\Other Dir\a b.txt""#),
+                "{}: {expanded}",
+                preset.name
+            );
+            assert!(preview_command(&preset.to_tool(|_| false)).is_ok());
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn preset_uses_the_first_install_path_that_exists() {
+        let all = presets(Some(Path::new(r"C:\Users\me\AppData\Local")));
+        let vs_code = all.iter().find(|preset| preset.name == "VS Code").unwrap();
+        let tool = vs_code.to_tool(|path| path.starts_with(r"C:\Program Files"));
+        assert_eq!(
+            tool.exe_path,
+            Path::new(r"C:\Program Files\Microsoft VS Code\Code.exe")
+        );
+        let tool = vs_code.to_tool(|_| true);
+        assert_eq!(
+            tool.exe_path,
+            Path::new(r"C:\Users\me\AppData\Local\Programs\Microsoft VS Code\Code.exe")
+        );
+        assert_eq!(tool.name, "VS Code");
+        assert_eq!(tool.template, vs_code.template);
+        assert_eq!(tool.kinds, vs_code.kinds);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn preset_not_installed_at_its_usual_path_uses_its_bare_name_for_the_path_lookup() {
+        let all = presets(None);
+        let winmerge = all.iter().find(|preset| preset.name == "WinMerge").unwrap();
+        assert!(!winmerge.install_paths.is_empty());
+        let tool = winmerge.to_tool(|_| false);
+        assert_eq!(tool.exe_path, Path::new("WinMergeU.exe"));
+        let resolved = resolve_exe(
+            &tool.exe_path,
+            None,
+            None,
+            |_| false,
+            |name| Some(Path::new(r"D:\Tools").join(name)),
+        );
+        assert_eq!(resolved.unwrap(), Path::new(r"D:\Tools\WinMergeU.exe"));
+    }
+
+    #[test]
+    fn default_config_is_the_zdiff_gui_preset() {
+        let config = DiffToolConfig::default();
+        let zdiff = presets(None).remove(0).to_tool(|_| false);
+        assert_eq!(config, DiffToolConfig::from_tool(zdiff));
+        assert_eq!(
+            config.tool(&config.default_tool).unwrap().exe_path,
+            Path::new("zdiff-gui.exe")
+        );
+    }
+
+    #[test]
+    fn preview_shows_the_exe_and_the_expanded_template() {
+        let tool = DiffTool {
+            exe_path: PathBuf::from(r"C:\Tools\diff.exe"),
+            template: r#""{left}" "{right}" -nl "{left_name}""#.to_string(),
+            ..tool("diff")
+        };
+        assert_eq!(
+            preview_command(&tool).unwrap(),
+            r#""C:\Tools\diff.exe" "C:\Temp\Left Folder\sample.txt" "C:\Temp\Right Folder\sample.txt" -nl "Folder 1: sub/sample.txt""#
+        );
+    }
+
+    #[test]
+    fn preview_reports_a_broken_template() {
+        let broken = |template: &str| DiffTool {
+            template: template.to_string(),
+            ..tool("broken")
+        };
+        assert_eq!(
+            preview_command(&broken("{left}")),
+            Err(TemplateError::MissingRight)
+        );
+        assert_eq!(
+            preview_command(&broken("{left} {rihgt}")),
+            Err(TemplateError::UnknownPlaceholder("rihgt".to_string()))
+        );
+    }
+
+    #[test]
+    fn adding_a_tool_with_a_taken_name_numbers_it() {
+        let mut config = config(Vec::new());
+        assert_eq!(config.add_tool(tool("WinMerge")), "WinMerge");
+        assert_eq!(config.add_tool(tool("WinMerge")), "WinMerge 2");
+        assert_eq!(config.add_tool(tool("WinMerge")), "WinMerge 3");
+        let names: Vec<_> = config.tools.iter().map(|tool| tool.name.as_str()).collect();
+        assert_eq!(
+            names,
+            [
+                "default",
+                "first",
+                "second",
+                "WinMerge",
+                "WinMerge 2",
+                "WinMerge 3"
+            ]
+        );
+    }
+
+    #[test]
+    fn renaming_a_tool_updates_its_rules_and_the_default() {
+        let mut config = config(vec![
+            rule(DiffToolMatch::Kind(FileKind::Image), "default"),
+            rule(DiffToolMatch::Kind(FileKind::Text), "first"),
+        ]);
+        config.rename_tool("default", "renamed").unwrap();
+        assert_eq!(config.default_tool, "renamed");
+        assert_eq!(config.tools[0].name, "renamed");
+        assert_eq!(config.rules[0].tool, "renamed");
+        assert_eq!(config.rules[1].tool, "first");
+    }
+
+    #[test]
+    fn renaming_to_an_empty_or_taken_name_is_rejected() {
+        let mut config = config(Vec::new());
+        assert_eq!(config.rename_tool("first", " "), Err(ToolNameError::Empty));
+        assert_eq!(
+            config.rename_tool("first", "second"),
+            Err(ToolNameError::Taken("second".to_string()))
+        );
+        assert_eq!(config.rename_tool("first", "first"), Ok(()));
+        assert_eq!(config.tools[1].name, "first");
+    }
+
+    #[test]
+    fn removing_a_tool_drops_its_rules() {
+        let mut config = config(vec![
+            rule(DiffToolMatch::Kind(FileKind::Image), "first"),
+            rule(DiffToolMatch::Kind(FileKind::Text), "second"),
+        ]);
+        config.remove_tool("first");
+        assert!(config.tool("first").is_none());
+        assert_eq!(
+            config.rules,
+            [rule(DiffToolMatch::Kind(FileKind::Text), "second")]
+        );
+        assert_eq!(config.default_tool, "default");
+    }
+
+    #[test]
+    fn removing_the_default_tool_passes_the_default_to_the_first_remaining_tool() {
+        let mut config = config(Vec::new());
+        config.remove_tool("default");
+        assert_eq!(config.default_tool, "first");
+        assert!(
+            config
+                .choose_tool(&KindTable::default(), Path::new("a.txt"))
+                .is_some()
+        );
+    }
+
     mod exe_resolution {
         use super::*;
 
