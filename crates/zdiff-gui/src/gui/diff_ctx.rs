@@ -12,16 +12,17 @@ use std::{
 use zdiff::universal_path::UniversalPath;
 use zdiff::{
     cached_file::CachedFile,
-    char_diff::{CharRanges, character_diff},
+    char_diff::{CharRanges, character_diff_traced},
     diff_builder::{DiffBuilderOptions, DiffRow, LineContent, build_diff_rows},
     diff_ir::{DiffIR, DiffOp},
     ignore::IgnoreOptions,
     lexer::{RawToken, TokenKind},
     myers::{
         DiffPhases, MyersDiffAlgorithm, MyersNumAddDelete, MyersPath, Pin, PinError, line_diff,
-        myers_count_add_deletes, myers_diff_path, token_diff, validate_pins,
+        myers_count_add_deletes, myers_diff_path_traced, token_diff, validate_pins,
     },
     row_text::build_row_text,
+    trace::PhaseTrace,
 };
 
 use crate::{
@@ -42,6 +43,8 @@ pub struct UpdateDiffRowsInput {
     /// `DiffProcessor::request_update` overwrites it with the processor's pins.
     #[cfg_attr(feature = "serde", serde(skip))]
     pub pins: Vec<Pin>,
+    #[cfg_attr(feature = "serde", serde(skip))]
+    pub collect_trace: bool,
 }
 impl PartialEq for UpdateDiffRowsInput {
     fn eq(&self, other: &Self) -> bool {
@@ -50,6 +53,7 @@ impl PartialEq for UpdateDiffRowsInput {
             && self.options == other.options
             && self.myers_diff_algorithm == other.myers_diff_algorithm
             && self.pins == other.pins
+            && self.collect_trace == other.collect_trace
             && self.file_1.as_ref().map(|f| &f.lexer_mode)
                 == other.file_1.as_ref().map(|f| &f.lexer_mode)
             && self.file_2.as_ref().map(|f| &f.lexer_mode)
@@ -214,6 +218,7 @@ pub struct MyersCtxInput {
     pub ignore: IgnoreOptions,
     pub phases: DiffPhases,
     pub pins: Vec<Pin>,
+    pub collect_trace: bool,
 }
 impl From<UpdateDiffRowsInput> for MyersCtxInput {
     fn from(input: UpdateDiffRowsInput) -> Self {
@@ -224,6 +229,7 @@ impl From<UpdateDiffRowsInput> for MyersCtxInput {
             ignore: input.options.ignore,
             phases: input.options.phases,
             pins: input.pins,
+            collect_trace: input.collect_trace,
         }
     }
 }
@@ -237,6 +243,7 @@ impl From<&UpdateDiffRowsInput> for MyersCtxInput {
             ignore: input.options.ignore.clone(),
             phases: input.options.phases,
             pins: input.pins.clone(),
+            collect_trace: input.collect_trace,
         }
     }
 }
@@ -260,6 +267,7 @@ pub struct MyersCtx {
     path: MyersPath,
     char_ranges: Arc<CharRanges>,
     ignored_pins: Option<PinError>,
+    phase_trace: Option<Arc<PhaseTrace>>,
     line_elapsed: Duration,
     token_elapsed: Duration,
 }
@@ -309,6 +317,8 @@ pub struct MinimalDiffCtx {
     pub num_add_deletes: MyersNumAddDelete,
     /// Why the input's pins don't fit its files; the diff then ran without them.
     pub ignored_pins: Option<PinError>,
+    /// Only when the input's `collect_trace` is set.
+    pub phase_trace: Option<Arc<PhaseTrace>>,
     pub stage_times: DiffStageTimes,
     pub precomputed_diffs: Arc<PrecomputedDiffs>,
     pub precomputed_file_rows: Arc<PrecomputedFileRows>,
@@ -404,6 +414,7 @@ impl Default for DiffCtx {
             options: Default::default(),
             myers_diff_algorithm: Default::default(),
             pins: Vec::new(),
+            collect_trace: false,
         })
     }
 }
@@ -573,8 +584,13 @@ impl DiffCtx {
                     }
                     let pins: &[Pin] = if ignored_pins.is_some() { &[] } else { pins };
                     let phases = input.phases;
+                    let mut trace = input.collect_trace.then(PhaseTrace::default);
                     // The default phases without pins run as the driver does, but timed separately.
-                    let result = if pins.is_empty() && phases.line && phases.token && !phases.scope
+                    let result = if pins.is_empty()
+                        && phases.line
+                        && phases.token
+                        && !phases.scope
+                        && trace.is_none()
                     {
                         line_diff(input.algo, t1, t2, &cmp, &ignore, cancel.clone()).and_then(
                             |hunks| {
@@ -593,7 +609,7 @@ impl DiffCtx {
                             },
                         )
                     } else {
-                        myers_diff_path(
+                        myers_diff_path_traced(
                             input.algo,
                             t1,
                             t2,
@@ -604,6 +620,7 @@ impl DiffCtx {
                             phases,
                             pins,
                             cancel.clone(),
+                            trace.as_mut(),
                         )
                         .map(|path| {
                             if phases.token {
@@ -617,7 +634,7 @@ impl DiffCtx {
                         let mut char_ranges = CharRanges::default();
                         if phases.character {
                             let start = Instant::now();
-                            char_ranges = character_diff(
+                            char_ranges = character_diff_traced(
                                 input.algo,
                                 &path,
                                 t1,
@@ -626,6 +643,7 @@ impl DiffCtx {
                                 &c2.contents,
                                 &ignore,
                                 cancel.clone(),
+                                trace.as_mut(),
                             )?;
                             token_elapsed += start.elapsed();
                         }
@@ -639,6 +657,7 @@ impl DiffCtx {
                             path,
                             char_ranges: Arc::new(char_ranges),
                             ignored_pins,
+                            phase_trace: trace.map(Arc::new),
                             line_elapsed,
                             token_elapsed,
                         }));
@@ -788,6 +807,7 @@ impl DiffCtx {
         let myers_ctx = self.request_myers(cancel_flag.clone())?;
         let num_add_deletes = myers_ctx.num_add_delete;
         let ignored_pins = myers_ctx.ignored_pins.clone();
+        let phase_trace = myers_ctx.phase_trace.clone();
         let (line_elapsed, token_elapsed) = (myers_ctx.line_elapsed, myers_ctx.token_elapsed);
         let diff_row_ctx = self.request_diff_rows(cancel_flag)?;
 
@@ -820,6 +840,7 @@ impl DiffCtx {
             input: self.update_diff_rows_input.clone(),
             num_add_deletes,
             ignored_pins,
+            phase_trace,
             stage_times,
             precomputed_diffs,
             precomputed_file_rows,
@@ -1405,6 +1426,7 @@ fn update_diff_rows_minimal_diff_ctx(
         input: input.clone(),
         num_add_deletes: myers_count_add_deletes(&myers_path),
         ignored_pins: None,
+        phase_trace: None,
         stage_times,
         precomputed_diffs: Arc::new(precomputed_diffs),
         precomputed_file_rows: Arc::new(precomputed_file_rows),
@@ -2074,6 +2096,41 @@ mod tests {
                 open(&mut processor, &current);
                 let off_again = settle(&mut processor).expect("character toggle never completed");
                 assert_eq!(changed_chars(&off_again), Vec::<Range<usize>>::new());
+            }
+
+            #[test]
+            fn the_phase_trace_is_collected_only_while_requested() {
+                let dir = tempfile::tempdir().unwrap();
+                let mut current = digit_pair(dir.path());
+                current.options.phases.character = true;
+                let mut processor = DiffProcessor::default();
+                open(&mut processor, &current);
+                let off = settle(&mut processor).expect("diff never completed");
+                assert!(off.phase_trace.is_none(), "{:?}", off.phase_trace);
+
+                current.collect_trace = true;
+                open(&mut processor, &current);
+                assert!(
+                    processor.ctx.myers_inflight_input.is_some(),
+                    "requesting the trace must recompute the diff stage"
+                );
+                let on = settle(&mut processor).expect("trace request never completed");
+                assert!(on.input == current, "diff shows {:?}", on.input);
+                let trace = on.phase_trace.as_ref().expect("trace requested");
+                assert_eq!(trace.line_hunks.len(), 1, "{trace:?}");
+                assert_eq!(trace.token_hunks.len(), 1, "{trace:?}");
+                assert_eq!(trace.char_pairs.len(), 1, "{trace:?}");
+                assert_eq!(on.num_add_deletes, off.num_add_deletes);
+                assert_eq!(changed_chars(&on), changed_chars(&off));
+
+                current.collect_trace = false;
+                open(&mut processor, &current);
+                let off_again = settle(&mut processor).expect("trace drop never completed");
+                assert!(
+                    off_again.phase_trace.is_none(),
+                    "{:?}",
+                    off_again.phase_trace
+                );
             }
         }
 

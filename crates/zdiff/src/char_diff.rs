@@ -4,12 +4,14 @@ use std::{
         Arc,
         atomic::{AtomicBool, Ordering},
     },
+    time::Instant,
 };
 
 use crate::{
     ignore::IgnoreMask,
     lexer::{RawTokenTrait, TokenKind},
     myers::{MyersDiffAlgorithm, Step, path_steps, raw_diff_path},
+    trace::{CharPair, PhaseTrace},
 };
 
 /// Changed bytes of each side, as byte ranges into that side's text. Sorted; each range lies
@@ -40,6 +42,32 @@ pub fn character_diff<T: RawTokenTrait>(
     ignore: &IgnoreMask,
     cancel_flag: Arc<AtomicBool>,
 ) -> Option<CharRanges> {
+    character_diff_traced(
+        algorithm,
+        path,
+        source,
+        target,
+        source_text,
+        target_text,
+        ignore,
+        cancel_flag,
+        None,
+    )
+}
+
+/// `character_diff`, recording each diffed token pair and the phase time into `trace` when given.
+pub fn character_diff_traced<T: RawTokenTrait>(
+    algorithm: MyersDiffAlgorithm,
+    path: &[(i32, i32)],
+    source: &[T],
+    target: &[T],
+    source_text: &str,
+    target_text: &str,
+    ignore: &IgnoreMask,
+    cancel_flag: Arc<AtomicBool>,
+    mut trace: Option<&mut PhaseTrace>,
+) -> Option<CharRanges> {
+    let start = trace.is_some().then(Instant::now);
     if cancel_flag.load(Ordering::Relaxed) {
         return None;
     }
@@ -73,15 +101,24 @@ pub fn character_diff<T: RawTokenTrait>(
             let offset = |r: Range<usize>, start: usize| start + r.start..start + r.end;
             let s_start = s.span.start;
             let t_start = t.span.start;
-            ranges
-                .source
-                .extend(s_changed.into_iter().map(|r| offset(r, s_start)));
-            ranges
-                .target
-                .extend(t_changed.into_iter().map(|r| offset(r, t_start)));
+            let s_changed: Vec<_> = s_changed.into_iter().map(|r| offset(r, s_start)).collect();
+            let t_changed: Vec<_> = t_changed.into_iter().map(|r| offset(r, t_start)).collect();
+            ranges.source.extend_from_slice(&s_changed);
+            ranges.target.extend_from_slice(&t_changed);
+            if let Some(trace) = trace.as_deref_mut() {
+                trace.char_pairs.push(CharPair {
+                    source_token: i,
+                    target_token: j,
+                    source: s_changed,
+                    target: t_changed,
+                });
+            }
         }
         deleted.clear();
         inserted.clear();
+    }
+    if let (Some(trace), Some(start)) = (trace, start) {
+        trace.times.character += start.elapsed();
     }
     Some(ranges)
 }

@@ -13,6 +13,7 @@ pub mod row_text;
 pub mod scope;
 #[cfg(test)]
 pub mod test_harness;
+pub mod trace;
 pub mod universal_path;
 
 pub fn read_file_contents<P: AsRef<Path>>(path: P) -> std::io::Result<String> {

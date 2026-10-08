@@ -1,15 +1,18 @@
 use std::{
+    cell::RefCell,
     ops::Range,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
     },
+    time::Instant,
 };
 
 use crate::{
     ignore::IgnoreMask,
     lexer::{RawTokenTrait, TokenKind},
     scope::scope_path,
+    trace::{PhaseTrace, add_time, run_local, span, token_hunk},
 };
 
 pub type MyersPath = Vec<(i32, i32)>;
@@ -138,6 +141,90 @@ where
     T: RawTokenTrait,
     F: Fn(&T, &T) -> bool + Sync,
 {
+    myers_diff_path_traced(
+        algorithm,
+        source,
+        target,
+        source_text,
+        target_text,
+        cmp,
+        ignore,
+        phases,
+        pins,
+        cancel_flag,
+        None,
+    )
+}
+
+/// `myers_diff_path`, recording each phase's results and times into `trace` when given.
+pub fn myers_diff_path_traced<T, F>(
+    algorithm: MyersDiffAlgorithm,
+    source: &[T],
+    target: &[T],
+    source_text: &str,
+    target_text: &str,
+    cmp: F,
+    ignore: &IgnoreMask,
+    phases: DiffPhases,
+    pins: &[Pin],
+    cancel_flag: Arc<AtomicBool>,
+    trace: Option<&mut PhaseTrace>,
+) -> Option<MyersPath>
+where
+    T: RawTokenTrait,
+    F: Fn(&T, &T) -> bool + Sync,
+{
+    let Some(trace) = trace else {
+        return pins_path(
+            algorithm,
+            source,
+            target,
+            source_text,
+            target_text,
+            cmp,
+            ignore,
+            phases,
+            pins,
+            cancel_flag,
+            None,
+        );
+    };
+    let cell = RefCell::new(std::mem::take(trace));
+    let path = pins_path(
+        algorithm,
+        source,
+        target,
+        source_text,
+        target_text,
+        cmp,
+        ignore,
+        phases,
+        pins,
+        cancel_flag,
+        Some(&cell),
+    );
+    *trace = cell.into_inner();
+    trace.fill_lines(source, target);
+    path
+}
+
+fn pins_path<T, F>(
+    algorithm: MyersDiffAlgorithm,
+    source: &[T],
+    target: &[T],
+    source_text: &str,
+    target_text: &str,
+    cmp: F,
+    ignore: &IgnoreMask,
+    phases: DiffPhases,
+    pins: &[Pin],
+    cancel_flag: Arc<AtomicBool>,
+    trace: Option<&RefCell<PhaseTrace>>,
+) -> Option<MyersPath>
+where
+    T: RawTokenTrait,
+    F: Fn(&T, &T) -> bool + Sync,
+{
     assert!(
         phases.is_valid(),
         "invalid diff phases {phases:?}: Line or Token must be on, and Character needs Token"
@@ -154,6 +241,7 @@ where
             phases,
             false,
             cancel_flag,
+            trace,
         );
     }
     let (source_lines, target_lines) = (split_lines(source), split_lines(target));
@@ -174,17 +262,25 @@ where
     let mut from = (0, 0);
     for (i, to) in ends.enumerate() {
         let (s, t) = (from.0..to.0, from.1..to.1);
-        let local = phases_path(
-            algorithm,
-            &source[s.clone()],
-            &target[t.clone()],
-            source_text,
-            target_text,
-            &cmp,
-            &slice_mask(ignore, s, t),
-            phases,
-            i % 2 == 1,
-            cancel_flag.clone(),
+        let local = run_local(
+            trace,
+            |i| from.0 + i,
+            |j| from.1 + j,
+            || {
+                phases_path(
+                    algorithm,
+                    &source[s.clone()],
+                    &target[t.clone()],
+                    source_text,
+                    target_text,
+                    &cmp,
+                    &slice_mask(ignore, s, t),
+                    phases,
+                    i % 2 == 1,
+                    cancel_flag.clone(),
+                    trace,
+                )
+            },
         )?;
         path.extend(
             local[1..]
@@ -223,6 +319,7 @@ pub(crate) fn phases_path<T, F>(
     phases: DiffPhases,
     pinned: bool,
     cancel_flag: Arc<AtomicBool>,
+    trace: Option<&RefCell<PhaseTrace>>,
 ) -> Option<MyersPath>
 where
     T: RawTokenTrait,
@@ -239,10 +336,20 @@ where
             ignore,
             phases,
             cancel_flag,
+            trace,
         );
     }
     let hunks = if phases.line {
-        line_diff(algorithm, source, target, cmp, ignore, cancel_flag.clone())?
+        let start = trace.map(|_| Instant::now());
+        let hunks = line_diff(algorithm, source, target, cmp, ignore, cancel_flag.clone())?;
+        add_time(trace, start, |times| &mut times.line);
+        if let Some(trace) = trace {
+            let spans = hunks
+                .iter()
+                .map(|h| span(h.source.clone(), h.target.clone()));
+            trace.borrow_mut().line_hunks.extend(spans);
+        }
+        hunks
     } else {
         vec![LineHunk {
             source: 0..source.len(),
@@ -250,7 +357,17 @@ where
         }]
     };
     if phases.token {
-        token_diff(algorithm, source, target, &hunks, cmp, ignore, cancel_flag)
+        let start = trace.map(|_| Instant::now());
+        let path = token_diff(algorithm, source, target, &hunks, cmp, ignore, cancel_flag)?;
+        add_time(trace, start, |times| &mut times.token);
+        if let Some(trace) = trace {
+            let traced = hunks
+                .iter()
+                .filter(|h| !h.source.is_empty() || !h.target.is_empty())
+                .map(|h| token_hunk(&path, h.source.clone(), h.target.clone()));
+            trace.borrow_mut().token_hunks.extend(traced);
+        }
+        Some(path)
     } else {
         hunks_to_path(
             source,

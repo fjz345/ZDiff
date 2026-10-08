@@ -1,9 +1,11 @@
 use std::{
+    cell::RefCell,
     ops::Range,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
     },
+    time::Instant,
 };
 
 use crate::{
@@ -13,6 +15,7 @@ use crate::{
         DiffPhases, MyersDiffAlgorithm, MyersPath, Step, path_steps, phases_path, raw_diff_path,
         slice_mask, split_lines,
     },
+    trace::{PhaseTrace, add_time, run_local, span},
 };
 
 /// Scope phase: pairs the top-level scopes of both sides by Myers over their header lines (under
@@ -29,6 +32,7 @@ pub(crate) fn scope_path<T, F>(
     ignore: &IgnoreMask,
     phases: DiffPhases,
     cancel_flag: Arc<AtomicBool>,
+    trace: Option<&RefCell<PhaseTrace>>,
 ) -> Option<MyersPath>
 where
     T: RawTokenTrait,
@@ -37,6 +41,7 @@ where
     if cancel_flag.load(Ordering::Relaxed) {
         return None;
     }
+    let start = trace.map(|_| Instant::now());
     let next = DiffPhases {
         scope: false,
         ..phases
@@ -53,15 +58,18 @@ where
             next,
             false,
             cancel_flag.clone(),
+            trace,
         )
     };
     let (Some(source_scopes), Some(target_scopes)) = (
         find_scopes(source, source_text),
         find_scopes(target, target_text),
     ) else {
+        add_time(trace, start, |times| &mut times.scope);
         return next_path(source, target, ignore);
     };
     if source_scopes.is_empty() && target_scopes.is_empty() {
+        add_time(trace, start, |times| &mut times.scope);
         return next_path(source, target, ignore);
     }
 
@@ -98,6 +106,13 @@ where
             Step::Insert => j += 1,
         }
     }
+    add_time(trace, start, |times| &mut times.scope);
+    if let Some(trace) = trace {
+        let spans = pairs
+            .iter()
+            .map(|&(i, j)| span(source_scopes[i].clone(), target_scopes[j].clone()));
+        trace.borrow_mut().scope_pairs.extend(spans);
+    }
 
     let mut path = Vec::with_capacity(source.len() + target.len() + 1);
     path.push((0, 0));
@@ -123,11 +138,17 @@ where
             unpaired,
             ignore,
             &next_path,
+            trace,
         )?;
         if let Some((i, j)) = pair {
             let (s, t) = (source_scopes[i].clone(), target_scopes[j].clone());
             let mask = slice_mask(ignore, s.clone(), t.clone());
-            let local = next_path(&source[s.clone()], &target[t.clone()], &mask)?;
+            let local = run_local(
+                trace,
+                |x| s.start + x,
+                |y| t.start + y,
+                || next_path(&source[s.clone()], &target[t.clone()], &mask),
+            )?;
             extend_offset(&mut path, &local, (s.start, t.start));
             (from, next_scope) = ((s.end, t.end), (i + 1, j + 1));
         }
@@ -145,6 +166,7 @@ fn between_scopes<T, N>(
     (source_unpaired, target_unpaired): (&[Range<usize>], &[Range<usize>]),
     ignore: &IgnoreMask,
     next_path: &N,
+    trace: Option<&RefCell<PhaseTrace>>,
 ) -> Option<()>
 where
     T: RawTokenTrait,
@@ -153,7 +175,12 @@ where
     let (s, t) = (range.start.0..range.end.0, range.start.1..range.end.1);
     if source_unpaired.is_empty() && target_unpaired.is_empty() {
         let mask = slice_mask(ignore, s.clone(), t.clone());
-        let local = next_path(&source[s.clone()], &target[t.clone()], &mask)?;
+        let local = run_local(
+            trace,
+            |x| s.start + x,
+            |y| t.start + y,
+            || next_path(&source[s.clone()], &target[t.clone()], &mask),
+        )?;
         extend_offset(path, &local, (s.start, t.start));
         return Some(());
     }
@@ -173,10 +200,17 @@ where
             ..Default::default()
         }
     };
-    let local = next_path(
-        &gather(source, &source_rest),
-        &gather(target, &target_rest),
-        &mask,
+    let local = run_local(
+        trace,
+        |x| source_rest.get(x).copied().unwrap_or(s.end),
+        |y| target_rest.get(y).copied().unwrap_or(t.end),
+        || {
+            next_path(
+                &gather(source, &source_rest),
+                &gather(target, &target_rest),
+                &mask,
+            )
+        },
     )?;
 
     let (mut x, mut y) = (s.start, t.start);

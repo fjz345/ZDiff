@@ -10,6 +10,7 @@ mod diff_phases;
 mod file;
 mod keybindings;
 mod p4;
+mod phase_trace_window;
 mod revert;
 mod scope;
 pub mod ui_egui;

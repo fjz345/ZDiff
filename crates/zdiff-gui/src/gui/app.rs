@@ -26,6 +26,7 @@ use crate::{
         P4Command, P4Profiles, P4Runner, local_path_of_depot_file, set_p4_slot_profile,
         ui_p4_profiles, update_p4_profiles,
     },
+    phase_trace_window::ui_phase_trace,
     revert::{
         self, HistoryStep, PendingP4Edit, RevertHistory, RevertRecord, RevertRefusal, RevertTarget,
         RevertWrite, WriteRefusal,
@@ -192,6 +193,9 @@ pub struct ZApp {
     open_universal_path_window: bool,
     #[serde(skip)]
     open_viewers_window: bool,
+    /// The diff collects the phase trace while it is open.
+    #[serde(skip)]
+    open_phase_trace_window: bool,
     /// A revert waiting on the p4 edit prompt.
     #[serde(skip)]
     pending_p4_edit: Option<(RevertTarget, PendingP4Edit)>,
@@ -261,6 +265,7 @@ impl<'a> ZApp {
             open_shortcuts_window: false,
             open_universal_path_window: false,
             open_viewers_window: false,
+            open_phase_trace_window: false,
             pending_p4_edit: None,
             toggle_active_side: false,
             open_help_window: false,
@@ -591,6 +596,9 @@ impl<'a> ZApp {
                         {
                             diff_processor.reset_ctx();
                         }
+                        if ui.button("Phase Trace").clicked() {
+                            self.open_phase_trace_window = true;
+                        }
                         #[cfg(debug_assertions)]
                         {
                             let load_btn = |ui: &mut egui::Ui,
@@ -739,6 +747,18 @@ impl<'a> ZApp {
                 |ui| {
                     ui.add(egui::Label::new(egui::RichText::new(cli::HELP).monospace()));
                 },
+            );
+        }
+        if self.open_phase_trace_window {
+            let trace = diff_processor
+                .get_minimal_diff_ctx()
+                .and_then(|ctx| ctx.phase_trace);
+            show_custom_popup(
+                ui.ctx(),
+                &mut self.open_phase_trace_window,
+                "Debug - Phase Trace",
+                false,
+                |ui| ui_phase_trace(ui, trace.as_deref()),
             );
         }
         if self.open_universal_path_window {
@@ -1511,6 +1531,7 @@ impl eframe::App for ZApp {
                     options: state.diff_options.clone(),
                     myers_diff_algorithm: state.myers_diff_algorithm.clone(),
                     pins: state.diff_processor.pins().to_vec(),
+                    collect_trace: self.open_phase_trace_window,
                 };
 
                 let diff_ctx_invalidated = if state.file_1.get_loading_path().is_some()
