@@ -88,6 +88,7 @@ mod tests {
             is_dir,
             depth: rel_path.split('/').filter(|c| !c.is_empty()).count() as _,
             diff_state,
+            file_kinds: [None, None],
         }
     }
 

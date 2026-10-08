@@ -8,7 +8,10 @@ use std::{
 use eframe::egui::{self, RichText};
 use egui_extras::{Column, TableBuilder};
 use serde::{Deserialize, Serialize};
-use zcommon::{hash::HashService, kinds::KindTable};
+use zcommon::{
+    hash::HashService,
+    kinds::{FileKind, KindTable},
+};
 use zhashdiff::{
     comparison::PathComparisonResult,
     external_diff_tool::{DiffPair, DiffToolConfig, folder_labels, open_diff_tool},
@@ -39,6 +42,7 @@ pub struct VisibleRowTwoFolderDiff {
     pub is_dir: bool,
     pub depth: FsNodeDepth,
     pub diff_state: DiffState,
+    pub file_kinds: [Option<FileKind>; 2],
 }
 
 /// File comparison results of the two loaded trees, so rebuilding the two-folder rows
@@ -183,6 +187,7 @@ impl FileSystemView {
         file_system_1: Option<&FileSystemView>,
         file_system_2: Option<&FileSystemView>,
         filter: &PathFilter,
+        kinds: &KindTable,
         compare_cache: &mut FileCompareCache,
         mut compare: impl FnMut(&Path, &Path) -> io::Result<PathComparisonResult>,
     ) -> io::Result<Vec<VisibleRowTwoFolderDiff>> {
@@ -317,11 +322,21 @@ impl FileSystemView {
                 (None, None) => panic!("unreachable"),
             };
 
+            let extension = Path::new(rel_path)
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("");
+            let file_kind = |side: &Option<(FsNodeId, &FsNode, FsNodeDepth)>| {
+                side.filter(|(_, node, _)| !node.is_dir())
+                    .map(|_| kinds.kind(extension))
+            };
+
             out_rows.push(VisibleRowTwoFolderDiff {
                 rel_path: rel_path.clone(),
                 is_dir,
                 depth,
                 diff_state,
+                file_kinds: [file_kind(left), file_kind(right)],
             });
         }
 
@@ -455,6 +470,21 @@ pub const PENDING_DELETION_COLOR: egui::Color32 = egui::Color32::LIGHT_RED;
 const FOLDER_ROW_TINT: egui::Color32 =
     egui::Color32::from_rgba_unmultiplied_const(120, 150, 255, 14);
 const DIMMED_TEXT_COLOR: egui::Color32 = egui::Color32::from_gray(105);
+
+fn tag_color(kind: FileKind) -> egui::Color32 {
+    match kind {
+        FileKind::Text => egui::Color32::from_rgb(170, 190, 215),
+        FileKind::Image => egui::Color32::from_rgb(215, 130, 220),
+        FileKind::Video => egui::Color32::from_rgb(235, 150, 80),
+        FileKind::Audio => egui::Color32::from_rgb(90, 200, 190),
+        FileKind::Model => egui::Color32::from_rgb(140, 210, 110),
+        FileKind::Archive => egui::Color32::from_rgb(210, 180, 110),
+        FileKind::Executable => egui::Color32::from_rgb(230, 105, 105),
+        FileKind::UnrealAsset => egui::Color32::from_rgb(100, 170, 255),
+        FileKind::UnrealMap => egui::Color32::from_rgb(150, 140, 255),
+        FileKind::Binary => egui::Color32::from_gray(130),
+    }
+}
 
 pub fn draw_ui_folder_tree_with_checkbox(
     ui: &mut egui::Ui,
@@ -708,6 +738,8 @@ pub fn draw_ui_two_folder_tree_with_diff(
             let row_height = ui.text_style_height(&egui::TextStyle::Body);
             let row_height_header = ui.text_style_height(&egui::TextStyle::Heading);
             let available_size = ui.available_size();
+            let tag_font = egui::TextStyle::Monospace.resolve(ui.style());
+            let tag_width = 4.0 * ui.fonts_mut(|f| f.glyph_width(&tag_font, 'M'));
 
             let mut table = TableBuilder::new(ui)
                 .sense(egui::Sense::all())
@@ -724,7 +756,9 @@ pub fn draw_ui_two_folder_tree_with_diff(
                         .at_least(100.0)
                         .resizable(true),
                 )
+                .column(Column::exact(tag_width))
                 .column(Column::auto().resizable(true).auto_size_this_frame(true))
+                .column(Column::exact(tag_width))
                 .column(Column::remainder().resizable(true).clip(false))
                 .header(row_height_header, |mut header| {
                     header.col(|ui| {
@@ -764,6 +798,7 @@ pub fn draw_ui_two_folder_tree_with_diff(
                             );
                         });
                     });
+                    header.col(|_| {});
                     header.col(|ui| {
                         ui.vertical(|ui| {
                             sort_header(ui, "≠", SortKey::State, sort);
@@ -786,6 +821,7 @@ pub fn draw_ui_two_folder_tree_with_diff(
                             }
                         });
                     });
+                    header.col(|_| {});
                     header.col(|ui| {
                         col2_rect = ui.max_rect();
                         let available = ui.available_width();
@@ -1267,6 +1303,15 @@ fn render_row_folder_tree_diff_column(
             ui.painter().rect_filled(rect, 0.0, FOLDER_ROW_TINT);
         }
     };
+    let tag = |ui: &mut egui::Ui, kind: Option<FileKind>| {
+        tint(ui);
+        if dimmed {
+            ui.multiply_opacity(0.5);
+        }
+        if let Some(kind) = kind {
+            ui.label(RichText::new(kind.tag()).monospace().color(tag_color(kind)));
+        }
+    };
 
     // --- Left Column (Folder 1) ---
     row.col(|ui| {
@@ -1294,6 +1339,7 @@ fn render_row_folder_tree_diff_column(
             || should_toggle_row = true,
         );
     });
+    row.col(|ui| tag(ui, entry.file_kinds[0]));
     // --- Middle Column (Diff Status) ---
     row.col(|ui| {
         tint(ui);
@@ -1304,6 +1350,7 @@ fn render_row_folder_tree_diff_column(
             ui_custom_diff_state(ui, &entry.diff_state);
         });
     });
+    row.col(|ui| tag(ui, entry.file_kinds[1]));
     // --- Right Column (Folder 2) ---
     row.col(|ui| {
         tint(ui);
@@ -1645,6 +1692,7 @@ mod tests {
     use std::path::Path;
     use std::sync::Arc;
     use tempfile::{TempDir, tempdir};
+    use zcommon::kinds::{FileKind, KindTable};
     use zhashdiff::comparison::compare_crc;
     use zhashdiff::filter::{PathFilter, PatternList};
     use zhashdiff::fs::{FileSystemModel, FsIsDir, FsNodeDepth, FsNodeId};
@@ -1872,6 +1920,7 @@ mod tests {
             Some(left),
             Some(right),
             filter,
+            &KindTable::default(),
             cache,
             |a, b| {
                 comparisons.set(comparisons.get() + 1);
@@ -2409,6 +2458,65 @@ mod tests {
     }
 
     #[test]
+    fn rows_carry_each_sides_file_kind_from_the_table_and_none_for_folders() {
+        let left_dir = tempdir().unwrap();
+        let right_dir = tempdir().unwrap();
+        let shared = [
+            ("a.txt", "a"),
+            ("p.PNG", "p"),
+            ("x.uasset", "x"),
+            ("noext", "n"),
+            ("w.qqq", "w"),
+            ("y.zzz", "y"),
+            ("sub/c.txt", "c"),
+        ];
+        write_files(left_dir.path(), &shared);
+        write_files(right_dir.path(), &shared);
+        write_files(
+            left_dir.path(),
+            &[("left_only.rs", "l"), ("mixed/inner.txt", "i")],
+        );
+        write_files(right_dir.path(), &[("mixed", "file on the right")]);
+        let left = load_view(left_dir.path());
+        let right = load_view(right_dir.path());
+        let mut kinds = KindTable::default();
+        kinds.set_override("zzz", FileKind::Model);
+
+        let rows = FileSystemView::build_two_folder_diff_rows(
+            Some(&left),
+            Some(&right),
+            &PathFilter::default(),
+            &kinds,
+            &mut FileCompareCache::default(),
+            |a, b| compare_crc(a, b),
+        )
+        .unwrap();
+
+        let actual: Vec<(&str, [Option<FileKind>; 2])> = rows
+            .iter()
+            .map(|r| (r.rel_path.as_str(), r.file_kinds))
+            .collect();
+        let both = |kind| [Some(kind), Some(kind)];
+        assert_eq!(
+            actual,
+            [
+                ("", [None, None]),
+                ("a.txt", both(FileKind::Text)),
+                ("left_only.rs", [Some(FileKind::Text), None]),
+                ("mixed", [None, Some(FileKind::Binary)]),
+                ("mixed/inner.txt", [Some(FileKind::Text), None]),
+                ("noext", both(FileKind::Binary)),
+                ("p.PNG", both(FileKind::Image)),
+                ("sub", [None, None]),
+                ("sub/c.txt", both(FileKind::Text)),
+                ("w.qqq", both(FileKind::Binary)),
+                ("x.uasset", both(FileKind::UnrealAsset)),
+                ("y.zzz", both(FileKind::Model)),
+            ]
+        );
+    }
+
+    #[test]
     fn rebuilding_two_folder_rows_compares_no_files_and_builds_identical_rows() {
         let (left_dir, right_dir) = two_folder_trees();
         let left = load_view(left_dir.path());
@@ -2813,6 +2921,7 @@ mod tests {
             is_dir,
             depth: 0,
             diff_state,
+            file_kinds: [None, None],
         };
         let rows = [
             row("", true, DiffState::Different(0, 0)),

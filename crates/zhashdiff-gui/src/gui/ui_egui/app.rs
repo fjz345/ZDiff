@@ -1,7 +1,7 @@
 use eframe::egui::{self, Layout, PointerButton};
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, path::PathBuf, sync::Arc};
-use zcommon::{hash::HashService, logger::LogBuffer};
+use zcommon::{hash::HashService, kinds::KindTable, logger::LogBuffer};
 use zhashdiff::{
     comparison::{PathComparissonMethod, compare_paths},
     external_diff_tool::DiffToolConfig,
@@ -80,6 +80,7 @@ impl AppStateCtx {
                 self.file_system_model_1_view.as_ref(),
                 self.file_system_model_2_view.as_ref(),
                 &self.path_filter,
+                &KindTable::default(),
                 &mut self.two_folder_diff_compare_cache,
                 |path_1, path_2| compare_paths(path_1, path_2, &PathComparissonMethod::CrC),
             )
