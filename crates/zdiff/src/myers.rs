@@ -139,14 +139,84 @@ where
         phases.is_valid(),
         "invalid diff phases {phases:?}: Line or Token must be on, and Character needs Token"
     );
-    if !pins.is_empty()
-        && let Err(err) = validate_pins(pins, split_lines(source).len(), split_lines(target).len())
-    {
+    if pins.is_empty() {
+        return phases_path(
+            algorithm,
+            source,
+            target,
+            &cmp,
+            ignore,
+            phases,
+            false,
+            cancel_flag,
+        );
+    }
+    let (source_lines, target_lines) = (split_lines(source), split_lines(target));
+    if let Err(err) = validate_pins(pins, source_lines.len(), target_lines.len()) {
         panic!("invalid pins: {err}");
     }
 
+    // Each pinned line pair is a stretch of its own, so it can only pair with itself.
+    let ends = pins
+        .iter()
+        .flat_map(|pin| {
+            let (s, t) = (&source_lines[pin.source], &target_lines[pin.target]);
+            [(s.start, t.start), (s.end, t.end)]
+        })
+        .chain([(source.len(), target.len())]);
+    let mut path = Vec::with_capacity(source.len() + target.len() + 1);
+    path.push((0, 0));
+    let mut from = (0, 0);
+    for (i, to) in ends.enumerate() {
+        let (s, t) = (from.0..to.0, from.1..to.1);
+        let local = phases_path(
+            algorithm,
+            &source[s.clone()],
+            &target[t.clone()],
+            &cmp,
+            &slice_mask(ignore, s, t),
+            phases,
+            i % 2 == 1,
+            cancel_flag.clone(),
+        )?;
+        path.extend(
+            local[1..]
+                .iter()
+                .map(|&(x, y)| (from.0 as i32 + x, from.1 as i32 + y)),
+        );
+        from = to;
+    }
+    Some(path)
+}
+
+fn slice_mask(ignore: &IgnoreMask, source: Range<usize>, target: Range<usize>) -> IgnoreMask {
+    if ignore.is_empty() {
+        return IgnoreMask::default();
+    }
+    IgnoreMask {
+        source: ignore.source[source].to_vec(),
+        target: ignore.target[target].to_vec(),
+        ..Default::default()
+    }
+}
+
+/// The enabled phases over one stretch. `pinned`: the stretch is one pinned line pair.
+fn phases_path<T, F>(
+    algorithm: MyersDiffAlgorithm,
+    source: &[T],
+    target: &[T],
+    cmp: &F,
+    ignore: &IgnoreMask,
+    phases: DiffPhases,
+    pinned: bool,
+    cancel_flag: Arc<AtomicBool>,
+) -> Option<MyersPath>
+where
+    T: RawTokenTrait,
+    F: Fn(&T, &T) -> bool + Sync,
+{
     let hunks = if phases.line {
-        line_diff(algorithm, source, target, &cmp, ignore, cancel_flag.clone())?
+        line_diff(algorithm, source, target, cmp, ignore, cancel_flag.clone())?
     } else {
         vec![LineHunk {
             source: 0..source.len(),
@@ -154,16 +224,26 @@ where
         }]
     };
     if phases.token {
-        token_diff(algorithm, source, target, &hunks, &cmp, ignore, cancel_flag)
+        token_diff(algorithm, source, target, &hunks, cmp, ignore, cancel_flag)
     } else {
         hunks_to_path(
             source,
             target,
             &hunks,
-            &cmp,
+            cmp,
             ignore,
             &cancel_flag,
-            |s, t| Some(replace_path(s.len(), t.len())),
+            |s, t| match (s.last(), t.last()) {
+                (Some(a), Some(b))
+                    if pinned && a.as_ref().kind == TokenKind::Newline && cmp(a, b) =>
+                {
+                    // The rows end a line at a deleted line break, which would split the pair.
+                    let mut path = replace_path(s.len() - 1, t.len() - 1);
+                    path.push((s.len() as i32, t.len() as i32));
+                    Some(path)
+                }
+                _ => Some(replace_path(s.len(), t.len())),
+            },
         )
     }
 }
@@ -2755,6 +2835,292 @@ mod tests {
                     .to_string(),
                 "pin 3:4 must come after pin 2:5 on both sides"
             );
+        }
+
+        mod in_driver {
+            use std::sync::atomic::AtomicUsize;
+
+            use super::*;
+            use crate::{
+                diff_builder::{DiffBuilderOptions, build_diff_rows},
+                diff_ir::DiffIR,
+                ignore::IgnoreOptions,
+                lexer::{LexerDefault, RawToken},
+                test_harness::DiffTestHarness,
+            };
+
+            const ALGORITHMS: [MyersDiffAlgorithm; 3] = [
+                MyersDiffAlgorithm::Trace,
+                MyersDiffAlgorithm::Linear,
+                MyersDiffAlgorithm::LinearMT,
+            ];
+            const LINE_ONLY: DiffPhases = DiffPhases {
+                scope: false,
+                line: true,
+                token: false,
+                character: false,
+            };
+            const TOKEN_ONLY: DiffPhases = DiffPhases {
+                scope: false,
+                line: false,
+                token: true,
+                character: false,
+            };
+            const PHASE_SETS: [DiffPhases; 3] = [
+                DiffPhases {
+                    scope: false,
+                    line: true,
+                    token: true,
+                    character: false,
+                },
+                LINE_ONLY,
+                TOKEN_ONLY,
+            ];
+
+            fn lex(text: &str) -> Vec<RawToken> {
+                LexerDefault::<RawToken>::new(text).collect()
+            }
+
+            fn path(
+                algorithm: MyersDiffAlgorithm,
+                s1: &str,
+                s2: &str,
+                ignore: &IgnoreOptions,
+                phases: DiffPhases,
+                pins: &[Pin],
+            ) -> MyersPath {
+                let (t1, t2) = (lex(s1), lex(s2));
+                let cmp = |a: &RawToken, b: &RawToken| {
+                    a.kind == b.kind && s1[a.span.clone()] == s2[b.span.clone()]
+                };
+                myers_diff_path(
+                    algorithm,
+                    &t1,
+                    &t2,
+                    cmp,
+                    &ignore.mask(&t1, s1, &t2, s2),
+                    phases,
+                    pins,
+                    Arc::new(AtomicBool::new(false)),
+                )
+                .expect("not cancelled")
+            }
+
+            fn options() -> DiffBuilderOptions {
+                DiffBuilderOptions {
+                    ghost_rows: false,
+                    ..Default::default()
+                }
+            }
+
+            fn rows<'a>(
+                algorithm: MyersDiffAlgorithm,
+                s1: &'a str,
+                s2: &'a str,
+                phases: DiffPhases,
+                pins: &[Pin],
+            ) -> DiffTestHarness<'a> {
+                let path = path(algorithm, s1, s2, &IgnoreOptions::default(), phases, pins);
+                DiffTestHarness::new(s1, s2, path, options(), 8)
+            }
+
+            #[test]
+            fn one_pin_aligns_lines_the_plain_diff_does_not() {
+                let s1 = "boot\nlinked\nserve\n";
+                let s2 = "boot\nwait\nwait\nonline\nserve\n";
+                for algorithm in ALGORITHMS {
+                    rows(algorithm, s1, s2, DiffPhases::default(), &[])
+                        .assert_row(1, 2, 2, "linked\n", "wait\n");
+
+                    for phases in PHASE_SETS {
+                        let h = rows(algorithm, s1, s2, phases, &[pin(1, 3)]);
+                        h.assert_row(0, 1, 1, "boot\n", "boot\n");
+                        h.assert_row(1, -1, 2, "VOID", "wait\n");
+                        h.assert_row(2, -1, 3, "VOID", "wait\n");
+                        h.assert_row(3, 2, 4, "linked\n", "online\n");
+                        h.assert_row(4, 3, 5, "serve\n", "serve\n");
+                        assert_eq!(h.rows().len(), 5, "{algorithm:?} {phases:?}");
+                    }
+                }
+            }
+
+            #[test]
+            fn several_pins_align_each_stretch() {
+                let s1 = "boot\nlinked\nack\ngone\nserve\n";
+                let s2 = "boot\nwait\nwait\nonline\nreply\nreply\nok\nserve\n";
+                let pins = [pin(0, 0), pin(1, 3), pin(2, 6)];
+                for algorithm in ALGORITHMS {
+                    for phases in PHASE_SETS {
+                        let h = rows(algorithm, s1, s2, phases, &pins);
+                        h.assert_row(0, 1, 1, "boot\n", "boot\n");
+                        h.assert_row(1, -1, 2, "VOID", "wait\n");
+                        h.assert_row(2, -1, 3, "VOID", "wait\n");
+                        h.assert_row(3, 2, 4, "linked\n", "online\n");
+                        h.assert_row(4, -1, 5, "VOID", "reply\n");
+                        h.assert_row(5, -1, 6, "VOID", "reply\n");
+                        h.assert_row(6, 3, 7, "ack\n", "ok\n");
+                        h.assert_row(7, 4, -1, "gone\n", "VOID");
+                        h.assert_row(8, 5, 8, "serve\n", "serve\n");
+                        assert_eq!(h.rows().len(), 9, "{algorithm:?} {phases:?}");
+                    }
+                }
+            }
+
+            #[test]
+            fn pinned_lines_with_different_text_are_a_changed_pair_on_one_row() {
+                let s1 = "a\ngone\nlet x = 1;\nb\n";
+                let s2 = "a\nfn y() {}\n";
+                for algorithm in ALGORITHMS {
+                    for phases in PHASE_SETS {
+                        let h = rows(algorithm, s1, s2, phases, &[pin(2, 1)]);
+                        h.assert_row(0, 1, 1, "a\n", "a\n");
+                        h.assert_row(1, 2, -1, "gone\n", "VOID");
+                        h.assert_row(2, 3, 2, "let x = 1;\n", "fn y() {}\n");
+                        h.assert_row(3, 4, -1, "b\n", "VOID");
+                        assert_eq!(h.rows().len(), 4, "{algorithm:?} {phases:?}");
+                    }
+                }
+
+                let (s1, s2) = ("a\nold", "new");
+                for algorithm in ALGORITHMS {
+                    for phases in PHASE_SETS {
+                        let h = rows(algorithm, s1, s2, phases, &[pin(1, 0)]);
+                        h.assert_row(0, 1, -1, "a\n", "VOID");
+                        h.assert_row(1, 2, 1, "old", "new");
+                        assert_eq!(h.rows().len(), 2, "{algorithm:?} {phases:?}");
+                    }
+                }
+            }
+
+            #[test]
+            fn pinned_lines_honor_the_ignore_options() {
+                let s1 = "a\n  x = 1;\nb\n";
+                let s2 = "a\nb\nx  =  1;\n";
+                let ignore = IgnoreOptions {
+                    whitespace: true,
+                    ..Default::default()
+                };
+                for algorithm in ALGORITHMS {
+                    for phases in PHASE_SETS {
+                        let path = path(algorithm, s1, s2, &ignore, phases, &[pin(1, 2)]);
+                        let options = DiffBuilderOptions {
+                            ignore: ignore.clone(),
+                            ..options()
+                        };
+                        let h = DiffTestHarness::new(s1, s2, path, options, 8);
+                        h.assert_row(0, 1, 1, "a\n", "a\n");
+                        h.assert_row(1, -1, 2, "VOID", "b\n");
+                        h.assert_row(2, 2, 3, "  x = 1;\n", "x  =  1;\n");
+                        h.assert_row(3, 3, -1, "b\n", "VOID");
+                        assert_eq!(h.rows().len(), 4, "{algorithm:?} {phases:?}");
+                    }
+                }
+            }
+
+            #[test]
+            fn no_pins_equals_the_plain_diff() {
+                let pairs = [
+                    (
+                        "boot\nretry\nlinked\nserve\n",
+                        "boot\nwait\nwait\nonline\nserve\n",
+                    ),
+                    ("a\ngone\nlet x = 1;\nb\n", "a\nb\nfn y() {}"),
+                    ("x\ny\nx\ny\n", "y\nx\ny\nx\n"),
+                    ("", "only target\n"),
+                ];
+                for algorithm in ALGORITHMS {
+                    for (s1, s2) in pairs {
+                        let (t1, t2) = (lex(s1), lex(s2));
+                        let cmp = |a: &RawToken, b: &RawToken| {
+                            a.kind == b.kind && s1[a.span.clone()] == s2[b.span.clone()]
+                        };
+                        let (mask, cancel) = (IgnoreMask::default(), Arc::default());
+                        let hunks = line_diff(algorithm, &t1, &t2, cmp, &mask, Arc::clone(&cancel))
+                            .unwrap();
+                        let plain =
+                            token_diff(algorithm, &t1, &t2, &hunks, cmp, &mask, cancel).unwrap();
+                        let ir = DiffIR::new(&plain, false, Arc::default()).unwrap();
+                        let plain_rows =
+                            build_diff_rows(ir, Some(&t1), Some(&t2), s1, s2, &options(), 8);
+
+                        let h = rows(algorithm, s1, s2, DiffPhases::default(), &[]);
+                        assert_eq!(
+                            format!("{:?}", h.rows()),
+                            format!("{plain_rows:?}"),
+                            "{algorithm:?}: {s1:?} -> {s2:?}"
+                        );
+                    }
+                }
+            }
+
+            fn large_pinned_input() -> (String, String, Vec<Pin>) {
+                let (mut s1, mut s2, mut pins) = (String::new(), String::new(), Vec::new());
+                let (mut l1, mut l2) = (0, 0);
+                for i in 0..4000 {
+                    let line = format!("let v{} = {} + {};\n", i % 13, i % 7, i);
+                    match i % 10 {
+                        0 => {
+                            pins.push(pin(l1, l2));
+                            s1 += &line;
+                            s2 += &format!("log({i});\n");
+                        }
+                        3 => s1 += &line,
+                        6 => s2 += &line,
+                        _ => {
+                            s1 += &line;
+                            s2 += &format!("let v{} = {} + {};\n", i % 13, i % 5, i);
+                        }
+                    }
+                    if i % 10 != 6 {
+                        l1 += 1;
+                    }
+                    if i % 10 != 3 {
+                        l2 += 1;
+                    }
+                }
+                (s1, s2, pins)
+            }
+
+            #[test]
+            fn cancellation_returns_none_promptly_with_pins() {
+                let (s1, s2, pins) = large_pinned_input();
+                let (t1, t2) = (lex(&s1), lex(&s2));
+                validate_pins(&pins, split_lines(&t1).len(), split_lines(&t2).len()).unwrap();
+                for algorithm in ALGORITHMS {
+                    for phases in PHASE_SETS {
+                        let run = |cancel_after: usize| {
+                            let calls = AtomicUsize::new(0);
+                            let cancel = Arc::new(AtomicBool::new(cancel_after == 0));
+                            let cmp = |a: &RawToken, b: &RawToken| {
+                                if calls.fetch_add(1, Ordering::Relaxed) + 1 >= cancel_after {
+                                    cancel.store(true, Ordering::Relaxed);
+                                }
+                                a.kind == b.kind && s1[a.span.clone()] == s2[b.span.clone()]
+                            };
+                            let path = myers_diff_path(
+                                algorithm,
+                                &t1,
+                                &t2,
+                                cmp,
+                                &IgnoreMask::default(),
+                                phases,
+                                &pins,
+                                Arc::clone(&cancel),
+                            );
+                            (path.is_some(), calls.into_inner())
+                        };
+                        let (finished, total) = run(usize::MAX);
+                        assert!(finished, "{algorithm:?} {phases:?}");
+                        let (finished, cancelled) = run(total / 10);
+                        assert!(!finished, "{algorithm:?} {phases:?}");
+                        assert!(
+                            cancelled < total / 2,
+                            "{algorithm:?} {phases:?}: {cancelled} of {total} compares"
+                        );
+                        assert_eq!(run(0), (false, 0), "{algorithm:?} {phases:?}");
+                    }
+                }
+            }
         }
     }
 }
