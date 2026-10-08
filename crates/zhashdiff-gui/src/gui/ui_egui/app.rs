@@ -4,7 +4,7 @@ use std::{collections::HashMap, path::PathBuf, sync::Arc};
 use zcommon::{hash::HashService, logger::LogBuffer, ui_egui::common::show_custom_popup};
 use zhashdiff::{
     comparison::{PathComparissonMethod, compare_paths},
-    external_diff_tool::{DiffToolConfig, DiffToolDefaultArgs},
+    external_diff_tool::{DiffPair, DiffToolConfig, LegacyDiffToolConfig, expand_template},
     filter::PathFilter,
     fs::FileSystemModel,
 };
@@ -295,40 +295,37 @@ impl ZApp {
                     ui.vertical(|ui| {
                         ui.horizontal(|ui| {
                             if ui.button("ZDiff").clicked() {
-                                app_ctx.diff_config = DiffToolConfig::default_zdiff()
+                                app_ctx.diff_config = LegacyDiffToolConfig::default_zdiff().into()
                             }
                             if ui.button("Tortoise").clicked() {
-                                app_ctx.diff_config = DiffToolConfig::default_tortoise()
+                                app_ctx.diff_config =
+                                    LegacyDiffToolConfig::default_tortoise().into()
                             }
                         });
                     });
 
-                    let mut text_edit = app_ctx.diff_config.exe_path.to_string_lossy();
+                    let default_tool = app_ctx.diff_config.default_tool.clone();
+                    let Some(tool) = app_ctx.diff_config.tool_mut(&default_tool) else {
+                        ui.label(format!("Default tool {default_tool:?} is missing"));
+                        return;
+                    };
+
+                    let mut text_edit = tool.exe_path.to_string_lossy();
                     ui.label("Path: ");
                     ui.text_edit_singleline(&mut text_edit);
-                    app_ctx.diff_config.exe_path = PathBuf::from(text_edit.as_str());
+                    tool.exe_path = PathBuf::from(text_edit.as_str());
 
-                    let mut text_edit = app_ctx.diff_config.diff_path_1_args.clone();
-                    ui.label("Path 1 args ({}): ");
-                    ui.text_edit_singleline(&mut text_edit);
-                    app_ctx.diff_config.diff_path_1_args = text_edit.to_string();
-
-                    let mut text_edit = app_ctx.diff_config.diff_path_2_args.clone();
-                    ui.label("Path 2 args ({}): ");
-                    ui.text_edit_singleline(&mut text_edit);
-                    app_ctx.diff_config.diff_path_2_args = text_edit.to_string();
-
-                    let mut text_edit = app_ctx.diff_config.prefix_args.to_string();
-                    ui.label("Prefix Args (\\n): ");
-                    ui.text_edit_multiline(&mut text_edit);
-                    app_ctx.diff_config.prefix_args =
-                        DiffToolDefaultArgs::from_string(text_edit.as_str());
-
-                    let mut text_edit = app_ctx.diff_config.suffix_args.to_string();
-                    ui.label("Suffix args (\\n): ");
-                    ui.text_edit_multiline(&mut text_edit);
-                    app_ctx.diff_config.suffix_args =
-                        DiffToolDefaultArgs::from_string(text_edit.as_str());
+                    ui.label("Arguments ({left} {right} {left_name} {right_name}): ");
+                    ui.text_edit_singleline(&mut tool.template);
+                    let sample = DiffPair {
+                        left: "left",
+                        right: "right",
+                        left_name: "left_name",
+                        right_name: "right_name",
+                    };
+                    if let Err(err) = expand_template(&tool.template, &sample) {
+                        ui.colored_label(ui.visuals().error_fg_color, err.to_string());
+                    }
                 },
             );
         }

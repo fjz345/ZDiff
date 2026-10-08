@@ -8,10 +8,10 @@ use std::{
 use eframe::egui::{self, RichText};
 use egui_extras::{Column, TableBuilder};
 use serde::{Deserialize, Serialize};
-use zcommon::hash::HashService;
+use zcommon::{hash::HashService, kinds::KindTable};
 use zhashdiff::{
     comparison::PathComparisonResult,
-    external_diff_tool::{DiffToolConfig, open_diff_tool},
+    external_diff_tool::{DiffPair, DiffToolConfig, folder_labels, open_diff_tool},
     filter::PathFilter,
     fs::{FileSystemModel, FsNode, FsNodeDepth, FsNodeId, TreeIter},
 };
@@ -1065,21 +1065,42 @@ fn on_row_item_clicked(
         }
         (Some(path1), Some(path2)) => {
             assert_eq!(file_system_1_view.is_some(), file_system_2_view.is_some()); // Model/View diff
-            let diff_tool = config;
+            let Some(diff_tool) =
+                config.choose_tool(&KindTable::default(), Path::new(&entry.rel_path))
+            else {
+                log::error!(
+                    "diffing failed: default diff tool {:?} is missing",
+                    config.default_tool
+                );
+                return false;
+            };
+            let left = file_system_1_view
+                .unwrap()
+                .file_system
+                .get_node(path1)
+                .unwrap()
+                .as_path()
+                .as_ref()
+                .to_string_lossy()
+                .into_owned();
+            let right = file_system_2_view
+                .unwrap()
+                .file_system
+                .get_node(path2)
+                .unwrap()
+                .as_path()
+                .as_ref()
+                .to_string_lossy()
+                .into_owned();
+            let (left_name, right_name) = folder_labels(&entry.rel_path);
             let result = open_diff_tool(
-                &diff_tool,
-                file_system_1_view
-                    .unwrap()
-                    .file_system
-                    .get_node(path1)
-                    .unwrap()
-                    .as_path(),
-                file_system_2_view
-                    .unwrap()
-                    .file_system
-                    .get_node(path2)
-                    .unwrap()
-                    .as_path(),
+                diff_tool,
+                &DiffPair {
+                    left: &left,
+                    right: &right,
+                    left_name: &left_name,
+                    right_name: &right_name,
+                },
             );
             if let Err(err) = result {
                 log::error!("diffing failed...");
