@@ -17,7 +17,7 @@ use zdiff::{
     diff_builder::{DiffBuilderOptions, DiffRow, LineContent, build_diff_rows},
     diff_ir::DiffIR,
     lexer::{LEXER_MODE_DEFAULT, LexerDefault, RawToken},
-    myers::{MyersDiffAlgorithm, myers_diff_path},
+    myers::{DiffPhases, MyersDiffAlgorithm, myers_diff_path},
     row_text::{RowText, build_row_text},
     universal_path::UniversalPath,
 };
@@ -129,6 +129,8 @@ impl CopyHarness {
             &options
                 .ignore
                 .mask(&file_source.tokens, source, &file_target.tokens, target),
+            DiffPhases::default(),
+            &[],
             Arc::new(AtomicBool::new(false)),
         )
         .expect("myers was not cancelled");

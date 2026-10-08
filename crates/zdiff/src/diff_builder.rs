@@ -531,7 +531,7 @@ mod tests {
         use crate::{
             ignore::IgnorePatterns,
             lexer::{LexerDefault, RawToken},
-            myers::{MyersDiffAlgorithm, myers_diff_path},
+            myers::{DiffPhases, MyersDiffAlgorithm, myers_diff_path},
         };
 
         // Hunks that add and remove lines, a deleted last line without a newline, and equal
@@ -555,6 +555,8 @@ mod tests {
                 t2,
                 cmp,
                 &mask,
+                DiffPhases::default(),
+                &[],
                 cancel.clone(),
             )
             .expect("not cancelled");
@@ -662,7 +664,7 @@ mod tests {
         use crate::{
             ignore::IgnorePatterns,
             lexer::{LexerDefault, RawToken},
-            myers::{MyersDiffAlgorithm, myers_diff_path},
+            myers::{DiffPhases, MyersDiffAlgorithm, myers_diff_path},
             test_harness::DiffTestHarness,
         };
 
@@ -704,6 +706,8 @@ mod tests {
                 &t2,
                 cmp,
                 &options.ignore.mask(&t1, s1, &t2, s2),
+                DiffPhases::default(),
+                &[],
                 Arc::new(AtomicBool::new(false)),
             )
             .expect("not cancelled");

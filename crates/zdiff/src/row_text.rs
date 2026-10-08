@@ -93,7 +93,7 @@ mod tests {
         diff_ir::DiffIR,
         ignore::IgnoreMask,
         lexer::{LEXER_MODE_DEFAULT, LexerDefault, RawToken},
-        myers::{MyersDiffAlgorithm, myers_diff_path},
+        myers::{DiffPhases, MyersDiffAlgorithm, myers_diff_path},
         universal_path::UniversalPath,
     };
 
@@ -321,6 +321,8 @@ mod tests {
             &file_target.tokens,
             cmp,
             &IgnoreMask::default(),
+            DiffPhases::default(),
+            &[],
             Arc::new(AtomicBool::new(false)),
         )
         .unwrap();

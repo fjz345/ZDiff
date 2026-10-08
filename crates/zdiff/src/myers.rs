@@ -23,22 +23,149 @@ pub enum MyersDiffAlgorithm {
     LinearMT, // N+M memory with multi-threading
 }
 
-/// Token-level edit path of `source` -> `target`: `line_diff`, then `token_diff`. A unit-step
-/// path from (0, 0) to (source.len(), target.len()). None when cancelled.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct DiffPhases {
+    pub scope: bool,
+    pub line: bool,
+    pub token: bool,
+    pub character: bool,
+}
+
+impl Default for DiffPhases {
+    fn default() -> Self {
+        Self {
+            scope: false,
+            line: true,
+            token: true,
+            character: false,
+        }
+    }
+}
+
+impl DiffPhases {
+    pub fn is_valid(self) -> bool {
+        (self.line || self.token) && (self.token || !self.character)
+    }
+}
+
+/// Forces a source line and a target line to pair. Lines are 0-based.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Pin {
+    pub source: usize,
+    pub target: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PinError {
+    OutOfRange {
+        pin: Pin,
+        source_lines: usize,
+        target_lines: usize,
+    },
+    NotIncreasing {
+        pin: Pin,
+        previous: Pin,
+    },
+}
+
+impl std::fmt::Display for PinError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match *self {
+            PinError::OutOfRange {
+                pin,
+                source_lines,
+                target_lines,
+            } => write!(
+                f,
+                "pin {}:{} is outside the files (left has {source_lines} lines, right has {target_lines})",
+                pin.source + 1,
+                pin.target + 1
+            ),
+            PinError::NotIncreasing { pin, previous } => write!(
+                f,
+                "pin {}:{} must come after pin {}:{} on both sides",
+                pin.source + 1,
+                pin.target + 1,
+                previous.source + 1,
+                previous.target + 1
+            ),
+        }
+    }
+}
+
+/// Pins must be strictly increasing on both sides and inside both files.
+pub fn validate_pins(
+    pins: &[Pin],
+    source_lines: usize,
+    target_lines: usize,
+) -> Result<(), PinError> {
+    let mut previous: Option<Pin> = None;
+    for &pin in pins {
+        if pin.source >= source_lines || pin.target >= target_lines {
+            return Err(PinError::OutOfRange {
+                pin,
+                source_lines,
+                target_lines,
+            });
+        }
+        if let Some(previous) = previous
+            && (pin.source <= previous.source || pin.target <= previous.target)
+        {
+            return Err(PinError::NotIncreasing { pin, previous });
+        }
+        previous = Some(pin);
+    }
+    Ok(())
+}
+
+/// Token-level edit path of `source` -> `target` through the enabled phases. A unit-step path
+/// from (0, 0) to (source.len(), target.len()). None when cancelled.
 pub fn myers_diff_path<T, F>(
     algorithm: MyersDiffAlgorithm,
     source: &[T],
     target: &[T],
     cmp: F,
     ignore: &IgnoreMask,
+    phases: DiffPhases,
+    pins: &[Pin],
     cancel_flag: Arc<AtomicBool>,
 ) -> Option<MyersPath>
 where
     T: RawTokenTrait,
     F: Fn(&T, &T) -> bool + Sync,
 {
-    let hunks = line_diff(algorithm, source, target, &cmp, ignore, cancel_flag.clone())?;
-    token_diff(algorithm, source, target, &hunks, &cmp, ignore, cancel_flag)
+    assert!(
+        phases.is_valid(),
+        "invalid diff phases {phases:?}: Line or Token must be on, and Character needs Token"
+    );
+    if !pins.is_empty()
+        && let Err(err) = validate_pins(pins, split_lines(source).len(), split_lines(target).len())
+    {
+        panic!("invalid pins: {err}");
+    }
+
+    let hunks = if phases.line {
+        line_diff(algorithm, source, target, &cmp, ignore, cancel_flag.clone())?
+    } else {
+        vec![LineHunk {
+            source: 0..source.len(),
+            target: 0..target.len(),
+        }]
+    };
+    if phases.token {
+        token_diff(algorithm, source, target, &hunks, &cmp, ignore, cancel_flag)
+    } else {
+        hunks_to_path(
+            source,
+            target,
+            &hunks,
+            &cmp,
+            ignore,
+            &cancel_flag,
+            |s, t| Some(replace_path(s.len(), t.len())),
+        )
+    }
 }
 
 /// A run of non-equal lines, as token ranges. Either range may be empty (pure insert/delete).
@@ -144,6 +271,34 @@ where
     T: RawTokenTrait,
     F: Fn(&T, &T) -> bool + Sync,
 {
+    hunks_to_path(source, target, hunks, &cmp, ignore, &cancel_flag, |s, t| {
+        if s.is_empty() || t.is_empty() {
+            return Some(replace_path(s.len(), t.len()));
+        }
+        let local = raw_diff_path(algorithm, s, t, &cmp, cancel_flag.clone())?;
+        if cancel_flag.load(Ordering::Relaxed) {
+            return None;
+        }
+        let is_line_end = |t: &T| t.as_ref().kind == TokenKind::Newline;
+        Some(align_runs_to_line_ends(&local, s, t, &cmp, is_line_end))
+    })
+}
+
+/// Concatenates each hunk's local path, offset to the hunk, with the equal lines between hunks.
+fn hunks_to_path<T, F, H>(
+    source: &[T],
+    target: &[T],
+    hunks: &[LineHunk],
+    cmp: &F,
+    ignore: &IgnoreMask,
+    cancel_flag: &AtomicBool,
+    mut hunk_path: H,
+) -> Option<MyersPath>
+where
+    T: RawTokenTrait,
+    F: Fn(&T, &T) -> bool,
+    H: FnMut(&[T], &[T]) -> Option<MyersPath>,
+{
     if cancel_flag.load(Ordering::Relaxed) {
         return None;
     }
@@ -157,31 +312,27 @@ where
             return None;
         }
         let to = (hunk.source.start, hunk.target.start);
-        push_equal_lines(&mut path, source, target, (x, y), to, &cmp, ignore);
-        (x, y) = (hunk.source.start, hunk.target.start);
+        push_equal_lines(&mut path, source, target, (x, y), to, cmp, ignore);
+        (x, y) = to;
 
-        let (s, t) = (&source[hunk.source.clone()], &target[hunk.target.clone()]);
-        if s.is_empty() || t.is_empty() {
-            path.extend((1..=s.len()).map(|i| ((x + i) as i32, y as i32)));
-            path.extend((1..=t.len()).map(|i| (x as i32, (y + i) as i32)));
-        } else {
-            let local = raw_diff_path(algorithm, s, t, &cmp, cancel_flag.clone())?;
-            if cancel_flag.load(Ordering::Relaxed) {
-                return None;
-            }
-            let is_line_end = |t: &T| t.as_ref().kind == TokenKind::Newline;
-            let local = align_runs_to_line_ends(&local, s, t, &cmp, is_line_end);
-            path.extend(
-                local[1..]
-                    .iter()
-                    .map(|&(lx, ly)| (x as i32 + lx, y as i32 + ly)),
-            );
-        }
+        let local = hunk_path(&source[hunk.source.clone()], &target[hunk.target.clone()])?;
+        path.extend(
+            local[1..]
+                .iter()
+                .map(|&(lx, ly)| (x as i32 + lx, y as i32 + ly)),
+        );
         (x, y) = (hunk.source.end, hunk.target.end);
     }
     let to = (source.len(), target.len());
-    push_equal_lines(&mut path, source, target, (x, y), to, &cmp, ignore);
+    push_equal_lines(&mut path, source, target, (x, y), to, cmp, ignore);
     Some(path)
+}
+
+/// Every source token deleted, then every target token inserted.
+fn replace_path(source_len: usize, target_len: usize) -> MyersPath {
+    let deletes = (0..=source_len).map(|i| (i as i32, 0));
+    let inserts = (1..=target_len).map(|j| (source_len as i32, j as i32));
+    deletes.chain(inserts).collect()
 }
 
 fn assert_mask_fits<T>(ignore: &IgnoreMask, source: &[T], target: &[T]) {
@@ -1636,6 +1787,24 @@ mod tests {
             ignore: &IgnoreOptions,
             cancel: bool,
         ) -> Option<Script> {
+            diff_phases(
+                algorithm,
+                source,
+                target,
+                ignore,
+                DiffPhases::default(),
+                cancel,
+            )
+        }
+
+        fn diff_phases(
+            algorithm: MyersDiffAlgorithm,
+            source: &str,
+            target: &str,
+            ignore: &IgnoreOptions,
+            phases: DiffPhases,
+            cancel: bool,
+        ) -> Option<Script> {
             let (ts, tt) = (lex(source), lex(target));
             let cmp = |a: &RawToken, b: &RawToken| {
                 a.kind == b.kind && source[a.span.clone()] == target[b.span.clone()]
@@ -1646,6 +1815,8 @@ mod tests {
                 &tt,
                 cmp,
                 &ignore.mask(&ts, source, &tt, target),
+                phases,
+                &[],
                 Arc::new(AtomicBool::new(cancel)),
             )?;
 
@@ -1923,6 +2094,198 @@ mod tests {
                         "{algorithm:?}: {source:?} -> {target:?}"
                     );
                 }
+            }
+        }
+
+        mod phases {
+            use super::*;
+
+            const LINE_ONLY: DiffPhases = DiffPhases {
+                scope: false,
+                line: true,
+                token: false,
+                character: false,
+            };
+            const TOKEN_ONLY: DiffPhases = DiffPhases {
+                scope: false,
+                line: false,
+                token: true,
+                character: false,
+            };
+
+            fn phases(scope: bool, line: bool, token: bool, character: bool) -> DiffPhases {
+                DiffPhases {
+                    scope,
+                    line,
+                    token,
+                    character,
+                }
+            }
+
+            fn path(
+                algorithm: MyersDiffAlgorithm,
+                source: &str,
+                target: &str,
+                phases: DiffPhases,
+                pins: &[Pin],
+            ) -> MyersPath {
+                let (ts, tt) = (lex(source), lex(target));
+                let cmp = |a: &RawToken, b: &RawToken| {
+                    a.kind == b.kind && source[a.span.clone()] == target[b.span.clone()]
+                };
+                myers_diff_path(
+                    algorithm,
+                    &ts,
+                    &tt,
+                    cmp,
+                    &IgnoreMask::default(),
+                    phases,
+                    pins,
+                    Arc::new(AtomicBool::new(false)),
+                )
+                .expect("not cancelled")
+            }
+
+            fn whole_file_token_diff(
+                algorithm: MyersDiffAlgorithm,
+                source: &str,
+                target: &str,
+            ) -> MyersPath {
+                let (ts, tt) = (lex(source), lex(target));
+                let cmp = |a: &RawToken, b: &RawToken| {
+                    a.kind == b.kind && source[a.span.clone()] == target[b.span.clone()]
+                };
+                let path = raw_diff_path(algorithm, &ts, &tt, &cmp, Arc::default()).unwrap();
+                let is_line_end = |t: &RawToken| t.kind == TokenKind::Newline;
+                align_runs_to_line_ends(&path, &ts, &tt, &cmp, is_line_end)
+            }
+
+            #[test]
+            fn line_only_changes_whole_lines() {
+                let cases = [
+                    (
+                        "fn f() {\n    let a = 1;\n    let b = 2;\n}\n",
+                        "fn f() {\n    let a = 7;\n    let b = 2;\n}\n",
+                        ("    let a = 1;\n", "    let a = 7;\n"),
+                    ),
+                    (
+                        "keep\nlet a = 1;\nlet b = 2;\nend",
+                        "keep\nlet a = 10;\nnew();\nlet b = 20;\nend",
+                        (
+                            "let a = 1;\nlet b = 2;\n",
+                            "let a = 10;\nnew();\nlet b = 20;\n",
+                        ),
+                    ),
+                    ("a\nold\nb\n", "a\nb\n", ("old\n", "")),
+                    ("", "x\n", ("", "x\n")),
+                ];
+                for algorithm in ALGORITHMS {
+                    for (source, target, (deleted, inserted)) in cases {
+                        let script = diff_phases(
+                            algorithm,
+                            source,
+                            target,
+                            &IgnoreOptions::default(),
+                            LINE_ONLY,
+                            false,
+                        )
+                        .unwrap();
+                        assert_eq!(
+                            changed_text(source, target, &script),
+                            (deleted.into(), inserted.into()),
+                            "{algorithm:?}: {source:?} -> {target:?}"
+                        );
+                    }
+                }
+            }
+
+            #[test]
+            fn token_only_equals_the_whole_file_token_diff() {
+                let pairs = [
+                    ("a b\nc\n", "c\na x\n"),
+                    (
+                        "let a = 1;\nlet b = 2;\nlet c = 3;\nlet d = 4;\n",
+                        "let a = 10;\nlet b = 20;\nnew();\nlet c = 30;\nlet d = 40;\n",
+                    ),
+                    ("x\ny\nx\ny\n", "y\nx\ny\nx\n"),
+                    ("same\ntext\n", "same\ntext\n"),
+                    ("", "only target\n"),
+                    ("", ""),
+                ];
+                for algorithm in ALGORITHMS {
+                    for (source, target) in pairs {
+                        for (s, t) in [(source, target), (target, source)] {
+                            assert_eq!(
+                                path(algorithm, s, t, TOKEN_ONLY, &[]),
+                                whole_file_token_diff(algorithm, s, t),
+                                "{algorithm:?}: {s:?} -> {t:?}"
+                            );
+                        }
+                    }
+                }
+            }
+
+            #[test]
+            fn phase_set_needs_line_or_token_and_character_needs_token() {
+                for valid in [
+                    phases(false, true, false, false),
+                    phases(false, false, true, false),
+                    phases(false, true, true, false),
+                    phases(false, false, true, true),
+                    phases(true, true, false, false),
+                    phases(true, true, true, true),
+                ] {
+                    assert!(valid.is_valid(), "{valid:?}");
+                }
+                for invalid in [
+                    phases(false, false, false, false),
+                    phases(true, false, false, false),
+                    phases(false, false, false, true),
+                    phases(false, true, false, true),
+                    phases(true, true, false, true),
+                ] {
+                    assert!(!invalid.is_valid(), "{invalid:?}");
+                }
+            }
+
+            #[test]
+            #[should_panic(expected = "invalid diff phases")]
+            fn driver_rejects_no_line_and_no_token() {
+                path(
+                    MyersDiffAlgorithm::Linear,
+                    "a\n",
+                    "b\n",
+                    phases(true, false, false, false),
+                    &[],
+                );
+            }
+
+            #[test]
+            #[should_panic(expected = "invalid diff phases")]
+            fn driver_rejects_character_without_token() {
+                path(
+                    MyersDiffAlgorithm::Linear,
+                    "a\n",
+                    "b\n",
+                    phases(false, true, false, true),
+                    &[],
+                );
+            }
+
+            #[test]
+            #[should_panic(expected = "invalid pins")]
+            fn driver_rejects_invalid_pins() {
+                let pins = [Pin {
+                    source: 0,
+                    target: 2,
+                }];
+                path(
+                    MyersDiffAlgorithm::Linear,
+                    "a\nb\n",
+                    "a\nb\n",
+                    DiffPhases::default(),
+                    &pins,
+                );
             }
         }
 
@@ -2324,6 +2687,74 @@ mod tests {
                     }
                 }
             }
+        }
+    }
+
+    mod pins {
+        use super::*;
+
+        fn pin(source: usize, target: usize) -> Pin {
+            Pin { source, target }
+        }
+
+        #[test]
+        fn increasing_pins_inside_both_files_are_valid() {
+            assert_eq!(validate_pins(&[], 0, 0), Ok(()));
+            assert_eq!(validate_pins(&[pin(0, 0)], 1, 1), Ok(()));
+            assert_eq!(
+                validate_pins(&[pin(0, 0), pin(2, 5), pin(3, 6)], 4, 7),
+                Ok(())
+            );
+        }
+
+        #[test]
+        fn crossing_and_repeated_pins_are_rejected() {
+            for pins in [
+                [pin(1, 4), pin(2, 3)],
+                [pin(2, 3), pin(1, 4)],
+                [pin(1, 3), pin(1, 4)],
+                [pin(1, 3), pin(2, 3)],
+                [pin(1, 3), pin(1, 3)],
+            ] {
+                assert_eq!(
+                    validate_pins(&pins, 10, 10),
+                    Err(PinError::NotIncreasing {
+                        pin: pins[1],
+                        previous: pins[0],
+                    }),
+                    "{pins:?}"
+                );
+            }
+        }
+
+        #[test]
+        fn out_of_range_pins_are_rejected() {
+            for bad in [pin(4, 0), pin(0, 7), pin(9, 9)] {
+                assert_eq!(
+                    validate_pins(&[pin(0, 0), bad], 4, 7),
+                    Err(PinError::OutOfRange {
+                        pin: bad,
+                        source_lines: 4,
+                        target_lines: 7,
+                    }),
+                    "{bad:?}"
+                );
+            }
+            assert!(validate_pins(&[pin(0, 0)], 0, 1).is_err());
+        }
+
+        #[test]
+        fn reasons_use_one_based_lines() {
+            assert_eq!(
+                validate_pins(&[pin(4, 0)], 4, 7).unwrap_err().to_string(),
+                "pin 5:1 is outside the files (left has 4 lines, right has 7)"
+            );
+            assert_eq!(
+                validate_pins(&[pin(1, 4), pin(2, 3)], 10, 10)
+                    .unwrap_err()
+                    .to_string(),
+                "pin 3:4 must come after pin 2:5 on both sides"
+            );
         }
     }
 }
