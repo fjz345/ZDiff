@@ -84,6 +84,20 @@ fn is_pending(row: &VisibleRowTwoFolderDiff) -> bool {
     matches!(row.diff_state, DiffState::Pending(..))
 }
 
+/// The root row first, then the rest by the key alone, ignoring depth and folders.
+pub fn sort_file_list(
+    mut rows: Vec<VisibleRowTwoFolderDiff>,
+    sort: TreeSort,
+) -> Vec<VisibleRowTwoFolderDiff> {
+    rows.sort_by(|a, b| {
+        b.rel_path
+            .is_empty()
+            .cmp(&a.rel_path.is_empty())
+            .then_with(|| sort.compare_by_key(a, b))
+    });
+    rows
+}
+
 /// The rows as a depth-first walk with every folder's children in `sort` order, so children stay
 /// under their parent. Flat: one list by depth, then the key, with no folders first. Each row
 /// holds both sides, so the sides stay aligned.

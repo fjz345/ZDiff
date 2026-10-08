@@ -14,7 +14,8 @@ use crate::ui_egui::{
     fs_tree::{FileCompareCache, FileSystemView, VisibleRowTwoFolderDiff},
     panes::{Pane, PathDiffView, TreeBehavior},
     path_diff_pane::PathDiffPane,
-    tree_sort::{TreeSort, sort_two_folder_rows},
+    tree_filter::{DiffFilter, arrange_two_folder_rows},
+    tree_sort::TreeSort,
 };
 use eframe::epaint::Pos2;
 use egui_tiles::Tile;
@@ -45,6 +46,10 @@ pub struct AppStateCtx {
     /// Sibling order of the two-folder diff rows.
     #[serde(default)]
     pub tree_sort: TreeSort,
+    #[serde(skip)]
+    two_folder_diff_rows_diff_filter: DiffFilter,
+    #[serde(default)]
+    pub diff_filter: DiffFilter,
 
     #[serde(skip)]
     pub active_conflict_hash: Option<String>,
@@ -63,6 +68,7 @@ impl AppStateCtx {
     fn build_two_folder_diff_rows_if_stale(&mut self) {
         if self.two_folder_diff_rows_filter != self.path_filter
             || self.two_folder_diff_rows_sort != self.tree_sort
+            || self.two_folder_diff_rows_diff_filter != self.diff_filter
         {
             self.two_folder_diff_visible_rows = None;
         }
@@ -77,9 +83,10 @@ impl AppStateCtx {
                 |path_1, path_2| compare_paths(path_1, path_2, &PathComparissonMethod::CrC),
             )
             .ok()
-            .map(|rows| sort_two_folder_rows(rows, self.tree_sort));
+            .map(|rows| arrange_two_folder_rows(rows, self.diff_filter, self.tree_sort));
             self.two_folder_diff_rows_filter = self.path_filter.clone();
             self.two_folder_diff_rows_sort = self.tree_sort;
+            self.two_folder_diff_rows_diff_filter = self.diff_filter;
         }
     }
 }
@@ -357,6 +364,7 @@ impl ZApp {
                     diff_tool_config: &app_ctx.diff_config,
                     path_filter: &mut app_ctx.path_filter,
                     tree_sort: &mut app_ctx.tree_sort,
+                    diff_filter: &mut app_ctx.diff_filter,
                     path_diff_view: &mut path_diff_view,
                     keyboard_taken,
                 };
@@ -600,6 +608,7 @@ impl eframe::App for ZApp {
 mod tests {
     use super::{AppState, AppStateCtx, ZApp};
     use crate::ui_egui::fs_tree::FileSystemView;
+    use crate::ui_egui::tree_filter::DiffFilter;
     use crate::ui_egui::tree_sort::{SortKey, TreeSort};
     use std::{fs, path::Path, sync::Arc};
     use tempfile::tempdir;
@@ -746,6 +755,65 @@ mod tests {
                 flat: false,
             }
         );
+    }
+
+    #[test]
+    fn diff_only_and_show_parents_survive_a_restart() {
+        let mut state = AppStateCtx::default();
+        state.diff_filter = DiffFilter {
+            diff_only: true,
+            show_parents: false,
+        };
+
+        let json = serde_json::to_string(&state).unwrap();
+        let restored: AppStateCtx = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(restored.diff_filter, state.diff_filter);
+    }
+
+    #[test]
+    fn a_state_saved_before_diff_only_existed_shows_every_row_with_parents() {
+        let mut json: serde_json::Value = serde_json::to_value(AppStateCtx::default()).unwrap();
+        json.as_object_mut().unwrap().remove("diff_filter").unwrap();
+
+        let restored: AppStateCtx = serde_json::from_value(json).unwrap();
+
+        assert_eq!(
+            restored.diff_filter,
+            DiffFilter {
+                diff_only: false,
+                show_parents: true,
+            }
+        );
+    }
+
+    #[test]
+    fn toggling_diff_only_and_show_parents_rebuilds_the_rows_on_the_next_update() {
+        let (left, right) = (tempdir().unwrap(), tempdir().unwrap());
+        for root in [left.path(), right.path()] {
+            fs::create_dir(root.join("z")).unwrap();
+            fs::write(root.join("a.txt"), "a").unwrap();
+        }
+        fs::write(left.path().join("z/b.txt"), "left b").unwrap();
+        fs::write(right.path().join("z/b.txt"), "right b").unwrap();
+        let mut state = AppStateCtx::default();
+        state.file_system_model_1_view = load_view(left.path());
+        state.file_system_model_2_view = load_view(right.path());
+
+        state.build_two_folder_diff_rows_if_stale();
+        assert_eq!(row_paths(&state), ["", "z", "z/b.txt", "a.txt"]);
+
+        state.diff_filter.diff_only = true;
+        state.build_two_folder_diff_rows_if_stale();
+        assert_eq!(row_paths(&state), ["", "z", "z/b.txt"]);
+
+        state.diff_filter.show_parents = false;
+        state.build_two_folder_diff_rows_if_stale();
+        assert_eq!(row_paths(&state), ["", "z/b.txt"]);
+
+        state.diff_filter.diff_only = false;
+        state.build_two_folder_diff_rows_if_stale();
+        assert_eq!(row_paths(&state), ["", "z", "z/b.txt", "a.txt"]);
     }
 
     #[test]

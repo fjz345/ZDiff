@@ -12,6 +12,7 @@ use crate::ui_egui::{
     fs_tree::{DiffState, FileSystemView, draw_ui_two_folder_tree_with_diff},
     panes::{PathDiffView, ZAppPane},
     tree_cursor::TreeCursor,
+    tree_filter::DiffFilter,
     tree_sort::TreeSort,
 };
 
@@ -22,6 +23,7 @@ pub struct PathDiffPaneCtx<'a, 'b> {
     pub diff_tool_config: &'a DiffToolConfig,
     pub path_filter: &'a mut PathFilter,
     pub tree_sort: &'a mut TreeSort,
+    pub diff_filter: &'a mut DiffFilter,
     /// A widget had keyboard focus when the frame started, so the tree's keys are not
     /// for the cursor.
     pub keyboard_taken: bool,
@@ -104,7 +106,7 @@ impl PathDiffPane {
             };
 
             // Folding doesn't show in flat mode.
-            let foldable = !ctx.tree_sort.flat;
+            let foldable = !ctx.diff_filter.is_flat(*ctx.tree_sort);
             if ui
                 .add_enabled(foldable, egui::Button::new(button_text))
                 .clicked()
@@ -157,6 +159,20 @@ impl PathDiffPane {
                 RichText::new("F").strong(),
                 "Flat: list all entries by depth, then by the sorted column",
             );
+            toggle_button(
+                ui,
+                &mut ctx.diff_filter.diff_only,
+                RichText::new("D").strong(),
+                "Diff only: hide entries that are the same on both sides",
+            );
+            ui.add_enabled_ui(ctx.diff_filter.diff_only, |ui| {
+                toggle_button(
+                    ui,
+                    &mut ctx.diff_filter.show_parents,
+                    RichText::new("P").strong(),
+                    "Show parent folders: off lists only the differing files (needs Diff only)",
+                );
+            });
         });
 
         ui.separator();
@@ -176,6 +192,7 @@ impl PathDiffPane {
                     &mut self.cursor,
                     ctx.tree_sort,
                     ctx.keyboard_taken,
+                    *ctx.diff_filter,
                 );
             });
 
