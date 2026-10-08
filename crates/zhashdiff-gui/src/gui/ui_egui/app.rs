@@ -132,6 +132,10 @@ impl ZApp {
         // if self.state.ctx().hash_service.is_none() {
         // self.state.ctx().hash_service = HashService::default();
         // }
+        self.state = self.state.take().map(|state| match state {
+            AppState::Idle(ctx) => AppState::Startup(ctx),
+            state => state,
+        });
     }
 
     pub fn new(log_buffer: LogBuffer) -> Self {
@@ -594,7 +598,7 @@ impl eframe::App for ZApp {
 
 #[cfg(test)]
 mod tests {
-    use super::{AppStateCtx, ZApp};
+    use super::{AppState, AppStateCtx, ZApp};
     use crate::ui_egui::fs_tree::FileSystemView;
     use crate::ui_egui::tree_sort::{SortKey, TreeSort};
     use std::{fs, path::Path, sync::Arc};
@@ -696,6 +700,14 @@ mod tests {
         json.as_object_mut().unwrap().remove("zoom").unwrap();
         let restored: ZApp = serde_json::from_value(json).unwrap();
         assert_eq!(restored.zoom, 1.0);
+    }
+
+    #[test]
+    fn a_restored_idle_app_runs_startup_again() {
+        let mut app = ZApp::new(LogBuffer::default());
+        app.state = Some(AppState::Idle(AppStateCtx::default()));
+        app.request_init();
+        assert!(matches!(app.state, Some(AppState::Startup(_))));
     }
 
     #[test]
