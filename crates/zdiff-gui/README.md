@@ -42,6 +42,58 @@ Budget: 1 ms per frame for the search, else the trigger would have become double
 
 A degenerate row such as 2000 times `a`, searched for `aa`, has a match at every character. Each row therefore highlights at most 128 matches (`MAX_OCCURRENCES_PER_ROW`). With the cap, 100 such rows cost 0.46 ms median and 0.64 ms worst; 200 rows cost 0.85 ms median and 1.1 ms worst. Without it, 100 rows cost 9 ms. Highlights past the cap in a row aren't drawn.
 
+## Use as a diff and merge tool
+zdiff-gui takes p4merge-style, git-style, GNU-style and Tortoise-style arguments (`zdiff-gui --help` lists them). Each launch opens its own window, and the process exits when you close it. The examples use `C:\Tools\zdiff-gui.exe`. Replace it with your path (for example `target\release\zdiff-gui.exe`).
+
+**Merge entries need the merge view.** Until the merge view exists, a merge launch opens left and right as a diff, never writes the output file, and exits 0. Tools that trust the exit code then treat the conflict as resolved. Skip the merge entries below until then, or set `trustExitCode = false` for git.
+
+### p4
+```
+p4 set P4DIFF=C:\Tools\zdiff-gui.exe
+p4 set P4MERGE=C:\Tools\zdiff-gui.exe
+```
+`p4 diff` passes two files (a diff). `p4 resolve` (`m`) passes `base theirs yours merged`. zdiff-gui reads four files as a merge. P4MERGE needs the merge view.
+
+### P4V
+Edit > Preferences.
+- Diff: Other application. Location `C:\Tools\zdiff-gui.exe`, Arguments:
+  ```
+  %1 %2
+  ```
+- Merge: Other application. Location `C:\Tools\zdiff-gui.exe`, Arguments:
+  ```
+  -nb Base -nl Theirs -nr Yours -nm Result %b %1 %2 %r
+  ```
+  P4V has no placeholders for file names, so the labels are fixed role names. Needs the merge view.
+
+### git
+In `~/.gitconfig` (inside the quotes, use forward slashes in the path):
+```
+[diff]
+    tool = zdiff
+[difftool "zdiff"]
+    cmd = \"C:/Tools/zdiff-gui.exe\" \"$LOCAL\" \"$REMOTE\"
+[merge]
+    tool = zdiff
+[mergetool "zdiff"]
+    cmd = \"C:/Tools/zdiff-gui.exe\" \"$BASE\" \"$LOCAL\" \"$REMOTE\" \"$MERGED\"
+    trustExitCode = true
+```
+`git difftool -d` passes folders, which zdiff-gui rejects (use zhashdiff-gui). The mergetool entry needs the merge view. Until then, use `trustExitCode = false`, or leave the entry out.
+
+### TortoiseSVN / TortoiseGit
+Settings > External Programs (TortoiseSVN) or Settings > Diff Viewer / Merge Tool (TortoiseGit), choose External.
+- Diff Viewer:
+  ```
+  C:\Tools\zdiff-gui.exe /base:%base /mine:%mine /basename:%bname /minename:%yname
+  ```
+  Base is shown on the left, mine on the right.
+- Merge Tool:
+  ```
+  C:\Tools\zdiff-gui.exe /base:%base /theirs:%theirs /mine:%mine /merged:%merged /basename:%bname /theirsname:%tname /minename:%yname /mergedname:%mname
+  ```
+  Theirs is shown on the left, mine on the right. Needs the merge view.
+
 ## Known bugs
 * lost_focus not called correctly on paths when holding down mouse: https://github.com/emilk/egui/issues/2142
 
