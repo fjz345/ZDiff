@@ -11,7 +11,9 @@ use serde::{Deserialize, Serialize};
 use zcommon::{hash::HashService, kinds::KindTable};
 use zhashdiff::{
     comparison::PathComparisonResult,
-    external_diff_tool::{DiffPair, DiffToolConfig, folder_labels, open_diff_tool},
+    external_diff_tool::{
+        DiffPair, DiffToolConfig, find_on_path, folder_labels, open_diff_tool, resolve_exe,
+    },
     filter::PathFilter,
     fs::{FileSystemModel, FsNode, FsNodeDepth, FsNodeId, TreeIter},
 };
@@ -1074,6 +1076,22 @@ fn on_row_item_clicked(
                 );
                 return false;
             };
+            let app_dir = std::env::current_exe()
+                .ok()
+                .and_then(|exe| exe.parent().map(Path::to_path_buf));
+            let exe = match resolve_exe(
+                &diff_tool.exe_path,
+                app_dir.as_deref(),
+                Some(Path::new(env!("ZDIFF_BIN_PATH"))),
+                Path::is_file,
+                find_on_path,
+            ) {
+                Ok(exe) => exe,
+                Err(err) => {
+                    log::error!("diffing failed: {err}");
+                    return false;
+                }
+            };
             let left = file_system_1_view
                 .unwrap()
                 .file_system
@@ -1094,6 +1112,7 @@ fn on_row_item_clicked(
                 .into_owned();
             let (left_name, right_name) = folder_labels(&entry.rel_path);
             let result = open_diff_tool(
+                &exe,
                 diff_tool,
                 &DiffPair {
                     left: &left,

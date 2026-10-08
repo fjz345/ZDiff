@@ -1,8 +1,9 @@
+use std::env;
 use std::fmt;
 use std::io;
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 use zcommon::kinds::{FileKind, KindTable, normalize_extension};
 
@@ -310,11 +311,84 @@ pub fn expand_template(template: &str, pair: &DiffPair) -> Result<String, Templa
     Ok(expanded)
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExeNotFound {
+    pub exe: PathBuf,
+    pub searched: Vec<String>,
+}
+
+impl fmt::Display for ExeNotFound {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{} not found, searched: {}",
+            self.exe.display(),
+            self.searched.join(", ")
+        )
+    }
+}
+
+impl std::error::Error for ExeNotFound {}
+
+pub fn resolve_exe(
+    exe: &Path,
+    app_dir: Option<&Path>,
+    build_time_zdiff: Option<&Path>,
+    is_file: impl Fn(&Path) -> bool,
+    on_path: impl Fn(&Path) -> Option<PathBuf>,
+) -> Result<PathBuf, ExeNotFound> {
+    let mut components = exe.components();
+    let is_bare = matches!(
+        (components.next(), components.next()),
+        (Some(Component::Normal(_)), None)
+    );
+    if !is_bare {
+        return Ok(exe.to_path_buf());
+    }
+
+    let is_zdiff = |build_path: &&Path| {
+        build_path
+            .file_name()
+            .is_some_and(|name| name.eq_ignore_ascii_case(exe))
+    };
+    let candidates = app_dir
+        .map(|dir| dir.join(exe))
+        .into_iter()
+        .chain(build_time_zdiff.filter(is_zdiff).map(Path::to_path_buf));
+    let mut searched = Vec::new();
+    for candidate in candidates {
+        if is_file(&candidate) {
+            return Ok(candidate);
+        }
+        searched.push(candidate.display().to_string());
+    }
+    if let Some(found) = on_path(exe) {
+        return Ok(found);
+    }
+    searched.push("PATH".to_string());
+    Err(ExeNotFound {
+        exe: exe.to_path_buf(),
+        searched,
+    })
+}
+
+/// Also tries `<name>.exe` on Windows, which `Command::new` would have found for an extensionless name.
+pub fn find_on_path(name: &Path) -> Option<PathBuf> {
+    let mut names = vec![name.to_path_buf()];
+    if cfg!(windows) && name.extension().is_none() {
+        names.push(name.with_extension("exe"));
+    }
+    let path = env::var_os("PATH")?;
+    env::split_paths(&path)
+        .flat_map(|dir| names.iter().map(move |name| dir.join(name)))
+        .find(|candidate| candidate.is_file())
+}
+
 #[cfg(target_os = "windows")]
-pub fn open_diff_tool_windows(tool: &DiffTool, pair: &DiffPair) -> io::Result<()> {
+pub fn open_diff_tool_windows(exe: &Path, tool: &DiffTool, pair: &DiffPair) -> io::Result<()> {
     let args = expand_template(&tool.template, pair)
         .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?;
-    let mut cmd = Command::new(&tool.exe_path);
+    let mut cmd = Command::new(exe);
     // !!! Important !!! use raw_arg.
     cmd.raw_arg(args);
 
@@ -324,9 +398,9 @@ pub fn open_diff_tool_windows(tool: &DiffTool, pair: &DiffPair) -> io::Result<()
     Ok(())
 }
 #[cfg(target_os = "macos")]
-pub fn open_diff_tool_macos(tool: &DiffTool, pair: &DiffPair) -> io::Result<()> {
+pub fn open_diff_tool_macos(exe: &Path, tool: &DiffTool, pair: &DiffPair) -> io::Result<()> {
     todo!();
-    let mut cmd = Command::new(&tool.exe_path);
+    let mut cmd = Command::new(exe);
 
     log::info!("Opening diff tool {:?}", cmd);
     cmd.spawn()?;
@@ -334,12 +408,12 @@ pub fn open_diff_tool_macos(tool: &DiffTool, pair: &DiffPair) -> io::Result<()> 
     Ok(())
 }
 
-pub fn open_diff_tool(tool: &DiffTool, pair: &DiffPair) -> io::Result<()> {
+pub fn open_diff_tool(exe: &Path, tool: &DiffTool, pair: &DiffPair) -> io::Result<()> {
     #[cfg(target_os = "windows")]
-    open_diff_tool_windows(tool, pair)?;
+    open_diff_tool_windows(exe, tool, pair)?;
 
     #[cfg(target_os = "macos")]
-    open_diff_tool_macos(tool, pair)?;
+    open_diff_tool_macos(exe, tool, pair)?;
 
     Ok(())
 }
@@ -590,6 +664,120 @@ mod tests {
             ..config(Vec::new())
         };
         assert_eq!(chosen(&config, &KindTable::default(), "a.txt"), None);
+    }
+
+    #[cfg(windows)]
+    mod exe_resolution {
+        use super::*;
+
+        const APP_DIR: &str = r"C:\apps\zhashdiff";
+        const BUILD_ZDIFF: &str = r"E:\repo\target\debug\zdiff-gui.exe";
+        const ON_PATH_DIR: &str = r"C:\tools";
+
+        fn resolve(exe: &str, files: &[&str], path_files: &[&str]) -> Result<PathBuf, ExeNotFound> {
+            resolve_exe(
+                Path::new(exe),
+                Some(Path::new(APP_DIR)),
+                Some(Path::new(BUILD_ZDIFF)),
+                |path| files.iter().any(|file| Path::new(file) == path),
+                |name| {
+                    path_files
+                        .iter()
+                        .any(|file| Path::new(file) == name)
+                        .then(|| Path::new(ON_PATH_DIR).join(name))
+                },
+            )
+        }
+
+        #[test]
+        fn bare_name_resolves_next_to_the_app_first() {
+            let next_to_app = r"C:\apps\zhashdiff\zdiff-gui.exe";
+            assert_eq!(
+                resolve(
+                    "zdiff-gui.exe",
+                    &[next_to_app, BUILD_ZDIFF],
+                    &["zdiff-gui.exe"]
+                ),
+                Ok(PathBuf::from(next_to_app))
+            );
+        }
+
+        #[test]
+        fn bare_zdiff_name_resolves_at_the_build_time_path() {
+            assert_eq!(
+                resolve("ZDiff-GUI.exe", &[BUILD_ZDIFF], &["ZDiff-GUI.exe"]),
+                Ok(PathBuf::from(BUILD_ZDIFF))
+            );
+        }
+
+        #[test]
+        fn bare_name_resolves_on_path_last() {
+            assert_eq!(
+                resolve("zdiff-gui.exe", &[], &["zdiff-gui.exe"]),
+                Ok(PathBuf::from(r"C:\tools\zdiff-gui.exe"))
+            );
+        }
+
+        #[test]
+        fn other_bare_names_skip_the_build_time_path() {
+            let resolve_other = |path_files: &[&str]| {
+                resolve_exe(
+                    Path::new("TortoiseProc.exe"),
+                    Some(Path::new(APP_DIR)),
+                    Some(Path::new(BUILD_ZDIFF)),
+                    |_| false,
+                    |name| {
+                        path_files
+                            .contains(&name.to_str().unwrap())
+                            .then(|| Path::new(ON_PATH_DIR).join(name))
+                    },
+                )
+            };
+            assert_eq!(
+                resolve_other(&["TortoiseProc.exe"]),
+                Ok(PathBuf::from(r"C:\tools\TortoiseProc.exe"))
+            );
+            assert_eq!(
+                resolve_other(&[]),
+                Err(ExeNotFound {
+                    exe: PathBuf::from("TortoiseProc.exe"),
+                    searched: vec![
+                        r"C:\apps\zhashdiff\TortoiseProc.exe".to_string(),
+                        "PATH".to_string(),
+                    ],
+                })
+            );
+        }
+
+        #[test]
+        fn path_with_folders_is_used_verbatim() {
+            for exe in [
+                r"C:\Program Files\TortoiseSVN\bin\TortoiseProc.exe",
+                r"bin\zdiff-gui.exe",
+            ] {
+                assert_eq!(resolve(exe, &[], &[]), Ok(PathBuf::from(exe)));
+            }
+        }
+
+        #[test]
+        fn nothing_found_lists_the_places_searched() {
+            let err = resolve("zdiff-gui.exe", &[], &[]).unwrap_err();
+            assert_eq!(
+                err.searched,
+                [r"C:\apps\zhashdiff\zdiff-gui.exe", BUILD_ZDIFF, "PATH"]
+            );
+            assert_eq!(
+                err.to_string(),
+                r"zdiff-gui.exe not found, searched: C:\apps\zhashdiff\zdiff-gui.exe, E:\repo\target\debug\zdiff-gui.exe, PATH"
+            );
+        }
+
+        #[test]
+        fn missing_app_dir_and_build_path_go_straight_to_path() {
+            let err = resolve_exe(Path::new("zdiff-gui.exe"), None, None, |_| true, |_| None)
+                .unwrap_err();
+            assert_eq!(err.searched, ["PATH"]);
+        }
     }
 
     #[cfg(feature = "serde")]
