@@ -9,7 +9,7 @@ use zcommon::ui_egui::common::show_custom_popup;
 use zdiff::{
     diff_builder::{DiffBuilderOptions, PivotLines},
     lexer::{LEXER_MODE_DEFAULT, LEXER_MODE_GREEDY, LEXER_MODE_NEWLINE, LEXER_MODE_TOKENIZE},
-    myers::MyersDiffAlgorithm,
+    myers::{DiffPhases, MyersDiffAlgorithm},
     universal_path::UniversalPath,
 };
 
@@ -19,6 +19,7 @@ use egui_tiles::Tile;
 use crate::{
     cli::{self, LaunchRequest},
     diff_ctx::{DiffProcessor, FindCtx, UpdateDiffRowsInput},
+    diff_phases::diff_phases_menu,
     file::{FileProcessor, LoadedFile},
     keybindings::{Keybindings, QuickDiffPaths, Shortcut, ui_keybindings},
     p4::{
@@ -418,6 +419,7 @@ impl<'a> ZApp {
         p4_profiles: &mut P4Profiles,
         extension_map: &mut ExtensionMap,
         myers_diff_algorithm: &mut MyersDiffAlgorithm,
+        diff_phases: &mut DiffPhases,
         code_language: &mut String,
         code_language_custom: &mut String,
     ) {
@@ -503,6 +505,7 @@ impl<'a> ZApp {
                                 "LinearMT",
                             );
                         });
+                        diff_phases_menu(ui, diff_phases);
                         ui.menu_button("Lexer", |ui| {
                             ui.radio_value(lexer_mode, LEXER_MODE_GREEDY, "LexerGreedy");
                             ui.radio_value(lexer_mode, LEXER_MODE_TOKENIZE, "LexerTokenize");
@@ -800,6 +803,7 @@ impl<'a> ZApp {
                 p4_profiles,
                 extension_map,
                 myers_diff_algorithm,
+                &mut diff_options.phases,
                 code_language,
                 code_language_custom,
             );
@@ -1728,6 +1732,35 @@ mod tests {
         json.as_object_mut().unwrap().remove("zoom").unwrap();
         let restored: ZApp = serde_json::from_value(json).unwrap();
         assert_eq!(restored.zoom, 1.0);
+    }
+
+    #[test]
+    fn diff_phases_survive_a_restart() {
+        let mut ctx = AppStateCtx::default();
+        ctx.diff_options.phases = DiffPhases {
+            scope: true,
+            line: false,
+            token: true,
+            character: true,
+        };
+        let json = serde_json::to_string(&ctx).unwrap();
+        let restored: AppStateCtx = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.diff_options.phases, ctx.diff_options.phases);
+    }
+
+    #[test]
+    fn a_save_without_diff_phases_loads_the_defaults() {
+        let mut ctx = AppStateCtx::default();
+        ctx.diff_options.ignore.whitespace = true;
+        let mut json = serde_json::to_value(&ctx).unwrap();
+        json["diff_options"]
+            .as_object_mut()
+            .unwrap()
+            .remove("phases")
+            .unwrap();
+        let restored: AppStateCtx = serde_json::from_value(json).unwrap();
+        assert_eq!(restored.diff_options.phases, DiffPhases::default());
+        assert!(restored.diff_options.ignore.whitespace);
     }
 
     #[test]

@@ -7,6 +7,7 @@ use crate::{
     diff_ir::{DiffIR, DiffOp, DiffResult, diff_ir_hide_ignored},
     ignore::{IgnoreMask, IgnoreOptions},
     lexer::{RawTokenTrait, TokenKind},
+    myers::DiffPhases,
 };
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -61,6 +62,8 @@ pub struct DiffBuilderOptions {
     pub ghost_rows: bool,
     pub pivot_lines: Option<PivotLines>,
     pub diff_only_with_extra_rows: Option<usize>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub phases: DiffPhases,
 }
 impl Default for DiffBuilderOptions {
     fn default() -> Self {
@@ -70,6 +73,7 @@ impl Default for DiffBuilderOptions {
             ghost_rows: true,
             pivot_lines: None,
             diff_only_with_extra_rows: None,
+            phases: DiffPhases::default(),
         }
     }
 }

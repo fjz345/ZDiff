@@ -13,13 +13,14 @@ use std::{
 use zdiff::universal_path::UniversalPath;
 use zdiff::{
     cached_file::CachedFile,
+    char_diff::{CharRanges, character_diff},
     diff_builder::{DiffBuilderOptions, DiffRow, LineContent, PivotLines, build_diff_rows},
     diff_ir::{DiffIR, DiffOp},
     ignore::IgnoreOptions,
     lexer::RawToken,
     myers::{
-        MyersDiffAlgorithm, MyersNumAddDelete, MyersPath, line_diff, myers_count_add_deletes,
-        token_diff,
+        DiffPhases, MyersDiffAlgorithm, MyersNumAddDelete, MyersPath, line_diff,
+        myers_count_add_deletes, myers_diff_path, token_diff,
     },
     row_text::build_row_text,
 };
@@ -208,6 +209,7 @@ pub struct MyersCtxInput {
     pub algo: MyersDiffAlgorithm,
     /// Ignore options decide line equality, so changing them recomputes this stage.
     pub ignore: IgnoreOptions,
+    pub phases: DiffPhases,
 }
 impl From<UpdateDiffRowsInput> for MyersCtxInput {
     fn from(input: UpdateDiffRowsInput) -> Self {
@@ -216,6 +218,7 @@ impl From<UpdateDiffRowsInput> for MyersCtxInput {
             file_2: input.file_2,
             algo: input.myers_diff_algorithm,
             ignore: input.options.ignore,
+            phases: input.options.phases,
         }
     }
 }
@@ -227,12 +230,14 @@ impl From<&UpdateDiffRowsInput> for MyersCtxInput {
             file_2: input.file_2.clone(),
             algo: input.myers_diff_algorithm,
             ignore: input.options.ignore.clone(),
+            phases: input.options.phases,
         }
     }
 }
 #[derive(Debug, Clone, PartialEq)]
 pub struct DiffIRInput {
     pub myers_path: MyersPath,
+    pub char_ranges: Arc<CharRanges>,
 }
 #[derive(Debug, Clone, PartialEq)]
 pub struct DiffRowsInput {
@@ -247,6 +252,7 @@ pub struct MyersCtx {
 
     num_add_delete: MyersNumAddDelete,
     path: MyersPath,
+    char_ranges: Arc<CharRanges>,
     line_elapsed: Duration,
     token_elapsed: Duration,
 }
@@ -543,30 +549,68 @@ impl DiffCtx {
                     let (c1, c2, _) = resolve_files(&input.file_1, &input.file_2);
                     let cmp = |a: &RawToken, b: &RawToken| compare_tokens(a, b, c1, c2);
 
-                    // myers_diff_path's two phases, timed separately.
                     let (t1, t2) = (&c1.tokens, &c2.tokens);
                     let ignore = input.ignore.mask(t1, &c1.contents, t2, &c2.contents);
-                    let result = line_diff(input.algo, t1, t2, &cmp, &ignore, cancel.clone())
-                        .and_then(|hunks| {
-                            let line_elapsed = start.elapsed();
+                    let phases = input.phases;
+                    // The default phases run as the driver does, but timed separately.
+                    let result = if phases.line && phases.token && !phases.scope {
+                        line_diff(input.algo, t1, t2, &cmp, &ignore, cancel.clone()).and_then(
+                            |hunks| {
+                                let line_elapsed = start.elapsed();
+                                let start = Instant::now();
+                                let path = token_diff(
+                                    input.algo,
+                                    t1,
+                                    t2,
+                                    &hunks,
+                                    &cmp,
+                                    &ignore,
+                                    cancel.clone(),
+                                )?;
+                                Some((path, line_elapsed, start.elapsed()))
+                            },
+                        )
+                    } else {
+                        myers_diff_path(
+                            input.algo,
+                            t1,
+                            t2,
+                            &cmp,
+                            &ignore,
+                            phases,
+                            &[],
+                            cancel.clone(),
+                        )
+                        .map(|path| match phases.token {
+                            true => (path, Duration::ZERO, start.elapsed()),
+                            false => (path, start.elapsed(), Duration::ZERO),
+                        })
+                    };
+                    let result = result.and_then(|(path, line_elapsed, mut token_elapsed)| {
+                        let mut char_ranges = CharRanges::default();
+                        if phases.character {
                             let start = Instant::now();
-                            let path = token_diff(
+                            char_ranges = character_diff(
                                 input.algo,
+                                &path,
                                 t1,
                                 t2,
-                                &hunks,
-                                &cmp,
+                                &c1.contents,
+                                &c2.contents,
                                 &ignore,
                                 cancel.clone(),
                             )?;
-                            Some((path, line_elapsed, start.elapsed()))
-                        });
-                    if let Some((path, line_elapsed, token_elapsed)) = result {
+                            token_elapsed += start.elapsed();
+                        }
+                        Some((path, char_ranges, line_elapsed, token_elapsed))
+                    });
+                    if let Some((path, char_ranges, line_elapsed, token_elapsed)) = result {
                         let num_add_delete = myers_count_add_deletes(&path);
                         let _ = tx.send(Some(MyersCtx {
                             input,
                             num_add_delete,
                             path,
+                            char_ranges: Arc::new(char_ranges),
                             line_elapsed,
                             token_elapsed,
                         }));
@@ -583,6 +627,7 @@ impl DiffCtx {
         let myers_ctx = self.request_myers(cancel_flag.clone())?;
         let expected_input = DiffIRInput {
             myers_path: myers_ctx.path.clone(),
+            char_ranges: myers_ctx.char_ranges.clone(),
         };
 
         poll_ctx_channel!(
@@ -612,7 +657,9 @@ impl DiffCtx {
                 .spawn(move || {
                     let start = Instant::now();
                     let cancel_ref = cancel.clone();
-                    if let Some(diff_ir) = DiffIR::new(&input.myers_path, is_equal_left, cancel) {
+                    if let Some(mut diff_ir) = DiffIR::new(&input.myers_path, is_equal_left, cancel)
+                    {
+                        diff_ir.char_ranges = (*input.char_ranges).clone();
                         let _ = tx.send(Some(DiffIRCtx {
                             input,
                             diff_ir: Arc::new(diff_ir),
@@ -1951,6 +1998,95 @@ mod tests {
             );
             let ctx = settle(&mut processor).expect("pattern edit never completed");
             assert!(ctx.input == current, "diff shows {:?}", ctx.input);
+        }
+
+        mod phases {
+            use zdiff::myers::DiffPhases;
+
+            use super::*;
+
+            fn changed_chars(ctx: &MinimalDiffCtx) -> Vec<Range<usize>> {
+                ctx.diff_rows
+                    .iter()
+                    .flat_map(|row| [&row.left, &row.right])
+                    .flat_map(|side| match side {
+                        LineContent::Code { changed_chars, .. } => changed_chars.clone(),
+                        _ => Vec::new(),
+                    })
+                    .collect()
+            }
+
+            fn digit_pair(dir: &Path) -> UpdateDiffRowsInput {
+                let write = |name: &str, contents: &str| {
+                    let path = dir.join(name);
+                    std::fs::write(&path, contents).unwrap();
+                    load(&UniversalPath::from(path))
+                };
+                input(
+                    &write("left.rs", "let a = foo123;\n"),
+                    &write("right.rs", "let a = foo124;\n"),
+                )
+            }
+
+            #[test]
+            fn toggling_a_phase_recomputes_only_from_the_diff_stage() {
+                let dir = tempfile::tempdir().unwrap();
+                let a = (
+                    load(&write_source(&dir.path().join("a1.rs"), 300, 1)),
+                    load(&write_source(&dir.path().join("a2.rs"), 300, 2)),
+                );
+                let mut processor = DiffProcessor::default();
+                let mut current = input(&a.0, &a.1);
+                open(&mut processor, &current);
+                let line_and_token = settle(&mut processor).expect("first diff never completed");
+
+                current.options.phases.token = false;
+                open(&mut processor, &current);
+                assert!(
+                    processor.ctx.myers_inflight_input.is_some(),
+                    "a phase change must recompute the diff stage"
+                );
+                let line_only = settle(&mut processor).expect("phase toggle never completed");
+                assert!(
+                    line_only.input == current,
+                    "diff shows {:?}",
+                    line_only.input
+                );
+                assert_ne!(line_only.num_add_deletes, line_and_token.num_add_deletes);
+
+                current.options.phases = DiffPhases {
+                    line: false,
+                    ..DiffPhases::default()
+                };
+                open(&mut processor, &current);
+                let token_only = settle(&mut processor).expect("phase toggle never completed");
+                assert!(
+                    token_only.input == current,
+                    "diff shows {:?}",
+                    token_only.input
+                );
+                assert_ne!(token_only.num_add_deletes, line_only.num_add_deletes);
+            }
+
+            #[test]
+            fn the_character_phase_marks_changed_chars_in_the_rows_only_while_on() {
+                let dir = tempfile::tempdir().unwrap();
+                let mut current = digit_pair(dir.path());
+                let mut processor = DiffProcessor::default();
+                open(&mut processor, &current);
+                let off = settle(&mut processor).expect("diff never completed");
+                assert_eq!(changed_chars(&off), Vec::<Range<usize>>::new());
+
+                current.options.phases.character = true;
+                open(&mut processor, &current);
+                let on = settle(&mut processor).expect("character toggle never completed");
+                assert_eq!(changed_chars(&on), vec![13..14, 13..14]);
+
+                current.options.phases.character = false;
+                open(&mut processor, &current);
+                let off_again = settle(&mut processor).expect("character toggle never completed");
+                assert_eq!(changed_chars(&off_again), Vec::<Range<usize>>::new());
+            }
         }
 
         mod expansion {

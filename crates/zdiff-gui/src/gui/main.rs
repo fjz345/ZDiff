@@ -6,6 +6,7 @@ mod app;
 mod cli;
 mod clamped_cursor;
 mod diff_ctx;
+mod diff_phases;
 mod file;
 mod keybindings;
 mod p4;
