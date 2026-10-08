@@ -1,3 +1,4 @@
+pub mod ffmpeg;
 pub mod hash;
 pub mod logger;
 #[cfg(feature = "gui")]
