@@ -125,6 +125,8 @@ impl CopyHarness {
             MyersDiffAlgorithm::Linear,
             &file_source.tokens,
             &file_target.tokens,
+            source,
+            target,
             cmp,
             &options
                 .ignore

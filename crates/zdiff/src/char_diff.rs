@@ -170,6 +170,8 @@ mod tests {
             MyersDiffAlgorithm::Linear,
             t1,
             t2,
+            s1,
+            s2,
             cmp,
             mask,
             phases,

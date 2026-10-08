@@ -9,6 +9,7 @@ use std::{
 use crate::{
     ignore::IgnoreMask,
     lexer::{RawTokenTrait, TokenKind},
+    scope::scope_path,
 };
 
 pub type MyersPath = Vec<(i32, i32)>;
@@ -125,6 +126,8 @@ pub fn myers_diff_path<T, F>(
     algorithm: MyersDiffAlgorithm,
     source: &[T],
     target: &[T],
+    source_text: &str,
+    target_text: &str,
     cmp: F,
     ignore: &IgnoreMask,
     phases: DiffPhases,
@@ -144,6 +147,8 @@ where
             algorithm,
             source,
             target,
+            source_text,
+            target_text,
             &cmp,
             ignore,
             phases,
@@ -173,6 +178,8 @@ where
             algorithm,
             &source[s.clone()],
             &target[t.clone()],
+            source_text,
+            target_text,
             &cmp,
             &slice_mask(ignore, s, t),
             phases,
@@ -189,7 +196,11 @@ where
     Some(path)
 }
 
-fn slice_mask(ignore: &IgnoreMask, source: Range<usize>, target: Range<usize>) -> IgnoreMask {
+pub(crate) fn slice_mask(
+    ignore: &IgnoreMask,
+    source: Range<usize>,
+    target: Range<usize>,
+) -> IgnoreMask {
     if ignore.is_empty() {
         return IgnoreMask::default();
     }
@@ -201,10 +212,12 @@ fn slice_mask(ignore: &IgnoreMask, source: Range<usize>, target: Range<usize>) -
 }
 
 /// The enabled phases over one stretch. `pinned`: the stretch is one pinned line pair.
-fn phases_path<T, F>(
+pub(crate) fn phases_path<T, F>(
     algorithm: MyersDiffAlgorithm,
     source: &[T],
     target: &[T],
+    source_text: &str,
+    target_text: &str,
     cmp: &F,
     ignore: &IgnoreMask,
     phases: DiffPhases,
@@ -215,6 +228,19 @@ where
     T: RawTokenTrait,
     F: Fn(&T, &T) -> bool + Sync,
 {
+    if phases.scope && !pinned {
+        return scope_path(
+            algorithm,
+            source,
+            target,
+            source_text,
+            target_text,
+            cmp,
+            ignore,
+            phases,
+            cancel_flag,
+        );
+    }
     let hunks = if phases.line {
         line_diff(algorithm, source, target, cmp, ignore, cancel_flag.clone())?
     } else {
@@ -521,7 +547,7 @@ fn push_equal_run(path: &mut MyersPath, from: (usize, usize), to: (usize, usize)
 
 /// Each line's token range, including its line break token. A last line without a line break
 /// is included; an empty file has no lines.
-fn split_lines<T: RawTokenTrait>(tokens: &[T]) -> Vec<Range<usize>> {
+pub(crate) fn split_lines<T: RawTokenTrait>(tokens: &[T]) -> Vec<Range<usize>> {
     let mut lines = Vec::new();
     let mut start = 0;
     for (i, token) in tokens.iter().enumerate() {
@@ -1893,6 +1919,8 @@ mod tests {
                 algorithm,
                 &ts,
                 &tt,
+                source,
+                target,
                 cmp,
                 &ignore.mask(&ts, source, &tt, target),
                 phases,
@@ -2217,6 +2245,8 @@ mod tests {
                     algorithm,
                     &ts,
                     &tt,
+                    source,
+                    target,
                     cmp,
                     &IgnoreMask::default(),
                     phases,
@@ -2897,6 +2927,8 @@ mod tests {
                     algorithm,
                     &t1,
                     &t2,
+                    s1,
+                    s2,
                     cmp,
                     &ignore.mask(&t1, s1, &t2, s2),
                     phases,
@@ -3101,6 +3133,8 @@ mod tests {
                                 algorithm,
                                 &t1,
                                 &t2,
+                                &s1,
+                                &s2,
                                 cmp,
                                 &IgnoreMask::default(),
                                 phases,

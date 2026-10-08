@@ -10,6 +10,7 @@ pub mod lexer;
 pub mod myers;
 pub mod pixel;
 pub mod row_text;
+pub mod scope;
 #[cfg(test)]
 pub mod test_harness;
 pub mod universal_path;
