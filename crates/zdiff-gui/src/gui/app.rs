@@ -258,8 +258,11 @@ impl<'a> ZApp {
     fn startup(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         let visuals: egui::Visuals = egui::Visuals::dark();
         ctx.set_visuals(visuals);
-        log::info!("pixels_per_point{:?}", ctx.pixels_per_point());
-        log::info!("native_pixels_per_point{:?}", ctx.native_pixels_per_point());
+        log::debug!("pixels_per_point {}", ctx.pixels_per_point());
+        log::debug!(
+            "native_pixels_per_point {:?}",
+            ctx.native_pixels_per_point()
+        );
         ctx.set_pixels_per_point(self.scale_factor); // Maybe mult native_pixels_per_point?
         // ctx.set_debug_on_hover(true);
 
@@ -944,24 +947,28 @@ impl<'a> ZApp {
             let clone_pivot = behavior.ctx_file_diff.pivot.clone();
 
             if let Some(file_path) = behavior.ctx_file_diff.set_file_1_root_request.take() {
-                log::debug!("Set new root from root_request_1: {:?}", file_path);
+                log::debug!("Set new root from root_request_1: {}", file_path);
                 app_ctx.file_1.set_root(file_path);
             }
             if let Some(file_path) = behavior.ctx_file_diff.set_file_2_root_request.take() {
-                log::debug!("Set new root from root_request_2: {:?}", file_path);
+                log::debug!("Set new root from root_request_2: {}", file_path);
                 app_ctx.file_2.set_root(file_path);
             }
 
             if let Some(file_path) = behavior.ctx_file_diff.load_file_1_request.take() {
-                log::debug!("Set new path from file_1_request: {:?}", file_path);
+                log::debug!("Set new path from file_1_request: {}", file_path);
                 app_ctx.file_1.set_path(file_path);
             }
             if let Some(file_path) = behavior.ctx_file_diff.load_file_2_request.take() {
-                log::debug!("Set new path from file_1_request: {:?}", file_path);
+                log::debug!("Set new path from file_2_request: {}", file_path);
                 app_ctx.file_2.set_path(file_path);
             }
             if let Some(revert_request) = *behavior.ctx_file_diff.revert_request {
-                log::debug!("new revert request: {:?}", revert_request);
+                log::debug!(
+                    "new revert request: hunk {} into {:?}",
+                    revert_request.hunk,
+                    revert_request.target
+                );
                 // Plan against the files the shown rows were built from, not the latest loads.
                 let planned = behavior
                     .ctx_file_diff
@@ -1003,7 +1010,12 @@ impl<'a> ZApp {
                         }
                     }
                     Err(refusal) => {
-                        log::error!("Revert refused: {} {:?}", refusal, revert_request);
+                        log::error!(
+                            "Revert refused: {} (hunk {} into {:?})",
+                            refusal,
+                            revert_request.hunk,
+                            revert_request.target
+                        );
                     }
                 }
             }
@@ -1285,7 +1297,7 @@ impl<'a> ZApp {
                             &std::env::temp_dir(),
                         ) {
                             log::warn!(
-                                "User Quick Diff Shortcut [{}] disabled: {}:\n{:?}\n{:?}",
+                                "User Quick Diff Shortcut [{}] disabled: {}:\n{}\n{}",
                                 i + 1,
                                 refusal,
                                 app_state_ctx.file_1.get_full_path(),
@@ -1296,13 +1308,13 @@ impl<'a> ZApp {
                             set_p4_slot_profile(path.p4_profile);
                             if path.source.is_some() {
                                 log::info!(
-                                    "User Quick Diff Shortcut set paths:\nSource: {:?}\nTarget: {:?}",
+                                    "User Quick Diff Shortcut set paths:\nSource: {}\nTarget: {}",
                                     app_state_ctx.file_1.get_full_path(),
                                     app_state_ctx.file_2.get_full_path()
                                 );
                             } else {
                                 log::info!(
-                                    "User Quick Diff Shortcut set paths:\nTarget: {:?}",
+                                    "User Quick Diff Shortcut set paths:\nTarget: {}",
                                     app_state_ctx.file_2.get_full_path()
                                 );
                             }
@@ -1349,12 +1361,11 @@ impl<'a> ZApp {
 
 impl eframe::App for ZApp {
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
-        log::debug!("SAVING...");
         #[cfg(feature = "serde")]
         if let Ok(json) = serde_json::to_string(self) {
             storage.set_string(eframe::APP_KEY, json);
+            log::debug!("App state saved");
         }
-        log::debug!("SAVED!");
     }
 
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {

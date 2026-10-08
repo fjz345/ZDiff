@@ -208,11 +208,7 @@ impl FileProcessor {
 
     pub fn set_lexer_mode(&mut self, mode: u8) {
         if self.diff_lexer_mode != mode {
-            log::debug!(
-                "Setting lexer mode {:?} for path: {:?}",
-                mode,
-                self.file_path
-            );
+            log::debug!("Setting lexer mode {} for path: {}", mode, self.file_path);
             self.diff_lexer_mode = mode;
             self.invalidate_cache_file();
         }
@@ -242,7 +238,13 @@ impl FileProcessor {
 
     pub fn set_path(&mut self, path: UniversalPath) {
         let old_path = self.file_path.clone();
-        log::debug!("{:?}", self.root_path);
+        log::debug!(
+            "set_path {} (root: {})",
+            path,
+            self.root_path
+                .as_ref()
+                .map_or("none".to_string(), |root| root.to_string())
+        );
 
         if let Some(root) = &self.root_path {
             if Self::is_root_valid(&root, &path) {
@@ -331,7 +333,7 @@ impl FileProcessor {
     }
 
     pub fn invalidate_cache_file(&mut self) {
-        log::debug!("Invalidating cache file for path: {:?}", self.file_path);
+        log::debug!("Invalidating cache file for path: {}", self.file_path);
         self.loaded_file = None;
         self.cached_file_path = None;
     }
@@ -361,7 +363,7 @@ impl FileProcessor {
             self.loading_path = Some(path.clone());
 
             log::debug!(
-                "Loading file asynchronously: {:?} with lexer mode {:?}",
+                "Loading file asynchronously: {} with lexer mode {}",
                 path,
                 self.diff_lexer_mode
             );

@@ -90,7 +90,11 @@ impl FindCtx {
             hits,
         };
         find_ctx.map_to_rows(&diff_ctx.precomputed_file_rows);
-        log::debug!("create_find_ctx: {:?}", find_ctx);
+        log::debug!(
+            "create_find_ctx: {} hits for {:?}",
+            find_ctx.hits.len(),
+            find_ctx.needle
+        );
         find_ctx
     }
 
@@ -442,7 +446,7 @@ impl DiffCtx {
 
     pub fn set_input(&mut self, input: UpdateDiffRowsInput) {
         log::info!(
-            "Diff Ctx recieved new input:\nSource: {:?}\nTarget: {:?}\nOptions: {:?}",
+            "Diff Ctx recieved new input:\nSource: {}\nTarget: {}",
             &input
                 .file_1
                 .as_ref()
@@ -453,7 +457,6 @@ impl DiffCtx {
                 .as_ref()
                 .map(|f| f.path.to_string())
                 .unwrap_or("None".to_string()),
-            &input.options
         );
         self.update_diff_rows_input = input;
     }
@@ -839,7 +842,7 @@ impl DiffProcessor {
         self.in_progress_input = Some(input.clone());
         log::trace!(
             "Diff Processor new in_progress_input: {:?}",
-            &self.in_progress_input
+            input.myers_diff_algorithm
         );
         self.ctx.set_input(input);
     }

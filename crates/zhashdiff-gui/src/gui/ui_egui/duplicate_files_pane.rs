@@ -161,7 +161,10 @@ fn set_keeper(
         .get(hash)
         .is_some_and(|paths| paths.iter().any(|path| path == keeper));
     if !is_member {
-        log::error!("Not keeping {keeper:?}: it is not a file of conflict {hash}");
+        log::error!(
+            "Not keeping {}: it is not a file of conflict {hash}",
+            keeper.display()
+        );
         return;
     }
     keepers.insert(hash.to_string(), keeper.to_path_buf());

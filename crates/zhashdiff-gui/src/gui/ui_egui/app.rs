@@ -157,8 +157,11 @@ impl ZApp {
         let visuals: egui::Visuals = egui::Visuals::dark();
         ctx.set_visuals(visuals);
         ctx.set_theme(egui::Theme::Dark);
-        log::info!("pixels_per_point{:?}", ctx.pixels_per_point());
-        log::info!("native_pixels_per_point{:?}", ctx.native_pixels_per_point());
+        log::debug!("pixels_per_point {}", ctx.pixels_per_point());
+        log::debug!(
+            "native_pixels_per_point {:?}",
+            ctx.native_pixels_per_point()
+        );
         ctx.set_pixels_per_point(self.scale_factor); // Maybe mult native_pixels_per_point?
         // ctx.set_debug_on_hover(true);
 
@@ -479,14 +482,11 @@ impl ZApp {
 
 impl eframe::App for ZApp {
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
-        log::info!("SAVING...");
-
         #[cfg(feature = "serde")]
         if let Ok(json) = serde_json::to_string(self) {
-            log::debug!("SAVED with state: {:?}", self.state);
             storage.set_string(eframe::APP_KEY, json);
+            log::debug!("App state saved");
         }
-        log::info!("SAVED!");
     }
 
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
@@ -580,7 +580,7 @@ impl eframe::App for ZApp {
             }
             AppState::Exit() => {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                log::info!("send_viewport_cmd sent");
+                log::trace!("send_viewport_cmd sent");
 
                 egui::CentralPanel::default().show(ctx, |ui| {
                     ui.centered_and_justified(|ui| {

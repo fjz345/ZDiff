@@ -1832,11 +1832,11 @@ fn handle_drops(
                 if let Some(path) = &dropped_file.path {
                     if rect1.contains(drop_pos) {
                         *load_file_1_request = Some(UniversalPath::from(path.clone()));
-                        log::info!("File dropped on left pane: {:?}", path);
+                        log::info!("File dropped on left pane: {}", path.display());
                         return true;
                     } else if rect2.contains(drop_pos) {
                         *load_file_2_request = Some(UniversalPath::from(path.clone()));
-                        log::info!("File dropped on right pane: {:?}", path);
+                        log::info!("File dropped on right pane: {}", path.display());
                         return true;
                     }
                     break;
