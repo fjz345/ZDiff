@@ -3,6 +3,7 @@ use std::ops::Range;
 use rayon::prelude::*;
 
 use crate::{
+    char_diff::{CharRanges, ranges_in_span},
     diff_ir::{DiffIR, DiffOp, DiffResult, diff_ir_hide_ignored},
     ignore::{IgnoreMask, IgnoreOptions},
     lexer::{RawTokenTrait, TokenKind},
@@ -37,6 +38,8 @@ pub enum LineContent {
         tokens: Vec<(DiffResult, Color32, IsGhost)>,
         line_num: i32,
         bg: Color32,
+        /// Changed characters of the side's Delete/Insert tokens, as byte ranges into its file.
+        changed_chars: Vec<Range<usize>>,
     },
     Void,
     Collapsed,
@@ -113,6 +116,7 @@ impl Default for DiffTheme {
 
 struct SideState {
     buf: Vec<(DiffResult, Color32, IsGhost)>,
+    changed_chars: Vec<Range<usize>>,
     line_num: i32,
     active_diff: bool,
 }
@@ -121,6 +125,7 @@ impl SideState {
     fn with_capacity(capacity: usize) -> Self {
         Self {
             buf: Vec::with_capacity(capacity),
+            changed_chars: Vec::new(),
             line_num: 1,
             active_diff: false,
         }
@@ -143,6 +148,7 @@ impl SideState {
                 tokens,
                 line_num,
                 bg: bg_color,
+                changed_chars: std::mem::take(&mut self.changed_chars),
             }
         }
     }
@@ -156,6 +162,7 @@ pub struct DiffBuilder<'a, 'b, T: RawTokenTrait> {
     rows: Vec<DiffRow>,
     /// Per token of (source, target), true when an ignore pattern matched it. Empty: none.
     dimmed: (&'a [bool], &'a [bool]),
+    char_ranges: (&'a [Range<usize>], &'a [Range<usize>]),
     left: SideState,
     right: SideState,
 }
@@ -174,6 +181,7 @@ impl<'a, 'b, T: RawTokenTrait> DiffBuilder<'a, 'b, T> {
             theme: DiffTheme::default(),
             rows: Vec::with_capacity(capacity),
             dimmed: (&[], &[]),
+            char_ranges: (&[], &[]),
             left: SideState::with_capacity(64),
             right: SideState::with_capacity(64),
         }
@@ -246,16 +254,18 @@ impl<'a, 'b, T: RawTokenTrait> DiffBuilder<'a, 'b, T> {
             self.dim(self.dimmed.1, diff_result.token_target_idx, self.theme.ins)
         };
 
-        let side = if is_deletion {
-            &mut self.left
+        let (side, char_ranges) = if is_deletion {
+            (&mut self.left, self.char_ranges.0)
         } else {
-            &mut self.right
+            (&mut self.right, self.char_ranges.1)
         };
         if !diff_result.hide_in_diff {
             side.active_diff = true;
         }
 
         side.push(diff_result.clone(), color, false);
+        let changed = ranges_in_span(char_ranges, &token.as_ref().span);
+        side.changed_chars.extend_from_slice(changed);
 
         if self.options.ghost_rows {
             self.apply_ghosts(is_deletion, diff_result);
@@ -384,6 +394,7 @@ pub fn build_diff_rows<'a, T: RawTokenTrait>(
         tokens_source,
         tokens_target,
         &ignore,
+        &diff_ir.char_ranges,
         options,
         estimated_num_rows,
         num_chunks,
@@ -397,6 +408,7 @@ fn build_diff_rows_chunked<T: RawTokenTrait>(
     tokens_source: Option<&[T]>,
     tokens_target: Option<&[T]>,
     ignore: &IgnoreMask,
+    char_ranges: &CharRanges,
     options: &DiffBuilderOptions,
     estimated_num_rows: usize,
     num_chunks: usize,
@@ -407,6 +419,7 @@ fn build_diff_rows_chunked<T: RawTokenTrait>(
         let mut builder =
             DiffBuilder::with_capacity(tokens_source, tokens_target, options, capacity);
         builder.dimmed = (&ignore.matched_source, &ignore.matched_target);
+        builder.char_ranges = (&char_ranges.source, &char_ranges.target);
         for diff_result in &entries[range.clone()] {
             match &diff_result.operation {
                 DiffOp::Equal(_) => builder.handle_match(diff_result.clone()),
@@ -639,6 +652,7 @@ mod tests {
                         Some(&t1[..]),
                         Some(&t2[..]),
                         &ignore,
+                        &ir.char_ranges,
                         &options,
                         1,
                         num_chunks,

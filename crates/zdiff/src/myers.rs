@@ -536,7 +536,7 @@ fn split_lines<T: RawTokenTrait>(tokens: &[T]) -> Vec<Range<usize>> {
     lines
 }
 
-fn raw_diff_path<T, F>(
+pub(crate) fn raw_diff_path<T, F>(
     algorithm: MyersDiffAlgorithm,
     source: &[T],
     target: &[T],
@@ -558,7 +558,7 @@ where
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Step {
+pub(crate) enum Step {
     Equal,
     Delete,
     Insert,
@@ -566,7 +566,7 @@ enum Step {
 
 /// Unit steps of a path, with the same window semantics as DiffIR::generate_ir: edits first,
 /// then the snake.
-fn path_steps(path: &[(i32, i32)]) -> Vec<Step> {
+pub(crate) fn path_steps(path: &[(i32, i32)]) -> Vec<Step> {
     let mut steps = Vec::with_capacity(path.len());
     for w in path.windows(2) {
         let (dx, dy) = (w[1].0 - w[0].0, w[1].1 - w[0].1);

@@ -1024,6 +1024,7 @@ impl FileDiffPane {
                 tokens,
                 line_num,
                 bg,
+                changed_chars,
             } => {
                 ui.scope_builder(UiBuilder::new().max_rect(rect), |ui| {
                     let add_contents = |ui: &mut egui::Ui| {
@@ -1050,6 +1051,7 @@ impl FileDiffPane {
 
                         let row_text = build_row_text(
                             tokens,
+                            changed_chars,
                             file_source.as_deref(),
                             file_target.as_deref(),
                         );
@@ -1075,6 +1077,11 @@ impl FileDiffPane {
                         let [r, g, b, a] = DIMMED.0;
                         let dim = egui::Color32::from_rgba_unmultiplied(r, g, b, a);
                         recolor_ranges(&mut layout_job, &dimmed, dim);
+                        let changed_bg = match side {
+                            ActiveSide::Left => CHANGED_CHARS_DEL_BG,
+                            ActiveSide::Right => CHANGED_CHARS_INS_BG,
+                        };
+                        highlight_ranges(&mut layout_job, &row_text.changed_chars, changed_bg);
                         let found = occurrences.ranges(side, row_index, &row_text.text);
                         highlight_ranges(&mut layout_job, &found, OCCURRENCE_BG);
                         // After the occurrences, so a find match shows over one.
@@ -1265,6 +1272,8 @@ const GUTTER_WIDTH: f32 = 35.0;
 const GUTTER_GAP: f32 = 4.0;
 
 const GOTO_LINE_NUM: egui::Color32 = egui::Color32::from_rgb(255, 210, 0);
+const CHANGED_CHARS_DEL_BG: egui::Color32 = egui::Color32::from_rgba_premultiplied(80, 0, 0, 80);
+const CHANGED_CHARS_INS_BG: egui::Color32 = egui::Color32::from_rgba_premultiplied(0, 70, 0, 70);
 
 /// Lines hidden in a collapsed block share another line's row, hence the line check.
 fn row_find<'a>(
@@ -1304,7 +1313,7 @@ pub(super) fn side_content_widths<T: RawTokenTrait>(
 ) -> [f32; 2] {
     let mut row_width = |content: &LineContent| match content {
         LineContent::Code { tokens, .. } => {
-            let row_text = build_row_text(tokens, file_source, file_target);
+            let row_text = build_row_text(tokens, &[], file_source, file_target);
             let ghosts: f32 = row_text
                 .ghosts
                 .iter()
@@ -1340,7 +1349,7 @@ pub(super) fn wrapped_row_heights<T: RawTokenTrait>(
                 line_height,
                 |height, (side, content)| match content {
                     LineContent::Code { tokens, .. } => {
-                        let row_text = build_row_text(tokens, file_source, file_target);
+                        let row_text = build_row_text(tokens, &[], file_source, file_target);
                         height.max(side_height(side, &row_text))
                     }
                     LineContent::Void | LineContent::Collapsed => height,
@@ -1858,6 +1867,7 @@ mod tests {
             tokens: Vec::new(),
             line_num,
             bg: zdiff::diff_builder::Color32::TRANSPARENT,
+            changed_chars: Vec::new(),
         };
         let hit = FindHit {
             side: ActiveSide::Right,

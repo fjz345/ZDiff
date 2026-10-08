@@ -371,7 +371,13 @@ impl CopyHarness {
         };
         let text = match content {
             LineContent::Code { tokens, .. } => {
-                build_row_text(tokens, Some(&*self.file_source), Some(&*self.file_target)).text
+                build_row_text(
+                    tokens,
+                    &[],
+                    Some(&*self.file_source),
+                    Some(&*self.file_target),
+                )
+                .text
             }
             _ => String::new(),
         };
@@ -549,7 +555,8 @@ impl CopyHarness {
                     };
                     let real_text = match content {
                         LineContent::Code { tokens, .. } => {
-                            build_row_text(tokens, Some(&**file_source), Some(&**file_target)).text
+                            build_row_text(tokens, &[], Some(&**file_source), Some(&**file_target))
+                                .text
                         }
                         _ => String::new(),
                     };

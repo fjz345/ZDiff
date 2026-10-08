@@ -3,7 +3,7 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 
-use crate::ignore::IgnoreMask;
+use crate::{char_diff::CharRanges, ignore::IgnoreMask};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum DiffOp {
@@ -25,6 +25,8 @@ pub struct DiffResult {
 pub struct DiffIR {
     pub entries: Vec<DiffResult>,
     pub distance: i32,
+    /// Empty unless the character phase ran.
+    pub char_ranges: CharRanges,
 }
 /// Hides every entry whose token, on either side, is ignored. Uses the same mask as the line
 /// key, so what the key ignores is exactly what the rows hide.
@@ -146,7 +148,11 @@ impl DiffIR {
             }
         }
 
-        Some(DiffIR { entries, distance })
+        Some(DiffIR {
+            entries,
+            distance,
+            char_ranges: CharRanges::default(),
+        })
     }
 }
 

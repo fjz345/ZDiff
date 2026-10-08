@@ -1080,6 +1080,7 @@ fn scope_reveal_from(ctx: &MinimalDiffCtx, key: usize) -> Option<usize> {
         (LineContent::Code { tokens, .. }, _) | (_, LineContent::Code { tokens, .. }) => {
             build_row_text(
                 tokens,
+                &[],
                 ctx.input.file_1.as_deref(),
                 ctx.input.file_2.as_deref(),
             )

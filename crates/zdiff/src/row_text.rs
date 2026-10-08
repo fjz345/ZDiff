@@ -2,6 +2,7 @@ use std::ops::Range;
 
 use crate::{
     cached_file::CachedFile,
+    char_diff::ranges_in_span,
     diff_builder::{Color32, IsGhost},
     diff_ir::{DiffOp, DiffResult},
     lexer::{RawTokenTrait, TokenKind},
@@ -23,10 +24,14 @@ pub struct RowText {
     pub ghosts: Vec<GhostInsertion>,
     /// Diff color of each real token, as byte ranges into `text`.
     pub color_overrides: Vec<(Range<usize>, Color32)>,
+    /// Changed characters inside real edited tokens, as byte ranges into `text`.
+    pub changed_chars: Vec<Range<usize>>,
 }
 
+/// `changed_chars` is the row's `LineContent::Code::changed_chars`.
 pub fn build_row_text<T: RawTokenTrait>(
     tokens: &[(DiffResult, Color32, IsGhost)],
+    changed_chars: &[Range<usize>],
     file_source: Option<&CachedFile<T>>,
     file_target: Option<&CachedFile<T>>,
 ) -> RowText {
@@ -34,6 +39,7 @@ pub fn build_row_text<T: RawTokenTrait>(
         text: String::new(),
         ghosts: Vec::new(),
         color_overrides: Vec::new(),
+        changed_chars: Vec::new(),
     };
 
     for (diff_result, color, is_ghost) in tokens {
@@ -57,6 +63,14 @@ pub fn build_row_text<T: RawTokenTrait>(
             let start = row.text.len();
             row.text.push_str(str);
             row.color_overrides.push((start..row.text.len(), *color));
+            // Equal tokens may resolve to the other side's file, where these offsets mean nothing.
+            if !matches!(diff_result.operation, DiffOp::Equal(_)) {
+                let changed = ranges_in_span(changed_chars, &token.span);
+                let to_row = |r: &Range<usize>| {
+                    start + r.start - token.span.start..start + r.end - token.span.start
+                };
+                row.changed_chars.extend(changed.iter().map(to_row));
+            }
         }
     }
 
@@ -137,7 +151,23 @@ mod tests {
     }
 
     fn build(file: &CachedFile<RawToken>, tokens: &[(DiffResult, Color32, IsGhost)]) -> RowText {
-        build_row_text(tokens, Some(file), Some(file))
+        build_row_text(tokens, &[], Some(file), Some(file))
+    }
+
+    #[test]
+    fn changed_chars_of_real_edited_tokens_map_into_the_row() {
+        // Tokens: "zz"(0) "\n"(1) "ab"(2) " "(3) "cd"(4)
+        let file = cached_file("zz\nab cd");
+        let tokens = vec![
+            (equal(2), TINT, false),
+            (equal(3), TINT, false),
+            (ghost_delete(4), GHOST_TINT, true),
+            (ghost_delete(4), TINT, false),
+        ];
+        let changed = [0..1, 3..4, 7..8];
+        let row = build_row_text(&tokens, &changed, Some(&file), Some(&file));
+        assert_eq!(row.text, "ab cd");
+        assert_eq!(row.changed_chars, [4..5]);
     }
 
     #[test]
@@ -213,7 +243,7 @@ mod tests {
             (ghost_delete(0), GHOST_TINT, true),
             (equal(2), TINT, false),
         ];
-        let row = build_row_text(&tokens, Some(&file), Some(&other));
+        let row = build_row_text(&tokens, &[], Some(&file), Some(&other));
         assert_eq!(row.text, "ab cd");
         assert_eq!(
             row.ghosts,
@@ -238,7 +268,7 @@ mod tests {
             (ghost_delete(1), GHOST_TINT, true),
             (ghost_delete(2), GHOST_TINT, true),
         ];
-        let row = build_row_text(&tokens, Some(&file), Some(&ghosts));
+        let row = build_row_text(&tokens, &[], Some(&file), Some(&ghosts));
         assert_eq!(row.text, "a b");
         let offsets: Vec<_> = row.ghosts.iter().map(|g| g.byte_offset).collect();
         // Ghosts read from the source file here: "a"(0) " "(1) "b"(2).
@@ -272,7 +302,7 @@ mod tests {
             (ghost_delete(0), GHOST_TINT, true),
             (equal(2), green, false),
         ];
-        let row = build_row_text(&tokens, Some(&file), Some(&other));
+        let row = build_row_text(&tokens, &[], Some(&file), Some(&other));
         assert_eq!(row.text, "ab cd");
         let ranges: Vec<_> = row
             .color_overrides
@@ -295,7 +325,7 @@ mod tests {
             (equal(1), TINT, false),
             (equal(2), TINT, false),
         ];
-        let row = build_row_text(&tokens, Some(&file), Some(&other));
+        let row = build_row_text(&tokens, &[], Some(&file), Some(&other));
         assert_eq!(row.text, "é ü");
         assert_eq!(row.ghosts[0].byte_offset, "é".len());
     }
@@ -303,7 +333,7 @@ mod tests {
     #[test]
     fn missing_file_contributes_nothing() {
         let file = cached_file("foo");
-        let row = build_row_text(&all_real(&file), None::<&CachedFile<RawToken>>, None);
+        let row = build_row_text(&all_real(&file), &[], None::<&CachedFile<RawToken>>, None);
         assert_eq!(row.text, "");
     }
 
@@ -339,7 +369,7 @@ mod tests {
 
         let text_of = |content: &LineContent| match content {
             LineContent::Code { tokens, .. } => {
-                build_row_text(tokens, Some(&file_source), Some(&file_target))
+                build_row_text(tokens, &[], Some(&file_source), Some(&file_target))
             }
             other => panic!("expected code row, got {other:?}"),
         };
