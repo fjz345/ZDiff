@@ -575,6 +575,8 @@ impl DiffCtx {
                             input.algo,
                             t1,
                             t2,
+                            &c1.contents,
+                            &c2.contents,
                             cmp,
                             &ignore,
                             phases,
