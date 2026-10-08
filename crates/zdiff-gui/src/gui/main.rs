@@ -3,6 +3,7 @@ use eframe::egui;
 use crate::app::ZApp;
 
 mod app;
+mod cli;
 mod clamped_cursor;
 mod diff_ctx;
 mod file;

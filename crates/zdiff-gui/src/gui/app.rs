@@ -20,6 +20,7 @@ use eframe::{
 use egui_tiles::Tile;
 
 use crate::{
+    cli::{self, LaunchRequest},
     diff_ctx::{DiffProcessor, FindCtx, UpdateDiffRowsInput},
     file::{FileProcessor, LoadedFile},
     keybindings::{Keybindings, QuickDiffPaths, Shortcut, ui_keybindings},
@@ -221,11 +222,32 @@ impl<'a> ZApp {
                 AppState::Startup(ctx) | AppState::Idle(ctx) => {
                     update_p4_profiles(ctx.p4_profiles.clone());
 
-                    let args: Vec<String> = env::args().collect();
-
-                    if let (Some(p1), Some(p2)) = (args.get(1), args.get(2)) {
-                        ctx.file_1.set_path(UniversalPath::from(PathBuf::from(p1)));
-                        ctx.file_2.set_path(UniversalPath::from(PathBuf::from(p2)));
+                    let args: Vec<String> = env::args().skip(1).collect();
+                    if args.is_empty() {
+                        return;
+                    }
+                    // Labels, merge and help are wired up by the app-integration issue.
+                    match cli::parse_launch_args(args) {
+                        Ok(launch) => {
+                            for warning in &launch.warnings {
+                                log::warn!("{warning}");
+                            }
+                            match launch.request {
+                                LaunchRequest::Diff { left, right } => {
+                                    ctx.file_1.set_path(left.path);
+                                    ctx.file_2.set_path(right.path);
+                                }
+                                LaunchRequest::Merge { left, right, .. } => {
+                                    log::warn!(
+                                        "merge is not supported yet; opening left and right as a diff"
+                                    );
+                                    ctx.file_1.set_path(left.path);
+                                    ctx.file_2.set_path(right.path);
+                                }
+                                LaunchRequest::Help => log::info!("help is not shown yet"),
+                            }
+                        }
+                        Err(err) => log::error!("{err}"),
                     }
                 }
                 _ => {}
