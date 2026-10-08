@@ -575,15 +575,18 @@ impl DiffCtx {
                             input.algo,
                             t1,
                             t2,
-                            &cmp,
+                            cmp,
                             &ignore,
                             phases,
                             &[],
                             cancel.clone(),
                         )
-                        .map(|path| match phases.token {
-                            true => (path, Duration::ZERO, start.elapsed()),
-                            false => (path, start.elapsed(), Duration::ZERO),
+                        .map(|path| {
+                            if phases.token {
+                                (path, Duration::ZERO, start.elapsed())
+                            } else {
+                                (path, start.elapsed(), Duration::ZERO)
+                            }
                         })
                     };
                     let result = result.and_then(|(path, line_elapsed, mut token_elapsed)| {
