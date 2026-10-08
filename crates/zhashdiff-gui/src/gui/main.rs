@@ -25,7 +25,7 @@ fn main() -> eframe::Result {
 
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([2560.0, 1440.0])
+            .with_inner_size([1600.0, 1000.0])
             .with_drag_and_drop(true)
             .with_icon(
                 eframe::icon_data::from_png_bytes(include_bytes!(
@@ -56,7 +56,7 @@ fn main() -> eframe::Result {
                 }
             }
 
-            let mut app = ZApp::new(cc, log_buffer.clone());
+            let mut app = ZApp::new(log_buffer.clone());
             app.request_init();
             Ok(Box::<ZApp>::new(app))
         }),

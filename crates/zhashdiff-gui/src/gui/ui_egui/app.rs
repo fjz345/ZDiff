@@ -16,10 +16,7 @@ use crate::ui_egui::{
     path_diff_pane::PathDiffPane,
     tree_sort::{TreeSort, sort_two_folder_rows},
 };
-use eframe::{
-    CreationContext,
-    epaint::{Pos2, Vec2},
-};
+use eframe::epaint::Pos2;
 use egui_tiles::Tile;
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -102,9 +99,8 @@ impl Default for AppState {
 
 #[derive(Serialize, Deserialize)]
 pub struct ZApp {
-    monitor_size: Vec2,
-    scale_factor: f32,
-    native_pixel_per_point: f32,
+    #[serde(default = "default_zoom", deserialize_with = "deserialize_zoom")]
+    zoom: f32,
     // Option > Hack to avoid cloning state when matching &mut self.state in update loop
     state: Option<AppState>,
     tree: egui_tiles::Tree<Pane>,
@@ -119,7 +115,18 @@ pub struct ZApp {
     open_external_diff_window: bool,
 }
 
-const HARDCODED_MONITOR_SIZE: Vec2 = Vec2::new(2560.0, 1440.0);
+fn default_zoom() -> f32 {
+    1.0
+}
+
+fn clamp_zoom(zoom: f32) -> f32 {
+    zoom.clamp(0.5, 3.0)
+}
+
+fn deserialize_zoom<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<f32, D::Error> {
+    f32::deserialize(deserializer).map(clamp_zoom)
+}
+
 impl ZApp {
     pub fn request_init(&mut self) {
         // if self.state.ctx().hash_service.is_none() {
@@ -127,18 +134,9 @@ impl ZApp {
         // }
     }
 
-    pub fn new(cc: &CreationContext<'_>, log_buffer: LogBuffer) -> Self {
-        // Can not get window screen size from CreationContext
-        let monitor_size = HARDCODED_MONITOR_SIZE;
-        const RESOLUTION_REF: f32 = 1080.0;
-        let scale_factor: f32 = monitor_size.x.min(monitor_size.y) / RESOLUTION_REF;
-
-        let native_pixel_per_point = cc.egui_ctx.native_pixels_per_point().unwrap_or(1.0);
-
+    pub fn new(log_buffer: LogBuffer) -> Self {
         Self {
-            monitor_size: monitor_size,
-            scale_factor: scale_factor,
-            native_pixel_per_point: native_pixel_per_point,
+            zoom: default_zoom(),
             state: Some(AppState::default()),
             tree: Self::create_tree(),
             log_buffer: log_buffer,
@@ -158,10 +156,16 @@ impl ZApp {
             "native_pixels_per_point {:?}",
             ctx.native_pixels_per_point()
         );
-        ctx.set_pixels_per_point(self.scale_factor); // Maybe mult native_pixels_per_point?
+        ctx.set_zoom_factor(self.zoom);
         // ctx.set_debug_on_hover(true);
+    }
 
-        ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(true));
+    fn sync_zoom(&mut self, ctx: &egui::Context) {
+        let zoom = clamp_zoom(ctx.zoom_factor());
+        if zoom != ctx.zoom_factor() {
+            ctx.set_zoom_factor(zoom);
+        }
+        self.zoom = zoom;
     }
 
     fn create_tree() -> egui_tiles::Tree<Pane> {
@@ -210,9 +214,6 @@ impl ZApp {
                         self.open_external_diff_window = true;
                     }
                     if ui.button("Setup colors").clicked() {
-                        log::error!("NYI");
-                    }
-                    if ui.button("Font size").clicked() {
                         log::error!("NYI");
                     }
                     if ui.button("Set Theme").clicked() {
@@ -502,6 +503,7 @@ impl eframe::App for ZApp {
                 AppState::Idle(state_ctx)
             }
             AppState::Idle(mut state) => {
+                self.sync_zoom(ctx);
                 if self.is_path_diff() != self.diff_mode_path_diff {
                     if self.is_path_diff() {
                         self.set_path_diff_visible(false);
@@ -592,11 +594,12 @@ impl eframe::App for ZApp {
 
 #[cfg(test)]
 mod tests {
-    use super::AppStateCtx;
+    use super::{AppStateCtx, ZApp};
     use crate::ui_egui::fs_tree::FileSystemView;
     use crate::ui_egui::tree_sort::{SortKey, TreeSort};
     use std::{fs, path::Path, sync::Arc};
     use tempfile::tempdir;
+    use zcommon::logger::LogBuffer;
     use zhashdiff::{
         filter::{PathFilter, PatternList},
         fs::FileSystemModel,
@@ -664,6 +667,35 @@ mod tests {
         state.path_filter = PathFilter::default();
         state.build_two_folder_diff_rows_if_stale();
         assert_eq!(row_paths(&state), ["", "a.txt", "b.obj"]);
+    }
+
+    #[test]
+    fn zoom_survives_a_restart() {
+        let mut app = ZApp::new(LogBuffer::default());
+        app.zoom = 1.7;
+        let json = serde_json::to_string(&app).unwrap();
+        let restored: ZApp = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.zoom, 1.7);
+    }
+
+    #[test]
+    fn a_saved_zoom_out_of_range_loads_clamped() {
+        let mut json = serde_json::to_value(ZApp::new(LogBuffer::default())).unwrap();
+        json["zoom"] = 10.0.into();
+        assert_eq!(
+            serde_json::from_value::<ZApp>(json.clone()).unwrap().zoom,
+            3.0
+        );
+        json["zoom"] = 0.1.into();
+        assert_eq!(serde_json::from_value::<ZApp>(json).unwrap().zoom, 0.5);
+    }
+
+    #[test]
+    fn a_save_without_a_zoom_loads_at_100_percent() {
+        let mut json = serde_json::to_value(ZApp::new(LogBuffer::default())).unwrap();
+        json.as_object_mut().unwrap().remove("zoom").unwrap();
+        let restored: ZApp = serde_json::from_value(json).unwrap();
+        assert_eq!(restored.zoom, 1.0);
     }
 
     #[test]
