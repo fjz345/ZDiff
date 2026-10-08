@@ -156,7 +156,6 @@ where
     )
 }
 
-/// `myers_diff_path`, recording each phase's results and times into `trace` when given.
 pub fn myers_diff_path_traced<T, F>(
     algorithm: MyersDiffAlgorithm,
     source: &[T],

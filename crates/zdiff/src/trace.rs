@@ -70,7 +70,7 @@ impl PhaseTrace {
     }
 
     /// Moves the spans recorded since `mark` out of a phase's local token range. `source` and
-    /// `target` map a local position (one past the last token included) to a file position.
+    /// `target` map a local token position, up to and including the local length, to a file one.
     pub(crate) fn map_since(
         &mut self,
         mark: &TraceMark,

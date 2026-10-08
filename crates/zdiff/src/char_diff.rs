@@ -55,7 +55,6 @@ pub fn character_diff<T: RawTokenTrait>(
     )
 }
 
-/// `character_diff`, recording each diffed token pair and the phase time into `trace` when given.
 pub fn character_diff_traced<T: RawTokenTrait>(
     algorithm: MyersDiffAlgorithm,
     path: &[(i32, i32)],
