@@ -148,9 +148,7 @@ impl ToolsWindow {
                         tool.exe_path = PathBuf::from(exe_path.as_str());
                     }
                     ui.label("Arguments ({left} {right} {left_name} {right_name}):");
-                    ui.add(
-                        egui::TextEdit::singleline(&mut tool.template).desired_width(f32::INFINITY),
-                    );
+                    ui.add(egui::TextEdit::singleline(&mut tool.template).desired_width(400.0));
                     match &preview {
                         Ok(command) => {
                             ui.label("Preview:");
