@@ -304,6 +304,18 @@ mod tests {
     }
 
     #[test]
+    fn text_blank_lines_and_crlf_count_as_lines() {
+        assert_eq!(
+            measure("txt", b"a\n\nb\n", b"a\n\nc\n", 0),
+            lines(4.0 / 6.0)
+        );
+        assert_eq!(
+            measure("txt", b"a\r\n\r\nb\r\n", b"a\r\n\r\nc\r\n", 0),
+            lines(4.0 / 6.0)
+        );
+    }
+
+    #[test]
     fn text_above_cap_uses_bytes() {
         let left = vec![b'a'; TEXT_LINES_MAX_BYTES + 1];
         let mut right = left.clone();
