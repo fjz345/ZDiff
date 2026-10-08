@@ -5192,6 +5192,7 @@ dependencies = [
  "egui_extras",
  "egui_tiles",
  "env_logger 0.10.2",
+ "image",
  "log",
  "rfd",
  "serde",

@@ -1,5 +1,8 @@
 use std::{env, path::PathBuf};
 
+#[path = "../zdiff-gui/build_icon.rs"]
+mod build_icon;
+
 fn main() {
     let profile_env = env::var("PROFILE").unwrap();
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
@@ -33,4 +36,6 @@ fn main() {
     // Watch the sibling crate for changes
     println!("cargo:rerun-if-changed=../zdiff-gui/src");
     println!("cargo:rerun-if-changed=../zdiff-gui/Cargo.toml");
+
+    build_icon::embed_exe_icon("../zdiff-gui/img/icon.png");
 }
