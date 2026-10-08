@@ -5173,12 +5173,14 @@ dependencies = [
  "crc32fast",
  "eframe",
  "env_logger 0.10.2",
+ "image",
  "log",
  "serde",
  "serde_json",
  "tempfile",
  "trash",
  "zcommon",
+ "zdiff",
 ]
 
 [[package]]
