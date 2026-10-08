@@ -23,6 +23,7 @@ use eframe::egui::{
     text_selection::LabelSelectionState,
 };
 use serde::{Deserialize, Serialize};
+use zcommon::ui_egui::toggle::{TOGGLE_BUTTON_SIZE, toggle_button};
 use zdiff::{
     cached_file::CachedFile,
     diff_builder::{DIMMED, DiffBuilderOptions, DiffRow, LineContent},
@@ -246,63 +247,38 @@ impl FileDiffPane {
 
             ui.with_layout(Layout::left_to_right(egui::Align::Center), |ui| {
                 ui.spacing_mut().item_spacing.x = 4.0;
-                let button_size = egui::vec2(24.0, 24.0);
-
-                let toggle_btn = |ui: &mut egui::Ui,
-                                  value: &mut bool,
-                                  label: egui::WidgetText,
-                                  tooltip: &str|
-                 -> bool {
-                    let btn = egui::Button::new(label).selected(*value);
-
-                    if ui
-                        .add_sized(button_size, btn)
-                        .on_hover_text(tooltip)
-                        .clicked()
-                    {
-                        *value = !*value;
-                        return true;
-                    }
-                    false
-                };
-                toggle_btn(
+                toggle_button(
                     ui,
                     &mut ctx.diff_options.ignore.whitespace,
-                    egui::RichText::new("W").strong().into(),
+                    egui::RichText::new("W").strong(),
                     "Ignore Whitespace",
                 );
-                toggle_btn(
+                toggle_button(
                     ui,
                     &mut ctx.diff_options.ignore.comments,
-                    egui::RichText::new("C").strong().into(),
+                    egui::RichText::new("C").strong(),
                     "Ignore Comments",
                 );
-                ignore_patterns_btn(ui, button_size, &mut ctx.diff_options.ignore.patterns);
-                toggle_btn(
+                ignore_patterns_btn(
+                    ui,
+                    TOGGLE_BUTTON_SIZE,
+                    &mut ctx.diff_options.ignore.patterns,
+                );
+                toggle_button(
                     ui,
                     &mut ctx.diff_options.highlight_rows,
-                    egui::RichText::new("H").strong().into(),
+                    egui::RichText::new("H").strong(),
                     "Highlight Rows",
                 );
-                toggle_btn(
-                    ui,
-                    &mut ctx.diff_options.ghost_rows,
-                    "👻".into(),
-                    "Ghost Rows",
-                );
-                toggle_btn(
-                    ui,
-                    ctx.h_scroll_linked,
-                    "🔗".into(),
-                    "Link Horizontal Scrolling",
-                );
-                toggle_btn(ui, ctx.word_wrap, "↩".into(), "Word Wrap");
+                toggle_button(ui, &mut ctx.diff_options.ghost_rows, "👻", "Ghost Rows");
+                toggle_button(ui, ctx.h_scroll_linked, "🔗", "Link Horizontal Scrolling");
+                toggle_button(ui, ctx.word_wrap, "↩", "Word Wrap");
 
                 let mut active = ctx.diff_options.diff_only_with_extra_rows.is_some();
-                if toggle_btn(
+                if toggle_button(
                     ui,
                     &mut active,
-                    egui::RichText::new("D").strong().into(),
+                    egui::RichText::new("D").strong(),
                     "Diff Only",
                 ) {
                     ctx.diff_options.diff_only_with_extra_rows = active.then_some(2);

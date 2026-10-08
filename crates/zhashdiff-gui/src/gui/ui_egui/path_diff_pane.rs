@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 use eframe::egui::{self, RichText, ScrollArea};
 use serde::{Deserialize, Serialize};
+use zcommon::ui_egui::toggle::toggle_button;
 use zhashdiff::{
     external_diff_tool::DiffToolConfig,
     filter::{PathFilter, PatternList},
@@ -145,10 +146,17 @@ impl PathDiffPane {
 
         ui.horizontal(|ui| {
             draw_filter_bar(ui, ctx.path_filter);
-            ui.separator();
+        });
+
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 4.0;
             // Like the filter, the app reorders the rows on the next update.
-            ui.checkbox(&mut ctx.tree_sort.flat, "Flat")
-                .on_hover_text("List all entries by depth, then by the sorted column");
+            toggle_button(
+                ui,
+                &mut ctx.tree_sort.flat,
+                RichText::new("F").strong(),
+                "Flat: list all entries by depth, then by the sorted column",
+            );
         });
 
         ui.separator();
