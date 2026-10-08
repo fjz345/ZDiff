@@ -52,11 +52,15 @@ impl TreeSort {
                 .cmp(name(b).chars().flat_map(char::to_lowercase)),
             SortKey::State => state_rank(&a.diff_state).cmp(&state_rank(&b.diff_state)),
         };
-        if self.descending {
+        let pending_last = match self.key {
+            SortKey::Name => Ordering::Equal,
+            SortKey::State => is_pending(a).cmp(&is_pending(b)),
+        };
+        pending_last.then(if self.descending {
             by_key.reverse()
         } else {
             by_key
-        }
+        })
     }
 }
 
@@ -72,7 +76,12 @@ fn state_rank(state: &DiffState) -> u8 {
         DiffState::OnlyInFirst(..) => 2,
         DiffState::OnlyInSecond(..) => 3,
         DiffState::Same(..) => 4,
+        DiffState::Pending(..) => 5,
     }
+}
+
+fn is_pending(row: &VisibleRowTwoFolderDiff) -> bool {
+    matches!(row.diff_state, DiffState::Pending(..))
 }
 
 /// The rows as a depth-first walk with every folder's children in `sort` order, so children stay
@@ -379,6 +388,25 @@ mod tests {
         assert!(FLAT.clicked(SortKey::Name).flat);
         assert!(FLAT.clicked(SortKey::State).flat);
         assert!(!TreeSort::default().flat);
+    }
+
+    #[test]
+    fn pending_sorts_last_in_both_directions() {
+        let siblings = || {
+            vec![
+                row("pending", false, DiffState::Pending(0, 0)),
+                row("same", false, DiffState::Same(0, 0)),
+                row("different", false, DiffState::Different(0, 0)),
+            ]
+        };
+        assert_eq!(
+            sorted(siblings(), STATE_ASC),
+            ["different", "same", "pending"]
+        );
+        assert_eq!(
+            sorted(siblings(), STATE_DESC),
+            ["same", "different", "pending"]
+        );
     }
 
     #[test]

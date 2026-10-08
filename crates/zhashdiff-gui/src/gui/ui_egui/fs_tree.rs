@@ -444,7 +444,7 @@ pub fn two_folder_cursor_rows<'a>(
                 || (!flat && on_either_side(row, FileSystemView::is_parent_chain_collapsed)),
             is_dir: row.is_dir,
             collapsed: !flat && row.is_dir && on_either_side(row, FileSystemView::is_collapsed),
-            differs: !matches!(row.diff_state, DiffState::Same(..)),
+            differs: !matches!(row.diff_state, DiffState::Same(..) | DiffState::Pending(..)),
         })
         .collect()
 }
@@ -909,6 +909,7 @@ pub enum DiffState {
     Partial(FsNodeId, FsNodeId),
     OnlyInFirst(FsNodeId),
     OnlyInSecond(FsNodeId),
+    Pending(FsNodeId, FsNodeId),
 }
 
 impl DiffState {
@@ -916,7 +917,8 @@ impl DiffState {
         match &self {
             DiffState::Same(path_buf, _)
             | DiffState::Different(path_buf, _)
-            | DiffState::Partial(path_buf, _) => Some(*path_buf),
+            | DiffState::Partial(path_buf, _)
+            | DiffState::Pending(path_buf, _) => Some(*path_buf),
             DiffState::OnlyInFirst(path_buf) => Some(*path_buf),
             DiffState::OnlyInSecond(..) => None,
         }
@@ -925,7 +927,8 @@ impl DiffState {
         match &self {
             DiffState::Same(_, path_buf1)
             | DiffState::Different(_, path_buf1)
-            | DiffState::Partial(_, path_buf1) => Some(*path_buf1),
+            | DiffState::Partial(_, path_buf1)
+            | DiffState::Pending(_, path_buf1) => Some(*path_buf1),
             DiffState::OnlyInFirst(..) => None,
             DiffState::OnlyInSecond(path_buf) => Some(*path_buf),
         }
@@ -945,6 +948,9 @@ pub fn ui_custom_diff_state(ui: &mut egui::Ui, state: &DiffState) -> egui::respo
         DiffState::Partial(..) => ui.label(RichText::new("≈").color(yellow)),
         DiffState::OnlyInFirst(..) => ui.label(RichText::new("−").color(blue)),
         DiffState::OnlyInSecond(..) => ui.label(RichText::new("+").color(blue)),
+        DiffState::Pending(..) => ui
+            .add(egui::Spinner::new().size(ui.text_style_height(&egui::TextStyle::Body)))
+            .on_hover_text("not compared"),
     }
 }
 
@@ -973,6 +979,22 @@ fn file_diff_state(
     }
 }
 
+pub fn aggregate_folder_state(
+    l_id: FsNodeId,
+    r_id: FsNodeId,
+    children: impl IntoIterator<Item = DiffState>,
+) -> DiffState {
+    let mut state = DiffState::Same(l_id, r_id);
+    for child in children {
+        match child {
+            DiffState::Same(..) => {}
+            DiffState::Pending(..) => state = DiffState::Pending(l_id, r_id),
+            _ => return DiffState::Different(l_id, r_id),
+        }
+    }
+    state
+}
+
 fn folder_diff_state(
     parent_path: &str,
     entries_map: &BTreeMap<
@@ -999,31 +1021,20 @@ fn folder_diff_state(
         format!("{}/", parent_path)
     };
 
-    for (path, (left, right)) in entries_map.range(prefix.clone()..) {
-        if !path.starts_with(&prefix) {
-            break;
-        }
-        if path == parent_path {
-            continue;
-        }
-
-        match (left, right) {
-            // If a child exists on one side only, the parent is "Different" (Modified)
-            (Some(_), None) | (None, Some(_)) => return DiffState::Different(l_id, r_id),
-            (Some((li, ln, _)), Some((ri, rn, _))) => {
-                if !ln.is_dir() {
-                    let s = compare_cache.file_diff_state((*li, ln), (*ri, rn), compare, threshold);
-                    // Use your specific enum variant names
-                    if !matches!(s, DiffState::Same(..)) {
-                        return DiffState::Different(l_id, r_id);
-                    }
-                }
+    // Over all descendant entries, which gives the same result as the rule applied bottom-up.
+    let descendants = entries_map
+        .range(prefix.clone()..)
+        .take_while(|(path, _)| path.starts_with(&prefix))
+        .filter(|(path, _)| path.as_str() != parent_path)
+        .filter_map(|(_, (left, right))| match (left, right) {
+            (Some((li, _, _)), None) => Some(DiffState::OnlyInFirst(*li)),
+            (None, Some((ri, _, _))) => Some(DiffState::OnlyInSecond(*ri)),
+            (Some((li, ln, _)), Some((ri, rn, _))) if !ln.is_dir() => {
+                Some(compare_cache.file_diff_state((*li, ln), (*ri, rn), compare, threshold))
             }
-            _ => {}
-        }
-    }
-
-    DiffState::Same(l_id, r_id)
+            _ => None,
+        });
+    aggregate_folder_state(l_id, r_id, descendants)
 }
 
 fn on_row_item_clicked(
@@ -1525,9 +1536,10 @@ fn get_folder_selection_state(
 mod tests {
     use crate::ui_egui::fs_tree::{
         DiffJump, DiffState, FileCompareCache, FileSystemView, VisibleRowTwoFolderDiff,
-        apply_cursor_request, cursor_keys, diff_jump_keys, tree_hidden, two_folder_cursor_rows,
+        aggregate_folder_state, apply_cursor_request, cursor_keys, diff_jump_keys, tree_hidden,
+        two_folder_cursor_rows,
     };
-    use crate::ui_egui::tree_cursor::CursorRequest;
+    use crate::ui_egui::tree_cursor::{CursorRequest, TreeCursor};
     use crate::ui_egui::tree_sort::{SortKey, TreeSort, sort_two_folder_rows};
     use zhashdiff::external_diff_tool::DiffToolConfig;
 
@@ -1588,9 +1600,10 @@ mod tests {
         match state {
             DiffState::OnlyInFirst(id) => get_rel(file_system_1, r1, *id),
             DiffState::OnlyInSecond(id) => get_rel(file_system_2, r2, *id),
-            DiffState::Same(id, _) | DiffState::Different(id, _) | DiffState::Partial(id, _) => {
-                get_rel(file_system_1, r1, *id)
-            }
+            DiffState::Same(id, _)
+            | DiffState::Different(id, _)
+            | DiffState::Partial(id, _)
+            | DiffState::Pending(id, _) => get_rel(file_system_1, r1, *id),
         }
     }
 
@@ -1698,6 +1711,7 @@ mod tests {
             DiffState::Partial(..) => "Partial",
             DiffState::OnlyInFirst(..) => "OnlyInFirst",
             DiffState::OnlyInSecond(..) => "OnlyInSecond",
+            DiffState::Pending(..) => "Pending",
         }
     }
 
@@ -2646,5 +2660,85 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn a_one_sided_child_makes_the_folder_different() {
+        for child in [DiffState::OnlyInFirst(3), DiffState::OnlyInSecond(3)] {
+            assert_eq!(
+                aggregate_folder_state(1, 2, [DiffState::Same(3, 3), child]),
+                DiffState::Different(1, 2)
+            );
+        }
+    }
+
+    #[test]
+    fn a_folder_whose_children_are_all_same_is_same() {
+        assert_eq!(
+            aggregate_folder_state(1, 2, [DiffState::Same(3, 3), DiffState::Same(4, 4)]),
+            DiffState::Same(1, 2)
+        );
+        assert_eq!(aggregate_folder_state(1, 2, []), DiffState::Same(1, 2));
+    }
+
+    #[test]
+    fn a_pending_child_makes_an_otherwise_same_folder_pending() {
+        assert_eq!(
+            aggregate_folder_state(1, 2, [DiffState::Same(3, 3), DiffState::Pending(4, 4)]),
+            DiffState::Pending(1, 2)
+        );
+        let sub = aggregate_folder_state(5, 6, [DiffState::Pending(7, 7)]);
+        assert_eq!(
+            aggregate_folder_state(1, 2, [DiffState::Same(3, 3), sub]),
+            DiffState::Pending(1, 2)
+        );
+    }
+
+    #[test]
+    fn a_folder_settles_different_while_siblings_are_still_pending() {
+        assert_eq!(
+            aggregate_folder_state(
+                1,
+                2,
+                [
+                    DiffState::Pending(3, 3),
+                    DiffState::Different(4, 4),
+                    DiffState::Pending(5, 5),
+                ]
+            ),
+            DiffState::Different(1, 2)
+        );
+    }
+
+    #[test]
+    fn next_and_prev_diff_skip_pending_files() {
+        let row = |rel_path: &str, is_dir, diff_state| VisibleRowTwoFolderDiff {
+            rel_path: rel_path.to_string(),
+            is_dir,
+            depth: 0,
+            diff_state,
+        };
+        let rows = [
+            row("", true, DiffState::Different(0, 0)),
+            row("a.txt", false, DiffState::Same(1, 1)),
+            row("b.txt", false, DiffState::Pending(2, 2)),
+            row("c.txt", false, DiffState::Different(3, 3)),
+            row("d.txt", false, DiffState::Pending(4, 4)),
+            row("e.txt", false, DiffState::Same(5, 5)),
+        ];
+        let cursor_rows = two_folder_cursor_rows(None, None, &rows, false);
+
+        let next = TreeCursor::at("a.txt").next_diff(&cursor_rows);
+        assert_eq!(next.map(|(c, _)| c), Some(TreeCursor::at("c.txt")));
+        let prev = TreeCursor::at("e.txt").prev_diff(&cursor_rows);
+        assert_eq!(prev.map(|(c, _)| c), Some(TreeCursor::at("c.txt")));
+
+        let pending_only = [
+            row("", true, DiffState::Pending(0, 0)),
+            row("b.txt", false, DiffState::Pending(2, 2)),
+        ];
+        let cursor_rows = two_folder_cursor_rows(None, None, &pending_only, false);
+        assert_eq!(TreeCursor::default().next_diff(&cursor_rows), None);
+        assert_eq!(TreeCursor::default().prev_diff(&cursor_rows), None);
     }
 }
