@@ -2,23 +2,20 @@
 // #![allow(dead_code)]
 // #![allow(unreachable_patterns)]
 
-use std::env;
-
 use eframe::egui::{self};
-use zcommon::logger::LogCollector;
+use zcommon::logger::init_logging;
 
 use crate::ui_egui::app::ZApp;
 
 mod ui_egui;
 
 fn main() -> eframe::Result {
-    unsafe { env::set_var("RUST_LOG", "debug") }; // or "info" or "debug"
     #[cfg(feature = "pretty-backtrace")]
     {
         color_backtrace::install();
     }
 
-    let log_buffer = LogCollector::init().expect("Failed to init logger");
+    let log_buffer = init_logging().expect("Failed to init logger");
 
     // Test build with zdiff
     {

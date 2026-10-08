@@ -1,11 +1,7 @@
 use eframe::egui::{self, Layout, PointerButton, TextBuffer};
 use serde::{Deserialize, Serialize};
-use std::{
-    collections::HashMap,
-    path::PathBuf,
-    sync::{Arc, Mutex},
-};
-use zcommon::{hash::HashService, ui_egui::common::show_custom_popup};
+use std::{collections::HashMap, path::PathBuf, sync::Arc};
+use zcommon::{hash::HashService, logger::LogBuffer, ui_egui::common::show_custom_popup};
 use zhashdiff::{
     comparison::{PathComparissonMethod, compare_paths},
     external_diff_tool::{DiffToolConfig, DiffToolDefaultArgs},
@@ -113,7 +109,7 @@ pub struct ZApp {
     state: Option<AppState>,
     tree: egui_tiles::Tree<Pane>,
     #[serde(skip)]
-    log_buffer: Arc<Mutex<Vec<String>>>,
+    log_buffer: LogBuffer,
 
     open_dir_window_1: bool,
     open_dir_window_2: bool,
@@ -131,7 +127,7 @@ impl ZApp {
         // }
     }
 
-    pub fn new(cc: &CreationContext<'_>, log_buffer: Arc<Mutex<Vec<String>>>) -> Self {
+    pub fn new(cc: &CreationContext<'_>, log_buffer: LogBuffer) -> Self {
         // Can not get window screen size from CreationContext
         let monitor_size = HARDCODED_MONITOR_SIZE;
         const RESOLUTION_REF: f32 = 1080.0;

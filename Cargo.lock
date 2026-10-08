@@ -5042,6 +5042,7 @@ name = "zcommon"
 version = "0.1.0"
 dependencies = [
  "blake3",
+ "dotenvy",
  "eframe",
  "egui_extras",
  "egui_tiles",
@@ -5073,7 +5074,6 @@ version = "0.6.1"
 dependencies = [
  "blake3",
  "color-backtrace",
- "dotenvy",
  "eframe",
  "egui_extras",
  "egui_tiles",

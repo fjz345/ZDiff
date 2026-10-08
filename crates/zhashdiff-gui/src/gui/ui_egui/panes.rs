@@ -1,12 +1,11 @@
-use std::{
-    collections::HashMap,
-    path::PathBuf,
-    sync::{Arc, Mutex},
-};
+use std::{collections::HashMap, path::PathBuf};
 
 use eframe::egui::{self};
 use serde::{Deserialize, Serialize};
-use zcommon::{hash::HashService, logger::ui_log_window};
+use zcommon::{
+    hash::HashService,
+    logger::{LogBuffer, ui_log_window},
+};
 use zhashdiff::{external_diff_tool::DiffToolConfig, filter::PathFilter};
 
 use crate::ui_egui::{
@@ -25,7 +24,7 @@ pub struct PathDiffView<'a> {
 }
 
 pub struct TreeBehavior<'a, 'b> {
-    pub log_buffer: Arc<Mutex<Vec<String>>>,
+    pub log_buffer: LogBuffer,
 
     pub hash_service: &'a mut HashService,
     pub path_diff_view: &'a mut PathDiffView<'b>,
@@ -144,11 +143,7 @@ impl ZAppPane for LogPane {
 }
 
 impl LogPane {
-    fn ui(
-        &mut self,
-        ui: &mut egui::Ui,
-        log_buffer: &Arc<Mutex<Vec<String>>>,
-    ) -> egui_tiles::UiResponse {
+    fn ui(&mut self, ui: &mut egui::Ui, log_buffer: &LogBuffer) -> egui_tiles::UiResponse {
         ui_log_window(ui, log_buffer.clone(), &mut self.scroll_to_bottom);
 
         return egui_tiles::UiResponse::None;

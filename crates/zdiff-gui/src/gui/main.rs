@@ -1,6 +1,3 @@
-use std::env;
-
-use dotenvy::dotenv;
 use eframe::egui;
 
 use crate::app::ZApp;
@@ -27,20 +24,11 @@ use std::alloc::System;
 pub static STATS_ALLOC: &StatsAlloc<System> = &INSTRUMENTED_SYSTEM;
 
 fn main() -> eframe::Result {
-    dotenv().ok();
-
-    #[cfg(debug_assertions)]
-    unsafe {
-        env::set_var("RUST_LOG", "debug")
-    }; // or "info" or "debug"
     #[cfg(feature = "pretty-backtrace")]
     {
         color_backtrace::install();
     }
-    env_logger::Builder::from_env(
-        env_logger::Env::default().default_filter_or("info,wgpu=warn,naga=warn"),
-    )
-    .init();
+    zcommon::logger::init_logging().expect("Failed to init logger");
 
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
