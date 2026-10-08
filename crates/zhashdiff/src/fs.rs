@@ -1,7 +1,11 @@
 use std::{
     io,
     path::{Path, PathBuf},
+    sync::atomic::{AtomicBool, AtomicUsize},
+    time::SystemTime,
 };
+
+use crate::scan::{LocalDisk, scan};
 
 pub type FsNodeId = usize;
 pub type FsNodeDepth = u16;
@@ -44,6 +48,8 @@ impl FsNodeKind {
 pub struct FsNode {
     pub parent: Option<FsNodeId>,
     pub kind: FsNodeKind,
+    pub size: u64,
+    pub modified: Option<SystemTime>,
 }
 
 impl FsNode {
@@ -132,7 +138,25 @@ pub struct FileSystemModel {
 
 impl FileSystemModel {
     pub fn new(root_path: impl AsRef<Path>) -> io::Result<Self> {
-        Self::build_model(root_path)
+        let output = scan(
+            &LocalDisk,
+            root_path.as_ref(),
+            &AtomicBool::new(false),
+            &AtomicUsize::new(0),
+        )
+        .expect("scan cancelled without a cancel request")?;
+        for skipped in &output.skipped {
+            log::warn!("Skipped {}: {}", skipped.path.display(), skipped.reason);
+        }
+        Ok(output.model)
+    }
+
+    pub(crate) fn empty(root_path: impl AsRef<Path>) -> Self {
+        Self {
+            root_path: root_path.as_ref().to_path_buf(),
+            root_id: 0,
+            nodes: Vec::new(),
+        }
     }
 
     pub fn get_node(&self, node_id: FsNodeId) -> Option<&FsNode> {
@@ -227,53 +251,29 @@ impl FileSystemModel {
             .count()
     }
 
-    fn push_node(&mut self, parent: Option<FsNodeId>, kind: FsNodeKind) -> FsNodeId {
-        let new_node = FsNode { parent, kind };
+    pub(crate) fn push_node(
+        &mut self,
+        parent: Option<FsNodeId>,
+        kind: FsNodeKind,
+        size: u64,
+        modified: Option<SystemTime>,
+    ) -> FsNodeId {
+        let new_node = FsNode {
+            parent,
+            kind,
+            size,
+            modified,
+        };
         let next_node_id: FsNodeId = self.nodes.len();
         self.nodes.push(new_node);
         next_node_id
     }
 
-    fn build_model(root: impl AsRef<Path>) -> io::Result<Self> {
-        let root_path = root.as_ref().to_path_buf();
-        let nodes = Vec::new();
-        let mut model = Self {
-            root_path,
-            nodes,
-            root_id: 0,
-        };
-
-        model.root_id = model.read_dir(root.as_ref().to_path_buf(), None)?;
-        assert_eq!(model.root_id, 0);
-
-        Ok(model)
-    }
-
-    fn read_dir(
-        &mut self,
-        path: impl AsRef<Path>,
-        parent: Option<FsNodeId>,
-    ) -> io::Result<FsNodeId> {
-        let read_dir = std::fs::read_dir(&path)?;
-        let dir_node_id = self.push_node(parent, FsNodeKind::new_empty_dir(&path));
-
-        let mut children = Vec::new();
-        for entry in read_dir.flatten() {
-            let p = entry.path();
-            let child_id = if p.is_dir() {
-                self.read_dir(p, Some(dir_node_id))?
-            } else {
-                self.push_node(Some(dir_node_id), FsNodeKind::new_file(p))
-            };
-            children.push(child_id);
+    pub(crate) fn set_children(&mut self, dir_id: FsNodeId, new_children: Vec<FsNodeId>) {
+        match &mut self.nodes[dir_id].kind {
+            FsNodeKind::Dir { children, .. } => *children = new_children,
+            FsNodeKind::File { .. } => panic!("set_children on a file node {dir_id}"),
         }
-
-        if let Some(node) = self.get_node_mut(dir_node_id) {
-            if let FsNodeKind::Dir { children: c, .. } = &mut node.kind {
-                *c = children;
-            }
-        }
-        Ok(dir_node_id)
     }
 
     #[allow(dead_code)]
