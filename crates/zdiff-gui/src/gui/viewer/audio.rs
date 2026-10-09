@@ -13,7 +13,9 @@ use std::{
 };
 
 use eframe::egui::{self, Align2, Color32, Rect, Sense, Stroke, pos2, vec2};
-use zcommon::ffmpeg::{FfmpegError, FfmpegPaths, StreamKind, pcm_decode_args, probe, run_ffmpeg};
+use zcommon::ffmpeg::{
+    FfmpegError, FfmpegPaths, MediaInfo, StreamKind, pcm_decode_args, probe, run_ffmpeg,
+};
 use zcommon::{style::SharedRole, ui_egui::style_window::role_color};
 
 use super::{hex::is_same_side, path_extension};
@@ -279,6 +281,39 @@ impl DecodeProgress {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AudioLayout {
+    pub sample_rate: u32,
+    pub channels: usize,
+    /// From the probed duration; 0 when it is missing or not a finite positive number.
+    pub expected_samples: u64,
+}
+
+/// The first audio stream, which `pcm_decode_args` decodes.
+pub fn audio_layout(info: &MediaInfo) -> Result<AudioLayout, String> {
+    let stream = info
+        .streams
+        .iter()
+        .find(|stream| stream.kind == StreamKind::Audio)
+        .ok_or_else(|| "it has no audio stream".to_string())?;
+    let (Some(sample_rate @ 1..), Some(channels @ 1..)) = (stream.sample_rate, stream.channels)
+    else {
+        return Err("ffprobe gave no sample rate or channel count".to_string());
+    };
+    let expected_samples = stream
+        .duration_secs
+        .or(info.duration_secs)
+        .filter(|secs| secs.is_finite() && *secs > 0.0)
+        .map_or(0, |secs| {
+            (secs * sample_rate as f64).ceil() as u64 * channels as u64
+        });
+    Ok(AudioLayout {
+        sample_rate,
+        channels: channels as usize,
+        expected_samples,
+    })
+}
+
 /// `Err(None)` is a cancelled decode.
 fn decode_audio(
     ffmpeg: &FfmpegPaths,
@@ -288,27 +323,24 @@ fn decode_audio(
 ) -> Result<DecodedAudio, Option<String>> {
     let cancelled = || cancel.load(Ordering::Relaxed);
     let info = probe(ffmpeg, input, cancel).map_err(|e| (!cancelled()).then_some(e))?;
-    let stream = info
-        .streams
-        .iter()
-        .find(|stream| stream.kind == StreamKind::Audio)
-        .ok_or_else(|| Some("it has no audio stream".to_string()))?;
-    let (Some(sample_rate), Some(channels @ 1..)) = (stream.sample_rate, stream.channels) else {
-        return Err(Some(
-            "ffprobe gave no sample rate or channel count".to_string(),
-        ));
-    };
-    let channels = channels as usize;
-    let expected = stream
-        .duration_secs
-        .or(info.duration_secs)
-        .map_or(0, |secs| {
-            (secs * sample_rate as f64).ceil() as u64 * channels as u64
-        });
-    progress.expected.store(expected, Ordering::Relaxed);
+    let AudioLayout {
+        sample_rate,
+        channels,
+        expected_samples,
+    } = audio_layout(&info).map_err(Some)?;
+    progress.expected.store(expected_samples, Ordering::Relaxed);
 
     // A second of slack, so a slightly short probed duration doesn't double the buffer.
-    let mut samples = Vec::with_capacity(expected as usize + sample_rate as usize * channels);
+    let reserve = expected_samples.saturating_add(sample_rate as u64 * channels as u64);
+    let mut samples = Vec::new();
+    usize::try_from(reserve)
+        .ok()
+        .and_then(|reserve| samples.try_reserve_exact(reserve).ok())
+        .ok_or_else(|| {
+            Some(format!(
+                "its probed length of {expected_samples} samples doesn't fit in memory"
+            ))
+        })?;
     let mut carry = Vec::new();
     run_ffmpeg(&ffmpeg.ffmpeg, &pcm_decode_args(input), cancel, |chunk| {
         append_f32le(&mut samples, &mut carry, chunk);
@@ -804,6 +836,7 @@ mod tests {
 
     use super::*;
     use crate::file::BinaryFile;
+    use zcommon::ffmpeg::parse_probe;
     use zdiff::universal_path::UniversalPath;
 
     fn audio_file(name: &str) -> LoadedFile {
@@ -818,6 +851,46 @@ mod tests {
         FfmpegPaths {
             ffmpeg: dir.join("ffmpeg.exe"),
             ffprobe: dir.join("ffprobe.exe"),
+        }
+    }
+
+    fn layout(stream: &str, duration: &str) -> Result<AudioLayout, String> {
+        let json = format!(
+            r#"{{"streams": [{{"codec_type": "video"}}, {stream}], "format": {{"duration": "{duration}"}}}}"#
+        );
+        audio_layout(&parse_probe(&json).unwrap())
+    }
+
+    #[test]
+    fn the_layout_is_the_first_audio_streams_rate_and_channels() {
+        let stereo = r#"{"codec_type": "audio", "sample_rate": "48000", "channels": 2}"#;
+        assert_eq!(
+            layout(stereo, "1.5"),
+            Ok(AudioLayout {
+                sample_rate: 48000,
+                channels: 2,
+                expected_samples: 144000,
+            })
+        );
+        for unknown in ["N/A", "inf", "-3.0", "NaN"] {
+            assert_eq!(
+                layout(stereo, unknown).unwrap().expected_samples,
+                0,
+                "{unknown}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_stream_without_a_usable_rate_or_channel_count_has_no_layout() {
+        for stream in [
+            r#"{"codec_type": "audio", "sample_rate": "0", "channels": 2}"#,
+            r#"{"codec_type": "audio", "sample_rate": "48000", "channels": 0}"#,
+            r#"{"codec_type": "audio", "sample_rate": "48000"}"#,
+            r#"{"codec_type": "audio", "channels": 2}"#,
+            r#"{"codec_type": "subtitle"}"#,
+        ] {
+            assert!(layout(stream, "1.0").is_err(), "{stream}");
         }
     }
 
