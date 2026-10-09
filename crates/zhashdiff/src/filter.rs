@@ -30,8 +30,9 @@ impl PathFilter {
     }
 }
 
-/// Patterns separated by commas or newlines, parsed once at construction. Equality and
-/// persistence go by `text` alone.
+/// Patterns separated by commas, semicolons or whitespace, parsed once at construction. A
+/// backslash makes the next character literal (`My\ Folder`, `\*`). Equality and persistence go
+/// by `text` alone.
 #[derive(Debug, Clone, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(from = "String", into = "String"))]
@@ -42,27 +43,40 @@ pub struct PatternList {
 
 #[derive(Debug, Clone)]
 struct Pattern {
-    chars: Vec<char>,
+    chars: Vec<PatternChar>,
     dir_only: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PatternChar {
+    Any,
+    One,
+    Literal(char),
 }
 
 impl PatternList {
     pub fn new(text: impl Into<String>) -> Self {
         let text = text.into();
-        let patterns = text
-            .split([',', '\n'])
-            .filter_map(|entry| {
-                let entry = entry.trim();
-                let (entry, dir_only) = match entry.strip_suffix('/') {
-                    Some(entry) => (entry.trim_end(), true),
-                    None => (entry, false),
-                };
-                (!entry.is_empty()).then(|| Pattern {
-                    chars: entry.chars().collect(),
-                    dir_only,
-                })
-            })
-            .collect();
+        let mut patterns = Vec::new();
+        let mut entry = Vec::new();
+        let mut ends_in_slash = false;
+        let mut chars = text.chars();
+        while let Some(c) = chars.next() {
+            let pattern_char = match c {
+                '\\' => PatternChar::Literal(chars.next().unwrap_or('\\')),
+                '*' => PatternChar::Any,
+                '?' => PatternChar::One,
+                c if c == ',' || c == ';' || c.is_whitespace() => {
+                    push_pattern(&mut patterns, std::mem::take(&mut entry), ends_in_slash);
+                    ends_in_slash = false;
+                    continue;
+                }
+                c => PatternChar::Literal(c),
+            };
+            ends_in_slash = c == '/';
+            entry.push(pattern_char);
+        }
+        push_pattern(&mut patterns, entry, ends_in_slash);
         Self { text, patterns }
     }
 
@@ -108,17 +122,21 @@ impl From<PatternList> for String {
 
 /// Greedy match that only ever backtracks to the last `*`: O(pattern x name), so no pattern can
 /// hang it.
-fn wildcard_match(pattern: &[char], name: &[char]) -> bool {
+fn wildcard_match(pattern: &[PatternChar], name: &[char]) -> bool {
     let (mut p, mut n) = (0, 0);
     // Pattern index after the last `*`, and the name index that `*` currently extends to.
     let mut last_star: Option<(usize, usize)> = None;
     while n < name.len() {
         match pattern.get(p) {
-            Some('*') => {
+            Some(PatternChar::Any) => {
                 last_star = Some((p + 1, n));
                 p += 1;
             }
-            Some(&c) if c == '?' || eq_ignore_case(c, name[n]) => {
+            Some(PatternChar::One) => {
+                p += 1;
+                n += 1;
+            }
+            Some(&PatternChar::Literal(c)) if eq_ignore_case(c, name[n]) => {
                 p += 1;
                 n += 1;
             }
@@ -132,7 +150,16 @@ fn wildcard_match(pattern: &[char], name: &[char]) -> bool {
             },
         }
     }
-    pattern[p..].iter().all(|&c| c == '*')
+    pattern[p..].iter().all(|&c| c == PatternChar::Any)
+}
+
+fn push_pattern(patterns: &mut Vec<Pattern>, mut chars: Vec<PatternChar>, dir_only: bool) {
+    if dir_only {
+        chars.pop();
+    }
+    if !chars.is_empty() {
+        patterns.push(Pattern { chars, dir_only });
+    }
 }
 
 // Per character, so `?` still consumes exactly one character of the name.
@@ -194,20 +221,67 @@ mod tests {
     }
 
     #[test]
-    fn patterns_split_on_commas_and_newlines_trimmed_with_blanks_dropped() {
-        let filter = blacklist(" a.txt ,b.txt\n\n  c.txt\r\n , ,\nbin /");
-        for name in ["a.txt", "b.txt", "c.txt"] {
+    fn patterns_split_on_commas_semicolons_and_whitespace_with_blanks_dropped() {
+        let filter =
+            blacklist("a.txt,b.txt;c.txt d.txt\te.txt\nf.txt\r\ng.txt ,; \t\n,,h.txt bin/");
+        for name in [
+            "a.txt", "b.txt", "c.txt", "d.txt", "e.txt", "f.txt", "g.txt", "h.txt",
+        ] {
             assert!(filter.is_blacklisted(name, false), "{name}");
         }
+        assert!(!filter.is_blacklisted("a.txt,b.txt", false));
+        assert!(!filter.is_blacklisted("c.txt d.txt", false));
         assert!(filter.is_blacklisted("bin", true));
         assert!(!filter.is_blacklisted("bin", false));
         assert!(!filter.is_blacklisted("", false));
         assert!(!filter.is_blacklisted(" ", false));
 
-        let blanks = blacklist(" , ,\n\r\n /,");
+        let blanks = blacklist(" , ;\t\n\r\n /;,");
         assert!(!blanks.is_active());
         assert!(!blanks.is_blacklisted("", true));
         assert!(!blanks.is_blacklisted("a", true));
+    }
+
+    #[test]
+    fn a_space_before_the_folder_slash_separates_it_from_the_name() {
+        let filter = blacklist("bin /");
+        assert!(filter.is_blacklisted("bin", true));
+        assert!(filter.is_blacklisted("bin", false));
+    }
+
+    #[test]
+    fn a_backslash_makes_the_next_character_literal() {
+        let filter = blacklist(r"My\ Folder/ a\,b a\;b c\\d star\* q\?");
+        assert!(filter.is_blacklisted("My Folder", true));
+        assert!(!filter.is_blacklisted("My Folder", false));
+        for name in ["My", "Folder"] {
+            assert!(!filter.is_blacklisted(name, true), "{name}");
+        }
+        for name in ["a,b", "a;b", r"c\d", "star*", "q?"] {
+            assert!(filter.is_blacklisted(name, false), "{name}");
+        }
+        for name in ["a", "b", "c", "d", r"c\\d", "stars", "star", "qq"] {
+            assert!(!filter.is_blacklisted(name, false), "{name}");
+        }
+    }
+
+    #[test]
+    fn a_trailing_escaped_space_is_part_of_the_pattern() {
+        let filter = blacklist(r"name\ ");
+        assert!(filter.is_blacklisted("name ", false));
+        assert!(!filter.is_blacklisted("name", false));
+
+        let filter = blacklist(r"dir\ /");
+        assert!(filter.is_blacklisted("dir ", true));
+        assert!(!filter.is_blacklisted("dir ", false));
+        assert!(!filter.is_blacklisted("dir", true));
+    }
+
+    #[test]
+    fn an_escaped_slash_does_not_mean_folders_only() {
+        let filter = blacklist(r"bin\/");
+        assert!(!filter.is_blacklisted("bin", true));
+        assert!(filter.is_blacklisted("bin/", false));
     }
 
     #[test]

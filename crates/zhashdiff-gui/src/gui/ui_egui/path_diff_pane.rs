@@ -229,9 +229,9 @@ impl PathDiffPane {
 /// table drawn below still has this frame's rows.
 fn draw_filter_bar(ui: &mut egui::Ui, filter: &mut PathFilter) {
     ui.label("Blacklist:");
-    draw_pattern_field(ui, &mut filter.blacklist, "*.obj, target/, .git");
+    draw_pattern_field(ui, &mut filter.blacklist, r"*.obj target/ My\ Folder/");
     ui.label("Whitelist:");
-    draw_pattern_field(ui, &mut filter.whitelist, "*.rs, *.toml");
+    draw_pattern_field(ui, &mut filter.whitelist, "*.rs *.toml");
     let has_text = *filter != PathFilter::default();
     if ui
         .add_enabled(has_text, egui::Button::new("Clear"))
