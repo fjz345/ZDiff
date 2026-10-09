@@ -317,7 +317,7 @@ impl<'a> SplitTable<'a> {
 
 /// Draws `add_contents` scrolled left by `offset` and clipped to the cell. The cell counts as
 /// used, not the content in it, so the column doesn't grow to the row's width.
-fn show_scrolled(ui: &mut egui::Ui, offset: f32, add_contents: impl FnOnce(&mut egui::Ui)) {
+pub fn show_scrolled(ui: &mut egui::Ui, offset: f32, add_contents: impl FnOnce(&mut egui::Ui)) {
     let cell = ui.max_rect();
     let shifted = egui::Rect::from_min_size(
         cell.min - egui::vec2(offset, 0.0),

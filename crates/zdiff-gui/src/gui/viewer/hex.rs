@@ -11,6 +11,7 @@ use std::{
 };
 
 use eframe::egui::{self, Color32, FontId, text::LayoutJob};
+use zcommon::ui_egui::table::SplitColumn;
 use zdiff::hex::{HexDiff, HexSide, hex_diff};
 
 use crate::{diff_ctx::ScrollSpan, file::LoadedFile};
@@ -317,36 +318,31 @@ impl HexViewCtx<'_> {
     }
 }
 
-/// Fills the diff pane's three-column table body: left side, change marker, right side.
-pub fn table_body(
-    body: egui_extras::TableBody<'_>,
-    ctx: &HexViewCtx,
-    row_height: f32,
-    left_rect: &mut egui::Rect,
-    right_rect: &mut egui::Rect,
-) {
+pub fn row_count(ctx: &HexViewCtx) -> usize {
+    let len = |file: Option<&LoadedFile>| file.map_or(0, |f| f.bytes().len());
+    hex_row_count(len(ctx.file_1), len(ctx.file_2))
+}
+
+/// One cell of the diff pane's table: a side's row, or the change marker in the center.
+pub fn cell(ui: &mut egui::Ui, ctx: &HexViewCtx, row_index: usize, column: SplitColumn) {
     let bytes_1 = ctx.file_1.map(|f| f.bytes()).unwrap_or_default();
     let bytes_2 = ctx.file_2.map(|f| f.bytes()).unwrap_or_default();
-    let total_rows = hex_row_count(bytes_1.len(), bytes_2.len());
+    let states_1 = || hex_row_states(ctx.diff, bytes_1.len(), row_index);
+    let states_2 = || hex_row_states(ctx.diff, bytes_2.len(), row_index);
 
-    body.rows(row_height, total_rows, |mut row| {
-        let row_index = row.index();
-        let states_1 = hex_row_states(ctx.diff, bytes_1.len(), row_index);
-        let states_2 = hex_row_states(ctx.diff, bytes_2.len(), row_index);
-
-        row.col(|ui| {
+    match column {
+        SplitColumn::Left => {
             if ctx.file_1.is_some() {
-                side_row_label(ui, bytes_1, &states_1, row_index, ctx.highlight.as_ref());
+                side_row_label(ui, bytes_1, &states_1(), row_index, ctx.highlight.as_ref());
             }
-            *left_rect = left_rect.union(ui.max_rect());
-        });
-        row.col(|ui| {
+        }
+        SplitColumn::Center => {
             let changed = |states: &[HexByteState]| {
                 states
                     .iter()
                     .any(|s| matches!(s, HexByteState::Different | HexByteState::OnlyHere))
             };
-            let marker = if changed(&states_1) || changed(&states_2) {
+            let marker = if changed(&states_1()) || changed(&states_2()) {
                 "≠"
             } else {
                 " "
@@ -357,14 +353,13 @@ pub fn table_body(
                         .selectable(false),
                 );
             });
-        });
-        row.col(|ui| {
+        }
+        SplitColumn::Right => {
             if ctx.file_2.is_some() {
-                side_row_label(ui, bytes_2, &states_2, row_index, ctx.highlight.as_ref());
+                side_row_label(ui, bytes_2, &states_2(), row_index, ctx.highlight.as_ref());
             }
-            *right_rect = right_rect.union(ui.max_rect());
-        });
-    });
+        }
+    }
 }
 
 fn side_row_label(

@@ -12,6 +12,7 @@ use std::{
 use eframe::egui::{
     self, Event, Galley, Modifiers, OutputCommand, PointerButton, Pos2, Rect, Shape,
 };
+use zcommon::ui_egui::table::{Split, SplitColumn, SplitTable, show_scrolled};
 use zdiff::{
     cached_file::{CachedFile, FileMetadata},
     diff_builder::{DiffBuilderOptions, DiffRow, LineContent, build_diff_rows},
@@ -25,8 +26,8 @@ use zdiff::{
 use crate::ui_egui::{
     active_side::{ActiveSide, ActiveSideState},
     diff_pane::{
-        CopyMarkerPlugin, FileDiffPane, measure_wrapped_rows, show_scrolled, side_content_widths,
-        text_rows, wrap_width, wrapped_row_heights,
+        CopyMarkerPlugin, FileDiffPane, measure_wrapped_rows, side_content_widths, text_rows,
+        wrap_width, wrapped_row_heights,
     },
     occurrence::{OccurrenceState, RowFind},
 };
@@ -386,8 +387,8 @@ impl CopyHarness {
         self.occurrences.ranges(active_side_of(side), row, &text)
     }
 
-    /// Draws the left side's rows through the pane's table body in a window `height` tall,
-    /// searching for `needle`, and returns how many rows were searched and the row height.
+    /// Draws the left side's rows through the pane's table in a window `height` tall, searching
+    /// for `needle`, and returns how many rows were searched and the row height.
     pub fn rows_searched_in_table(&self, needle: &str, height: f32) -> (usize, f32) {
         let ctx = egui::Context::default();
         let mut occurrences = OccurrenceState::with_needle(needle);
@@ -401,32 +402,34 @@ impl CopyHarness {
                 ui.style_mut().override_text_style = Some(egui::TextStyle::Monospace);
                 ui.spacing_mut().item_spacing.y = 0.0;
                 row_h = ui.text_style_height(&egui::TextStyle::Monospace);
-                egui_extras::TableBuilder::new(ui)
-                    .column(egui_extras::Column::remainder())
-                    .body(|body| {
-                        text_rows(body, None, row_h, self.rows.len(), |mut row| {
-                            let index = row.index();
-                            row.col(|ui| {
-                                FileDiffPane::render_side_row(
-                                    ui,
-                                    ActiveSide::Left,
-                                    index,
-                                    &mut occurrences,
-                                    Some(self.file_source.clone()),
-                                    Some(self.file_target.clone()),
-                                    &self.rows[index].left,
-                                    SIDE_WIDTH,
-                                    false,
-                                    false,
-                                    false,
-                                    RowFind::default(),
-                                    false,
-                                    "rs",
-                                    None,
-                                );
-                            });
-                        });
-                    });
+                SplitTable::new("rows_searched", &mut Split::default()).show(
+                    ui,
+                    0.0,
+                    |_, _| {},
+                    text_rows(None, row_h, self.rows.len()),
+                    |index, column, ui| {
+                        if column != SplitColumn::Left {
+                            return;
+                        }
+                        FileDiffPane::render_side_row(
+                            ui,
+                            ActiveSide::Left,
+                            index,
+                            &mut occurrences,
+                            Some(self.file_source.clone()),
+                            Some(self.file_target.clone()),
+                            &self.rows[index].left,
+                            SIDE_WIDTH,
+                            false,
+                            false,
+                            false,
+                            RowFind::default(),
+                            false,
+                            "rs",
+                            None,
+                        );
+                    },
+                );
             });
         });
         (occurrences.searched_rows(), row_h)

@@ -23,10 +23,7 @@ use crate::{
         image::{self, ImageDiffProcessor},
     },
 };
-use eframe::egui::{
-    self, Layout, TextEdit, UiBuilder, Vec2, scroll_area::ScrollBarVisibility,
-    text_selection::LabelSelectionState,
-};
+use eframe::egui::{self, Layout, TextEdit, UiBuilder, Vec2, text_selection::LabelSelectionState};
 use serde::{Deserialize, Serialize};
 use zcommon::{
     find::Matcher,
@@ -37,6 +34,7 @@ use zcommon::{
         keymap::{Action, Keymap},
         pathbar::{PathBarAction, path_bar},
         presets::presets_menu,
+        table::{Rows, Split, SplitColumn, SplitTable, shared_width},
         toggle::{TOGGLE_BUTTON_SIZE, toggle_button},
     },
 };
@@ -129,6 +127,11 @@ pub struct FileDiffPane {
     pin_input: PinInput,
     #[serde(skip)]
     browsers: [Option<FolderBrowser>; 2],
+    #[serde(skip)]
+    split: Split,
+    /// Measured from the last frame's header: the header cells clip to the height they're given.
+    #[serde(skip)]
+    header_height: f32,
 }
 
 #[derive(Default)]
@@ -219,6 +222,8 @@ impl FileDiffPane {
             occurrences: OccurrenceState::default(),
             pin_input: PinInput::default(),
             browsers: [None, None],
+            split: Split::default(),
+            header_height: 0.0,
         }
     }
 
@@ -254,19 +259,10 @@ impl FileDiffPane {
         ui.ctx().add_plugin(CopyMarkerPlugin);
         self.occurrences.begin_frame(ui.ctx());
 
-        // egui turns Shift+wheel (Ctrl+wheel via h_scroll::remap_wheel_events) into horizontal
-        // delta. Only text rows over a side scroll; the footer bars handle the wheel themselves.
-        let (wheel_delta, hover_pos) =
-            ui.input(|i| (i.smooth_scroll_delta.x, i.pointer.hover_pos()));
-        let wheel_side = hover_pos
-            .filter(|_| wheel_delta != 0.0 && ctx.hex_view.is_none() && ctx.image_view.is_none())
-            .and_then(|pos| self.active_side.side_at(pos));
         let content_widths = match ctx.diff_ctx {
             Some(diff_ctx) => self.content_widths(ui, diff_ctx),
             None => [0.0; 2],
         };
-        // Each side's max offset, set once the text rows are laid out.
-        let mut h_scroll_max = None;
 
         log::trace!("=================================================");
 
@@ -279,6 +275,8 @@ impl FileDiffPane {
         let row_heights = &mut self.row_heights;
         let occurrences = &mut self.occurrences;
         let pin_input = &mut self.pin_input;
+        let split = &mut self.split;
+        let header_height = &mut self.header_height;
         let mono_font = egui::TextStyle::Monospace.resolve(ui.style());
         let egui_ctx = ui.ctx().clone();
         let keymap = ctx.keymap;
@@ -507,11 +505,9 @@ impl FileDiffPane {
         ui.style_mut().override_text_style = Some(egui::TextStyle::Monospace);
         ui.spacing_mut().item_spacing.y = 0.0;
 
-        let footer_height = 30.0;
-        let table_height = (ui.available_height() - footer_height).max(0.0);
+        let table_height = ui.available_height();
 
-        let mut left_rect = egui::Rect::NOTHING;
-        let mut right_rect = egui::Rect::NOTHING;
+        let mut side_rects = [egui::Rect::NOTHING; 2];
         let mut table_rect = egui::Rect::NOTHING;
         let mut header_rects = [egui::Rect::NOTHING; 2];
         let mut browse: [Option<String>; 2] = [None, None];
@@ -523,17 +519,21 @@ impl FileDiffPane {
                     egui::Frame::default()
                         .fill(egui::Color32::from_gray(15))
                         .show(ui, |ui| {
-                            use egui_extras::{Column, TableBuilder};
-
-                            let mut table_builder = TableBuilder::new(ui);
+                            let area = ui.available_rect_before_wrap();
+                            let side_widths = split.widths(shared_width(
+                                area.width(),
+                                CENTER_WIDTH,
+                                ui.spacing().item_spacing.x,
+                            ));
+                            let mut table = SplitTable::new("file_diff_table", &mut *split)
+                                .center_width(CENTER_WIDTH);
                             // Images are drawn below the header (the path editors), in the
                             // table's columns, outside its scroll area so the wheel zooms.
                             let mut image_left_width = None;
 
                             if let Some(ScrollSpan { start, maybe_end }) = &ctx.scroll_to_row_span {
                                 log::trace!("scroll_to_row_span: ({:?}, {:?})", start, maybe_end);
-                                table_builder =
-                                    table_builder.scroll_to_row(*start, Some(egui::Align::Min));
+                                table = table.scroll_to_row(*start, Some(egui::Align::Min));
                             }
 
                             let editable_path_test =
@@ -696,134 +696,114 @@ impl FileDiffPane {
                                     None => (None, None),
                                 }
                             };
-                            table_builder
-                                .id_salt("file_diff_table")
-                                .striped(false)
-                                .resizable(true)
-                                .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-                                .column(
-                                    Column::initial(available_width * 0.48)
-                                        .at_least(100.0)
-                                        .clip(false),
-                                )
-                                .column(Column::exact(12.0)) // "≠"
-                                .column(Column::remainder().clip(false))
-                                .header(20.0, |mut header| {
-                                    header_rects[0] = header.col(|ui| {
-                                        ui.vertical(|ui| {
-                                            *ctx.set_file_1_root_request = editable_path_test(
-                                                ui,
-                                                "file_1_path_editor_path".into(),
-                                                &ctx.file_source_root.clone().unwrap_or_default(),
-                                                None,
-                                                ctx.file_source_root_valid,
-                                                ctx.file_source_loading,
-                                            );
-                                            ui.separator();
-                                            (*ctx.load_file_1_request, browse[0]) = file_path_bar(
-                                                ui,
-                                                "file_1_path_bar",
-                                                &ctx.file_source_path,
-                                                ctx.file_source_label.as_deref(),
-                                                ctx.file_source_root.as_ref(),
-                                                ctx.file_source_path_valid,
-                                                ctx.file_source_loading,
-                                            );
-                                            ui.separator();
-                                        });
-                                    })
-                                    .0;
-                                    header.col(|_| {});
-                                    header_rects[1] = header.col(|ui| {
-                                        ui.vertical(|ui| {
-                                            *ctx.set_file_2_root_request = editable_path_test(
-                                                ui,
-                                                "file_2_path_editor_path".into(),
-                                                &ctx.file_target_root.clone().unwrap_or_default(),
-                                                None,
-                                                ctx.file_target_root_valid,
-                                                ctx.file_target_loading,
-                                            );
-                                            ui.separator();
-                                            (*ctx.load_file_2_request, browse[1]) = file_path_bar(
-                                                ui,
-                                                "file_2_path_bar",
-                                                &ctx.file_target_path,
-                                                ctx.file_target_label.as_deref(),
-                                                ctx.file_target_root.as_ref(),
-                                                ctx.file_target_path_valid,
-                                                ctx.file_target_loading,
-                                            );
-                                            ui.separator();
-                                        });
-                                    })
-                                    .0;
-                                })
-                                .body(|body| {
-                                    if ctx.image_view.is_some() {
-                                        image_left_width = Some(body.widths()[0]);
-                                        return;
+                            let header = |column: SplitColumn, ui: &mut egui::Ui| {
+                                // Clipped cells truncate text; the path bars lay out as before.
+                                ui.style_mut().wrap_mode = None;
+                                match column {
+                                    SplitColumn::Left => {
+                                        header_rects[0] = ui
+                                            .vertical(|ui| {
+                                                *ctx.set_file_1_root_request = editable_path_test(
+                                                    ui,
+                                                    "file_1_path_editor_path".into(),
+                                                    &ctx.file_source_root.clone().unwrap_or_default(),
+                                                    None,
+                                                    ctx.file_source_root_valid,
+                                                    ctx.file_source_loading,
+                                                );
+                                                ui.separator();
+                                                (*ctx.load_file_1_request, browse[0]) = file_path_bar(
+                                                    ui,
+                                                    "file_1_path_bar",
+                                                    &ctx.file_source_path,
+                                                    ctx.file_source_label.as_deref(),
+                                                    ctx.file_source_root.as_ref(),
+                                                    ctx.file_source_path_valid,
+                                                    ctx.file_source_loading,
+                                                );
+                                                ui.separator();
+                                            })
+                                            .response
+                                            .rect;
                                     }
-                                    if let Some(hex_view) = &ctx.hex_view {
-                                        hex::table_body(
-                                            body,
-                                            hex_view,
-                                            row_height,
-                                            &mut left_rect,
-                                            &mut right_rect,
-                                        );
-                                        return;
+                                    SplitColumn::Center => {}
+                                    SplitColumn::Right => {
+                                        header_rects[1] = ui
+                                            .vertical(|ui| {
+                                                *ctx.set_file_2_root_request = editable_path_test(
+                                                    ui,
+                                                    "file_2_path_editor_path".into(),
+                                                    &ctx.file_target_root.clone().unwrap_or_default(),
+                                                    None,
+                                                    ctx.file_target_root_valid,
+                                                    ctx.file_target_loading,
+                                                );
+                                                ui.separator();
+                                                (*ctx.load_file_2_request, browse[1]) = file_path_bar(
+                                                    ui,
+                                                    "file_2_path_bar",
+                                                    &ctx.file_target_path,
+                                                    ctx.file_target_label.as_deref(),
+                                                    ctx.file_target_root.as_ref(),
+                                                    ctx.file_target_path_valid,
+                                                    ctx.file_target_loading,
+                                                );
+                                                ui.separator();
+                                            })
+                                            .response
+                                            .rect;
                                     }
-                                    if do_not_render_diff {
-                                        return Default::default();
-                                    }
+                                }
+                            };
+                            let header_only = ctx.image_view.is_some() || do_not_render_diff;
+                            let mut offsets = [*ctx.scroll_left, *ctx.scroll_right];
+                            // Wrapped text fits its column, so nothing scrolls sideways. Hex rows
+                            // have a fixed width, images pan.
+                            if !(wrap || header_only || ctx.hex_view.is_some()) {
+                                table = table.h_scroll(
+                                    &mut offsets,
+                                    *ctx.h_scroll_linked,
+                                    content_widths,
+                                );
+                            }
+                            let rows = if let Some(hex_view) = &ctx.hex_view {
+                                Rows::Uniform {
+                                    height: row_height,
+                                    count: hex::row_count(hex_view),
+                                }
+                            } else if header_only {
+                                Rows::Uniform {
+                                    height: row_height,
+                                    count: 0,
+                                }
+                            } else {
+                                let heights = match ctx.diff_ctx {
+                                    Some(diff_ctx) if wrap => Some(wrapped_heights(
+                                        row_heights,
+                                        &egui_ctx,
+                                        &mono_font,
+                                        diff_ctx,
+                                        side_widths.map(wrap_width),
+                                    )),
+                                    _ => None,
+                                };
+                                text_rows(heights, row_height, diff_rows_len)
+                            };
 
-                                    let widths = body.widths().to_vec();
                                     // Once per frame, not per row: a temp side gets no revert buttons.
                                     let temp_root = std::env::temp_dir();
-                                    // Wrapped text fits its column, so nothing scrolls sideways.
-                                    let [sl, sr] = if wrap {
-                                        [0.0; 2]
-                                    } else {
-                                        let max = [
-                                            h_scroll::max_offset(content_widths[0], widths[0]),
-                                            h_scroll::max_offset(content_widths[1], widths[2]),
-                                        ];
-                                        let linked = *ctx.h_scroll_linked;
-                                        let mut offsets = h_scroll::clamp(
-                                            [*ctx.scroll_left, *ctx.scroll_right],
-                                            max,
-                                            linked,
-                                        );
-                                        if let Some(side) = wheel_side {
-                                            let offset =
-                                                offsets[h_scroll::side_index(side)] - wheel_delta;
-                                            offsets =
-                                                h_scroll::set(offsets, side, offset, max, linked);
-                                        }
-                                        [*ctx.scroll_left, *ctx.scroll_right] = offsets;
-                                        h_scroll_max = Some(max);
-                                        offsets
-                                    };
-                                    let heights = match ctx.diff_ctx {
-                                        Some(diff_ctx) if wrap => Some(wrapped_heights(
-                                            row_heights,
-                                            &egui_ctx,
-                                            &mono_font,
-                                            diff_ctx,
-                                            [wrap_width(widths[0]), wrap_width(widths[2])],
-                                        )),
-                                        _ => None,
-                                    };
                                     let shown_pins = ctx.diff_ctx.map_or(&[][..], shown_pins);
                                     let overlay = ctx
                                         .diff_ctx
                                         .filter(|_| ctx.phase_overlay)
                                         .and_then(|d| d.phase_trace.as_deref());
-                                    let add_row = |mut row: egui_extras::TableRow| {
+                                    let cell = |row_index: usize, column: SplitColumn, ui: &mut egui::Ui| {
+                                            if let Some(hex_view) = &ctx.hex_view {
+                                                hex::cell(ui, hex_view, row_index, column);
+                                                return;
+                                            }
                                             if let Some(rows) = diff_rows {
-                                                let row_index = row.index();
-                                                let diff_row = &rows[row.index()];
+                                                let diff_row = &rows[row_index];
                                                 let is_highlighted =
                                                     ctx.active_highlights.contains(&row_index);
                                                 let highlight_side = ctx.highlight_side;
@@ -837,12 +817,17 @@ impl FileDiffPane {
                                                 let (find_matcher, find_hit) =
                                                     (ctx.find_matcher, ctx.find_hit);
 
-                                                log::trace!("==LEFT==");
-                                                row.col(|ui| {
-                                                    show_scrolled(ui, sl, |ui| {
+                                                match column {
+                                                SplitColumn::Left | SplitColumn::Right => {
+                                                    let (side, content) = if column == SplitColumn::Left {
+                                                        (ActiveSide::Left, &diff_row.left)
+                                                    } else {
+                                                        (ActiveSide::Right, &diff_row.right)
+                                                    };
+                                                    let width = ui.max_rect().width();
                                                         Self::render_side_row(
                                                             ui,
-                                                            ActiveSide::Left,
+                                                            side,
                                                             row_index,
                                                             occurrences,
                                                             ctx.diff_ctx
@@ -851,33 +836,43 @@ impl FileDiffPane {
                                                             ctx.diff_ctx
                                                                 .map(|f| f.input.file_2.clone())
                                                                 .unwrap_or_default(),
-                                                            &diff_row.left,
-                                                            widths[0] + sl,
+                                                            content,
+                                                            width,
                                                             wrap,
-                                                            lit(ActiveSide::Left),
-                                                            accent_line_num(ActiveSide::Left),
+                                                            lit(side),
+                                                            accent_line_num(side),
                                                             row_find(
                                                                 find_matcher,
                                                                 find_hit,
-                                                                ActiveSide::Left,
+                                                                side,
                                                                 row_index,
-                                                                &diff_row.left,
+                                                                content,
                                                             ),
-                                                            active_side == ActiveSide::Left,
+                                                            active_side == side,
                                                             ctx.code_language,
                                                             overlay,
                                                         );
-                                                    });
-                                                    if is_pinned(shown_pins, ActiveSide::Left, &diff_row.left) {
-                                                        paint_pin_marker(ui);
+                                                    let pinned = is_pinned(shown_pins, side, content);
+                                                    if pinned || overlay.is_some() {
+                                                        let cell_ui = ui.new_child(
+                                                            UiBuilder::new().max_rect(unscrolled_cell(ui)),
+                                                        );
+                                                        if pinned {
+                                                            paint_pin_marker(&cell_ui);
+                                                        }
+                                                        if let Some(trace) = overlay {
+                                                            paint_trace_gutter(&cell_ui, trace, side, content);
+                                                        }
                                                     }
-                                                    if let Some(trace) = overlay {
-                                                        paint_trace_gutter(ui, trace, ActiveSide::Left, &diff_row.left);
-                                                    }
-                                                    left_rect = left_rect.union(ui.max_rect());
-                                                });
+                                                }
 
-                                                row.col(|ui| {
+                                                SplitColumn::Center => {
+                                                    // Today's buttons spill over the sides of the column; 04 sizes it to fit them.
+                                                    ui.set_clip_rect(egui::Rect::from_x_y_ranges(
+                                                        area.x_range(),
+                                                        ui.clip_rect().y_range(),
+                                                    ));
+                                                    ui.style_mut().wrap_mode = None;
                                                     let has_op =
                                                         |tokens: &[(DiffResult, _, _)], op| {
                                                             tokens.iter().any(|f| {
@@ -1004,51 +999,35 @@ impl FileDiffPane {
                                                             revert_button(ui, RevertTarget::Right, ">", "Replace this hunk in the right file with the left side");
                                                         });
                                                     });
-                                                });
-
-                                                log::trace!("==RIGHT==");
-                                                row.col(|ui| {
-                                                    show_scrolled(ui, sr, |ui| {
-                                                        Self::render_side_row(
-                                                            ui,
-                                                            ActiveSide::Right,
-                                                            row_index,
-                                                            occurrences,
-                                                            ctx.diff_ctx
-                                                                .map(|f| f.input.file_1.clone())
-                                                                .unwrap_or_default(),
-                                                            ctx.diff_ctx
-                                                                .map(|f| f.input.file_2.clone())
-                                                                .unwrap_or_default(),
-                                                            &diff_row.right,
-                                                            widths[2] + sr,
-                                                            wrap,
-                                                            lit(ActiveSide::Right),
-                                                            accent_line_num(ActiveSide::Right),
-                                                            row_find(
-                                                                find_matcher,
-                                                                find_hit,
-                                                                ActiveSide::Right,
-                                                                row_index,
-                                                                &diff_row.right,
-                                                            ),
-                                                            active_side == ActiveSide::Right,
-                                                            ctx.code_language,
-                                                            overlay,
-                                                        );
-                                                    });
-                                                    if is_pinned(shown_pins, ActiveSide::Right, &diff_row.right) {
-                                                        paint_pin_marker(ui);
-                                                    }
-                                                    if let Some(trace) = overlay {
-                                                        paint_trace_gutter(ui, trace, ActiveSide::Right, &diff_row.right);
-                                                    }
-                                                    right_rect = right_rect.union(ui.max_rect());
-                                                });
+                                                }
+                                                }
                                             }
                                         };
-                                    text_rows(body, heights, row_height, diff_rows_len, add_row);
-                                });
+                            let output = if header_only {
+                                // The table fills the space it is given; only its header shows here.
+                                let rect = egui::Rect::from_min_size(
+                                    ui.cursor().min,
+                                    egui::vec2(ui.available_width(), *header_height),
+                                );
+                                let mut header_ui = ui.new_child(UiBuilder::new().max_rect(rect));
+                                let output =
+                                    table.show(&mut header_ui, *header_height, header, rows, cell);
+                                ui.advance_cursor_after_rect(rect);
+                                output
+                            } else {
+                                table.show(ui, *header_height, header, rows, cell)
+                            };
+                            [*ctx.scroll_left, *ctx.scroll_right] = offsets;
+                            let measured = header_rects[0].height().max(header_rects[1].height());
+                            if measured != *header_height {
+                                *header_height = measured;
+                                ui.ctx().request_repaint();
+                            }
+                            if ctx.image_view.is_some() {
+                                image_left_width = Some(output.side_rects[0].width());
+                            } else if !header_only {
+                                side_rects = output.side_rects;
+                            }
                             if let (Some(image_view), Some(left_width)) =
                                 (ctx.image_view.as_deref_mut(), image_left_width)
                             {
@@ -1078,42 +1057,6 @@ impl FileDiffPane {
                         ui.label("Load Source & Target files to see diff.");
                     }
                 });
-            }
-
-            // The bars scroll text rows; hex rows have a fixed width, images pan.
-            if let Some(max) = h_scroll_max
-                && !(waiting_for_diff || do_not_render_diff || other_viewer)
-            {
-                ui.add_space(4.0);
-                let linked = *ctx.h_scroll_linked;
-                let mut offsets = [*ctx.scroll_left, *ctx.scroll_right];
-                let side_rects = [left_rect, right_rect];
-                let ranges = h_scroll::ranges(max, linked);
-                let footer = ui
-                    .allocate_space(egui::vec2(ui.available_width(), footer_height - 4.0))
-                    .1;
-                if linked {
-                    let rect = egui::Rect::from_x_y_ranges(
-                        left_rect.union(right_rect).x_range(),
-                        footer.y_range(),
-                    );
-                    if let Some(offset) = h_scroll_bar(ui, rect, "linked", offsets[0], ranges[0])
-                    {
-                        offsets = h_scroll::set(offsets, ActiveSide::Left, offset, max, linked);
-                        ui.ctx().request_repaint();
-                    }
-                } else {
-                    for side in [ActiveSide::Left, ActiveSide::Right] {
-                        let i = h_scroll::side_index(side);
-                        let rect =
-                            egui::Rect::from_x_y_ranges(side_rects[i].x_range(), footer.y_range());
-                        if let Some(offset) = h_scroll_bar(ui, rect, i, offsets[i], ranges[i]) {
-                            offsets = h_scroll::set(offsets, side, offset, max, linked);
-                            ui.ctx().request_repaint();
-                        }
-                    }
-                }
-                [*ctx.scroll_left, *ctx.scroll_right] = offsets;
             }
         });
 
@@ -1184,13 +1127,7 @@ impl FileDiffPane {
             self.browsers = [None, None];
         }
 
-        // Rows are laid out inside the table's scroll area, so clip to it: a partially visible
-        // edge row would otherwise push the outline past the table.
-        let active_rect = match active_side {
-            ActiveSide::Left => left_rect,
-            ActiveSide::Right => right_rect,
-        }
-        .intersect(table_rect);
+        let active_rect = side_rects[h_scroll::side_index(active_side)];
         if active_rect.is_positive() {
             ui.painter().rect_stroke(
                 active_rect,
@@ -1199,12 +1136,12 @@ impl FileDiffPane {
                 egui::StrokeKind::Inside,
             );
         }
+        let [left_rect, right_rect] = side_rects;
         self.active_side.end_frame(left_rect, right_rect);
         self.occurrences.end_frame(ui.ctx());
         if !other_viewer {
-            let rects = [left_rect, right_rect].map(|rect| rect.intersect(table_rect));
             ui.ctx()
-                .data_mut(|data| data.insert_temp(wheel_rects_id(), rects));
+                .data_mut(|data| data.insert_temp(wheel_rects_id(), side_rects));
         }
 
         handle_drops(
@@ -1514,6 +1451,7 @@ impl FileDiffPane {
 /// Line number column of a code row, and the gap between it and the row text.
 const GUTTER_WIDTH: f32 = 35.0;
 const GUTTER_GAP: f32 = 4.0;
+const CENTER_WIDTH: f32 = 12.0;
 
 const GOTO_LINE_NUM: egui::Color32 = egui::Color32::from_rgb(255, 210, 0);
 const CHANGED_CHARS_DEL_BG: egui::Color32 = egui::Color32::from_rgba_premultiplied(80, 0, 0, 80);
@@ -1983,62 +1921,23 @@ fn layout_side_text(
 /// Lays out the text rows: one line each, or each its wrapped height. A `scroll_to_row` on the
 /// table goes by the same heights.
 pub(super) fn text_rows(
-    body: egui_extras::TableBody<'_>,
     wrapped_heights: Option<&[f32]>,
     row_height: f32,
     num_rows: usize,
-    add_row: impl FnMut(egui_extras::TableRow<'_, '_>),
-) {
+) -> Rows<'_> {
     match wrapped_heights {
-        Some(heights) => body.heterogeneous_rows(heights.iter().copied(), add_row),
-        None => body.rows(row_height, num_rows, add_row),
+        Some(heights) => Rows::Heights(heights),
+        None => Rows::Uniform {
+            height: row_height,
+            count: num_rows,
+        },
     }
 }
 
-/// Draws `add_contents` scrolled left by `offset` and clipped to the cell. The cell counts as
-/// used, not the text in it, so the unclipped column doesn't grow to the row's text width.
-pub(super) fn show_scrolled(
-    ui: &mut egui::Ui,
-    offset: f32,
-    add_contents: impl FnOnce(&mut egui::Ui),
-) {
-    let cell = ui.max_rect();
-    let shifted = egui::Rect::from_min_size(
-        cell.min - egui::vec2(offset, 0.0),
-        cell.size() + egui::vec2(offset, 0.0),
-    );
-    let mut child = ui.new_child(UiBuilder::new().max_rect(shifted));
-    // Clipping also limits hit-testing, so shifted text can't take clicks from the middle column.
-    child.set_clip_rect(cell.intersect(ui.clip_rect()));
-    add_contents(&mut child);
-    ui.advance_cursor_after_rect(cell);
-}
-
-/// A horizontal scrollbar in `rect` (one side's, or both linked sides'), scrolling `range`
-/// points. Returns the offset when the bar moved it.
-fn h_scroll_bar(
-    ui: &mut egui::Ui,
-    rect: egui::Rect,
-    id_salt: impl std::hash::Hash,
-    offset: f32,
-    range: f32,
-) -> Option<f32> {
-    if !rect.is_positive() {
-        return None;
-    }
-    let mut child = ui.new_child(UiBuilder::new().max_rect(rect));
-    // Floating bars take no space and only show on hover.
-    child.spacing_mut().scroll = egui::style::ScrollStyle::solid();
-    let output = egui::ScrollArea::horizontal()
-        .id_salt(("h_scroll_bar", id_salt))
-        .auto_shrink([false, true])
-        .scroll_bar_visibility(ScrollBarVisibility::AlwaysVisible)
-        .scroll_offset(egui::vec2(offset, 0.0))
-        .show(&mut child, |ui| {
-            ui.allocate_space(egui::vec2(rect.width() + range, 0.0));
-        });
-    let moved = output.state.offset.x;
-    (moved != offset).then_some(moved)
+/// The cell a side's row is drawn in before `SplitTable` shifts it sideways. The shifted ui still
+/// clips to the cell, so its clip rect has the cell's x range.
+fn unscrolled_cell(ui: &egui::Ui) -> egui::Rect {
+    egui::Rect::from_x_y_ranges(ui.clip_rect().x_range(), ui.max_rect().y_range())
 }
 
 pub const REGEX_IGNORE_PRESETS: &[BuiltinPreset] = &[
@@ -2680,6 +2579,7 @@ mod tests {
 
     use std::time::Duration;
 
+    use zcommon::ui_egui::table::{Split, SplitColumn, SplitTable};
     use zdiff::{
         diff_builder::{DiffBuilderOptions, DiffRow, LineContent},
         ignore::{IgnoreOptions, IgnorePatterns},
@@ -2695,6 +2595,19 @@ mod tests {
         diff_status_text, highlight_ranges, insert_ghost_gaps, layout_side_text, recolor_ranges,
         row_find, strip_copy_markers,
     };
+
+    #[test]
+    fn the_split_is_not_persisted() {
+        let mut pane = super::FileDiffPane::new(Some("Diff".to_owned()));
+        pane.split.drag(150.0, 1000.0);
+        assert_ne!(pane.split, Split::default());
+
+        let json = serde_json::to_string(&pane).unwrap();
+        let restored: super::FileDiffPane = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(restored.title.as_deref(), Some("Diff"));
+        assert_eq!(restored.split, Split::default());
+    }
 
     #[test]
     fn pin_fields_are_one_based_line_numbers() {
@@ -3689,20 +3602,19 @@ mod tests {
                 egui::CentralPanel::default().show(ctx, |ui| {
                     ui.spacing_mut().item_spacing.y = 0.0;
                     body_top = ui.cursor().top();
-                    egui_extras::TableBuilder::new(ui)
-                        .column(egui_extras::Column::remainder())
+                    SplitTable::new("jump", &mut Split::default())
                         .scroll_to_row(target, Some(egui::Align::Min))
-                        .animate_scrolling(false)
-                        .body(|body| {
-                            super::text_rows(body, wrapped_heights, 15.0, num_rows, |mut row| {
-                                let index = row.index();
-                                row.col(|ui| {
-                                    if index == target {
-                                        target_rect = ui.max_rect();
-                                    }
-                                });
-                            });
-                        });
+                        .show(
+                            ui,
+                            0.0,
+                            |_, _| {},
+                            super::text_rows(wrapped_heights, 15.0, num_rows),
+                            |index, column, ui| {
+                                if index == target && column == SplitColumn::Left {
+                                    target_rect = ui.max_rect();
+                                }
+                            },
+                        );
                 });
             });
         }

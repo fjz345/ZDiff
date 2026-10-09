@@ -65,11 +65,6 @@ impl ActiveSideState {
         };
     }
 
-    /// The side under `pos` in the previous frame.
-    pub fn side_at(&self, pos: egui::Pos2) -> Option<ActiveSide> {
-        side_at_press(pos, self.left_rect, self.right_rect)
-    }
-
     pub fn end_frame(&mut self, left_rect: egui::Rect, right_rect: egui::Rect) {
         self.left_rect = left_rect;
         self.right_rect = right_rect;
