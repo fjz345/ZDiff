@@ -16,6 +16,7 @@ use crate::ui_egui::{
     panes::{PathDiffView, ZAppPane},
     roots::{Side, set_root},
     status_line::ToolMessage,
+    tree_compare::TreeCompare,
     tree_cursor::TreeCursor,
     tree_filter::DiffFilter,
     tree_sort::TreeSort,
@@ -31,6 +32,8 @@ pub struct PathDiffPaneCtx<'a, 'b> {
     pub filter_presets: &'a mut FilterPresets,
     pub tree_sort: &'a mut TreeSort,
     pub diff_filter: &'a mut DiffFilter,
+    pub likeness_bar: &'a mut bool,
+    pub tree_compare: &'a TreeCompare,
     /// A widget had keyboard focus when the frame started, so the tree's keys are not
     /// for the cursor.
     pub keyboard_taken: bool,
@@ -180,6 +183,12 @@ impl PathDiffPane {
                     "Show parent folders: off lists only the differing files (needs Diff only)",
                 );
             });
+            toggle_button(
+                ui,
+                ctx.likeness_bar,
+                RichText::new("L").strong(),
+                "Likeness: how alike the two files of each pair are, measured in the background",
+            );
         });
 
         ui.separator();
@@ -203,6 +212,7 @@ impl PathDiffPane {
                     ctx.tree_sort,
                     ctx.keyboard_taken,
                     *ctx.diff_filter,
+                    ctx.likeness_bar.then_some(ctx.tree_compare),
                 );
             });
 

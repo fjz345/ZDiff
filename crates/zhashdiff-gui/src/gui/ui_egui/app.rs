@@ -73,6 +73,8 @@ pub struct AppStateCtx {
     two_folder_diff_rows_diff_filter: DiffFilter,
     #[serde(default)]
     pub diff_filter: DiffFilter,
+    #[serde(default)]
+    pub likeness_bar: bool,
 
     #[serde(skip)]
     pub active_conflict_hash: Option<String>,
@@ -95,6 +97,7 @@ impl AppStateCtx {
             self.file_system_model_1_view.as_ref(),
             self.file_system_model_2_view.as_ref(),
         ]);
+        let likeness_changed = self.tree_compare.set_likeness(self.likeness_bar);
         if self.two_folder_diff_rows_filter != self.path_filter
             || self.two_folder_diff_rows_sort != self.tree_sort
             || self.two_folder_diff_rows_diff_filter != self.diff_filter
@@ -125,6 +128,18 @@ impl AppStateCtx {
                 self.two_folder_diff_visible_rows
                     .as_ref()
                     .map_or(0, Vec::len)
+            );
+        } else if likeness_changed
+            && self.likeness_bar
+            && let Some(rows) = &self.two_folder_diff_visible_rows
+        {
+            self.tree_compare.start(
+                rows,
+                [
+                    self.file_system_model_1_view.as_ref(),
+                    self.file_system_model_2_view.as_ref(),
+                ],
+                Instant::now(),
             );
         }
     }
@@ -802,6 +817,8 @@ impl ZApp {
                     filter_presets: &mut app_ctx.filter_presets,
                     tree_sort: &mut app_ctx.tree_sort,
                     diff_filter: &mut app_ctx.diff_filter,
+                    likeness_bar: &mut app_ctx.likeness_bar,
+                    tree_compare: &app_ctx.tree_compare,
                     path_diff_view: &mut path_diff_view,
                     keyboard_taken,
                 };
@@ -1023,6 +1040,7 @@ mod tests {
     use crate::ui_egui::fs_tree::{DiffState, FileSystemView};
     use crate::ui_egui::path_diff_pane::{BLACKLIST_PRESETS, FilterField, FilterPresets};
     use crate::ui_egui::roots::{Side, clear_root, set_root};
+    use crate::ui_egui::tree_compare::PairResult;
     use crate::ui_egui::tree_filter::DiffFilter;
     use crate::ui_egui::tree_sort::{SortKey, TreeSort};
     use eframe::egui;
@@ -1071,7 +1089,10 @@ mod tests {
         let (sender, paths) = state.tree_compare.pause(start);
         let send = |rel_path: &str, state: PairState| {
             let i = paths.iter().position(|path| path == rel_path).unwrap();
-            let result = PairCompare { state, error: None };
+            let result = PairResult {
+                compare: Some(PairCompare { state, error: None }),
+                likeness: None,
+            };
             sender.send((i, result)).unwrap();
         };
 
@@ -1309,6 +1330,54 @@ mod tests {
                 show_parents: true,
             }
         );
+    }
+
+    #[test]
+    fn the_likeness_bar_survives_a_restart() {
+        let state = AppStateCtx {
+            likeness_bar: true,
+            ..Default::default()
+        };
+
+        let json = serde_json::to_string(&state).unwrap();
+        let restored: AppStateCtx = serde_json::from_str(&json).unwrap();
+
+        assert!(restored.likeness_bar);
+    }
+
+    #[test]
+    fn a_state_saved_before_the_likeness_bar_existed_loads_it_off() {
+        let mut json: serde_json::Value = serde_json::to_value(AppStateCtx::default()).unwrap();
+        json.as_object_mut()
+            .unwrap()
+            .remove("likeness_bar")
+            .unwrap();
+
+        let restored: AppStateCtx = serde_json::from_value(json).unwrap();
+
+        assert!(!restored.likeness_bar);
+    }
+
+    #[test]
+    fn turning_the_likeness_bar_on_measures_the_differing_pairs_on_the_next_update() {
+        let (left, right) = (tempdir().unwrap(), tempdir().unwrap());
+        for root in [left.path(), right.path()] {
+            fs::write(root.join("a.txt"), "a").unwrap();
+        }
+        fs::write(left.path().join("b.txt"), "left b").unwrap();
+        fs::write(right.path().join("b.txt"), "right b").unwrap();
+        let mut state = AppStateCtx {
+            file_system_model_1_view: load_view(left.path()),
+            file_system_model_2_view: load_view(right.path()),
+            ..Default::default()
+        };
+        finish_compare(&mut state);
+        assert!(!state.tree_compare.is_comparing());
+
+        state.likeness_bar = true;
+        state.build_two_folder_diff_rows_if_stale();
+
+        assert_eq!(state.tree_compare.queued(), [("b.txt", false, true)]);
     }
 
     #[test]

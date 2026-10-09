@@ -28,9 +28,11 @@ use zcommon::ui_egui::pathbar::{PathBarAction, path_bar};
 use crate::ui_egui::roots::{InvalidRoot, Side, set_root};
 use crate::ui_egui::status_line::ToolMessage;
 use crate::ui_egui::tools_window::resolve_tool_exe;
+use crate::ui_egui::tree_compare::TreeCompare;
 use crate::ui_egui::tree_cursor::{CursorRequest, CursorRow, TreeCursor};
 use crate::ui_egui::tree_filter::DiffFilter;
 use crate::ui_egui::tree_guides::{Guide, tree_guides};
+use crate::ui_egui::tree_likeness::{likeness_cell, ui_likeness_cell};
 use crate::ui_egui::tree_menu::{Entry, RowAction, apply_row_action, row_menu, show_row_menu};
 use crate::ui_egui::tree_sort::{SortKey, TreeSort};
 
@@ -608,6 +610,7 @@ pub fn draw_ui_two_folder_tree_with_diff(
     sort: &mut TreeSort,
     keyboard_taken: bool,
     diff_filter: DiffFilter,
+    likeness: Option<&TreeCompare>,
 ) -> egui::response::Response {
     if file_system_1_view.is_none() && file_system_2_view.is_none() {
         return ui
@@ -775,23 +778,32 @@ pub fn draw_ui_two_folder_tree_with_diff(
             let tag_font = egui::TextStyle::Monospace.resolve(ui.style());
             let tag_width = 4.0 * ui.fonts_mut(|f| f.glyph_width(&tag_font, 'M'));
 
+            // egui_extras resets every column width when the column count changes.
+            let id_salt = match likeness {
+                Some(_) => "two_folder_diff_table_likeness",
+                None => "two_folder_diff_table",
+            };
             let mut table = TableBuilder::new(ui)
                 .sense(egui::Sense::all())
-                .id_salt("two_folder_diff_table")
+                .id_salt(id_salt)
                 .striped(true)
                 .resizable(false)
                 .auto_shrink([false, true]);
             if let Some(row) = scroll_to_row {
                 table = table.scroll_to_row(row, None);
             }
-            table
+            table = table
                 .column(
                     Column::initial(available_size.x * 0.5)
                         .at_least(100.0)
                         .resizable(true),
                 )
                 .column(Column::exact(tag_width))
-                .column(Column::auto().resizable(true).auto_size_this_frame(true))
+                .column(Column::auto().resizable(true).auto_size_this_frame(true));
+            if likeness.is_some() {
+                table = table.column(Column::exact(1.5 * tag_width));
+            }
+            table
                 .column(Column::exact(tag_width))
                 .column(Column::remainder().resizable(true).clip(false))
                 .header(row_height_header, |mut header| {
@@ -837,6 +849,11 @@ pub fn draw_ui_two_folder_tree_with_diff(
                             }
                         });
                     });
+                    if likeness.is_some() {
+                        header.col(|ui| {
+                            ui.label("%").on_hover_text("Likeness of the two files");
+                        });
+                    }
                     header.col(|_| {});
                     header.col(|ui| {
                         col2_rect = ui.max_rect();
@@ -874,6 +891,7 @@ pub fn draw_ui_two_folder_tree_with_diff(
                             tool_message,
                             layout,
                             row_guides,
+                            likeness,
                         );
                         if clicked {
                             *cursor = TreeCursor::at(&entry.rel_path);
@@ -1358,6 +1376,7 @@ fn render_row_folder_tree_diff_column(
     tool_message: &mut Option<ToolMessage>,
     layout: RowLayout,
     guides: [&[Guide]; 2],
+    likeness: Option<&TreeCompare>,
 ) -> (bool, Option<RowAction>) {
     let rel_path = |shown: RowLayout| (layout == shown).then_some(entry.rel_path.as_str());
     let flat_rel_path = rel_path(RowLayout::RelPaths);
@@ -1454,6 +1473,20 @@ fn render_row_folder_tree_diff_column(
             ui_custom_diff_state(ui, &entry.diff_state);
         });
     });
+    if let Some(compare) = likeness {
+        row.col(|ui| {
+            tint(ui);
+            if dimmed {
+                ui.multiply_opacity(0.5);
+            }
+            let nodes = [
+                (file_system_1_view.as_deref(), first_node_id),
+                (file_system_2_view.as_deref(), second_node_id),
+            ]
+            .map(|(view, id)| view?.file_system.get_node(id?));
+            ui_likeness_cell(ui, likeness_cell(entry, nodes, compare), row_height);
+        });
+    }
     tag(row, 1);
     // --- Right Column (Folder 2) ---
     let (_, cell_2) = row.col(|ui| {

@@ -14,6 +14,7 @@ use crate::ui_egui::{
     fs_tree::{FileSystemView, VisibleRowTwoFolderDiff},
     path_diff_pane::{FilterPresets, PathDiffPane, PathDiffPaneCtx},
     status_line::ToolMessage,
+    tree_compare::TreeCompare,
     tree_filter::DiffFilter,
     tree_sort::TreeSort,
 };
@@ -44,6 +45,8 @@ pub struct TreeBehavior<'a, 'b> {
     pub filter_presets: &'a mut FilterPresets,
     pub tree_sort: &'a mut TreeSort,
     pub diff_filter: &'a mut DiffFilter,
+    pub likeness_bar: &'a mut bool,
+    pub tree_compare: &'a TreeCompare,
     pub keyboard_taken: bool,
 }
 
@@ -56,6 +59,8 @@ impl<'a, 'b> TreeBehavior<'a, 'b> {
             filter_presets: self.filter_presets,
             tree_sort: self.tree_sort,
             diff_filter: self.diff_filter,
+            likeness_bar: self.likeness_bar,
+            tree_compare: self.tree_compare,
             path_diff_view: self.path_diff_view,
             keyboard_taken: self.keyboard_taken,
         }

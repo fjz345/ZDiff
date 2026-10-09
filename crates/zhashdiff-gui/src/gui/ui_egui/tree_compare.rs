@@ -1,5 +1,7 @@
 use std::{
     collections::HashMap,
+    fs::File,
+    io,
     path::{Path, PathBuf},
     sync::{
         Arc, Weak,
@@ -9,11 +11,14 @@ use std::{
     time::{Duration, Instant, SystemTime},
 };
 
+use memmap2::Mmap;
+use zcommon::kinds::KindTable;
 use zhashdiff::{
     comparison::{
         DiskReader, FileMeta, PairCompare, PairCompareCache, PairSide, PairState, compare_pair,
     },
     fs::{FileSystemModel, FsNode},
+    likeness::{Likeness, likeness},
 };
 
 use crate::ui_egui::fs_tree::{DiffState, FileSystemView, VisibleRowTwoFolderDiff};
@@ -21,6 +26,14 @@ use crate::ui_egui::fs_tree::{DiffState, FileSystemView, VisibleRowTwoFolderDiff
 // Disk bound: more readers than this mostly make the reads seek against each other.
 const MAX_COMPARE_WORKERS: usize = 4;
 const ROWS_PATCH_INTERVAL: Duration = Duration::from_millis(250);
+// The image viewer's default. The likeness cache doesn't key on it.
+const PIXEL_TOLERANCE: u8 = 0;
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum PairLikeness {
+    Measured(Likeness),
+    Failed(String),
+}
 
 #[derive(Debug, Clone)]
 pub struct PendingPair {
@@ -51,6 +64,31 @@ impl PendingPair {
             },
         };
         compare_pair(&DiskReader, &side(0), &side(1))
+    }
+
+    /// `None` when cancelled.
+    fn likeness(
+        &self,
+        kinds: &KindTable,
+        cancel: &Arc<AtomicBool>,
+    ) -> Option<io::Result<Likeness>> {
+        // SAFETY: a file changed while mapped only skews this one measure.
+        let map = |path: &Path| unsafe { Mmap::map(&File::open(path)?) };
+        let (left, right) = match (map(&self.paths[0]), map(&self.paths[1])) {
+            (Ok(left), Ok(right)) => (left, right),
+            (Err(e), _) | (_, Err(e)) => return Some(Err(e)),
+        };
+        let extension = Path::new(&self.rel_path)
+            .extension()
+            .map_or(String::new(), |e| e.to_string_lossy().into_owned());
+        likeness(kinds, &extension, &left, &right, PIXEL_TOLERANCE, cancel).map(Ok)
+    }
+
+    fn cache_metas(&self) -> Option<[FileMeta; 2]> {
+        Some([
+            file_meta(self.sizes[0], self.modified[0])?,
+            file_meta(self.sizes[1], self.modified[1])?,
+        ])
     }
 
     fn cache_sides(&self) -> Option<[PairSide<'_>; 2]> {
@@ -88,7 +126,15 @@ fn cache_side<'a>(
     })
 }
 
+fn file_meta(size: u64, modified: Option<SystemTime>) -> Option<FileMeta> {
+    Some(FileMeta {
+        size,
+        modified: modified?,
+    })
+}
+
 /// The file pairs of `rows` still Pending, in row order.
+#[cfg(test)]
 pub fn pending_pairs(
     rows: &[VisibleRowTwoFolderDiff],
     views: [Option<&FileSystemView>; 2],
@@ -120,12 +166,26 @@ pub fn patch_row_states(rows: &mut [VisibleRowTwoFolderDiff], fresh: Vec<Visible
     }
 }
 
+#[derive(Debug, Clone)]
+struct PairTask {
+    pair: PendingPair,
+    compare: bool,
+    likeness: bool,
+}
+
+#[derive(Debug)]
+pub struct PairResult {
+    pub compare: Option<PairCompare>,
+    pub likeness: Option<io::Result<Likeness>>,
+}
+
 /// One background compare of a list of pairs. Dropping it cancels the compare.
 #[derive(Debug)]
 struct CompareJob {
-    pairs: Arc<[PendingPair]>,
+    tasks: Arc<[PairTask]>,
     cancel: Arc<AtomicBool>,
-    results: mpsc::Receiver<(usize, PairCompare)>,
+    likeness: Arc<AtomicBool>,
+    results: mpsc::Receiver<(usize, PairResult)>,
     received: usize,
     started: Instant,
     patched: Instant,
@@ -133,11 +193,16 @@ struct CompareJob {
 }
 
 impl CompareJob {
-    fn new(pairs: Vec<PendingPair>, now: Instant) -> (Self, mpsc::Sender<(usize, PairCompare)>) {
+    fn new(
+        tasks: Vec<PairTask>,
+        likeness: bool,
+        now: Instant,
+    ) -> (Self, mpsc::Sender<(usize, PairResult)>) {
         let (sender, results) = mpsc::channel();
         let job = Self {
-            pairs: pairs.into(),
+            tasks: tasks.into(),
             cancel: Arc::new(AtomicBool::new(false)),
+            likeness: Arc::new(AtomicBool::new(likeness)),
             results,
             received: 0,
             started: now,
@@ -147,29 +212,45 @@ impl CompareJob {
         (job, sender)
     }
 
-    fn start(pairs: Vec<PendingPair>, now: Instant) -> Self {
-        let (job, sender) = Self::new(pairs, now);
+    fn start(tasks: Vec<PairTask>, likeness: bool, now: Instant) -> Self {
+        let (job, sender) = Self::new(tasks, likeness, now);
         let next = Arc::new(AtomicUsize::new(0));
         let workers = std::thread::available_parallelism()
             .map_or(1, |n| n.get())
             .min(MAX_COMPARE_WORKERS)
-            .min(job.pairs.len());
+            .min(job.tasks.len());
         for _ in 0..workers {
-            let (pairs, cancel, next, sender) = (
-                job.pairs.clone(),
+            let (tasks, cancel, likeness, next, sender) = (
+                job.tasks.clone(),
                 job.cancel.clone(),
+                job.likeness.clone(),
                 next.clone(),
                 sender.clone(),
             );
             std::thread::Builder::new()
                 .name("folder compare".into())
                 .spawn(move || {
+                    let kinds = KindTable::default();
                     while !cancel.load(Ordering::Relaxed) {
                         let i = next.fetch_add(1, Ordering::Relaxed);
-                        let Some(pair) = pairs.get(i) else {
+                        let Some(task) = tasks.get(i) else {
                             break;
                         };
-                        if sender.send((i, pair.compare())).is_err() {
+                        let compare = task.compare.then(|| task.pair.compare());
+                        let measure = task.likeness
+                            && likeness.load(Ordering::Relaxed)
+                            && compare.as_ref().is_none_or(|c| {
+                                c.state == PairState::Different && c.error.is_none()
+                            });
+                        let likeness = if measure {
+                            let Some(result) = task.pair.likeness(&kinds, &cancel) else {
+                                break;
+                            };
+                            Some(result)
+                        } else {
+                            None
+                        };
+                        if sender.send((i, PairResult { compare, likeness })).is_err() {
                             break;
                         }
                     }
@@ -204,6 +285,9 @@ pub struct TreeCompare {
     trees: [Weak<FileSystemModel>; 2],
     states: HashMap<String, PairState>,
     cache: PairCompareCache,
+    measure_likeness: bool,
+    likeness: HashMap<String, PairLikeness>,
+    likeness_cache: HashMap<String, ([FileMeta; 2], PairLikeness)>,
     job: Option<CompareJob>,
     cancelled: bool,
     compare_time: Option<Duration>,
@@ -217,6 +301,7 @@ impl TreeCompare {
         if !Weak::ptr_eq(&trees[0], &self.trees[0]) || !Weak::ptr_eq(&trees[1], &self.trees[1]) {
             self.trees = trees;
             self.states.clear();
+            self.likeness.clear();
             self.job = None;
             self.cancelled = false;
             self.compare_time = None;
@@ -243,21 +328,83 @@ impl TreeCompare {
         self.cache.get(&left, &right)
     }
 
-    /// Compares the pending pairs of `rows`, replacing any running compare. Nothing starts
-    /// after a cancel until the models change.
+    pub fn likeness_of(&self, rel_path: &str, nodes: [&FsNode; 2]) -> Option<&PairLikeness> {
+        if let Some(likeness) = self.likeness.get(rel_path) {
+            return Some(likeness);
+        }
+        let metas = [
+            file_meta(nodes[0].size, nodes[0].modified)?,
+            file_meta(nodes[1].size, nodes[1].modified)?,
+        ];
+        let (cached_metas, likeness) = self.likeness_cache.get(rel_path)?;
+        (*cached_metas == metas).then_some(likeness)
+    }
+
+    /// Returns whether it changed. On measures again after a cancel; off skips the likeness
+    /// left in the running compare.
+    pub fn set_likeness(&mut self, on: bool) -> bool {
+        if self.measure_likeness == on {
+            return false;
+        }
+        self.measure_likeness = on;
+        self.cancelled &= !on;
+        if let Some(job) = &self.job {
+            job.likeness.store(on, Ordering::Relaxed);
+        }
+        true
+    }
+
+    /// Compares the pending pairs of `rows`, and measures the differing ones while likeness is
+    /// on, replacing any running compare. Nothing starts after a cancel until the models
+    /// change.
     pub fn start(
         &mut self,
         rows: &[VisibleRowTwoFolderDiff],
         views: [Option<&FileSystemView>; 2],
         now: Instant,
     ) {
-        let pairs = pending_pairs(rows, views);
+        let tasks = self.tasks(rows, views);
         let started = self.job.as_ref().map_or(now, |job| job.started);
-        self.job = (!self.cancelled && !pairs.is_empty()).then(|| {
-            let mut job = CompareJob::start(pairs, now);
+        self.job = (!self.cancelled && !tasks.is_empty()).then(|| {
+            let mut job = CompareJob::start(tasks, self.measure_likeness, now);
             job.started = started;
             job
         });
+    }
+
+    fn tasks(
+        &self,
+        rows: &[VisibleRowTwoFolderDiff],
+        views: [Option<&FileSystemView>; 2],
+    ) -> Vec<PairTask> {
+        let node = |side: usize, id| views[side]?.file_system.get_node(id);
+        rows.iter()
+            .filter(|row| !row.is_dir)
+            .filter_map(|row| {
+                let (DiffState::Pending(l_id, r_id) | DiffState::Different(l_id, r_id)) =
+                    row.diff_state
+                else {
+                    return None;
+                };
+                let nodes = [node(0, l_id)?, node(1, r_id)?];
+                // Rows patched less often than results arrive can still be Pending.
+                let state = match row.diff_state {
+                    DiffState::Pending(..) => self.state_of(&row.rel_path, nodes),
+                    _ => Some(PairState::Different),
+                };
+                let compare = state.is_none();
+                // A file facing a folder is Different without a compare.
+                let likeness = self.measure_likeness
+                    && state != Some(PairState::Same)
+                    && nodes.iter().all(|node| node.is_file())
+                    && self.likeness_of(&row.rel_path, nodes).is_none();
+                (compare || likeness).then(|| PairTask {
+                    pair: PendingPair::new(&row.rel_path, nodes),
+                    compare,
+                    likeness,
+                })
+            })
+            .collect()
     }
 
     /// The rows keep their remaining pairs Pending.
@@ -272,10 +419,10 @@ impl TreeCompare {
         self.job.is_some() && !self.cancelled
     }
 
-    /// Compared and total pairs of the running compare.
+    /// Done and total pairs of the running compare.
     pub fn progress(&self) -> Option<(usize, usize)> {
         let job = self.job.as_ref().filter(|_| !self.cancelled)?;
-        Some((job.received, job.pairs.len()))
+        Some((job.received, job.tasks.len()))
     }
 
     pub fn compare_time(&self) -> Option<Duration> {
@@ -290,9 +437,20 @@ impl TreeCompare {
         loop {
             match job.results.try_recv() {
                 Ok((i, result)) => {
-                    apply_result(&mut self.states, &mut self.cache, &job.pairs[i], result);
+                    let pair = &job.tasks[i].pair;
+                    if let Some(compare) = result.compare {
+                        apply_result(&mut self.states, &mut self.cache, pair, compare);
+                        job.unpatched = true;
+                    }
+                    if let Some(likeness) = result.likeness {
+                        apply_likeness(
+                            &mut self.likeness,
+                            &mut self.likeness_cache,
+                            pair,
+                            likeness,
+                        );
+                    }
                     job.received += 1;
-                    job.unpatched = true;
                 }
                 Err(mpsc::TryRecvError::Empty) => break,
                 Err(mpsc::TryRecvError::Disconnected) => {
@@ -301,7 +459,7 @@ impl TreeCompare {
                 }
             }
         }
-        let total = job.pairs.len();
+        let total = job.tasks.len();
         if self.cancelled || disconnected || job.received == total {
             let elapsed = now.saturating_duration_since(job.started);
             self.compare_time = Some(elapsed);
@@ -351,22 +509,62 @@ fn apply_result(
     states.insert(pair.rel_path.clone(), result.state);
 }
 
+/// Like a compare read error, a failed measure stays out of the cache.
+fn apply_likeness(
+    likeness: &mut HashMap<String, PairLikeness>,
+    cache: &mut HashMap<String, ([FileMeta; 2], PairLikeness)>,
+    pair: &PendingPair,
+    result: io::Result<Likeness>,
+) {
+    let measured = match result {
+        Ok(measured) => PairLikeness::Measured(measured),
+        Err(e) => {
+            log::warn!(
+                "Measuring the likeness of {} and {}: {e}",
+                pair.paths[0].display(),
+                pair.paths[1].display()
+            );
+            PairLikeness::Failed(e.to_string())
+        }
+    };
+    if let (PairLikeness::Measured(_), Some(metas)) = (&measured, pair.cache_metas()) {
+        cache.insert(pair.rel_path.clone(), (metas, measured.clone()));
+    }
+    likeness.insert(pair.rel_path.clone(), measured);
+}
+
 #[cfg(test)]
 impl TreeCompare {
-    pub fn pause(&mut self, now: Instant) -> (mpsc::Sender<(usize, PairCompare)>, Vec<String>) {
+    pub fn pause(&mut self, now: Instant) -> (mpsc::Sender<(usize, PairResult)>, Vec<String>) {
         let running = self.job.take().expect("a running compare");
-        let pairs = running.pairs.to_vec();
-        let rel_paths = pairs.iter().map(|pair| pair.rel_path.clone()).collect();
-        let (mut job, sender) = CompareJob::new(pairs, now);
+        let tasks = running.tasks.to_vec();
+        let rel_paths = tasks
+            .iter()
+            .map(|task| task.pair.rel_path.clone())
+            .collect();
+        let (mut job, sender) =
+            CompareJob::new(tasks, running.likeness.load(Ordering::Relaxed), now);
         job.started = running.started;
         self.job = Some(job);
         (sender, rel_paths)
+    }
+
+    /// Path, compare and likeness of each pair of the running compare.
+    pub fn queued(&self) -> Vec<(&str, bool, bool)> {
+        self.job
+            .iter()
+            .flat_map(|job| job.tasks.iter())
+            .map(|task| (task.pair.rel_path.as_str(), task.compare, task.likeness))
+            .collect()
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{CompareUpdate, ROWS_PATCH_INTERVAL, TreeCompare, apply_result, pending_pairs};
+    use super::{
+        CompareUpdate, PairLikeness, PairResult, ROWS_PATCH_INTERVAL, TreeCompare, apply_result,
+        pending_pairs,
+    };
     use crate::ui_egui::fs_tree::{DiffState, FileSystemView, VisibleRowTwoFolderDiff};
     use std::{
         fs, io,
@@ -597,9 +795,13 @@ mod tests {
         compare.start(&rows, [Some(&left), Some(&right)], start);
         let (sender, paths) = compare.pause(start);
         let same = |i| {
-            let result = PairCompare {
+            let compare = PairCompare {
                 state: PairState::Same,
                 error: None,
+            };
+            let result = PairResult {
+                compare: Some(compare),
+                likeness: None,
             };
             sender.send((i, result)).unwrap();
         };
@@ -639,9 +841,12 @@ mod tests {
         compare.start(&rows, [Some(&left), Some(&right)], restart);
         let (sender, paths) = compare.pause(restart);
         for i in 0..paths.len() {
-            let result = PairCompare {
-                state: PairState::Same,
-                error: None,
+            let result = PairResult {
+                compare: Some(PairCompare {
+                    state: PairState::Same,
+                    error: None,
+                }),
+                likeness: None,
             };
             sender.send((i, result)).unwrap();
         }
@@ -656,5 +861,166 @@ mod tests {
         let right = load_view(right_dir.path());
         compare.retain_for([Some(&left), Some(&right)]);
         assert_eq!(compare.compare_time(), None);
+    }
+
+    fn likeness_at(
+        compare: &mut TreeCompare,
+        left: &FileSystemView,
+        right: &FileSystemView,
+        rel_path: &str,
+    ) -> Option<PairLikeness> {
+        let rows = build(compare, left, right);
+        let row = rows.iter().find(|row| row.rel_path == rel_path).unwrap();
+        let nodes = [
+            left.file_system.get_node(row.diff_state.first()?)?,
+            right.file_system.get_node(row.diff_state.second()?)?,
+        ];
+        compare.likeness_of(rel_path, nodes).cloned()
+    }
+
+    #[test]
+    fn with_likeness_off_no_likeness_is_queued() {
+        let (left_dir, right_dir) = trees();
+        let (left, right) = (load_view(left_dir.path()), load_view(right_dir.path()));
+        let mut compare = TreeCompare::default();
+        let rows = build(&mut compare, &left, &right);
+
+        compare.start(&rows, [Some(&left), Some(&right)], Instant::now());
+        assert_eq!(
+            compare.queued(),
+            [
+                ("a.txt", true, false),
+                ("b.txt", true, false),
+                ("sub/c.txt", true, false)
+            ]
+        );
+        poll_until_finished(&mut compare);
+
+        let rows = build(&mut compare, &left, &right);
+        compare.start(&rows, [Some(&left), Some(&right)], Instant::now());
+        assert!(!compare.is_comparing());
+        assert_eq!(likeness_at(&mut compare, &left, &right, "b.txt"), None);
+    }
+
+    #[test]
+    fn with_likeness_on_only_differing_file_pairs_are_measured() {
+        let (left_dir, right_dir) = trees();
+        write_files(left_dir.path(), &[("x", "file")]);
+        write_files(right_dir.path(), &[("x/inner.txt", "folder")]);
+        let (left, right) = (load_view(left_dir.path()), load_view(right_dir.path()));
+        let mut compare = TreeCompare::default();
+        let rows = build(&mut compare, &left, &right);
+        compare_pending(&mut compare, &rows, &left, &right);
+
+        assert!(compare.set_likeness(true));
+        let rows = build(&mut compare, &left, &right);
+        compare.start(&rows, [Some(&left), Some(&right)], Instant::now());
+
+        assert_eq!(compare.queued(), [("b.txt", false, true)]);
+    }
+
+    #[test]
+    fn a_pending_pair_is_measured_after_its_compare_only_when_it_differs() {
+        let (left_dir, right_dir) = trees();
+        let (left, right) = (load_view(left_dir.path()), load_view(right_dir.path()));
+        let mut compare = TreeCompare::default();
+        compare.set_likeness(true);
+        let rows = build(&mut compare, &left, &right);
+
+        compare.start(&rows, [Some(&left), Some(&right)], Instant::now());
+        assert_eq!(
+            compare.queued(),
+            [
+                ("a.txt", true, true),
+                ("b.txt", true, true),
+                ("sub/c.txt", true, true)
+            ]
+        );
+        poll_until_finished(&mut compare);
+
+        let Some(PairLikeness::Measured(b)) = likeness_at(&mut compare, &left, &right, "b.txt")
+        else {
+            panic!("b.txt was not measured");
+        };
+        assert_eq!(b.ratio, 0.0);
+        assert_eq!(likeness_at(&mut compare, &left, &right, "a.txt"), None);
+    }
+
+    #[test]
+    fn a_rescan_measures_only_the_pairs_whose_files_changed() {
+        let (left_dir, right_dir) = trees();
+        let left = load_view(left_dir.path());
+        let mut right = load_view(right_dir.path());
+        let mut compare = TreeCompare::default();
+        compare.set_likeness(true);
+        let rows = build(&mut compare, &left, &right);
+        compare.start(&rows, [Some(&left), Some(&right)], Instant::now());
+        poll_until_finished(&mut compare);
+
+        right = load_view(right_dir.path());
+        let rows = build(&mut compare, &left, &right);
+        compare.start(&rows, [Some(&left), Some(&right)], Instant::now());
+        assert!(!compare.is_comparing(), "{:?}", compare.queued());
+        assert!(matches!(
+            likeness_at(&mut compare, &left, &right, "b.txt"),
+            Some(PairLikeness::Measured(_))
+        ));
+
+        fs::write(right_dir.path().join("b.txt"), "right b, changed").unwrap();
+        right = load_view(right_dir.path());
+        let rows = build(&mut compare, &left, &right);
+        compare.start(&rows, [Some(&left), Some(&right)], Instant::now());
+        assert_eq!(compare.queued(), [("b.txt", true, true)]);
+    }
+
+    #[test]
+    fn a_failed_likeness_is_kept_until_a_rescan_retries_it() {
+        let (left_dir, right_dir) = trees();
+        let left = load_view(left_dir.path());
+        let mut right = load_view(right_dir.path());
+        let mut compare = TreeCompare::default();
+        compare.set_likeness(true);
+        let rows = build(&mut compare, &left, &right);
+        compare_pending(&mut compare, &rows, &left, &right);
+        let rows = build(&mut compare, &left, &right);
+        compare.start(&rows, [Some(&left), Some(&right)], Instant::now());
+        let (sender, _) = compare.pause(Instant::now());
+
+        let failed = PairResult {
+            compare: None,
+            likeness: Some(Err(io::Error::other("locked"))),
+        };
+        sender.send((0, failed)).unwrap();
+        assert_eq!(compare.poll(Instant::now()), CompareUpdate::Finished);
+        let rows = build(&mut compare, &left, &right);
+        compare.start(&rows, [Some(&left), Some(&right)], Instant::now());
+        assert!(!compare.is_comparing());
+        assert_eq!(
+            likeness_at(&mut compare, &left, &right, "b.txt"),
+            Some(PairLikeness::Failed("locked".into()))
+        );
+
+        right = load_view(right_dir.path());
+        let rows = build(&mut compare, &left, &right);
+        compare.start(&rows, [Some(&left), Some(&right)], Instant::now());
+        assert_eq!(compare.queued(), [("b.txt", false, true)]);
+    }
+
+    #[test]
+    fn turning_likeness_on_measures_even_after_a_cancel() {
+        let (left_dir, right_dir) = trees();
+        let (left, right) = (load_view(left_dir.path()), load_view(right_dir.path()));
+        let mut compare = TreeCompare::default();
+        let rows = build(&mut compare, &left, &right);
+        compare.start(&rows, [Some(&left), Some(&right)], Instant::now());
+        let _sender = compare.pause(Instant::now());
+        compare.cancel();
+        assert_eq!(compare.poll(Instant::now()), CompareUpdate::Finished);
+
+        assert!(compare.set_likeness(true));
+        assert!(!compare.set_likeness(true));
+        let rows = build(&mut compare, &left, &right);
+        compare.start(&rows, [Some(&left), Some(&right)], Instant::now());
+        assert!(compare.is_comparing());
     }
 }
