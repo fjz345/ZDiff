@@ -40,7 +40,7 @@ use crate::ui_egui::{
     tools_window::ToolsWindow,
     tree_compare::{CompareUpdate, PairLikeness, TreeCompare, patch_row_states},
     tree_filter::{DiffFilter, arrange_two_folder_rows},
-    tree_find::{FolderFind, find_mask},
+    tree_find::{FindChipEvent, FolderFind, TreeFindView, find_mask},
     tree_sort::TreeSort,
     tree_tolerance::Tolerance,
 };
@@ -99,6 +99,8 @@ pub struct AppStateCtx {
     /// The last valid `folder_find`: an invalid regex keeps the filter it replaces.
     #[serde(skip)]
     find_applied: FolderFind,
+    #[serde(skip)]
+    find_matcher: Option<Matcher>,
     #[serde(skip)]
     find_error: Option<String>,
     #[serde(skip)]
@@ -201,13 +203,17 @@ impl AppStateCtx {
     }
 
     fn apply_find(&mut self) {
-        match Matcher::new(&self.folder_find.query) {
-            Ok(_) | Err(FindError::EmptyQuery) => {
-                self.find_error = None;
-                self.find_applied = self.folder_find.clone();
+        let matcher = match Matcher::new(&self.folder_find.query) {
+            Ok(matcher) => Some(matcher),
+            Err(FindError::EmptyQuery) => None,
+            Err(e) => {
+                self.find_error = Some(e.to_string());
+                return;
             }
-            Err(e) => self.find_error = Some(e.to_string()),
-        }
+        };
+        self.find_error = None;
+        self.find_applied = self.folder_find.clone();
+        self.find_matcher = matcher;
     }
 
     /// Reads no file: pairs without a known state are Pending.
@@ -950,6 +956,13 @@ impl ZApp {
                     file_system_2_root_path: &mut app_ctx.file_system_2_root_path,
                     visible_rows: &mut app_ctx.two_folder_diff_visible_rows,
                 };
+                let mut find_view = TreeFindView {
+                    matcher: app_ctx.find_matcher.as_ref(),
+                    match_path: app_ctx.find_applied.match_path,
+                    chip: (!self.find_open && app_ctx.find_matcher.is_some())
+                        .then_some(app_ctx.find_applied.query.text.as_str()),
+                    chip_event: None,
+                };
                 let mut behavior = TreeBehavior {
                     log_buffer: self.log_buffer.clone(),
                     hash_service: &mut app_ctx.hash_service,
@@ -969,12 +982,14 @@ impl ZApp {
                     tolerance: &mut app_ctx.tolerance,
                     tree_compare: &app_ctx.tree_compare,
                     h_scroll_link: &mut app_ctx.h_scroll_link,
+                    find: &mut find_view,
                     path_diff_view: &mut path_diff_view,
                     keyboard_taken,
                     actions: &actions,
                 };
 
                 self.tree.ui(&mut behavior, ui);
+                let chip_event = behavior.find.chip_event;
 
                 for (_tile_id, tile) in self.tree.tiles.iter() {
                     if let Tile::Pane(Pane::DuplicateFiles(_file_explorer)) = tile {
@@ -1018,6 +1033,19 @@ impl ZApp {
 
                         break;
                     }
+                }
+
+                match chip_event {
+                    Some(FindChipEvent::Reopen) => self.find_open = true,
+                    Some(FindChipEvent::Clear) => {
+                        app_ctx.folder_find.query.text.clear();
+                        app_ctx.apply_find();
+                    }
+                    None => {}
+                }
+                // The popup and the rows only change on the next update.
+                if chip_event.is_some() {
+                    ctx.request_repaint();
                 }
             });
         });
@@ -1229,6 +1257,7 @@ mod tests {
     use crate::ui_egui::roots::{Side, clear_root, set_root};
     use crate::ui_egui::tree_compare::PairResult;
     use crate::ui_egui::tree_filter::DiffFilter;
+    use crate::ui_egui::tree_find::FolderFind;
     use crate::ui_egui::tree_sort::{SortKey, TreeSort};
     use crate::ui_egui::tree_tolerance::{SizeDelta, Tolerance};
     use eframe::egui;
@@ -1996,6 +2025,24 @@ mod tests {
         assert_eq!(row_paths(&state), ["", "readme.md"]);
         let rows = state.two_folder_diff_visible_rows.as_ref().unwrap();
         assert!(matches!(rows[1].diff_state, DiffState::Different(..)));
+    }
+
+    #[test]
+    fn find_is_not_saved_so_it_is_empty_after_a_restart() {
+        let (_left, _right, mut state) = find_state(&ART);
+        state.folder_find.match_path = true;
+        state.folder_find.show_contents = true;
+        set_find(&mut state, "forgotten_query");
+        state.build_two_folder_diff_rows_if_stale();
+        assert_eq!(state.find_matches, Some(0));
+
+        let json = serde_json::to_string(&state).unwrap();
+        assert!(!json.contains("forgotten_query"));
+        let restored: AppStateCtx = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(restored.folder_find, FolderFind::default());
+        assert_eq!(restored.find_applied, FolderFind::default());
+        assert_eq!(restored.find_matches, None);
     }
 
     fn finish_scans(state: &mut AppStateCtx) {

@@ -1,14 +1,18 @@
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     io,
+    ops::Range,
     path::{Path, PathBuf},
     sync::Arc,
 };
 
-use eframe::egui::{self, RichText};
+use eframe::egui::{self, RichText, text::LayoutJob};
 use egui_extras::{Column, TableBuilder};
 use serde::{Deserialize, Serialize};
-use zcommon::kinds::{FileKind, KindTable};
+use zcommon::{
+    find::Matcher,
+    kinds::{FileKind, KindTable},
+};
 use zhashdiff::{
     comparison::{FileMeta, PairState},
     external_diff_tool::{
@@ -30,6 +34,7 @@ use crate::ui_egui::tools_window::resolve_tool_exe;
 use crate::ui_egui::tree_compare::{PairLikeness, TreeCompare};
 use crate::ui_egui::tree_cursor::{CursorRequest, CursorRow, TreeCursor};
 use crate::ui_egui::tree_filter::DiffFilter;
+use crate::ui_egui::tree_find::{FindChipEvent, TreeFindView, drawn_ranges};
 use crate::ui_egui::tree_guides::{Guide, tree_guides};
 use crate::ui_egui::tree_likeness::{likeness_cell, ui_likeness_cell};
 use crate::ui_egui::tree_menu::{Entry, RowAction, apply_row_action, row_menu, show_row_menu};
@@ -472,6 +477,8 @@ pub const PENDING_DELETION_COLOR: egui::Color32 = egui::Color32::LIGHT_RED;
 const FOLDER_ROW_TINT: egui::Color32 =
     egui::Color32::from_rgba_unmultiplied_const(120, 150, 255, 14);
 const DIMMED_TEXT_COLOR: egui::Color32 = egui::Color32::from_gray(105);
+const FIND_MATCH_BG: egui::Color32 = egui::Color32::from_rgba_premultiplied(90, 66, 0, 140);
+const FIND_CHIP_MAX_CHARS: usize = 24;
 const GUIDE_LINE_COLOR: egui::Color32 = egui::Color32::from_gray(95);
 const BLUEPRINT_TAG_COLOR: egui::Color32 = egui::Color32::from_rgb(70, 120, 255);
 const TREE_INDENT: f32 = 16.0;
@@ -492,16 +499,17 @@ fn tag_color(kind: FileKind) -> egui::Color32 {
     }
 }
 
-pub struct TwoFolderTable<'a> {
+pub struct TwoFolderTable<'a, 'b> {
     pub compare: &'a TreeCompare,
     pub likeness_bar: bool,
     pub tolerance: &'a Tolerance,
     pub table: &'a mut TreeTable,
     pub linked: bool,
+    pub find: &'a mut TreeFindView<'b>,
 }
 
-pub enum TreeMode<'a> {
-    TwoFolder(TwoFolderTable<'a>),
+pub enum TreeMode<'a, 'b> {
+    TwoFolder(TwoFolderTable<'a, 'b>),
     /// Folder 1 alone, without the center column and Folder 2: the duplicates tab.
     SingleSide {
         pending_deletion: &'a HashSet<PathBuf>,
@@ -693,11 +701,19 @@ pub fn draw_ui_folder_tree(
     let mut clicked_row = None;
     let mut toggle_row = None;
     let mut row_action = None;
+    let mut chip_event = None;
 
     let (mut two_folder, pending_deletion) = match mode {
         TreeMode::TwoFolder(two_folder) => (Some(two_folder), None),
         TreeMode::SingleSide { pending_deletion } => (None, Some(pending_deletion)),
     };
+    let (find_matcher, match_path, find_chip_query) =
+        two_folder
+            .as_ref()
+            .map_or((None, false, None), |two_folder| {
+                let find = &two_folder.find;
+                (find.matcher, find.match_path, find.chip)
+            });
 
     let frame_output = egui::Frame::default()
         .fill(egui::Color32::from_gray(20))
@@ -730,6 +746,8 @@ pub fn draw_ui_folder_tree(
                     pending,
                     row_height,
                     diff_tool_config,
+                    find_matcher,
+                    match_path,
                 }
             };
             let mut side_cell = |i: usize, side: usize, ui: &mut egui::Ui| {
@@ -775,6 +793,7 @@ pub fn draw_ui_folder_tree(
                                 open_dir_window_1,
                                 [&mut *root_1, &mut *root_2],
                                 row_height_header,
+                                None,
                             );
                         });
                     })
@@ -814,13 +833,16 @@ pub fn draw_ui_folder_tree(
                 ui,
                 header_height,
                 |column, ui| match column {
-                    SplitColumn::Left => folder_1_header(
-                        ui,
-                        sort,
-                        open_dir_window_1,
-                        [&mut *root_1, &mut *root_2],
-                        row_height_header,
-                    ),
+                    SplitColumn::Left => {
+                        chip_event = folder_1_header(
+                            ui,
+                            sort,
+                            open_dir_window_1,
+                            [&mut *root_1, &mut *root_2],
+                            row_height_header,
+                            find_chip_query,
+                        );
+                    }
                     SplitColumn::Center => center.show(ui, |slot, ui| match slot {
                         CenterSlot::State => {
                             ui.vertical(|ui| {
@@ -869,6 +891,9 @@ pub fn draw_ui_folder_tree(
             );
             side_rects = output.side_rects;
         });
+    if let Some(two_folder) = two_folder {
+        two_folder.find.chip_event = chip_event;
+    }
 
     if let Some(entry) = toggle_row {
         if let (Some(view), Some(id)) = (file_system_1_view.as_mut(), entry.diff_state.first()) {
@@ -903,10 +928,15 @@ fn folder_1_header(
     open_dir_window: &mut bool,
     roots: [&mut Option<PathBuf>; 2],
     button_height: f32,
-) {
+    find_chip_query: Option<&str>,
+) -> Option<FindChipEvent> {
+    let mut chip_event = None;
     ui.vertical(|ui| {
         ui.horizontal(|ui| {
             sort_header(ui, "Name", SortKey::Name, sort);
+            if let Some(query) = find_chip_query {
+                chip_event = find_chip(ui, query);
+            }
             let available = ui.available_width();
             if ui
                 .add_sized(
@@ -920,6 +950,27 @@ fn folder_1_header(
         });
         root_path_bar(ui, roots, Side::Folder1);
     });
+    chip_event
+}
+
+fn find_chip(ui: &mut egui::Ui, query: &str) -> Option<FindChipEvent> {
+    let shown = if query.chars().count() > FIND_CHIP_MAX_CHARS {
+        let head: String = query.chars().take(FIND_CHIP_MAX_CHARS - 1).collect();
+        format!("{head}…")
+    } else {
+        query.to_owned()
+    };
+    let reopen = ui
+        .button(format!("🔎 {shown}"))
+        .on_hover_text(format!("Find: {query}\nClick to edit"));
+    let clear = ui.small_button("x").on_hover_text("Clear find");
+    if clear.clicked() {
+        Some(FindChipEvent::Clear)
+    } else if reopen.clicked() {
+        Some(FindChipEvent::Reopen)
+    } else {
+        None
+    }
 }
 
 /// A clickable column header for `key`. The active one shows the direction.
@@ -1271,11 +1322,12 @@ fn render_diff_side(
     row_height: f32,
     flat_rel_path: Option<&str>,
     list_rel_path: Option<&str>,
+    highlight: &[Range<usize>],
     mut on_select: impl FnMut(),
     mut on_open: impl FnMut(),
     mut on_toggle: impl FnMut(),
 ) -> Option<egui::Response> {
-    let name_text = |text: String| {
+    let name_text = |text: &str| {
         let text = RichText::new(text);
         let text = if is_dir { text.strong() } else { text };
         match color {
@@ -1283,16 +1335,47 @@ fn render_diff_side(
             None => text,
         }
     };
+    // `highlight` is in `name`. Matched parts only get a background, so widths stay as measured.
+    let name_label = |ui: &egui::Ui, prefix: &str, name: &str| -> egui::WidgetText {
+        if highlight.is_empty() {
+            return name_text(&format!("{prefix}{name}")).into();
+        }
+        let mut job = LayoutJob::default();
+        let mut append = |text: &str, matched: bool| {
+            if text.is_empty() {
+                return;
+            }
+            let text = name_text(text);
+            let text = if matched {
+                text.background_color(FIND_MATCH_BG)
+            } else {
+                text
+            };
+            text.append_to(
+                &mut job,
+                ui.style(),
+                egui::FontSelection::Default,
+                ui.text_valign(),
+            );
+        };
+        append(prefix, false);
+        let mut at = 0;
+        for range in highlight {
+            append(&name[at..range.start], false);
+            append(&name[range.clone()], true);
+            at = range.end;
+        }
+        append(&name[at..], false);
+        job.into()
+    };
     ui.horizontal(|ui| {
         if let Some(rel_path) = flat_rel_path {
             if let (Some(v), Some(id)) = (view, node_id) {
                 if v.file_system.get_node(id).is_some() {
-                    let text = if is_dir {
-                        format!("📁 {rel_path}")
-                    } else {
-                        rel_path.to_owned()
-                    };
-                    let label_resp = ui.label(name_text(text)).interact(egui::Sense::click());
+                    let prefix = if is_dir { "📁 " } else { "" };
+                    let label_resp = ui
+                        .label(name_label(ui, prefix, rel_path))
+                        .interact(egui::Sense::click());
                     if label_resp.clicked() {
                         on_select();
                     }
@@ -1323,7 +1406,7 @@ fn render_diff_side(
                     }
 
                     let label_resp = ui
-                        .label(name_text(format!("📁 {}", node.display_name())))
+                        .label(name_label(ui, "📁 ", node.display_name()))
                         .interact(egui::Sense::click());
 
                     if label_resp.clicked() {
@@ -1335,7 +1418,7 @@ fn render_diff_side(
                     return Some(label_resp);
                 } else {
                     let mut label_resp = ui
-                        .label(name_text(node.display_name().to_string()))
+                        .label(name_label(ui, "", node.display_name()))
                         .interact(egui::Sense::click());
                     if let Some(rel_path) = list_rel_path {
                         label_resp = label_resp.on_hover_text(rel_path);
@@ -1520,6 +1603,8 @@ struct RowCell<'a> {
     pending: bool,
     row_height: f32,
     diff_tool_config: &'a DiffToolConfig,
+    find_matcher: Option<&'a Matcher>,
+    match_path: bool,
 }
 
 struct SideCell {
@@ -1544,7 +1629,17 @@ fn render_side_cell(
         pending,
         row_height,
         diff_tool_config,
+        find_matcher,
+        match_path,
     } = *row;
+    let highlight = find_matcher.map_or_else(Vec::new, |matcher| {
+        drawn_ranges(
+            matcher,
+            match_path,
+            &entry.rel_path,
+            layout == RowLayout::RelPaths,
+        )
+    });
     let rel_path = |shown: RowLayout| (layout == shown).then_some(entry.rel_path.as_str());
     let flat_rel_path = rel_path(RowLayout::RelPaths);
     let list_rel_path = rel_path(RowLayout::FileList);
@@ -1578,6 +1673,7 @@ fn render_side_cell(
         row_height,
         flat_rel_path,
         list_rel_path,
+        &highlight,
         || select = true,
         || *tool_message = on_row_item_clicked(views[0], views[1], entry, diff_tool_config),
         || toggle = true,
@@ -1625,6 +1721,7 @@ fn render_center_cell(
         pending: _,
         row_height,
         diff_tool_config,
+        ..
     } = *row;
     let nodes = [
         side_node(views[0], entry.diff_state.first()),

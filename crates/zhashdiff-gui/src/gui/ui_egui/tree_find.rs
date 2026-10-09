@@ -1,4 +1,7 @@
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet},
+    ops::Range,
+};
 
 use zcommon::find::{FindQuery, Matcher};
 
@@ -15,6 +18,20 @@ pub struct FolderFind {
 pub struct FindMask {
     pub hidden: Vec<bool>,
     pub matches: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FindChipEvent {
+    Reopen,
+    Clear,
+}
+
+pub struct TreeFindView<'a> {
+    pub matcher: Option<&'a Matcher>,
+    pub match_path: bool,
+    /// The query, while the popup is closed.
+    pub chip: Option<&'a str>,
+    pub chip_event: Option<FindChipEvent>,
 }
 
 /// `rows` are the paired rows the path filter shows, so find can only narrow them. In `flat`
@@ -73,6 +90,35 @@ pub fn find_mask(
         hidden,
         matches: matched.iter().filter(|&&matched| matched).count(),
     }
+}
+
+/// The matches `find_mask` sees inside the drawn text (path or name), relative to it, merged.
+pub fn drawn_ranges(
+    matcher: &Matcher,
+    match_path: bool,
+    rel_path: &str,
+    draws_path: bool,
+) -> Vec<Range<usize>> {
+    let mut ranges: Vec<Range<usize>> = Vec::new();
+    if rel_path.is_empty() {
+        return ranges;
+    }
+    let name_start = rel_path.rfind('/').map_or(0, |i| i + 1);
+    let searched_from = if match_path { 0 } else { name_start };
+    let drawn_from = if draws_path { 0 } else { name_start };
+    for found in matcher.find_iter(&rel_path[searched_from..]) {
+        let start = (searched_from + found.start).max(drawn_from);
+        let end = searched_from + found.end;
+        if start >= end {
+            continue;
+        }
+        let range = start - drawn_from..end - drawn_from;
+        match ranges.last_mut() {
+            Some(last) if range.start <= last.end => last.end = last.end.max(range.end),
+            _ => ranges.push(range),
+        }
+    }
+    ranges
 }
 
 fn folder_or_ancestor_matches<'a>(

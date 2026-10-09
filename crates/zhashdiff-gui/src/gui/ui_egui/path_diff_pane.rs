@@ -26,6 +26,7 @@ use crate::ui_egui::{
     tree_compare::TreeCompare,
     tree_cursor::TreeCursor,
     tree_filter::DiffFilter,
+    tree_find::TreeFindView,
     tree_sort::TreeSort,
     tree_tolerance::{SizeDelta, Tolerance},
 };
@@ -44,6 +45,7 @@ pub struct PathDiffPaneCtx<'a, 'b> {
     pub tolerance: &'a mut Tolerance,
     pub tree_compare: &'a TreeCompare,
     pub h_scroll_link: &'a mut HScrollLink,
+    pub find: &'a mut TreeFindView<'b>,
     /// A widget had keyboard focus when the frame started, so the tree's keys are not
     /// for the cursor.
     pub keyboard_taken: bool,
@@ -248,6 +250,7 @@ impl PathDiffPane {
                         tolerance: ctx.tolerance,
                         table: &mut self.table,
                         linked: ctx.h_scroll_link.0,
+                        find: ctx.find,
                     }),
                 );
             });

@@ -17,6 +17,7 @@ use crate::ui_egui::{
     status_line::ToolMessage,
     tree_compare::TreeCompare,
     tree_filter::DiffFilter,
+    tree_find::TreeFindView,
     tree_sort::TreeSort,
     tree_tolerance::Tolerance,
 };
@@ -51,6 +52,7 @@ pub struct TreeBehavior<'a, 'b> {
     pub tolerance: &'a mut Tolerance,
     pub tree_compare: &'a TreeCompare,
     pub h_scroll_link: &'a mut HScrollLink,
+    pub find: &'a mut TreeFindView<'b>,
     pub keyboard_taken: bool,
     pub actions: &'a [FolderAction],
 }
@@ -68,6 +70,7 @@ impl<'a, 'b> TreeBehavior<'a, 'b> {
             tolerance: self.tolerance,
             tree_compare: self.tree_compare,
             h_scroll_link: self.h_scroll_link,
+            find: self.find,
             path_diff_view: self.path_diff_view,
             keyboard_taken: self.keyboard_taken,
             actions: self.actions,
