@@ -272,8 +272,6 @@ impl FileDiffPane {
         let pin_input = &mut self.pin_input;
         let mono_font = egui::TextStyle::Monospace.resolve(ui.style());
         let egui_ctx = ui.ctx().clone();
-        // Read before any widget runs: an Esc that ends a path edit this frame must not also close.
-        let nothing_focused = ui.memory(|m| m.focused().is_none());
 
         ui.horizontal(|ui| {
             ui.with_layout(Layout::left_to_right(egui::Align::Center), |ui| {
@@ -1065,9 +1063,6 @@ impl FileDiffPane {
             }
         });
 
-        let close_browsers = nothing_focused
-            && self.browsers.iter().any(Option::is_some)
-            && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
         for (i, side) in [ActiveSide::Left, ActiveSide::Right]
             .into_iter()
             .enumerate()
@@ -1084,9 +1079,6 @@ impl FileDiffPane {
                         Arc::new(LocalFolder),
                     ));
                 }
-            }
-            if close_browsers {
-                self.browsers[i] = None;
             }
             // The table and its path bars are skipped while no diff is shown.
             let Some(browser) = self.browsers[i]
@@ -1133,6 +1125,12 @@ impl FileDiffPane {
                 }
                 None => {}
             }
+        }
+        // Checked after every path bar ran: one that ends an edit consumes its Esc.
+        if self.browsers.iter().any(Option::is_some)
+            && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
+        {
+            self.browsers = [None, None];
         }
 
         // Rows are laid out inside the table's scroll area, so clip to it: a partially visible
