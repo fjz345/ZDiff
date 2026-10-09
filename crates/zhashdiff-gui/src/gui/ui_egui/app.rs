@@ -32,6 +32,7 @@ use crate::ui_egui::{
     tree_compare::{CompareUpdate, TreeCompare, patch_row_states},
     tree_filter::{DiffFilter, arrange_two_folder_rows},
     tree_sort::TreeSort,
+    tree_tolerance::Tolerance,
 };
 use eframe::epaint::Pos2;
 use egui_tiles::Tile;
@@ -76,6 +77,10 @@ pub struct AppStateCtx {
     pub diff_filter: DiffFilter,
     #[serde(default)]
     pub likeness_bar: bool,
+    #[serde(skip)]
+    two_folder_diff_rows_tolerance: Tolerance,
+    #[serde(default)]
+    pub tolerance: Tolerance,
 
     #[serde(skip)]
     pub active_conflict_hash: Option<String>,
@@ -104,6 +109,7 @@ impl AppStateCtx {
         if self.two_folder_diff_rows_filter != self.path_filter
             || self.two_folder_diff_rows_sort != self.tree_sort
             || self.two_folder_diff_rows_diff_filter != self.diff_filter
+            || self.two_folder_diff_rows_tolerance != self.tolerance
         {
             self.two_folder_diff_visible_rows = None;
         }
@@ -126,6 +132,7 @@ impl AppStateCtx {
             self.two_folder_diff_rows_filter = self.path_filter.clone();
             self.two_folder_diff_rows_sort = self.tree_sort;
             self.two_folder_diff_rows_diff_filter = self.diff_filter;
+            self.two_folder_diff_rows_tolerance = self.tolerance;
             log::info!(
                 "Two-folder rows rebuilt: {} rows",
                 self.two_folder_diff_visible_rows
@@ -156,6 +163,7 @@ impl AppStateCtx {
             self.file_system_model_2_view.as_ref(),
             &self.path_filter,
             &KindTable::default(),
+            &self.tolerance,
             |rel_path, nodes| compare.state_of(rel_path, nodes),
             |path, meta| {
                 check_blueprints
@@ -863,6 +871,7 @@ impl ZApp {
                     tree_sort: &mut app_ctx.tree_sort,
                     diff_filter: &mut app_ctx.diff_filter,
                     likeness_bar: &mut app_ctx.likeness_bar,
+                    tolerance: &mut app_ctx.tolerance,
                     tree_compare: &app_ctx.tree_compare,
                     path_diff_view: &mut path_diff_view,
                     keyboard_taken,
@@ -1090,6 +1099,7 @@ mod tests {
     use crate::ui_egui::tree_compare::PairResult;
     use crate::ui_egui::tree_filter::DiffFilter;
     use crate::ui_egui::tree_sort::{SortKey, TreeSort};
+    use crate::ui_egui::tree_tolerance::{SizeDelta, Tolerance};
     use eframe::egui;
     use std::{
         fs,
@@ -1451,6 +1461,78 @@ mod tests {
         state.build_two_folder_diff_rows_if_stale();
 
         assert_eq!(state.tree_compare.queued(), [("b.txt", false, true)]);
+    }
+
+    #[test]
+    fn the_tolerance_settings_survive_a_restart() {
+        let state = AppStateCtx {
+            tolerance: Tolerance {
+                enabled: true,
+                size: false,
+                max_size_delta: SizeDelta::Bytes(12),
+                same_size_and_time: true,
+            },
+            ..Default::default()
+        };
+
+        let json = serde_json::to_string(&state).unwrap();
+        let restored: AppStateCtx = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(restored.tolerance, state.tolerance);
+    }
+
+    #[test]
+    fn a_state_saved_before_tolerance_existed_loads_it_off_with_a_1_percent_size_criterion() {
+        let mut json: serde_json::Value = serde_json::to_value(AppStateCtx::default()).unwrap();
+        json.as_object_mut().unwrap().remove("tolerance").unwrap();
+
+        let restored: AppStateCtx = serde_json::from_value(json).unwrap();
+
+        assert_eq!(
+            restored.tolerance,
+            Tolerance {
+                enabled: false,
+                size: true,
+                max_size_delta: SizeDelta::Percent(1.0),
+                same_size_and_time: false,
+            }
+        );
+    }
+
+    #[test]
+    fn toggling_tolerance_rebuilds_the_rows_and_off_restores_the_exact_state_without_a_compare() {
+        let (left, right) = (tempdir().unwrap(), tempdir().unwrap());
+        for root in [left.path(), right.path()] {
+            fs::write(root.join("a.txt"), "a").unwrap();
+        }
+        fs::write(left.path().join("b.txt"), "left b").unwrap();
+        fs::write(right.path().join("b.txt"), "right b").unwrap();
+        let mut state = AppStateCtx {
+            file_system_model_1_view: load_view(left.path()),
+            file_system_model_2_view: load_view(right.path()),
+            ..Default::default()
+        };
+        finish_compare(&mut state);
+        let b_state = |state: &AppStateCtx| {
+            let rows = state.two_folder_diff_visible_rows.as_ref().unwrap();
+            let row = rows.iter().find(|row| row.rel_path == "b.txt").unwrap();
+            row.diff_state.clone()
+        };
+        assert!(matches!(b_state(&state), DiffState::Different(..)));
+
+        state.tolerance = Tolerance {
+            enabled: true,
+            max_size_delta: SizeDelta::Bytes(1),
+            ..Tolerance::default()
+        };
+        state.build_two_folder_diff_rows_if_stale();
+        assert!(matches!(b_state(&state), DiffState::Similar(..)));
+        assert!(!state.tree_compare.is_comparing());
+
+        state.tolerance.enabled = false;
+        state.build_two_folder_diff_rows_if_stale();
+        assert!(matches!(b_state(&state), DiffState::Different(..)));
+        assert!(!state.tree_compare.is_comparing());
     }
 
     #[test]

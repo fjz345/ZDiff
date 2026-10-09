@@ -1,6 +1,9 @@
 use std::path::PathBuf;
 
-use eframe::egui::{self, RichText, ScrollArea};
+use eframe::egui::{
+    self, PopupCloseBehavior, RichText, ScrollArea,
+    containers::menu::{MenuButton, MenuConfig},
+};
 use serde::{Deserialize, Serialize};
 use zcommon::{
     presets::{BuiltinPreset, UserPresets},
@@ -21,6 +24,7 @@ use crate::ui_egui::{
     tree_cursor::TreeCursor,
     tree_filter::DiffFilter,
     tree_sort::TreeSort,
+    tree_tolerance::{SizeDelta, Tolerance},
 };
 
 pub struct PathDiffPaneCtx<'a, 'b> {
@@ -34,6 +38,7 @@ pub struct PathDiffPaneCtx<'a, 'b> {
     pub tree_sort: &'a mut TreeSort,
     pub diff_filter: &'a mut DiffFilter,
     pub likeness_bar: &'a mut bool,
+    pub tolerance: &'a mut Tolerance,
     pub tree_compare: &'a TreeCompare,
     /// A widget had keyboard focus when the frame started, so the tree's keys are not
     /// for the cursor.
@@ -191,6 +196,15 @@ impl PathDiffPane {
                 RichText::new("L").strong(),
                 "Likeness: how alike the two files of each pair are, measured in the background",
             );
+            toggle_button(
+                ui,
+                &mut ctx.tolerance.enabled,
+                RichText::new("T").strong(),
+                "Tolerance: differing files that pass every enabled criterion count as Similar (≈)",
+            );
+            MenuButton::new("⏷")
+                .config(MenuConfig::new().close_behavior(PopupCloseBehavior::CloseOnClickOutside))
+                .ui(ui, |ui| draw_tolerance_settings(ui, ctx.tolerance));
         });
 
         ui.separator();
@@ -216,6 +230,7 @@ impl PathDiffPane {
                     ctx.actions,
                     *ctx.diff_filter,
                     ctx.likeness_bar.then_some(ctx.tree_compare),
+                    ctx.tolerance,
                 );
             });
 
@@ -337,6 +352,42 @@ impl FilterField {
 
 /// Only edits the filter: the app rebuilds the rows on the next update when it changed, so the
 /// table drawn below still has this frame's rows.
+fn draw_tolerance_settings(ui: &mut egui::Ui, tolerance: &mut Tolerance) {
+    ui.checkbox(&mut tolerance.enabled, "Tolerance");
+    ui.add_enabled_ui(tolerance.enabled, |ui| {
+        ui.horizontal(|ui| {
+            ui.checkbox(&mut tolerance.size, "Sizes differ by at most");
+            ui.add_enabled_ui(tolerance.size, |ui| {
+                draw_size_delta(ui, &mut tolerance.max_size_delta)
+            });
+        });
+        ui.checkbox(
+            &mut tolerance.same_size_and_time,
+            "Same size and modification time",
+        )
+        .on_hover_text("Decides without reading the files");
+    });
+}
+
+fn draw_size_delta(ui: &mut egui::Ui, delta: &mut SizeDelta) {
+    match delta {
+        SizeDelta::Bytes(max) => ui.add(egui::DragValue::new(max).suffix(" bytes")),
+        SizeDelta::Percent(max) => ui.add(
+            egui::DragValue::new(max)
+                .range(0.0..=100.0)
+                .speed(0.1)
+                .suffix(" %"),
+        ),
+    };
+    let percent = matches!(delta, SizeDelta::Percent(_));
+    if ui.selectable_label(!percent, "bytes").clicked() && percent {
+        *delta = SizeDelta::Bytes(1024);
+    }
+    if ui.selectable_label(percent, "%").clicked() && !percent {
+        *delta = SizeDelta::Percent(1.0);
+    }
+}
+
 fn draw_filter_bar(ui: &mut egui::Ui, filter: &mut PathFilter, presets: &mut FilterPresets) {
     for field in [FilterField::Blacklist, FilterField::Whitelist] {
         ui.label(field.label());

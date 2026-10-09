@@ -36,7 +36,7 @@ pub fn count_rows(rows: &[VisibleRowTwoFolderDiff]) -> RowCounts {
             DiffState::OnlyInFirst(..) => &mut counts.only_in_1,
             DiffState::OnlyInSecond(..) => &mut counts.only_in_2,
             _ if row.is_dir => continue,
-            DiffState::Different(..) | DiffState::Partial(..) => &mut counts.different,
+            DiffState::Different(..) | DiffState::Similar(..) => &mut counts.different,
             DiffState::Same(..) => &mut counts.same,
             DiffState::Pending(..) => &mut counts.pending,
         };
@@ -128,7 +128,7 @@ mod tests {
             row("a/x/b.txt", false, DiffState::Different(0, 0)),
             row("added", true, DiffState::OnlyInSecond(0)),
             row("added/new.txt", false, DiffState::OnlyInSecond(0)),
-            row("c.txt", false, DiffState::Partial(0, 0)),
+            row("c.txt", false, DiffState::Different(0, 0)),
             row("empty_removed", true, DiffState::OnlyInFirst(0)),
             row("equal", true, DiffState::Same(0, 0)),
             row("equal/deep", true, DiffState::Same(0, 0)),

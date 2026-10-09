@@ -381,8 +381,9 @@ impl TreeCompare {
         rows.iter()
             .filter(|row| !row.is_dir)
             .filter_map(|row| {
-                let (DiffState::Pending(l_id, r_id) | DiffState::Different(l_id, r_id)) =
-                    row.diff_state
+                let (DiffState::Pending(l_id, r_id)
+                | DiffState::Different(l_id, r_id)
+                | DiffState::Similar(l_id, r_id)) = row.diff_state
                 else {
                     return None;
                 };
@@ -390,6 +391,8 @@ impl TreeCompare {
                 // Rows patched less often than results arrive can still be Pending.
                 let state = match row.diff_state {
                     DiffState::Pending(..) => self.state_of(&row.rel_path, nodes),
+                    // A pair Similar before its compare is never read.
+                    DiffState::Similar(..) => Some(self.state_of(&row.rel_path, nodes)?),
                     _ => Some(PairState::Different),
                 };
                 let compare = state.is_none();
@@ -568,11 +571,13 @@ mod tests {
         pending_pairs,
     };
     use crate::ui_egui::fs_tree::{DiffState, FileSystemView, VisibleRowTwoFolderDiff};
+    use crate::ui_egui::tree_tolerance::{SizeDelta, Tolerance};
     use std::{
-        fs, io,
+        fs::{self, File},
+        io,
         path::Path,
         sync::Arc,
-        time::{Duration, Instant},
+        time::{Duration, Instant, SystemTime},
     };
     use tempfile::{TempDir, tempdir};
     use zcommon::kinds::KindTable;
@@ -609,12 +614,22 @@ mod tests {
         left: &FileSystemView,
         right: &FileSystemView,
     ) -> Vec<VisibleRowTwoFolderDiff> {
+        build_tolerant(compare, left, right, &Tolerance::default())
+    }
+
+    fn build_tolerant(
+        compare: &mut TreeCompare,
+        left: &FileSystemView,
+        right: &FileSystemView,
+        tolerance: &Tolerance,
+    ) -> Vec<VisibleRowTwoFolderDiff> {
         compare.retain_for([Some(left), Some(right)]);
         FileSystemView::build_two_folder_diff_rows(
             Some(left),
             Some(right),
             &PathFilter::default(),
             &KindTable::default(),
+            tolerance,
             |rel_path, nodes| compare.state_of(rel_path, nodes),
             |_, _| None,
         )
@@ -645,7 +660,7 @@ mod tests {
                 let kind = match row.diff_state {
                     DiffState::Different(..) => "Different",
                     DiffState::Same(..) => "Same",
-                    DiffState::Partial(..) => "Partial",
+                    DiffState::Similar(..) => "Similar",
                     DiffState::OnlyInFirst(..) => "OnlyInFirst",
                     DiffState::OnlyInSecond(..) => "OnlyInSecond",
                     DiffState::Pending(..) => "Pending",
@@ -958,6 +973,65 @@ mod tests {
         let rows = build(&mut compare, &left, &right);
         compare.start(&rows, [Some(&left), Some(&right)], Instant::now());
 
+        assert_eq!(compare.queued(), [("b.txt", false, true)]);
+    }
+
+    #[test]
+    fn a_pair_similar_by_modification_time_is_neither_compared_nor_measured() {
+        let (left_dir, right_dir) = trees();
+        write_files(left_dir.path(), &[("x.txt", "aaaa")]);
+        write_files(right_dir.path(), &[("x.txt", "bbbb")]);
+        let time = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
+        for root in [left_dir.path(), right_dir.path()] {
+            File::options()
+                .write(true)
+                .open(root.join("x.txt"))
+                .unwrap()
+                .set_modified(time)
+                .unwrap();
+        }
+        let (left, right) = (load_view(left_dir.path()), load_view(right_dir.path()));
+        let mut compare = TreeCompare::default();
+        compare.set_likeness(true);
+        let tolerance = Tolerance {
+            enabled: true,
+            size: false,
+            same_size_and_time: true,
+            ..Tolerance::default()
+        };
+
+        let rows = build_tolerant(&mut compare, &left, &right, &tolerance);
+        compare.start(&rows, [Some(&left), Some(&right)], Instant::now());
+
+        assert_eq!(state_at(&rows, "x.txt"), "Similar");
+        assert_eq!(
+            compare.queued(),
+            [
+                ("a.txt", true, true),
+                ("b.txt", true, true),
+                ("sub/c.txt", true, true)
+            ]
+        );
+    }
+
+    #[test]
+    fn a_compared_different_pair_that_is_similar_by_size_is_still_measured() {
+        let (left_dir, right_dir) = trees();
+        let (left, right) = (load_view(left_dir.path()), load_view(right_dir.path()));
+        let mut compare = TreeCompare::default();
+        let rows = build(&mut compare, &left, &right);
+        compare_pending(&mut compare, &rows, &left, &right);
+        compare.set_likeness(true);
+        let tolerance = Tolerance {
+            enabled: true,
+            max_size_delta: SizeDelta::Bytes(1),
+            ..Tolerance::default()
+        };
+
+        let rows = build_tolerant(&mut compare, &left, &right, &tolerance);
+        compare.start(&rows, [Some(&left), Some(&right)], Instant::now());
+
+        assert_eq!(state_at(&rows, "b.txt"), "Similar");
         assert_eq!(compare.queued(), [("b.txt", false, true)]);
     }
 

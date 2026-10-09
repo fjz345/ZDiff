@@ -14,3 +14,4 @@ pub mod tree_guides;
 pub mod tree_likeness;
 pub mod tree_menu;
 pub mod tree_sort;
+pub mod tree_tolerance;

@@ -8,7 +8,7 @@ pub struct CursorRow<'a> {
     pub is_dir: bool,
     /// A folder collapsed on a side it exists on, so some of its rows are hidden.
     pub collapsed: bool,
-    /// Different, Partial, or only on one side.
+    /// Different, or only on one side.
     pub differs: bool,
 }
 

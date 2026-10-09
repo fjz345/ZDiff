@@ -72,7 +72,7 @@ fn name(row: &VisibleRowTwoFolderDiff) -> &str {
 fn state_rank(state: &DiffState) -> u8 {
     match state {
         DiffState::Different(..) => 0,
-        DiffState::Partial(..) => 1,
+        DiffState::Similar(..) => 1,
         DiffState::OnlyInFirst(..) => 2,
         DiffState::OnlyInSecond(..) => 3,
         DiffState::Same(..) => 4,
@@ -228,23 +228,23 @@ mod tests {
     }
 
     #[test]
-    fn state_sorts_different_partial_only_in_first_only_in_second_same() {
+    fn state_sorts_different_similar_only_in_first_only_in_second_same() {
         let siblings = || {
             vec![
                 row("same", false, DiffState::Same(0, 0)),
                 row("second", false, DiffState::OnlyInSecond(0)),
                 row("first", false, DiffState::OnlyInFirst(0)),
-                row("partial", false, DiffState::Partial(0, 0)),
+                row("similar", false, DiffState::Similar(0, 0)),
                 row("different", false, DiffState::Different(0, 0)),
             ]
         };
         assert_eq!(
             sorted(siblings(), STATE_ASC),
-            ["different", "partial", "first", "second", "same"]
+            ["different", "similar", "first", "second", "same"]
         );
         assert_eq!(
             sorted(siblings(), STATE_DESC),
-            ["same", "second", "first", "partial", "different"]
+            ["same", "second", "first", "similar", "different"]
         );
     }
 

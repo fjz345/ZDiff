@@ -36,6 +36,7 @@ use crate::ui_egui::tree_guides::{Guide, tree_guides};
 use crate::ui_egui::tree_likeness::{likeness_cell, ui_likeness_cell};
 use crate::ui_egui::tree_menu::{Entry, RowAction, apply_row_action, row_menu, show_row_menu};
 use crate::ui_egui::tree_sort::{SortKey, TreeSort};
+use crate::ui_egui::tree_tolerance::{SideMeta, Tolerance, similar_tooltip};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct FileSystemView {
@@ -156,6 +157,7 @@ impl FileSystemView {
         file_system_2: Option<&FileSystemView>,
         filter: &PathFilter,
         kinds: &KindTable,
+        tolerance: &Tolerance,
         mut pair_state: impl FnMut(&str, [&FsNode; 2]) -> Option<PairState>,
         mut blueprint: impl FnMut(&Path, FileMeta) -> Option<bool>,
     ) -> io::Result<Vec<VisibleRowTwoFolderDiff>> {
@@ -262,8 +264,13 @@ impl FileSystemView {
                 if l_node.is_dir() {
                     return None;
                 }
-                let state =
-                    file_diff_state(rel_path, (*l_id, l_node), (*r_id, r_node), &mut pair_state);
+                let state = file_diff_state(
+                    rel_path,
+                    (*l_id, l_node),
+                    (*r_id, r_node),
+                    tolerance,
+                    &mut pair_state,
+                );
                 Some((rel_path.as_str(), state))
             })
             .collect();
@@ -444,7 +451,10 @@ pub fn two_folder_cursor_rows<'a>(
                 || (!flat && on_either_side(row, FileSystemView::is_parent_chain_collapsed)),
             is_dir: row.is_dir,
             collapsed: !flat && row.is_dir && on_either_side(row, FileSystemView::is_collapsed),
-            differs: !matches!(row.diff_state, DiffState::Same(..) | DiffState::Pending(..)),
+            differs: !matches!(
+                row.diff_state,
+                DiffState::Same(..) | DiffState::Similar(..) | DiffState::Pending(..)
+            ),
         })
         .collect()
 }
@@ -613,6 +623,7 @@ pub fn draw_ui_two_folder_tree_with_diff(
     actions: &[FolderAction],
     diff_filter: DiffFilter,
     likeness: Option<&TreeCompare>,
+    tolerance: &Tolerance,
 ) -> egui::response::Response {
     if file_system_1_view.is_none() && file_system_2_view.is_none() {
         return ui
@@ -895,6 +906,7 @@ pub fn draw_ui_two_folder_tree_with_diff(
                             layout,
                             row_guides,
                             likeness,
+                            tolerance,
                         );
                         if clicked {
                             *cursor = TreeCursor::at(&entry.rel_path);
@@ -1040,7 +1052,7 @@ pub(crate) fn apply_path_bar(
 pub enum DiffState {
     Different(FsNodeId, FsNodeId),
     Same(FsNodeId, FsNodeId),
-    Partial(FsNodeId, FsNodeId),
+    Similar(FsNodeId, FsNodeId),
     OnlyInFirst(FsNodeId),
     OnlyInSecond(FsNodeId),
     Pending(FsNodeId, FsNodeId),
@@ -1051,7 +1063,7 @@ impl DiffState {
         match &self {
             DiffState::Same(path_buf, _)
             | DiffState::Different(path_buf, _)
-            | DiffState::Partial(path_buf, _)
+            | DiffState::Similar(path_buf, _)
             | DiffState::Pending(path_buf, _) => Some(*path_buf),
             DiffState::OnlyInFirst(path_buf) => Some(*path_buf),
             DiffState::OnlyInSecond(..) => None,
@@ -1061,7 +1073,7 @@ impl DiffState {
         match &self {
             DiffState::Same(_, path_buf1)
             | DiffState::Different(_, path_buf1)
-            | DiffState::Partial(_, path_buf1)
+            | DiffState::Similar(_, path_buf1)
             | DiffState::Pending(_, path_buf1) => Some(*path_buf1),
             DiffState::OnlyInFirst(..) => None,
             DiffState::OnlyInSecond(path_buf) => Some(*path_buf),
@@ -1079,7 +1091,7 @@ pub fn ui_custom_diff_state(ui: &mut egui::Ui, state: &DiffState) -> egui::respo
     match state {
         DiffState::Same(..) => ui.label(RichText::new("=").color(green)),
         DiffState::Different(..) => ui.label(RichText::new("≠").color(red)),
-        DiffState::Partial(..) => ui.label(RichText::new("≈").color(yellow)),
+        DiffState::Similar(..) => ui.label(RichText::new("≈").color(yellow)),
         DiffState::OnlyInFirst(..) => ui.label(RichText::new("−").color(blue)),
         DiffState::OnlyInSecond(..) => ui.label(RichText::new("+").color(blue)),
         DiffState::Pending(..) => ui
@@ -1092,12 +1104,18 @@ fn file_diff_state(
     rel_path: &str,
     left: (FsNodeId, &FsNode),
     right: (FsNodeId, &FsNode),
+    tolerance: &Tolerance,
     pair_state: &mut impl FnMut(&str, [&FsNode; 2]) -> Option<PairState>,
 ) -> DiffState {
     if right.1.is_dir() {
         return DiffState::Different(left.0, right.0);
     }
-    match pair_state(rel_path, [left.1, right.1]) {
+    let exact = pair_state(rel_path, [left.1, right.1]);
+    let sides = [left.1, right.1].map(|node| Some(SideMeta::of(node)));
+    if tolerance.is_similar(sides, exact) {
+        return DiffState::Similar(left.0, right.0);
+    }
+    match exact {
         Some(PairState::Same) => DiffState::Same(left.0, right.0),
         Some(PairState::Different) => DiffState::Different(left.0, right.0),
         None => DiffState::Pending(left.0, right.0),
@@ -1113,6 +1131,11 @@ pub fn aggregate_folder_state(
     for child in children {
         match child {
             DiffState::Same(..) => {}
+            DiffState::Similar(..) => {
+                if matches!(state, DiffState::Same(..)) {
+                    state = DiffState::Similar(l_id, r_id);
+                }
+            }
             DiffState::Pending(..) => state = DiffState::Pending(l_id, r_id),
             _ => return DiffState::Different(l_id, r_id),
         }
@@ -1380,6 +1403,7 @@ fn render_row_folder_tree_diff_column(
     layout: RowLayout,
     guides: [&[Guide]; 2],
     likeness: Option<&TreeCompare>,
+    tolerance: &Tolerance,
 ) -> (bool, Option<RowAction>) {
     let rel_path = |shown: RowLayout| (layout == shown).then_some(entry.rel_path.as_str());
     let flat_rel_path = rel_path(RowLayout::RelPaths);
@@ -1473,7 +1497,21 @@ fn render_row_folder_tree_diff_column(
             ui.multiply_opacity(0.5);
         }
         ui.horizontal(|ui| {
-            ui_custom_diff_state(ui, &entry.diff_state);
+            let response = ui_custom_diff_state(ui, &entry.diff_state);
+            if matches!(entry.diff_state, DiffState::Similar(..)) {
+                let nodes = [
+                    (file_system_1_view.as_deref(), first_node_id),
+                    (file_system_2_view.as_deref(), second_node_id),
+                ]
+                .map(|(view, id)| view?.file_system.get_node(id?));
+                let sides = match nodes {
+                    [Some(left), Some(right)] if !entry.is_dir => {
+                        Some([left, right].map(SideMeta::of))
+                    }
+                    _ => None,
+                };
+                response.on_hover_text(similar_tooltip(tolerance, sides));
+            }
         });
     });
     if let Some(compare) = likeness {
@@ -1852,6 +1890,8 @@ mod tests {
     use crate::ui_egui::tree_cursor::{CursorRequest, TreeCursor};
     use crate::ui_egui::tree_filter::{DiffFilter, arrange_two_folder_rows};
     use crate::ui_egui::tree_sort::{SortKey, TreeSort, sort_two_folder_rows};
+    use crate::ui_egui::tree_tolerance::{SizeDelta, Tolerance};
+    use std::time::{Duration, SystemTime};
     use zcommon::path::split_path;
     use zcommon::ui_egui::pathbar::PathBarAction;
     use zhashdiff::external_diff_tool::{DiffTool, DiffToolConfig};
@@ -1916,7 +1956,7 @@ mod tests {
             DiffState::OnlyInSecond(id) => get_rel(file_system_2, r2, *id),
             DiffState::Same(id, _)
             | DiffState::Different(id, _)
-            | DiffState::Partial(id, _)
+            | DiffState::Similar(id, _)
             | DiffState::Pending(id, _) => get_rel(file_system_1, r1, *id),
         }
     }
@@ -2022,7 +2062,7 @@ mod tests {
         match state {
             DiffState::Different(..) => "Different",
             DiffState::Same(..) => "Same",
-            DiffState::Partial(..) => "Partial",
+            DiffState::Similar(..) => "Similar",
             DiffState::OnlyInFirst(..) => "OnlyInFirst",
             DiffState::OnlyInSecond(..) => "OnlyInSecond",
             DiffState::Pending(..) => "Pending",
@@ -2082,11 +2122,22 @@ mod tests {
         states: &PairStates,
         filter: &PathFilter,
     ) -> Vec<VisibleRowTwoFolderDiff> {
+        build_tolerant_from_states(left, right, states, filter, &Tolerance::default())
+    }
+
+    fn build_tolerant_from_states(
+        left: &FileSystemView,
+        right: &FileSystemView,
+        states: &PairStates,
+        filter: &PathFilter,
+        tolerance: &Tolerance,
+    ) -> Vec<VisibleRowTwoFolderDiff> {
         FileSystemView::build_two_folder_diff_rows(
             Some(left),
             Some(right),
             filter,
             &KindTable::default(),
+            tolerance,
             |rel_path, _| states.get(rel_path).copied(),
             |_, _| None,
         )
@@ -2100,7 +2151,25 @@ mod tests {
         comparisons: &Cell<usize>,
         filter: &PathFilter,
     ) -> Vec<VisibleRowTwoFolderDiff> {
-        let rows = build_from_states(left, right, states, filter);
+        build_compared(
+            left,
+            right,
+            states,
+            comparisons,
+            filter,
+            &Tolerance::default(),
+        )
+    }
+
+    fn build_compared(
+        left: &FileSystemView,
+        right: &FileSystemView,
+        states: &mut PairStates,
+        comparisons: &Cell<usize>,
+        filter: &PathFilter,
+        tolerance: &Tolerance,
+    ) -> Vec<VisibleRowTwoFolderDiff> {
+        let rows = build_tolerant_from_states(left, right, states, filter, tolerance);
         let pending = pending_pairs(&rows, [Some(left), Some(right)]);
         if pending.is_empty() {
             return rows;
@@ -2109,7 +2178,134 @@ mod tests {
             comparisons.set(comparisons.get() + 1);
             states.insert(pair.rel_path.clone(), pair.compare().state);
         }
-        build_from_states(left, right, states, filter)
+        build_tolerant_from_states(left, right, states, filter, tolerance)
+    }
+
+    fn set_modified(root: &Path, rel_path: &str, modified: SystemTime) {
+        File::options()
+            .write(true)
+            .open(root.join(rel_path))
+            .unwrap()
+            .set_modified(modified)
+            .unwrap();
+    }
+
+    #[test]
+    fn the_time_criterion_makes_a_pair_similar_without_comparing_it() {
+        let (left_dir, right_dir) = (tempdir().unwrap(), tempdir().unwrap());
+        write_files(left_dir.path(), &[("x.txt", "aaaa"), ("y.txt", "aaaa")]);
+        write_files(right_dir.path(), &[("x.txt", "bbbb"), ("y.txt", "bbbb")]);
+        let time = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
+        set_modified(left_dir.path(), "x.txt", time);
+        set_modified(right_dir.path(), "x.txt", time);
+        set_modified(left_dir.path(), "y.txt", time);
+        set_modified(right_dir.path(), "y.txt", time + Duration::from_secs(1));
+        let left = load_view(left_dir.path());
+        let right = load_view(right_dir.path());
+        let tolerance = Tolerance {
+            enabled: true,
+            size: false,
+            same_size_and_time: true,
+            ..Tolerance::default()
+        };
+        let comparisons = Cell::new(0);
+
+        let rows = build_compared(
+            &left,
+            &right,
+            &mut PairStates::new(),
+            &comparisons,
+            &PathFilter::default(),
+            &tolerance,
+        );
+
+        assert_eq!(
+            rows_with_kinds(&rows),
+            [
+                ("", "Different"),
+                ("x.txt", "Similar"),
+                ("y.txt", "Different")
+            ]
+        );
+        assert_eq!(comparisons.get(), 1, "only y.txt is compared");
+    }
+
+    #[test]
+    fn turning_tolerance_off_restores_the_exact_states_without_comparing_again() {
+        let (left_dir, right_dir) = two_folder_trees();
+        let left = load_view(left_dir.path());
+        let right = load_view(right_dir.path());
+        let mut states = PairStates::new();
+        let comparisons = Cell::new(0);
+        let tolerance = Tolerance {
+            enabled: true,
+            max_size_delta: SizeDelta::Bytes(1),
+            ..Tolerance::default()
+        };
+        let filter = PathFilter::default();
+
+        let rows = build_compared(
+            &left,
+            &right,
+            &mut states,
+            &comparisons,
+            &filter,
+            &tolerance,
+        );
+        assert_eq!(kind_at(&rows, "b.txt"), "Similar");
+        assert_eq!(comparisons.get(), 4);
+
+        let off = Tolerance {
+            enabled: false,
+            ..tolerance
+        };
+        let rows = build_compared(&left, &right, &mut states, &comparisons, &filter, &off);
+        assert_eq!(kind_at(&rows, "b.txt"), "Different");
+        assert_eq!(comparisons.get(), 4);
+    }
+
+    #[test]
+    fn a_folder_of_same_and_similar_files_is_similar_and_hidden_by_diff_only() {
+        let (left_dir, right_dir) = (tempdir().unwrap(), tempdir().unwrap());
+        write_files(
+            left_dir.path(),
+            &[("sub/a.txt", "same"), ("sub/b.txt", "left")],
+        );
+        write_files(
+            right_dir.path(),
+            &[("sub/a.txt", "same"), ("sub/b.txt", "right")],
+        );
+        let left = load_view(left_dir.path());
+        let right = load_view(right_dir.path());
+        let tolerance = Tolerance {
+            enabled: true,
+            max_size_delta: SizeDelta::Bytes(1),
+            ..Tolerance::default()
+        };
+
+        let rows = build_compared(
+            &left,
+            &right,
+            &mut PairStates::new(),
+            &Cell::new(0),
+            &PathFilter::default(),
+            &tolerance,
+        );
+        assert_eq!(
+            rows_with_kinds(&rows),
+            [
+                ("", "Similar"),
+                ("sub", "Similar"),
+                ("sub/a.txt", "Same"),
+                ("sub/b.txt", "Similar"),
+            ]
+        );
+        let diff_only = DiffFilter {
+            diff_only: true,
+            show_parents: true,
+        };
+        let shown = arrange_two_folder_rows(rows, diff_only, TreeSort::default());
+        assert_eq!(rows_with_kinds(&shown), [("", "Similar")]);
     }
 
     #[test]
@@ -2697,6 +2893,7 @@ mod tests {
             Some(&right),
             &PathFilter::default(),
             &kinds,
+            &Tolerance::default(),
             |_, _| None,
             |_, _| None,
         )
@@ -2764,6 +2961,7 @@ mod tests {
             Some(&right),
             &PathFilter::default(),
             &KindTable::default(),
+            &Tolerance::default(),
             |_, _| None,
             |path, meta| {
                 checked.push((path.to_path_buf(), meta.size));
@@ -2805,6 +3003,7 @@ mod tests {
             Some(&right),
             &PathFilter::default(),
             &KindTable::default(),
+            &Tolerance::default(),
             |_, _| None,
             |_, _| None,
         )
@@ -3228,6 +3427,49 @@ mod tests {
             ),
             DiffState::Different(1, 2)
         );
+    }
+
+    #[test]
+    fn a_similar_child_counts_as_equal_but_marks_the_folder_similar() {
+        assert_eq!(
+            aggregate_folder_state(1, 2, [DiffState::Similar(3, 3), DiffState::Same(4, 4)]),
+            DiffState::Similar(1, 2)
+        );
+        assert_eq!(
+            aggregate_folder_state(1, 2, [DiffState::Similar(3, 3), DiffState::Pending(4, 4)]),
+            DiffState::Pending(1, 2)
+        );
+        assert_eq!(
+            aggregate_folder_state(1, 2, [DiffState::Similar(3, 3), DiffState::Different(4, 4)]),
+            DiffState::Different(1, 2)
+        );
+    }
+
+    #[test]
+    fn next_and_prev_diff_skip_similar_files() {
+        let row = |rel_path: &str, diff_state| VisibleRowTwoFolderDiff {
+            rel_path: rel_path.to_string(),
+            is_dir: rel_path.is_empty(),
+            depth: 0,
+            diff_state,
+            file_kinds: [None, None],
+            blueprints: [false, false],
+        };
+        let rows = [
+            row("", DiffState::Different(0, 0)),
+            row("a.txt", DiffState::Different(1, 1)),
+            row("b.txt", DiffState::Similar(2, 2)),
+            row("c.txt", DiffState::Different(3, 3)),
+            row("d.txt", DiffState::Similar(4, 4)),
+        ];
+        let cursor_rows = two_folder_cursor_rows(None, None, &rows, false);
+
+        let next = TreeCursor::at("a.txt").next_diff(&cursor_rows);
+        assert_eq!(next.map(|(c, _)| c), Some(TreeCursor::at("c.txt")));
+        let prev = TreeCursor::at("c.txt").prev_diff(&cursor_rows);
+        assert_eq!(prev.map(|(c, _)| c), Some(TreeCursor::at("a.txt")));
+        let wrapped = TreeCursor::at("c.txt").next_diff(&cursor_rows);
+        assert_ne!(wrapped.map(|(c, _)| c), Some(TreeCursor::at("d.txt")));
     }
 
     #[test]

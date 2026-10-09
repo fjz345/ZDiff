@@ -44,7 +44,9 @@ pub fn filter_diff_rows(
     if !filter.diff_only {
         return rows;
     }
-    let differs = |row: &VisibleRowTwoFolderDiff| !matches!(row.diff_state, DiffState::Same(..));
+    let differs = |row: &VisibleRowTwoFolderDiff| {
+        !matches!(row.diff_state, DiffState::Same(..) | DiffState::Similar(..))
+    };
     if filter.lists_files() {
         rows.retain(|row| row.rel_path.is_empty() || (!row.is_dir && differs(row)));
         return rows;
@@ -102,7 +104,7 @@ mod tests {
             row("a/x/b.txt", false, DiffState::Different(0, 0)),
             row("added", true, DiffState::OnlyInSecond(0)),
             row("added/new.txt", false, DiffState::OnlyInSecond(0)),
-            row("c.txt", false, DiffState::Partial(0, 0)),
+            row("c.txt", false, DiffState::Different(0, 0)),
             row("empty_removed", true, DiffState::OnlyInFirst(0)),
             row("equal", true, DiffState::Same(0, 0)),
             row("equal/deep", true, DiffState::Same(0, 0)),
@@ -222,6 +224,22 @@ mod tests {
             )),
             ["", "a", "a/b.txt"]
         );
+    }
+
+    #[test]
+    fn diff_only_hides_similar_rows_and_similar_folders() {
+        let rows = || {
+            vec![
+                row("", true, DiffState::Different(0, 0)),
+                row("near", true, DiffState::Similar(0, 0)),
+                row("near/a.txt", false, DiffState::Similar(0, 0)),
+                row("near/b.txt", false, DiffState::Same(0, 0)),
+                row("near.txt", false, DiffState::Similar(0, 0)),
+                row("far.txt", false, DiffState::Different(0, 0)),
+            ]
+        };
+        assert_eq!(paths(&filter_diff_rows(rows(), DIFF_ONLY)), ["", "far.txt"]);
+        assert_eq!(paths(&filter_diff_rows(rows(), FILE_LIST)), ["", "far.txt"]);
     }
 
     #[test]

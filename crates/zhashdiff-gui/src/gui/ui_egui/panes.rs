@@ -18,6 +18,7 @@ use crate::ui_egui::{
     tree_compare::TreeCompare,
     tree_filter::DiffFilter,
     tree_sort::TreeSort,
+    tree_tolerance::Tolerance,
 };
 
 pub struct PathDiffView<'a> {
@@ -47,6 +48,7 @@ pub struct TreeBehavior<'a, 'b> {
     pub tree_sort: &'a mut TreeSort,
     pub diff_filter: &'a mut DiffFilter,
     pub likeness_bar: &'a mut bool,
+    pub tolerance: &'a mut Tolerance,
     pub tree_compare: &'a TreeCompare,
     pub keyboard_taken: bool,
     pub actions: &'a [FolderAction],
@@ -62,6 +64,7 @@ impl<'a, 'b> TreeBehavior<'a, 'b> {
             tree_sort: self.tree_sort,
             diff_filter: self.diff_filter,
             likeness_bar: self.likeness_bar,
+            tolerance: self.tolerance,
             tree_compare: self.tree_compare,
             path_diff_view: self.path_diff_view,
             keyboard_taken: self.keyboard_taken,
