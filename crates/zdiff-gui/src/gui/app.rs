@@ -1218,13 +1218,15 @@ impl<'a> ZApp {
                     );
                 }
 
-                if r.modifiers.shift && r.key_pressed(egui::Key::Enter) {
+                // The popup takes Enter; stepping here would move the kept hits under an error.
+                let step_find = !app_state_ctx.find_open;
+                if step_find && r.modifiers.shift && r.key_pressed(egui::Key::Enter) {
                     app_state_ctx.diff_processor.find_cursor.dec();
                     log::info!(
                         "FindCursor-- @{}",
                         app_state_ctx.diff_processor.find_cursor.get()
                     );
-                } else if r.key_pressed(egui::Key::Enter) {
+                } else if step_find && r.key_pressed(egui::Key::Enter) {
                     app_state_ctx.diff_processor.find_cursor.inc();
                     log::info!(
                         "FindCursor++ @{}",
