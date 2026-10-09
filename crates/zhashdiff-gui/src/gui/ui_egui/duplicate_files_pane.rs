@@ -235,7 +235,7 @@ impl DuplicateFilesPane {
     }
 
     /// Resolve All Selected: removes every non-keeper of the groups with a keeper through
-    /// `delete`, then forgets the conflicts and rescans the folder.
+    /// `delete`, then forgets the conflicts and requests a rescan of the folder.
     fn resolve_selected<E: Display>(
         &mut self,
         ctx: &mut DuplicateFilesPaneCtx,
@@ -346,8 +346,6 @@ impl DuplicateFilesPane {
             .max_height(500.0)
             .show(ui, |ui| {
                 if let Some(file_system_view) = ctx.path_diff_view.file_system_1_view {
-                    // Here rather than once per frame: a resolve above may have rescanned
-                    // the tree, and the ids are per model.
                     let hidden = tree_hidden(file_system_view, ctx.path_filter);
                     draw_ui_folder_tree_with_checkbox(
                         ui,

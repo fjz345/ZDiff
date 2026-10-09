@@ -602,6 +602,7 @@ impl ZApp {
                     if ui.button("Clear FileSystemModels").clicked() {
                         app_ctx.file_system_model_1_view = None;
                         app_ctx.file_system_model_2_view = None;
+                        app_ctx.two_folder_diff_visible_rows = None;
                     }
                     #[cfg(debug_assertions)]
                     {
