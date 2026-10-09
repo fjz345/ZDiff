@@ -3,7 +3,10 @@ use std::{
     io,
     ops::Range,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
 };
 
 use eframe::egui::{self, RichText, text::LayoutJob};
@@ -414,35 +417,129 @@ pub fn single_side_rows(
 /// The two-folder rows as the cursor sees them. A row is hidden when it isn't drawn: the
 /// root row, or an entry inside a folder collapsed on a side the entry exists on. A folder is
 /// collapsed when it is collapsed on a side it exists on. In flat mode only the root row is hidden.
-pub fn two_folder_cursor_rows<'a>(
+pub fn two_folder_cursor_rows(
     file_system_1_view: Option<&FileSystemView>,
     file_system_2_view: Option<&FileSystemView>,
-    rows: &'a [VisibleRowTwoFolderDiff],
+    rows: &[VisibleRowTwoFolderDiff],
     flat: bool,
-) -> Vec<CursorRow<'a>> {
-    let on_either_side = |row: &VisibleRowTwoFolderDiff,
-                          test: fn(&FileSystemView, FsNodeId) -> bool| {
+) -> Vec<CursorRow> {
+    let views = [file_system_1_view, file_system_2_view];
+    rows.iter()
+        .map(|row| {
+            let (hidden, collapsed) = fold_state(views, row, flat);
+            CursorRow {
+                rel_path: row.rel_path.clone(),
+                hidden,
+                is_dir: row.is_dir,
+                collapsed,
+                differs: !matches!(
+                    row.diff_state,
+                    DiffState::Same(..) | DiffState::Similar(..) | DiffState::Pending(..)
+                ),
+            }
+        })
+        .collect()
+}
+
+fn fold_state(
+    views: [Option<&FileSystemView>; 2],
+    row: &VisibleRowTwoFolderDiff,
+    flat: bool,
+) -> (bool, bool) {
+    let on_either_side = |test: fn(&FileSystemView, FsNodeId) -> bool| {
         let test_side = |view: Option<&FileSystemView>, id: Option<FsNodeId>| match (view, id) {
             (Some(view), Some(id)) => test(view, id),
             _ => false,
         };
-        test_side(file_system_1_view, row.diff_state.first())
-            || test_side(file_system_2_view, row.diff_state.second())
+        test_side(views[0], row.diff_state.first()) || test_side(views[1], row.diff_state.second())
     };
     // Flat mode has no hierarchy to fold, so the views' collapse state doesn't apply.
-    rows.iter()
-        .map(|row| CursorRow {
-            rel_path: &row.rel_path,
-            hidden: row.rel_path.is_empty()
-                || (!flat && on_either_side(row, FileSystemView::is_parent_chain_collapsed)),
-            is_dir: row.is_dir,
-            collapsed: !flat && row.is_dir && on_either_side(row, FileSystemView::is_collapsed),
-            differs: !matches!(
-                row.diff_state,
-                DiffState::Same(..) | DiffState::Similar(..) | DiffState::Pending(..)
-            ),
-        })
-        .collect()
+    let hidden = row.rel_path.is_empty()
+        || (!flat && on_either_side(FileSystemView::is_parent_chain_collapsed));
+    let collapsed = !flat && row.is_dir && on_either_side(FileSystemView::is_collapsed);
+    (hidden, collapsed)
+}
+
+/// One build of a rows `Vec`. A rebuilt `Vec` can reuse the old one's address and length.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RowsId(u64);
+
+impl RowsId {
+    pub fn next() -> Self {
+        static NEXT: AtomicU64 = AtomicU64::new(1);
+        Self(NEXT.fetch_add(1, Ordering::Relaxed))
+    }
+}
+
+#[derive(PartialEq)]
+struct CursorRowsKey {
+    rows: RowsId,
+    flat: bool,
+    collapsed: [Option<HashMap<FsNodeId, bool>>; 2],
+}
+
+/// `two_folder_cursor_rows` and the indices of the drawn rows, kept until the rows, a view's
+/// collapse state or flat mode change.
+#[derive(Default)]
+pub struct CursorRowsCache {
+    key: Option<CursorRowsKey>,
+    cursor_rows: Vec<CursorRow>,
+    drawn: Vec<usize>,
+    #[cfg(test)]
+    builds: usize,
+}
+
+impl CursorRowsCache {
+    pub fn update(
+        &mut self,
+        views: [Option<&FileSystemView>; 2],
+        rows: &[VisibleRowTwoFolderDiff],
+        rows_id: RowsId,
+        flat: bool,
+    ) -> &[CursorRow] {
+        let collapsed = views.map(|view| view.map(|view| &view.collapsed));
+        let current = self.key.as_ref().is_some_and(|key| {
+            key.rows == rows_id
+                && key.flat == flat
+                && key.collapsed.iter().map(Option::as_ref).eq(collapsed)
+        });
+        if !current {
+            if self.key.as_ref().is_some_and(|key| key.rows == rows_id) {
+                assert_eq!(
+                    self.cursor_rows.len(),
+                    rows.len(),
+                    "rows changed under one RowsId"
+                );
+                // The paths stay: a fold or flat mode changes only these two flags.
+                for (cursor_row, row) in self.cursor_rows.iter_mut().zip(rows) {
+                    (cursor_row.hidden, cursor_row.collapsed) = fold_state(views, row, flat);
+                }
+            } else {
+                self.cursor_rows = two_folder_cursor_rows(views[0], views[1], rows, flat);
+            }
+            self.drawn.clear();
+            self.drawn
+                .extend((0..self.cursor_rows.len()).filter(|&i| !self.cursor_rows[i].hidden));
+            self.key = Some(CursorRowsKey {
+                rows: rows_id,
+                flat,
+                collapsed: collapsed.map(|collapsed| collapsed.cloned()),
+            });
+            #[cfg(test)]
+            {
+                self.builds += 1;
+            }
+        }
+        &self.cursor_rows
+    }
+
+    pub fn cursor_rows(&self) -> &[CursorRow] {
+        &self.cursor_rows
+    }
+
+    pub fn drawn(&self) -> &[usize] {
+        &self.drawn
+    }
 }
 
 pub fn apply_blueprint_results(
@@ -528,6 +625,7 @@ pub fn draw_ui_folder_tree(
     file_system_1_view: &mut Option<FileSystemView>,
     file_system_2_view: &mut Option<FileSystemView>,
     visible_rows: Option<&[VisibleRowTwoFolderDiff]>,
+    rows_id: RowsId,
     root_1: &mut Option<PathBuf>,
     root_2: &mut Option<PathBuf>,
     open_dir_window_1: &mut bool,
@@ -535,6 +633,7 @@ pub fn draw_ui_folder_tree(
     diff_tool_config: &DiffToolConfig,
     tool_message: &mut Option<ToolMessage>,
     cursor: &mut TreeCursor,
+    rows_cache: &mut CursorRowsCache,
     sort: &mut TreeSort,
     keyboard_taken: bool,
     actions: &[FolderAction],
@@ -572,10 +671,10 @@ pub fn draw_ui_folder_tree(
 
     // Every frame rather than at each rebuild or collapse: filter, rescan, the collapse
     // buttons and the expander arrows all change the rows, and this sees all of them.
-    *cursor = cursor.resolve(&two_folder_cursor_rows(
-        file_system_1_view.as_ref(),
-        file_system_2_view.as_ref(),
+    *cursor = cursor.resolve(rows_cache.update(
+        [file_system_1_view.as_ref(), file_system_2_view.as_ref()],
         visible_rows,
+        rows_id,
         flat,
     ));
 
@@ -584,10 +683,10 @@ pub fn draw_ui_folder_tree(
     if !keyboard_taken {
         for key in ui.input(cursor_keys) {
             // Each key sees the rows the previous key's fold left.
-            let cursor_rows = two_folder_cursor_rows(
-                file_system_1_view.as_ref(),
-                file_system_2_view.as_ref(),
+            let cursor_rows = rows_cache.update(
+                [file_system_1_view.as_ref(), file_system_2_view.as_ref()],
                 visible_rows,
+                rows_id,
                 flat,
             );
             let (moved, request) = match key {
@@ -615,10 +714,10 @@ pub fn draw_ui_folder_tree(
         }
     }
     for action in actions {
-        let cursor_rows = two_folder_cursor_rows(
-            file_system_1_view.as_ref(),
-            file_system_2_view.as_ref(),
+        let cursor_rows = rows_cache.update(
+            [file_system_1_view.as_ref(), file_system_2_view.as_ref()],
             visible_rows,
+            rows_id,
             flat,
         );
         let target = match action {
@@ -645,21 +744,20 @@ pub fn draw_ui_folder_tree(
     }
 
     // After the keys, so a fold they made is drawn this frame.
-    let cursor_rows = two_folder_cursor_rows(
-        file_system_1_view.as_ref(),
-        file_system_2_view.as_ref(),
+    rows_cache.update(
+        [file_system_1_view.as_ref(), file_system_2_view.as_ref()],
         visible_rows,
+        rows_id,
         flat,
     );
+    let cursor_rows = rows_cache.cursor_rows();
 
     // Only drawn rows go to the table: it places row i at i * row height, both when
     // virtualizing and when scrolling to a row.
-    let drawn_rows: Vec<usize> = (0..cursor_rows.len())
-        .filter(|&i| !cursor_rows[i].hidden)
-        .collect();
+    let drawn_rows = rows_cache.drawn();
     let selected_row = drawn_rows
         .iter()
-        .position(|&i| cursor.is_at(cursor_rows[i].rel_path));
+        .position(|&i| cursor.is_at(&cursor_rows[i].rel_path));
     let scroll_to_row = selected_row.filter(|_| scroll_to_cursor);
 
     let row_count = drawn_rows.len();
@@ -1897,9 +1995,10 @@ fn cursor_keys(input: &egui::InputState) -> Vec<egui::Key> {
 mod tests {
     use crate::ui_egui::fs_tree::apply_path_bar;
     use crate::ui_egui::fs_tree::{
-        DiffState, EXPANDER_WIDTH, FileSystemView, RowLayout, TREE_INDENT, VisibleRowTwoFolderDiff,
-        aggregate_folder_state, apply_blueprint_results, apply_cursor_request, cursor_keys,
-        side_width, single_side_rows, tree_hidden, two_folder_cursor_rows,
+        CursorRowsCache, DiffState, EXPANDER_WIDTH, FileSystemView, RowLayout, RowsId, TREE_INDENT,
+        VisibleRowTwoFolderDiff, aggregate_folder_state, apply_blueprint_results,
+        apply_cursor_request, cursor_keys, side_width, single_side_rows, tree_hidden,
+        two_folder_cursor_rows,
     };
     use crate::ui_egui::roots::{InvalidRoot, Side};
     use crate::ui_egui::status_line::ToolMessage;
@@ -3218,8 +3317,8 @@ mod tests {
         left.toggle_collapse(sub.diff_state.first().unwrap());
         right.toggle_collapse(sub.diff_state.second().unwrap());
 
-        let hidden: Vec<&str> = two_folder_cursor_rows(Some(&left), Some(&right), &rows, false)
-            .iter()
+        let hidden: Vec<String> = two_folder_cursor_rows(Some(&left), Some(&right), &rows, false)
+            .into_iter()
             .filter(|r| r.hidden)
             .map(|r| r.rel_path)
             .collect();
@@ -3233,6 +3332,83 @@ mod tests {
                 "sub/deep/d.txt",
                 "sub/left_only_in_sub.txt",
             ]
+        );
+    }
+
+    #[test]
+    fn cursor_rows_are_rebuilt_when_the_rows_collapse_state_or_flat_mode_change_and_not_otherwise()
+    {
+        let (left_dir, right_dir) = two_folder_trees();
+        let mut left = load_view(left_dir.path());
+        let mut right = load_view(right_dir.path());
+        let rows = build_counting(&left, &right, &mut PairStates::default(), &Cell::new(0));
+        let sub = rows.iter().find(|r| r.rel_path == "sub").unwrap();
+        let (sub_left, sub_right) = (sub.diff_state.first(), sub.diff_state.second());
+        let mut cache = CursorRowsCache::default();
+        let mut builds = |left: &FileSystemView, right: &FileSystemView, id, flat| {
+            cache.update([Some(left), Some(right)], &rows, id, flat);
+            cache.builds
+        };
+        let id = RowsId::next();
+
+        assert_eq!(builds(&left, &right, id, false), 1);
+        assert_eq!(builds(&left, &right, id, false), 1);
+
+        left.toggle_collapse(sub_left.unwrap());
+        assert_eq!(builds(&left, &right, id, false), 2);
+        assert_eq!(builds(&left, &right, id, false), 2);
+
+        right.collapsed.insert(sub_right.unwrap(), true);
+        assert_eq!(builds(&left, &right, id, false), 3);
+
+        let id = RowsId::next();
+        assert_eq!(builds(&left, &right, id, false), 4);
+        assert_eq!(builds(&left, &right, id, false), 4);
+
+        assert_eq!(builds(&left, &right, id, true), 5);
+        assert_eq!(builds(&left, &right, id, true), 5);
+    }
+
+    #[test]
+    fn the_drawn_rows_are_the_rows_the_cursor_sees_and_reuse_one_buffer() {
+        let (left_dir, right_dir) = two_folder_trees();
+        let mut left = load_view(left_dir.path());
+        let right = load_view(right_dir.path());
+        let rows = build_counting(&left, &right, &mut PairStates::default(), &Cell::new(0));
+        let id = RowsId::next();
+        let mut cache = CursorRowsCache::default();
+        let drawn_paths = |cache: &CursorRowsCache| -> Vec<String> {
+            let cursor_rows = cache.cursor_rows();
+            cache
+                .drawn()
+                .iter()
+                .map(|&i| cursor_rows[i].rel_path.clone())
+                .collect()
+        };
+
+        cache.update([Some(&left), Some(&right)], &rows, id, false);
+        let buffer = cache.drawn().as_ptr();
+        assert_eq!(drawn_paths(&cache).len(), rows.len() - 1);
+        cache.update([Some(&left), Some(&right)], &rows, id, false);
+        assert_eq!(cache.drawn().as_ptr(), buffer);
+
+        let sub = rows.iter().find(|r| r.rel_path == "sub").unwrap();
+        left.toggle_collapse(sub.diff_state.first().unwrap());
+        let cursor_rows = cache.update([Some(&left), Some(&right)], &rows, id, false);
+        assert_eq!(
+            cursor_rows,
+            two_folder_cursor_rows(Some(&left), Some(&right), &rows, false)
+        );
+        assert_eq!(cache.drawn().as_ptr(), buffer);
+        assert_eq!(
+            drawn_paths(&cache),
+            ["a.txt", "b.txt", "left_only.txt", "right_only.txt", "sub"]
+        );
+
+        let cursor_rows = cache.update([Some(&left), Some(&right)], &rows, id, true);
+        assert_eq!(
+            cursor_rows,
+            two_folder_cursor_rows(Some(&left), Some(&right), &rows, true)
         );
     }
 
@@ -3251,7 +3427,7 @@ mod tests {
         let hidden: Vec<&str> = cursor_rows
             .iter()
             .filter(|r| r.hidden)
-            .map(|r| r.rel_path)
+            .map(|r| r.rel_path.as_str())
             .collect();
         assert_eq!(hidden, [""]);
         assert!(cursor_rows.iter().all(|r| !r.collapsed));
@@ -3320,13 +3496,13 @@ mod tests {
         let hidden: Vec<&str> = cursor_rows
             .iter()
             .filter(|r| r.hidden)
-            .map(|r| r.rel_path)
+            .map(|r| r.rel_path.as_str())
             .collect();
         assert_eq!(hidden, ["", "sub/deep", "sub/deep/d.txt", "sub/c.txt"]);
         let collapsed: Vec<&str> = cursor_rows
             .iter()
             .filter(|r| r.collapsed)
-            .map(|r| r.rel_path)
+            .map(|r| r.rel_path.as_str())
             .collect();
         assert_eq!(collapsed, ["sub"]);
     }
@@ -3344,7 +3520,7 @@ mod tests {
         let hidden: Vec<&str> = cursor_rows
             .iter()
             .filter(|r| r.hidden)
-            .map(|r| r.rel_path)
+            .map(|r| r.rel_path.as_str())
             .collect();
         assert_eq!(hidden, [""]);
         assert!(cursor_rows.iter().all(|r| !r.collapsed));
@@ -3485,11 +3661,12 @@ mod tests {
         let right = load_view(right_dir.path());
         let rows = build_counting(&left, &right, &mut PairStates::default(), &Cell::new(0));
 
-        let differing: Vec<&str> = two_folder_cursor_rows(Some(&left), Some(&right), &rows, false)
-            .iter()
-            .filter(|r| r.differs)
-            .map(|r| r.rel_path)
-            .collect();
+        let differing: Vec<String> =
+            two_folder_cursor_rows(Some(&left), Some(&right), &rows, false)
+                .into_iter()
+                .filter(|r| r.differs)
+                .map(|r| r.rel_path)
+                .collect();
         assert_eq!(differing, ["", "b.txt", "left_only.txt", "right_only.txt"]);
     }
 

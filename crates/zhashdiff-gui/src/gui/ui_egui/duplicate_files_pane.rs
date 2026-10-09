@@ -27,9 +27,11 @@ use zhashdiff::filter::PathFilter;
 use zhashdiff::fs::FileSystemModel;
 use zhashdiff::fs::FsNodeId;
 
+use crate::ui_egui::fs_tree::CursorRowsCache;
 use crate::ui_egui::fs_tree::FileSystemView;
 use crate::ui_egui::fs_tree::NodeColumn;
 use crate::ui_egui::fs_tree::PENDING_DELETION_COLOR;
+use crate::ui_egui::fs_tree::RowsId;
 use crate::ui_egui::fs_tree::TreeMode;
 use crate::ui_egui::fs_tree::VisibleRowTwoFolderDiff;
 use crate::ui_egui::fs_tree::draw_ui_folder_tree;
@@ -347,6 +349,8 @@ pub struct DuplicateFilesPane {
     /// Files requested since hashing was last idle.
     #[serde(skip)]
     hash_batch: usize,
+    #[serde(skip)]
+    cursor_rows: CursorRowsCache,
 }
 
 struct TreeRows {
@@ -355,6 +359,7 @@ struct TreeRows {
     filter: PathFilter,
     sort: TreeSort,
     rows: Vec<VisibleRowTwoFolderDiff>,
+    id: RowsId,
 }
 
 impl ZAppPane for DuplicateFilesPane {
@@ -394,6 +399,7 @@ impl DuplicateFilesPane {
             tree_cache: None,
             hashed_for: None,
             hash_batch: 0,
+            cursor_rows: CursorRowsCache::default(),
         }
     }
 
@@ -464,6 +470,7 @@ impl DuplicateFilesPane {
                 filter: filter.clone(),
                 sort,
                 rows,
+                id: RowsId::next(),
             });
         }
         &self.tree_cache.as_ref().expect("built above").rows
@@ -675,7 +682,7 @@ impl DuplicateFilesPane {
 
         if let Some(view) = ctx.path_diff_view.file_system_1_view.as_ref() {
             self.tree_rows(view, ctx.path_filter, *ctx.tree_sort);
-            let rows = self.tree_cache.as_ref().map(|cache| cache.rows.as_slice());
+            let cache = self.tree_cache.as_ref().expect("built above");
             let pending_deletion = pending_deletions(ctx.conflict_map, ctx.conflict_map_resolved);
             let root = view_root(Some(view)).expect("a view has a root");
             let groups = self.groups.as_ref();
@@ -689,7 +696,8 @@ impl DuplicateFilesPane {
                 ui,
                 ctx.path_diff_view.file_system_1_view,
                 &mut None,
-                rows,
+                Some(&cache.rows),
+                cache.id,
                 ctx.path_diff_view.file_system_1_root_path,
                 &mut None,
                 &mut self.open_dir_window,
@@ -697,6 +705,7 @@ impl DuplicateFilesPane {
                 ctx.diff_tool_config,
                 ctx.tool_message,
                 &mut self.cursor,
+                &mut self.cursor_rows,
                 ctx.tree_sort,
                 ctx.keyboard_taken,
                 &[],
@@ -1102,6 +1111,7 @@ mod tests {
                 file_system_2_view: &mut self.view_2,
                 file_system_1_scan: &mut self.scan_1,
                 visible_rows: &mut self.visible_rows,
+                rows_id: RowsId::default(),
             };
             let mut ctx = DuplicateFilesPaneCtx {
                 hash_service: &mut self.hash_service,

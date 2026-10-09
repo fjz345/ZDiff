@@ -17,8 +17,8 @@ use zhashdiff::{
 use crate::ui_egui::{
     folder_keymap::FolderAction,
     fs_tree::{
-        DiffState, FileSystemView, HScrollLink, TreeMode, TreeTable, TwoFolderTable,
-        draw_ui_folder_tree,
+        CursorRowsCache, DiffState, FileSystemView, HScrollLink, TreeMode, TreeTable,
+        TwoFolderTable, draw_ui_folder_tree,
     },
     panes::{PathDiffView, ZAppPane},
     roots::{Side, set_root},
@@ -69,6 +69,8 @@ pub struct PathDiffPane {
     cursor_roots: (Option<PathBuf>, Option<PathBuf>),
     #[serde(skip)]
     table: TreeTable,
+    #[serde(skip)]
+    rows_cache: CursorRowsCache,
 }
 
 impl ZAppPane for PathDiffPane {
@@ -86,6 +88,7 @@ impl PathDiffPane {
             cursor: TreeCursor::default(),
             cursor_roots: (None, None),
             table: TreeTable::default(),
+            rows_cache: CursorRowsCache::default(),
         }
     }
 
@@ -233,6 +236,7 @@ impl PathDiffPane {
                     &mut ctx.path_diff_view.file_system_1_view,
                     &mut ctx.path_diff_view.file_system_2_view,
                     ctx.path_diff_view.visible_rows.as_deref(),
+                    ctx.path_diff_view.rows_id,
                     ctx.path_diff_view.file_system_1_root_path,
                     ctx.path_diff_view.file_system_2_root_path,
                     &mut self.open_dir_window_1,
@@ -240,6 +244,7 @@ impl PathDiffPane {
                     &ctx.diff_tool_config,
                     ctx.tool_message,
                     &mut self.cursor,
+                    &mut self.rows_cache,
                     ctx.tree_sort,
                     ctx.keyboard_taken,
                     ctx.actions,

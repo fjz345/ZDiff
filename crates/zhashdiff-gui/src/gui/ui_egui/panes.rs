@@ -12,7 +12,7 @@ use crate::ui_egui::{
     app::SideScan,
     duplicate_files_pane::{DuplicateFilesPane, DuplicateFilesPaneCtx},
     folder_keymap::FolderAction,
-    fs_tree::{FileSystemView, HScrollLink, VisibleRowTwoFolderDiff},
+    fs_tree::{FileSystemView, HScrollLink, RowsId, VisibleRowTwoFolderDiff},
     path_diff_pane::{FilterPresets, PathDiffPane, PathDiffPaneCtx},
     status_line::ToolMessage,
     tree_compare::TreeCompare,
@@ -29,6 +29,7 @@ pub struct PathDiffView<'a> {
     pub file_system_2_view: &'a mut Option<FileSystemView>,
     pub file_system_1_scan: &'a mut SideScan,
     pub visible_rows: &'a mut Option<Vec<VisibleRowTwoFolderDiff>>,
+    pub rows_id: RowsId,
 }
 
 pub struct TreeBehavior<'a, 'b> {

@@ -1,8 +1,8 @@
 /// One row of the two-folder tree as the cursor sees it, in display order.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct CursorRow<'a> {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CursorRow {
     /// Relative to the roots, with `/` separators.
-    pub rel_path: &'a str,
+    pub rel_path: String,
     /// Not drawn: inside a collapsed folder, or the root row.
     pub hidden: bool,
     pub is_dir: bool,
@@ -12,7 +12,7 @@ pub struct CursorRow<'a> {
     pub differs: bool,
 }
 
-impl CursorRow<'_> {
+impl CursorRow {
     /// Only files: a differing folder just says something below it differs.
     fn is_diff_stop(&self) -> bool {
         self.differs && !self.is_dir
@@ -79,7 +79,7 @@ impl TreeCursor {
         if row.is_dir && !row.collapsed {
             return (
                 self.clone(),
-                Some(CursorRequest::Collapse(row.rel_path.into())),
+                Some(CursorRequest::Collapse(row.rel_path.clone())),
             );
         }
         let parent = row.rel_path.rsplit_once('/').map(|(parent, _)| parent);
@@ -93,13 +93,13 @@ impl TreeCursor {
     /// Expands a collapsed folder.
     pub fn right(&self, rows: &[CursorRow]) -> Option<CursorRequest> {
         let row = self.drawn_row(rows)?;
-        (row.is_dir && row.collapsed).then(|| CursorRequest::Expand(row.rel_path.into()))
+        (row.is_dir && row.collapsed).then(|| CursorRequest::Expand(row.rel_path.clone()))
     }
 
     /// Opens a file, toggles a folder.
     pub fn enter(&self, rows: &[CursorRow]) -> Option<CursorRequest> {
         let row = self.drawn_row(rows)?;
-        let rel_path = row.rel_path.into();
+        let rel_path = row.rel_path.clone();
         Some(match (row.is_dir, row.collapsed) {
             (false, _) => CursorRequest::Open(rel_path),
             (true, true) => CursorRequest::Expand(rel_path),
@@ -135,7 +135,7 @@ impl TreeCursor {
             })
             .map(|ancestor| CursorRequest::Expand(ancestor.into()))
             .collect();
-        (Self::at(target.rel_path), expand)
+        (Self::at(&target.rel_path), expand)
     }
 
     /// After a row rebuild: the same entry if it is still drawn, else its nearest drawn
@@ -147,18 +147,18 @@ impl TreeCursor {
         // The root row is always hidden, so it is never the fallback.
         let is_self_or_ancestor = |row: &CursorRow| {
             rel_path
-                .strip_prefix(row.rel_path)
+                .strip_prefix(row.rel_path.as_str())
                 .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
         };
         rows.iter()
             .filter(|row| !row.hidden && is_self_or_ancestor(row))
             .max_by_key(|row| row.rel_path.len())
-            .map_or_else(Self::default, |row| Self::at(row.rel_path))
+            .map_or_else(Self::default, |row| Self::at(&row.rel_path))
     }
 
     /// The cursor's row if it is drawn. Acting on a row the user can't see would be a
     /// surprise.
-    fn drawn_row<'a>(&self, rows: &'a [CursorRow<'a>]) -> Option<&'a CursorRow<'a>> {
+    fn drawn_row<'a>(&self, rows: &'a [CursorRow]) -> Option<&'a CursorRow> {
         self.index_in(rows)
             .map(|index| &rows[index])
             .filter(|row| !row.hidden)
@@ -171,7 +171,7 @@ impl TreeCursor {
     }
 
     fn moved_to(&self, row: Option<&CursorRow>) -> Self {
-        row.map_or_else(|| self.clone(), |row| Self::at(row.rel_path))
+        row.map_or_else(|| self.clone(), |row| Self::at(&row.rel_path))
     }
 }
 
@@ -181,7 +181,7 @@ mod tests {
 
     /// A `-` prefix marks a row hidden by collapse, then a `*` prefix a differing entry. A `/`
     /// suffix marks an expanded folder and a `>` suffix a collapsed one.
-    fn rows<'a>(spec: &[&'a str]) -> Vec<CursorRow<'a>> {
+    fn rows(spec: &[&str]) -> Vec<CursorRow> {
         spec.iter()
             .map(|s| {
                 let (hidden, s) = s.strip_prefix('-').map_or((false, *s), |s| (true, s));
@@ -194,7 +194,7 @@ mod tests {
                     (false, false, s)
                 };
                 CursorRow {
-                    rel_path,
+                    rel_path: rel_path.to_string(),
                     hidden,
                     is_dir,
                     collapsed,

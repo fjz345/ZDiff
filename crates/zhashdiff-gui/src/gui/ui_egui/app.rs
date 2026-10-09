@@ -32,7 +32,9 @@ use zhashdiff::{
 use crate::ui_egui::{
     duplicate_files_pane::DuplicateFilesPane,
     folder_keymap::{FolderAction, KeybindingsWindow},
-    fs_tree::{FileSystemView, HScrollLink, VisibleRowTwoFolderDiff, apply_blueprint_results},
+    fs_tree::{
+        FileSystemView, HScrollLink, RowsId, VisibleRowTwoFolderDiff, apply_blueprint_results,
+    },
     panes::{Pane, PathDiffView, TreeBehavior},
     path_diff_pane::{FilterPresets, PathDiffPane},
     roots::{LaunchArgs, Side, apply_launch_args, clear_root, set_root},
@@ -63,6 +65,8 @@ pub struct AppStateCtx {
     file_system_2_scan: SideScan,
     #[serde(skip)]
     two_folder_diff_visible_rows: Option<Vec<VisibleRowTwoFolderDiff>>,
+    #[serde(skip)]
+    two_folder_diff_rows_id: RowsId,
     /// The visible rows before find narrows them. Current only while the visible rows are set.
     #[serde(skip)]
     two_folder_diff_arranged_rows: Option<Vec<VisibleRowTwoFolderDiff>>,
@@ -198,6 +202,7 @@ impl AppStateCtx {
             .map(|rows| narrow_to_find(rows, &self.find_applied, flat))
             .unzip();
         self.two_folder_diff_visible_rows = rows;
+        self.two_folder_diff_rows_id = RowsId::next();
         self.find_matches = matches.flatten();
         self.two_folder_diff_rows_find = self.find_applied.clone();
     }
@@ -955,6 +960,7 @@ impl ZApp {
                     file_system_1_root_path: &mut app_ctx.file_system_1_root_path,
                     file_system_2_root_path: &mut app_ctx.file_system_2_root_path,
                     visible_rows: &mut app_ctx.two_folder_diff_visible_rows,
+                    rows_id: app_ctx.two_folder_diff_rows_id,
                 };
                 let mut find_view = TreeFindView {
                     matcher: app_ctx.find_matcher.as_ref(),
