@@ -25,7 +25,7 @@ use crate::ui_egui::{
     duplicate_files_pane::DuplicateFilesPane,
     fs_tree::{FileCompareCache, FileSystemView, VisibleRowTwoFolderDiff, apply_blueprint_results},
     panes::{Pane, PathDiffView, TreeBehavior},
-    path_diff_pane::PathDiffPane,
+    path_diff_pane::{FilterPresets, PathDiffPane},
     roots::{LaunchArgs, Side, apply_launch_args, clear_root, set_root},
     tools_window::ToolsWindow,
     tree_filter::{DiffFilter, arrange_two_folder_rows},
@@ -60,6 +60,8 @@ pub struct AppStateCtx {
     /// Applies to the two-folder diff rows.
     #[serde(default)]
     pub path_filter: PathFilter,
+    #[serde(default)]
+    pub filter_presets: FilterPresets,
     /// The sort `two_folder_diff_visible_rows` were built with.
     #[serde(skip)]
     two_folder_diff_rows_sort: TreeSort,
@@ -698,6 +700,7 @@ impl ZApp {
 
                     diff_tool_config: &app_ctx.diff_config,
                     path_filter: &mut app_ctx.path_filter,
+                    filter_presets: &mut app_ctx.filter_presets,
                     tree_sort: &mut app_ctx.tree_sort,
                     diff_filter: &mut app_ctx.diff_filter,
                     path_diff_view: &mut path_diff_view,
@@ -916,6 +919,7 @@ mod tests {
         update_side_scan,
     };
     use crate::ui_egui::fs_tree::FileSystemView;
+    use crate::ui_egui::path_diff_pane::{BLACKLIST_PRESETS, FilterField, FilterPresets};
     use crate::ui_egui::roots::{Side, clear_root, set_root};
     use crate::ui_egui::tree_filter::DiffFilter;
     use crate::ui_egui::tree_sort::{SortKey, TreeSort};
@@ -1031,6 +1035,59 @@ mod tests {
         app.state = Some(AppState::Idle(AppStateCtx::default()));
         app.request_init();
         assert!(matches!(app.state, Some(AppState::Startup(_))));
+    }
+
+    #[test]
+    fn the_no_build_dirs_preset_hides_target_and_keeps_src() {
+        let (left, right) = (tempdir().unwrap(), tempdir().unwrap());
+        for root in [left.path(), right.path()] {
+            for dir in ["src", "target"] {
+                fs::create_dir(root.join(dir)).unwrap();
+                fs::write(root.join(dir).join("a.rs"), "a").unwrap();
+            }
+        }
+        let mut state = AppStateCtx {
+            file_system_model_1_view: load_view(left.path()),
+            file_system_model_2_view: load_view(right.path()),
+            ..Default::default()
+        };
+        let preset = BLACKLIST_PRESETS
+            .iter()
+            .find(|p| p.name == "No build dirs")
+            .unwrap();
+
+        FilterField::Blacklist.set_text(&mut state.path_filter, preset.text);
+        state.build_two_folder_diff_rows_if_stale();
+
+        assert_eq!(row_paths(&state), ["", "src", "src/a.rs"]);
+    }
+
+    #[test]
+    fn filter_presets_survive_a_restart() {
+        let mut state = AppStateCtx::default();
+        let (builtins, user) = FilterField::Blacklist.presets(&mut state.filter_presets);
+        user.save(builtins, "Mine", "*.tmp").unwrap();
+        let (builtins, user) = FilterField::Whitelist.presets(&mut state.filter_presets);
+        user.save(builtins, "Shaders", "*.hlsl *.usf").unwrap();
+
+        let json = serde_json::to_string(&state).unwrap();
+        let restored: AppStateCtx = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(restored.filter_presets, state.filter_presets);
+        assert_ne!(restored.filter_presets, FilterPresets::default());
+    }
+
+    #[test]
+    fn a_state_saved_before_filter_presets_existed_loads_none() {
+        let mut json: serde_json::Value = serde_json::to_value(AppStateCtx::default()).unwrap();
+        json.as_object_mut()
+            .unwrap()
+            .remove("filter_presets")
+            .unwrap();
+
+        let restored: AppStateCtx = serde_json::from_value(json).unwrap();
+
+        assert_eq!(restored.filter_presets, FilterPresets::default());
     }
 
     #[test]

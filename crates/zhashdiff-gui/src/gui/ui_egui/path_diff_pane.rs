@@ -2,7 +2,10 @@ use std::path::PathBuf;
 
 use eframe::egui::{self, RichText, ScrollArea};
 use serde::{Deserialize, Serialize};
-use zcommon::ui_egui::toggle::toggle_button;
+use zcommon::{
+    presets::{BuiltinPreset, UserPresets},
+    ui_egui::{presets::presets_menu, toggle::toggle_button},
+};
 use zhashdiff::{
     external_diff_tool::DiffToolConfig,
     filter::{PathFilter, PatternList},
@@ -23,6 +26,7 @@ pub struct PathDiffPaneCtx<'a, 'b> {
     // User Interaction State
     pub diff_tool_config: &'a DiffToolConfig,
     pub path_filter: &'a mut PathFilter,
+    pub filter_presets: &'a mut FilterPresets,
     pub tree_sort: &'a mut TreeSort,
     pub diff_filter: &'a mut DiffFilter,
     /// A widget had keyboard focus when the frame started, so the tree's keys are not
@@ -148,7 +152,7 @@ impl PathDiffPane {
         });
 
         ui.horizontal(|ui| {
-            draw_filter_bar(ui, ctx.path_filter);
+            draw_filter_bar(ui, ctx.path_filter, ctx.filter_presets);
         });
 
         ui.horizontal(|ui| {
@@ -225,13 +229,103 @@ impl PathDiffPane {
     }
 }
 
+pub const BLACKLIST_PRESETS: &[BuiltinPreset] = &[
+    BuiltinPreset {
+        name: "No build dirs",
+        text: "bin/ obj/ target/ Intermediate/ Binaries/ DerivedDataCache/ Saved/ .vs/",
+    },
+    BuiltinPreset {
+        name: "No VCS",
+        text: ".git/ .svn/ .hg/",
+    },
+    BuiltinPreset {
+        name: "No binaries",
+        text: "*.exe *.dll *.pdb *.lib *.obj *.o",
+    },
+];
+
+pub const WHITELIST_PRESETS: &[BuiltinPreset] = &[
+    BuiltinPreset {
+        name: "Text only",
+        text: "*.txt *.md *.log *.json *.xml *.ini *.cfg *.yaml *.yml *.toml *.csv",
+    },
+    BuiltinPreset {
+        name: "Source",
+        text: "*.rs *.c *.h *.cpp *.hpp *.cs *.py *.js *.ts *.hlsl *.usf *.ush",
+    },
+    BuiltinPreset {
+        name: "Images",
+        text: "*.png *.tga *.jpg *.jpeg *.bmp *.dds *.exr *.hdr *.psd",
+    },
+    BuiltinPreset {
+        name: "Unreal assets",
+        text: "*.uasset *.umap",
+    },
+];
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FilterPresets {
+    #[serde(default)]
+    pub blacklist: UserPresets,
+    #[serde(default)]
+    pub whitelist: UserPresets,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum FilterField {
+    Blacklist,
+    Whitelist,
+}
+
+impl FilterField {
+    fn label(self) -> &'static str {
+        match self {
+            FilterField::Blacklist => "Blacklist:",
+            FilterField::Whitelist => "Whitelist:",
+        }
+    }
+
+    fn hint(self) -> &'static str {
+        match self {
+            FilterField::Blacklist => r"*.obj target/ My\ Folder/",
+            FilterField::Whitelist => "*.rs *.toml",
+        }
+    }
+
+    fn patterns(self, filter: &PathFilter) -> &PatternList {
+        match self {
+            FilterField::Blacklist => &filter.blacklist,
+            FilterField::Whitelist => &filter.whitelist,
+        }
+    }
+
+    pub fn presets(
+        self,
+        presets: &mut FilterPresets,
+    ) -> (&'static [BuiltinPreset], &mut UserPresets) {
+        match self {
+            FilterField::Blacklist => (BLACKLIST_PRESETS, &mut presets.blacklist),
+            FilterField::Whitelist => (WHITELIST_PRESETS, &mut presets.whitelist),
+        }
+    }
+
+    /// Typed text and a picked preset both land here, so a pick is an ordinary filter change.
+    pub fn set_text(self, filter: &mut PathFilter, text: impl Into<String>) {
+        let list = match self {
+            FilterField::Blacklist => &mut filter.blacklist,
+            FilterField::Whitelist => &mut filter.whitelist,
+        };
+        *list = PatternList::new(text);
+    }
+}
+
 /// Only edits the filter: the app rebuilds the rows on the next update when it changed, so the
 /// table drawn below still has this frame's rows.
-fn draw_filter_bar(ui: &mut egui::Ui, filter: &mut PathFilter) {
-    ui.label("Blacklist:");
-    draw_pattern_field(ui, &mut filter.blacklist, r"*.obj target/ My\ Folder/");
-    ui.label("Whitelist:");
-    draw_pattern_field(ui, &mut filter.whitelist, "*.rs *.toml");
+fn draw_filter_bar(ui: &mut egui::Ui, filter: &mut PathFilter, presets: &mut FilterPresets) {
+    for field in [FilterField::Blacklist, FilterField::Whitelist] {
+        ui.label(field.label());
+        draw_pattern_field(ui, filter, presets, field);
+    }
     let has_text = *filter != PathFilter::default();
     if ui
         .add_enabled(has_text, egui::Button::new("Clear"))
@@ -245,27 +339,200 @@ fn draw_filter_bar(ui: &mut egui::Ui, filter: &mut PathFilter) {
     }
 }
 
-fn draw_pattern_field(ui: &mut egui::Ui, list: &mut PatternList, hint: &str) {
-    let mut text = list.text().to_owned();
+fn draw_pattern_field(
+    ui: &mut egui::Ui,
+    filter: &mut PathFilter,
+    presets: &mut FilterPresets,
+    field: FilterField,
+) {
+    let mut text = field.patterns(filter).text().to_owned();
     let edit = egui::TextEdit::singleline(&mut text)
-        .hint_text(hint)
+        .hint_text(field.hint())
         .desired_width(300.0);
-    if ui.add(edit).changed() {
-        *list = PatternList::new(text);
+    let mut new_text = ui.add(edit).changed().then(|| text.clone());
+    let (builtins, user) = field.presets(presets);
+    if let Some(picked) = presets_menu(ui, ("filter_presets", field), builtins, user, &text) {
+        new_text = Some(picked);
+    }
+    if let Some(text) = new_text {
+        field.set_text(filter, text);
         ui.ctx().request_repaint();
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::PathDiffPane;
+    use super::{BLACKLIST_PRESETS, FilterField, FilterPresets, PathDiffPane, WHITELIST_PRESETS};
     use crate::ui_egui::{fs_tree::FileSystemView, tree_cursor::TreeCursor};
     use std::{path::Path, sync::Arc};
     use tempfile::tempdir;
-    use zhashdiff::fs::FileSystemModel;
+    use zhashdiff::{filter::PathFilter, fs::FileSystemModel};
+
+    const DIR: bool = true;
+    const FILE: bool = false;
 
     fn load_view(root: &Path) -> FileSystemView {
         FileSystemView::new(Arc::new(FileSystemModel::new(root).unwrap()))
+    }
+
+    fn preset_names(field: FilterField, presets: &mut FilterPresets) -> Vec<String> {
+        let (builtins, user) = field.presets(presets);
+        user.list(builtins).map(|e| e.name.to_string()).collect()
+    }
+
+    #[test]
+    fn every_filter_preset_matches_one_name_per_pattern_and_nothing_else() {
+        use FilterField::{Blacklist, Whitelist};
+        type Names = &'static [(&'static str, bool)];
+        let samples: &[(FilterField, &str, Names, Names)] = &[
+            (
+                Blacklist,
+                "No build dirs",
+                &[
+                    ("bin", DIR),
+                    ("obj", DIR),
+                    ("target", DIR),
+                    ("Intermediate", DIR),
+                    ("Binaries", DIR),
+                    ("DerivedDataCache", DIR),
+                    ("Saved", DIR),
+                    (".vs", DIR),
+                ],
+                &[("target", FILE), ("src", DIR), ("Content", DIR)],
+            ),
+            (
+                Blacklist,
+                "No VCS",
+                &[(".git", DIR), (".svn", DIR), (".hg", DIR)],
+                &[(".git", FILE), (".gitignore", FILE), ("git", DIR)],
+            ),
+            (
+                Blacklist,
+                "No binaries",
+                &[
+                    ("a.exe", FILE),
+                    ("a.dll", FILE),
+                    ("a.pdb", FILE),
+                    ("a.lib", FILE),
+                    ("a.obj", FILE),
+                    ("a.o", FILE),
+                ],
+                &[("a.rs", FILE), ("a.object", FILE), ("a.o.txt", FILE)],
+            ),
+            (
+                Whitelist,
+                "Text only",
+                &[
+                    ("a.txt", FILE),
+                    ("a.md", FILE),
+                    ("a.log", FILE),
+                    ("a.json", FILE),
+                    ("a.xml", FILE),
+                    ("a.ini", FILE),
+                    ("a.cfg", FILE),
+                    ("a.yaml", FILE),
+                    ("a.yml", FILE),
+                    ("a.toml", FILE),
+                    ("a.csv", FILE),
+                ],
+                &[("a.rs", FILE), ("a.png", FILE), ("txt", FILE)],
+            ),
+            (
+                Whitelist,
+                "Source",
+                &[
+                    ("a.rs", FILE),
+                    ("a.c", FILE),
+                    ("a.h", FILE),
+                    ("a.cpp", FILE),
+                    ("a.hpp", FILE),
+                    ("a.cs", FILE),
+                    ("a.py", FILE),
+                    ("a.js", FILE),
+                    ("a.ts", FILE),
+                    ("a.hlsl", FILE),
+                    ("a.usf", FILE),
+                    ("a.ush", FILE),
+                ],
+                &[("a.txt", FILE), ("a.rs.bak", FILE)],
+            ),
+            (
+                Whitelist,
+                "Images",
+                &[
+                    ("a.png", FILE),
+                    ("a.tga", FILE),
+                    ("a.jpg", FILE),
+                    ("a.jpeg", FILE),
+                    ("a.bmp", FILE),
+                    ("a.dds", FILE),
+                    ("a.exr", FILE),
+                    ("a.hdr", FILE),
+                    ("a.psd", FILE),
+                ],
+                &[("a.txt", FILE), ("a.gif", FILE)],
+            ),
+            (
+                Whitelist,
+                "Unreal assets",
+                &[("a.uasset", FILE), ("a.umap", FILE)],
+                &[("a.uexp", FILE), ("a.ubulk", FILE)],
+            ),
+        ];
+
+        let all = [
+            (Blacklist, BLACKLIST_PRESETS),
+            (Whitelist, WHITELIST_PRESETS),
+        ];
+        assert_eq!(
+            samples.len(),
+            BLACKLIST_PRESETS.len() + WHITELIST_PRESETS.len()
+        );
+        for (field, builtins) in all {
+            for preset in builtins {
+                let (_, _, matched, unmatched) = samples
+                    .iter()
+                    .find(|(f, name, ..)| *f == field && *name == preset.name)
+                    .unwrap_or_else(|| panic!("no sample for {field:?} {}", preset.name));
+                assert_eq!(
+                    preset.text.split_whitespace().count(),
+                    matched.len(),
+                    "{}: one name per pattern",
+                    preset.name
+                );
+                let mut filter = PathFilter::default();
+                field.set_text(&mut filter, preset.text);
+                let hides = |name: &str, is_dir: bool| !filter.keeps(name, is_dir);
+                let blacklist = field == Blacklist;
+                for &(name, is_dir) in *matched {
+                    assert_eq!(hides(name, is_dir), blacklist, "{}: {name}", preset.name);
+                }
+                for &(name, is_dir) in *unmatched {
+                    assert_eq!(hides(name, is_dir), !blacklist, "{}: {name}", preset.name);
+                }
+                if !blacklist {
+                    assert!(!hides("src", DIR), "{}: folders stay", preset.name);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn blacklist_and_whitelist_presets_are_separate_stores() {
+        let mut presets = FilterPresets::default();
+        let (builtins, user) = FilterField::Blacklist.presets(&mut presets);
+        user.save(builtins, "Mine", "*.tmp").unwrap();
+        let (builtins, user) = FilterField::Whitelist.presets(&mut presets);
+        user.save(builtins, "Shaders", "*.hlsl").unwrap();
+
+        assert_eq!(
+            preset_names(FilterField::Blacklist, &mut presets),
+            ["No build dirs", "No VCS", "No binaries", "Mine"]
+        );
+        assert_eq!(
+            preset_names(FilterField::Whitelist, &mut presets),
+            ["Text only", "Source", "Images", "Unreal assets", "Shaders"]
+        );
     }
 
     #[test]
