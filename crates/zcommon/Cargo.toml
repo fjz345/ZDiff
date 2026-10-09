@@ -8,7 +8,7 @@ name = "zcommon"
 
 [features]
 default = []
-gui = ["dep:eframe", "dep:egui_tiles", "dep:egui_extras"]
+gui = ["serde", "dep:eframe", "dep:egui_tiles", "dep:egui_extras"]
 serde = ["dep:serde"]
 
 [dependencies]

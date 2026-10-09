@@ -19,6 +19,7 @@ use zcommon::{
     ui_egui::{
         find_popup::{FindPopupEvent, find_popup},
         keymap::Keymap,
+        style_window::StyleWindow,
     },
 };
 use zhashdiff::{
@@ -33,7 +34,8 @@ use crate::ui_egui::{
     duplicate_files_pane::DuplicateFilesPane,
     folder_keymap::{FolderAction, KeybindingsWindow},
     fs_tree::{
-        FileSystemView, HScrollLink, RowsId, VisibleRowTwoFolderDiff, apply_blueprint_results,
+        FileSystemView, FolderRole, HScrollLink, RowsId, VisibleRowTwoFolderDiff,
+        apply_blueprint_results,
     },
     panes::{Pane, PathDiffView, TreeBehavior},
     path_diff_pane::{FilterPresets, PathDiffPane},
@@ -668,6 +670,8 @@ pub struct ZApp {
     #[serde(skip)]
     keybindings_window: KeybindingsWindow,
     #[serde(skip)]
+    style_window: StyleWindow,
+    #[serde(skip)]
     find_open: bool,
 }
 
@@ -719,14 +723,13 @@ impl ZApp {
             diff_mode_path_diff: true,
             tools_window: ToolsWindow::default(),
             keybindings_window: KeybindingsWindow::default(),
+            style_window: StyleWindow::default(),
             find_open: false,
         }
     }
 
     fn startup(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        let visuals: egui::Visuals = egui::Visuals::dark();
-        ctx.set_visuals(visuals);
-        ctx.set_theme(egui::Theme::Dark);
+        self.style_window.load(ctx);
         log::debug!("pixels_per_point {}", ctx.pixels_per_point());
         log::debug!(
             "native_pixels_per_point {:?}",
@@ -792,11 +795,8 @@ impl ZApp {
                     if ui.button("Keybindings").clicked() {
                         self.keybindings_window.open = true;
                     }
-                    if ui.button("Setup colors").clicked() {
-                        log::error!("NYI");
-                    }
-                    if ui.button("Set Theme").clicked() {
-                        log::error!("NYI");
+                    if ui.button("Style").clicked() {
+                        self.style_window.open = true;
                     }
                 });
 
@@ -878,6 +878,7 @@ impl ZApp {
         if self.keybindings_window.open {
             self.keybindings_window.show(ui.ctx(), &mut app_ctx.keymap);
         }
+        self.style_window.show::<FolderRole>(ui.ctx(), "Folder");
     }
 
     fn ui(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame, app_ctx: &mut AppStateCtx) {

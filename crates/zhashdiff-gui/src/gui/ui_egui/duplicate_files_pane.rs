@@ -13,6 +13,7 @@ use serde::Serialize;
 use zcommon::hash::HashRepresentation;
 use zcommon::hash::HashService;
 use zcommon::ui_egui::common::show_custom_popup;
+use zcommon::ui_egui::style_window::role_color;
 use zcommon::ui_egui::toggle::toggle_button;
 use zhashdiff::conflict::DuplicateGroup;
 use zhashdiff::conflict::ResolutionSummary;
@@ -30,8 +31,8 @@ use zhashdiff::fs::FsNodeId;
 use crate::ui_egui::folder_keymap::FolderAction;
 use crate::ui_egui::fs_tree::CursorRowsCache;
 use crate::ui_egui::fs_tree::FileSystemView;
+use crate::ui_egui::fs_tree::FolderRole;
 use crate::ui_egui::fs_tree::NodeColumn;
-use crate::ui_egui::fs_tree::PENDING_DELETION_COLOR;
 use crate::ui_egui::fs_tree::RowsId;
 use crate::ui_egui::fs_tree::TreeMode;
 use crate::ui_egui::fs_tree::VisibleRowTwoFolderDiff;
@@ -319,7 +320,12 @@ fn ui_group_cell(
             let mark = if keeper {
                 Some(ui.label(egui::RichText::new("✔ keep").color(KEEPER_COLOR)))
             } else if pending {
-                Some(ui.label(egui::RichText::new("✖").color(PENDING_DELETION_COLOR)))
+                Some(
+                    ui.label(
+                        egui::RichText::new("✖")
+                            .color(role_color(ui.ctx(), FolderRole::PendingDeletion)),
+                    ),
+                )
             } else {
                 None
             };
@@ -1026,7 +1032,10 @@ impl DuplicateFilesPane {
                 .max_height(200.0)
                 .show(ui, |ui| {
                     for path in &preview.removed {
-                        ui.label(egui::RichText::new(shown(path)).color(PENDING_DELETION_COLOR));
+                        ui.label(
+                            egui::RichText::new(shown(path))
+                                .color(role_color(ui.ctx(), FolderRole::PendingDeletion)),
+                        );
                     }
                 });
             if preview.skipped > 0 {

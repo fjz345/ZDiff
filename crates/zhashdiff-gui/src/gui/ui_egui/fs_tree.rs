@@ -26,8 +26,10 @@ use zhashdiff::{
 };
 
 use zcommon::path::{common_parent, split_path};
+use zcommon::style::{Rgba8, Role};
 use zcommon::ui_egui::h_scroll::text_width;
 use zcommon::ui_egui::pathbar::{PathBarAction, path_bar};
+use zcommon::ui_egui::style_window::role_color;
 use zcommon::ui_egui::table::{Rows, Split, SplitColumn, SplitTable};
 
 use crate::ui_egui::folder_keymap::FolderAction;
@@ -570,7 +572,70 @@ pub fn apply_blueprint_results(
     }
 }
 
-pub const PENDING_DELETION_COLOR: egui::Color32 = egui::Color32::LIGHT_RED;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FolderRole {
+    Same,
+    Different,
+    Similar,
+    OnlyInFirst,
+    OnlyInSecond,
+    PendingDeletion,
+}
+
+impl Role for FolderRole {
+    fn all() -> &'static [Self] {
+        &[
+            FolderRole::Same,
+            FolderRole::Different,
+            FolderRole::Similar,
+            FolderRole::OnlyInFirst,
+            FolderRole::OnlyInSecond,
+            FolderRole::PendingDeletion,
+        ]
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            FolderRole::Same => "folder_same",
+            FolderRole::Different => "folder_different",
+            FolderRole::Similar => "folder_similar",
+            FolderRole::OnlyInFirst => "folder_only_in_first",
+            FolderRole::OnlyInSecond => "folder_only_in_second",
+            FolderRole::PendingDeletion => "folder_pending_deletion",
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            FolderRole::Same => "Same",
+            FolderRole::Different => "Different",
+            FolderRole::Similar => "Similar",
+            FolderRole::OnlyInFirst => "Only in first",
+            FolderRole::OnlyInSecond => "Only in second",
+            FolderRole::PendingDeletion => "Pending deletion",
+        }
+    }
+
+    fn dark(self) -> Rgba8 {
+        match self {
+            FolderRole::Same => Rgba8([0x7E, 0xD3, 0x21, 255]),
+            FolderRole::Different => Rgba8([0xD0, 0x02, 0x1B, 255]),
+            FolderRole::Similar => Rgba8([0xF8, 0xE7, 0x1C, 255]),
+            FolderRole::OnlyInFirst | FolderRole::OnlyInSecond => Rgba8([0x4A, 0x90, 0xE2, 255]),
+            FolderRole::PendingDeletion => Rgba8([255, 128, 128, 255]),
+        }
+    }
+
+    fn light(self) -> Rgba8 {
+        match self {
+            FolderRole::Same => Rgba8([40, 140, 20, 255]),
+            FolderRole::Different => Rgba8([200, 0, 20, 255]),
+            FolderRole::Similar => Rgba8([160, 120, 0, 255]),
+            FolderRole::OnlyInFirst | FolderRole::OnlyInSecond => Rgba8([30, 100, 200, 255]),
+            FolderRole::PendingDeletion => Rgba8([200, 40, 40, 255]),
+        }
+    }
+}
 const FOLDER_ROW_TINT: egui::Color32 =
     egui::Color32::from_rgba_unmultiplied_const(120, 150, 255, 14);
 const DIMMED_TEXT_COLOR: egui::Color32 = egui::Color32::from_gray(105);
@@ -1274,22 +1339,19 @@ impl DiffState {
 }
 
 pub fn ui_custom_diff_state(ui: &mut egui::Ui, state: &DiffState) -> egui::response::Response {
-    let green = egui::Color32::from_rgb(0x7E, 0xD3, 0x21);
-    let red = egui::Color32::from_rgb(0xD0, 0x02, 0x1B);
-    let yellow = egui::Color32::from_rgb(0xF8, 0xE7, 0x1C);
-    let blue = egui::Color32::from_rgb(0x4A, 0x90, 0xE2);
-    // let teal = egui::Color32::from_rgb(0x50, 0xE3, 0xC2);
-
-    match state {
-        DiffState::Same(..) => ui.label(RichText::new("=").color(green)),
-        DiffState::Different(..) => ui.label(RichText::new("≠").color(red)),
-        DiffState::Similar(..) => ui.label(RichText::new("≈").color(yellow)),
-        DiffState::OnlyInFirst(..) => ui.label(RichText::new("−").color(blue)),
-        DiffState::OnlyInSecond(..) => ui.label(RichText::new("+").color(blue)),
-        DiffState::Pending(..) => ui
-            .add(egui::Spinner::new().size(ui.text_style_height(&egui::TextStyle::Body)))
-            .on_hover_text("not compared"),
-    }
+    let (symbol, role) = match state {
+        DiffState::Same(..) => ("=", FolderRole::Same),
+        DiffState::Different(..) => ("≠", FolderRole::Different),
+        DiffState::Similar(..) => ("≈", FolderRole::Similar),
+        DiffState::OnlyInFirst(..) => ("−", FolderRole::OnlyInFirst),
+        DiffState::OnlyInSecond(..) => ("+", FolderRole::OnlyInSecond),
+        DiffState::Pending(..) => {
+            return ui
+                .add(egui::Spinner::new().size(ui.text_style_height(&egui::TextStyle::Body)))
+                .on_hover_text("not compared");
+        }
+    };
+    ui.label(RichText::new(symbol).color(role_color(ui.ctx(), role)))
 }
 
 fn file_diff_state(
@@ -1822,7 +1884,7 @@ fn render_side_cell(
         entry.is_dir,
         is_collapsed,
         if pending {
-            Some(PENDING_DELETION_COLOR)
+            Some(role_color(ui.ctx(), FolderRole::PendingDeletion))
         } else {
             dimmed.then_some(DIMMED_TEXT_COLOR)
         },
@@ -2059,6 +2121,18 @@ mod tests {
     use zhashdiff::comparison::PairState;
     use zhashdiff::filter::{PathFilter, PatternList};
     use zhashdiff::fs::{FileSystemModel, FsIsDir, FsNodeDepth, FsNodeId};
+
+    #[test]
+    fn folder_role_names_are_unique_against_the_shared_roles() {
+        use crate::ui_egui::fs_tree::FolderRole;
+        use zcommon::style::{Role, SharedRole};
+        let mut names: Vec<&str> = SharedRole::all().iter().map(|r| r.name()).collect();
+        names.extend(FolderRole::all().iter().map(|r| r.name()));
+        let count = names.len();
+        names.sort_unstable();
+        names.dedup();
+        assert_eq!(names.len(), count);
+    }
 
     struct CollapsedTestCase {
         name: &'static str,

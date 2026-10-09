@@ -41,6 +41,10 @@ pub trait Role: Copy + Eq + 'static {
     fn dark(self) -> Rgba8;
     fn light(self) -> Rgba8;
 
+    fn has_alpha(self) -> bool {
+        false
+    }
+
     fn default_color(self, tone: Tone) -> Rgba8 {
         match tone {
             Tone::Dark => self.dark(),
@@ -101,6 +105,13 @@ impl Role for SharedRole {
             SharedRole::InsertText => Rgba8([20, 130, 20, 255]),
             SharedRole::InsertBackground => Rgba8([0, 200, 0, 30]),
         }
+    }
+
+    fn has_alpha(self) -> bool {
+        matches!(
+            self,
+            SharedRole::DeleteBackground | SharedRole::InsertBackground
+        )
     }
 }
 

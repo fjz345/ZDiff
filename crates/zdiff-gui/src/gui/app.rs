@@ -17,6 +17,7 @@ use zcommon::ui_egui::find_popup::{FindPopupEvent, find_popup};
 use zcommon::ui_egui::h_scroll::{self, WheelModifier};
 use zcommon::ui_egui::keymap::{Action, Shortcut};
 use zcommon::ui_egui::keymap_editor::KeymapEditor;
+use zcommon::ui_egui::style_window::{NoRole, StyleWindow};
 use zdiff::{
     diff_builder::DiffBuilderOptions,
     lexer::{LEXER_MODE_DEFAULT, LEXER_MODE_GREEDY, LEXER_MODE_NEWLINE, LEXER_MODE_TOKENIZE},
@@ -221,6 +222,8 @@ pub struct ZApp {
     #[serde(skip)]
     keymap_editor: KeymapEditor<FileAction>,
     #[serde(skip)]
+    style_window: StyleWindow,
+    #[serde(skip)]
     open_universal_path_window: bool,
     #[serde(skip)]
     open_viewers_window: bool,
@@ -313,6 +316,7 @@ impl<'a> ZApp {
             tree: Self::create_tree(),
             open_shortcuts_window: false,
             keymap_editor: KeymapEditor::default(),
+            style_window: StyleWindow::default(),
             open_universal_path_window: false,
             open_viewers_window: false,
             open_phase_trace_window: false,
@@ -328,8 +332,7 @@ impl<'a> ZApp {
     }
 
     fn startup(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        let visuals: egui::Visuals = egui::Visuals::dark();
-        ctx.set_visuals(visuals);
+        self.style_window.load(ctx);
         log::debug!("pixels_per_point {}", ctx.pixels_per_point());
         log::debug!(
             "native_pixels_per_point {:?}",
@@ -583,6 +586,9 @@ impl<'a> ZApp {
                         if ui.button("File Viewers").clicked() {
                             self.open_viewers_window = true;
                         }
+                        if ui.button("Style").clicked() {
+                            self.style_window.open = true;
+                        }
                     });
 
                     ui.menu_button("Debug", |ui| {
@@ -764,6 +770,7 @@ impl<'a> ZApp {
                 },
             );
         }
+        self.style_window.show::<NoRole>(ui.ctx(), "");
         if self.open_help_window {
             show_custom_popup(
                 ui.ctx(),
