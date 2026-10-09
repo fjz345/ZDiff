@@ -175,14 +175,14 @@ fn display(
             for (i, segment) in segments.iter().enumerate() {
                 if hidden.as_ref().is_some_and(|h| h.contains(&i)) {
                     if hidden.as_ref().is_some_and(|h| h.start == i) {
-                        ui.label(SEPARATOR);
+                        ui.add(egui::Label::new(SEPARATOR).selectable(false));
                         ui.add(egui::Label::new(ELLIPSIS).selectable(false))
                             .on_hover_text(full_path);
                     }
                     continue;
                 }
                 if i > 0 {
-                    ui.label(SEPARATOR);
+                    ui.add(egui::Label::new(SEPARATOR).selectable(false));
                 }
                 let text = egui::RichText::new(&segment.name).color(text_color(i));
                 if clickable(i) {
