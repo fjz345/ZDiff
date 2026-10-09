@@ -23,7 +23,8 @@ use crate::{
         hex::{self, HexViewCtx},
         image::{self, ImageDiffProcessor},
         media_placeholder,
-        video_frames::{self, VideoFrameProcessor},
+        video_frames::VideoFrameProcessor,
+        video_meta::{self, VideoMetaProcessor},
     },
 };
 use eframe::egui::{self, Layout, TextEdit, UiBuilder, Vec2, text_selection::LabelSelectionState};
@@ -113,6 +114,7 @@ pub struct FileDiffPaneCtx<'a> {
     pub media_view: Option<ViewerKind>,
     pub audio_meta: Option<&'a mut AudioMetaProcessor>,
     pub video_frames: Option<&'a mut VideoFrameProcessor>,
+    pub video_meta: Option<&'a mut VideoMetaProcessor>,
     /// The toolbar's viewer switch for the current pair; `None` is Auto.
     pub viewer_override: &'a mut Option<ViewerKind>,
     /// Why the pair isn't in the viewer it asked for, if it isn't.
@@ -1000,12 +1002,18 @@ impl FileDiffPane {
                             {
                                 image::show(ui, image_view, left_width);
                             }
-                            if let Some((processor, settings)) = ctx.audio_view.as_mut() {
+                            if let (Some(meta), Some(frames), Some(left_width)) = (
+                                ctx.video_meta.as_deref_mut(),
+                                ctx.video_frames.as_deref_mut(),
+                                image_left_width,
+                            ) {
+                                let audio = ctx
+                                    .audio_view
+                                    .as_mut()
+                                    .map(|(processor, settings)| (&mut **processor, &mut **settings));
+                                video_meta::show(ui, meta, frames, left_width, audio);
+                            } else if let Some((processor, settings)) = ctx.audio_view.as_mut() {
                                 audio::show(ui, processor, settings);
-                            } else if let (Some(processor), Some(left_width)) =
-                                (ctx.video_frames.as_deref_mut(), image_left_width)
-                            {
-                                video_frames::show(ui, processor, left_width);
                             } else if let Some(kind) = ctx.media_view {
                                 media_placeholder(
                                     ui,

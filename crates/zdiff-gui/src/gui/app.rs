@@ -58,6 +58,7 @@ use crate::{
         image::ImageDiffProcessor,
         image_decode_fallback, resolve_viewer, ui_extension_map, ui_ffmpeg_setting,
         video_frames::VideoFrameProcessor,
+        video_meta::{VideoMetaProcessor, VideoTab},
     },
 };
 
@@ -81,6 +82,8 @@ pub struct AppStateCtx {
     pub audio_meta: AudioMetaProcessor,
     #[cfg_attr(feature = "serde", serde(skip), serde(default))]
     pub video_frames: VideoFrameProcessor,
+    #[cfg_attr(feature = "serde", serde(skip), serde(default))]
+    pub video_meta: VideoMetaProcessor,
     /// Resolved each frame from the loaded files; `None` while neither side is loaded.
     #[cfg_attr(feature = "serde", serde(skip), serde(default))]
     pub viewer_kind: Option<ViewerKind>,
@@ -163,6 +166,7 @@ impl Default for AppStateCtx {
             audio_settings: Default::default(),
             audio_meta: Default::default(),
             video_frames: Default::default(),
+            video_meta: Default::default(),
             viewer_kind: None,
             viewer_override: Default::default(),
             viewer_fallback: None,
@@ -872,6 +876,7 @@ impl<'a> ZApp {
                 audio_settings,
                 audio_meta,
                 video_frames,
+                video_meta,
                 viewer_kind,
                 viewer_override,
                 viewer_fallback,
@@ -888,6 +893,8 @@ impl<'a> ZApp {
             let is_image = *viewer_kind == Some(ViewerKind::Image);
             let media_view =
                 viewer_kind.filter(|k| matches!(k, ViewerKind::Audio | ViewerKind::Video));
+            let video_audio =
+                media_view == Some(ViewerKind::Video) && video_meta.tab == VideoTab::Audio;
             self.show_menu(
                 ui,
                 file_1,
@@ -1049,11 +1056,12 @@ impl<'a> ZApp {
                     block_toggle_request: &mut block_toggle_request,
                     hex_view: is_hex.then(|| hex_processor.view_ctx()),
                     image_view: is_image.then_some(image_processor),
-                    audio_view: (media_view == Some(ViewerKind::Audio))
+                    audio_view: (media_view == Some(ViewerKind::Audio) || video_audio)
                         .then_some((audio_processor, audio_settings)),
                     media_view,
                     audio_meta: (media_view == Some(ViewerKind::Audio)).then_some(audio_meta),
                     video_frames: (media_view == Some(ViewerKind::Video)).then_some(video_frames),
+                    video_meta: (media_view == Some(ViewerKind::Video)).then_some(video_meta),
                     viewer_override: &mut viewer_override.kind,
                     viewer_fallback: viewer_fallback.as_deref(),
                     phase_overlay: self.phase_overlay,
@@ -1334,9 +1342,13 @@ impl<'a> ZApp {
                         FileAction::Find => app_state_ctx.find_open = true,
                         FileAction::Goto => app_state_ctx.goto_open = true,
                         FileAction::SaveMerge => save_merge = true,
-                        FileAction::NextFrame | FileAction::PrevFrame => app_state_ctx
-                            .video_frames
-                            .step(action == FileAction::NextFrame),
+                        FileAction::NextFrame | FileAction::PrevFrame => {
+                            if app_state_ctx.video_meta.tab == VideoTab::Frames {
+                                app_state_ctx
+                                    .video_frames
+                                    .step(action == FileAction::NextFrame);
+                            }
+                        }
                         FileAction::NextConflict | FileAction::PrevConflict
                             if let Some(merge) = &mut self.merge =>
                         {
@@ -1652,7 +1664,11 @@ impl eframe::App for ZApp {
                     }
                     _ => r,
                 });
-                if resolution.as_ref().map(|r| r.kind) == Some(ViewerKind::Audio)
+                // A video pair decodes its audio only while the Audio tab is open.
+                let kind = resolution.as_ref().map(|r| r.kind);
+                let video_audio =
+                    kind == Some(ViewerKind::Video) && state.video_meta.tab == VideoTab::Audio;
+                if (kind == Some(ViewerKind::Audio) || video_audio)
                     && let Ok(ffmpeg) = state.ffmpeg.lookup()
                 {
                     state
@@ -1684,6 +1700,15 @@ impl eframe::App for ZApp {
                     _ => None,
                 };
                 state.audio_meta.request(audio_pair);
+                let video_pair = match (state.viewer_kind, &loaded_1, &loaded_2) {
+                    (Some(ViewerKind::Video), Some(a), Some(b)) => state
+                        .ffmpeg
+                        .lookup()
+                        .ok()
+                        .map(|ffmpeg| ([a.clone(), b.clone()], ffmpeg)),
+                    _ => None,
+                };
+                state.video_meta.request(video_pair);
                 let is_hex = state.viewer_kind == Some(ViewerKind::Hex);
                 let is_text = matches!(state.viewer_kind, Some(ViewerKind::Text) | None);
                 if is_hex {

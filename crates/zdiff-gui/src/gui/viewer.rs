@@ -17,6 +17,7 @@ pub mod audio_spectrum;
 pub mod hex;
 pub mod image;
 pub mod video_frames;
+pub mod video_meta;
 pub mod video_timeline;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
