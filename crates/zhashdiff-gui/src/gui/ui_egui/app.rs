@@ -440,8 +440,8 @@ impl ZApp {
         let mut user_quit: bool = false;
         {
             let _input_ctx = ctx.input(|r| {
-                // Esc
-                if r.key_down(egui::Key::Escape) {
+                // Esc, unless a widget consumed it (the path bar's cancel)
+                if r.key_pressed(egui::Key::Escape) {
                     user_quit = true;
                 }
 

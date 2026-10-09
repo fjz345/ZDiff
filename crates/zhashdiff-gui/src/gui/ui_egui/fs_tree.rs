@@ -21,11 +21,11 @@ use zhashdiff::{
     fs::{FileSystemModel, FsNode, FsNodeDepth, FsNodeId, TreeIter},
 };
 
-use zcommon::ui_egui::common::{
-    CheckboxSelectState, draw_persistent_hint_text_edit, hash_to_color, ui_custom_checkbox,
-};
+use zcommon::path::{common_parent, split_path};
+use zcommon::ui_egui::common::{CheckboxSelectState, hash_to_color, ui_custom_checkbox};
+use zcommon::ui_egui::pathbar::{PathBarAction, path_bar};
 
-use crate::ui_egui::roots::{Side, set_root};
+use crate::ui_egui::roots::{InvalidRoot, Side, set_root};
 use crate::ui_egui::tools_window::resolve_tool_exe;
 use crate::ui_egui::tree_cursor::{CursorRequest, CursorRow, TreeCursor};
 use crate::ui_egui::tree_filter::DiffFilter;
@@ -848,25 +848,7 @@ pub fn draw_ui_two_folder_tree_with_diff(
                                     *open_dir_window_1 = true;
                                 }
                             });
-                            let text = if let Some(fs1_view) = file_system_1_view {
-                                fs1_view
-                                    .file_system
-                                    .get_root()
-                                    .as_path()
-                                    .as_ref()
-                                    .to_string_lossy()
-                                    .to_string()
-                            } else {
-                                "No folder".to_string()
-                            };
-                            let available = ui.available_width();
-                            let id = ui.make_persistent_id("two_folder_diff_fs1_path");
-                            let _ = draw_persistent_hint_text_edit(
-                                ui,
-                                id,
-                                text,
-                                [available, row_height_header],
-                            );
+                            root_path_bar(ui, [&mut *root_1, &mut *root_2], Side::Folder1);
                         });
                     });
                     header.col(|_| {});
@@ -906,25 +888,7 @@ pub fn draw_ui_two_folder_tree_with_diff(
                             {
                                 *open_dir_window_2 = true;
                             }
-                            let text = if let Some(fs2_view) = file_system_2_view {
-                                let fs2 = &fs2_view.file_system;
-                                fs2.get_root()
-                                    .as_path()
-                                    .as_ref()
-                                    .to_string_lossy()
-                                    .to_string()
-                            } else {
-                                "No folder".to_string()
-                            };
-
-                            let available = ui.available_width();
-                            let id = ui.make_persistent_id("two_folder_diff_fs2_path");
-                            let _ = draw_persistent_hint_text_edit(
-                                ui,
-                                id,
-                                text,
-                                [available, row_height_header],
-                            );
+                            root_path_bar(ui, [&mut *root_1, &mut *root_2], Side::Folder2);
                         });
                     });
                 })
@@ -1010,6 +974,70 @@ fn handle_drops(
         }
         return false;
     });
+}
+
+#[derive(Clone)]
+struct PathBarError {
+    root: Option<PathBuf>,
+    reason: String,
+}
+
+fn root_path_bar(ui: &mut egui::Ui, roots: [&mut Option<PathBuf>; 2], side: Side) {
+    let paths = roots
+        .each_ref()
+        .map(|r| r.as_ref().map(|p| p.to_string_lossy().into_owned()));
+    let dim = match &paths {
+        [Some(a), Some(b)] => common_parent(a, false, b, false),
+        _ => 0,
+    };
+    let index = match side {
+        Side::Folder1 => 0,
+        Side::Folder2 => 1,
+    };
+    let segments = paths[index].as_deref().map(split_path).unwrap_or_default();
+    // Keyed to the root it was rejected against, so any later root change clears the red.
+    let error_id = ui.make_persistent_id(("root_path_bar_error", index));
+    let error = ui
+        .data(|d| d.get_temp::<PathBarError>(error_id))
+        .filter(|e| e.root == *roots[index]);
+    let action = path_bar(
+        ui,
+        ("root_path_bar", index),
+        &segments,
+        dim,
+        |i| i + 1 < segments.len(),
+        error.as_ref().map(|e| e.reason.as_str()),
+    );
+    if let Some(action) = action {
+        let root = roots[index].clone();
+        match apply_path_bar(roots, side, action) {
+            Ok(()) => ui.data_mut(|d| d.remove::<PathBarError>(error_id)),
+            Err(e) => ui.data_mut(|d| {
+                let reason = e.to_string();
+                d.insert_temp(error_id, PathBarError { root, reason })
+            }),
+        }
+    }
+}
+
+pub(crate) fn apply_path_bar(
+    roots: [&mut Option<PathBuf>; 2],
+    side: Side,
+    action: PathBarAction,
+) -> Result<(), InvalidRoot> {
+    let [root_1, root_2] = roots;
+    let root = match side {
+        Side::Folder1 => root_1,
+        Side::Folder2 => root_2,
+    };
+    let path = match action {
+        PathBarAction::Segment(i) => {
+            let current = root.as_ref().expect("segment clicked on an empty path bar");
+            PathBuf::from(&split_path(&current.to_string_lossy())[i].path)
+        }
+        PathBarAction::Commit(text) => PathBuf::from(text.trim().trim_matches('"')),
+    };
+    set_root(root, side, &path)
 }
 
 #[derive(PartialEq, Debug, Clone)]
@@ -1791,14 +1819,18 @@ fn get_folder_selection_state(
 
 #[cfg(test)]
 mod tests {
+    use crate::ui_egui::fs_tree::apply_path_bar;
     use crate::ui_egui::fs_tree::{
         DiffJump, DiffState, FileCompareCache, FileSystemView, VisibleRowTwoFolderDiff,
         aggregate_folder_state, apply_blueprint_results, apply_cursor_request, cursor_keys,
         diff_jump_keys, tree_hidden, two_folder_cursor_rows,
     };
+    use crate::ui_egui::roots::{InvalidRoot, Side};
     use crate::ui_egui::tree_cursor::{CursorRequest, TreeCursor};
     use crate::ui_egui::tree_filter::{DiffFilter, arrange_two_folder_rows};
     use crate::ui_egui::tree_sort::{SortKey, TreeSort, sort_two_folder_rows};
+    use zcommon::path::split_path;
+    use zcommon::ui_egui::pathbar::PathBarAction;
     use zhashdiff::external_diff_tool::DiffToolConfig;
 
     use std::cell::Cell;
@@ -3281,5 +3313,118 @@ mod tests {
                 }
             }
         }
+    }
+    #[test]
+    fn path_bar_parent_segment_reroots_only_that_side() {
+        let dir = tempdir().unwrap();
+        let parent = dir.path().join("a");
+        let root = parent.join("b");
+        fs::create_dir_all(&root).unwrap();
+        let mut root_1 = Some(root.clone());
+        let mut root_2 = Some(root.clone());
+        let parent_index = split_path(&root.to_string_lossy()).len() - 2;
+
+        apply_path_bar(
+            [&mut root_1, &mut root_2],
+            Side::Folder1,
+            PathBarAction::Segment(parent_index),
+        )
+        .unwrap();
+
+        assert_eq!(root_1, Some(parent));
+        assert_eq!(root_2, Some(root));
+    }
+
+    #[test]
+    fn path_bar_segment_on_folder_2_reroots_folder_2() {
+        let dir = tempdir().unwrap();
+        let root = dir.path().join("a");
+        fs::create_dir_all(&root).unwrap();
+        let mut root_1 = Some(root.clone());
+        let mut root_2 = Some(root.clone());
+        let parent_index = split_path(&root.to_string_lossy()).len() - 2;
+
+        apply_path_bar(
+            [&mut root_1, &mut root_2],
+            Side::Folder2,
+            PathBarAction::Segment(parent_index),
+        )
+        .unwrap();
+
+        assert_eq!(root_1, Some(root));
+        assert_eq!(root_2, Some(dir.path().to_path_buf()));
+    }
+
+    #[test]
+    fn path_bar_committed_folder_sets_root() {
+        let dir = tempdir().unwrap();
+        let target = dir.path().join("target");
+        fs::create_dir(&target).unwrap();
+        let mut root_1 = None;
+        let mut root_2 = Some(dir.path().to_path_buf());
+
+        apply_path_bar(
+            [&mut root_1, &mut root_2],
+            Side::Folder2,
+            PathBarAction::Commit(target.to_string_lossy().into_owned()),
+        )
+        .unwrap();
+
+        assert_eq!(root_1, None);
+        assert_eq!(root_2, Some(target));
+    }
+
+    #[test]
+    fn path_bar_committed_quoted_path_with_spaces_sets_root() {
+        let dir = tempdir().unwrap();
+        let target = dir.path().join("with space");
+        fs::create_dir(&target).unwrap();
+        let mut root_1 = None;
+        let mut root_2 = None;
+
+        apply_path_bar(
+            [&mut root_1, &mut root_2],
+            Side::Folder1,
+            PathBarAction::Commit(format!(" \"{}\" ", target.display())),
+        )
+        .unwrap();
+
+        assert_eq!(root_1, Some(target));
+    }
+
+    #[test]
+    fn path_bar_committed_missing_path_keeps_root() {
+        let dir = tempdir().unwrap();
+        let missing = dir.path().join("missing");
+        let mut root_1 = Some(dir.path().to_path_buf());
+        let mut root_2 = None;
+
+        let result = apply_path_bar(
+            [&mut root_1, &mut root_2],
+            Side::Folder1,
+            PathBarAction::Commit(missing.to_string_lossy().into_owned()),
+        );
+
+        assert_eq!(result, Err(InvalidRoot::Missing(missing)));
+        assert_eq!(root_1, Some(dir.path().to_path_buf()));
+        assert_eq!(root_2, None);
+    }
+
+    #[test]
+    fn path_bar_committed_file_keeps_root() {
+        let dir = tempdir().unwrap();
+        let file = dir.path().join("file.txt");
+        File::create(&file).unwrap();
+        let mut root_1 = None;
+        let mut root_2 = Some(dir.path().to_path_buf());
+
+        let result = apply_path_bar(
+            [&mut root_1, &mut root_2],
+            Side::Folder2,
+            PathBarAction::Commit(file.to_string_lossy().into_owned()),
+        );
+
+        assert_eq!(result, Err(InvalidRoot::NotAFolder(file)));
+        assert_eq!(root_2, Some(dir.path().to_path_buf()));
     }
 }
