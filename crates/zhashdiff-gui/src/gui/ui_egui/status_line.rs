@@ -265,7 +265,7 @@ mod tests {
                     &PathFilter::default(),
                     &KindTable::default(),
                     tolerance,
-                    |rel_path, _| states.get(rel_path).copied(),
+                    |rel_path, _| (states.get(rel_path).copied(), None),
                     |_, _| None,
                 )
                 .unwrap(),
