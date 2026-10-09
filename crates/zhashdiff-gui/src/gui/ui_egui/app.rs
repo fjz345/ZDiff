@@ -276,7 +276,6 @@ impl SideScan {
         self.job.is_some()
     }
 
-    /// Of the scan the shown view came from.
     pub fn shown(&self) -> Option<&ScanSummary> {
         self.shown.as_ref()
     }

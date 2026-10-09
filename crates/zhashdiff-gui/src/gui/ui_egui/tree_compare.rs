@@ -253,8 +253,11 @@ impl TreeCompare {
     ) {
         let pairs = pending_pairs(rows, views);
         let started = self.job.as_ref().map_or(now, |job| job.started);
-        self.job =
-            (!self.cancelled && !pairs.is_empty()).then(|| CompareJob::start(pairs, started));
+        self.job = (!self.cancelled && !pairs.is_empty()).then(|| {
+            let mut job = CompareJob::start(pairs, now);
+            job.started = started;
+            job
+        });
     }
 
     /// The rows keep their remaining pairs Pending.
@@ -275,7 +278,6 @@ impl TreeCompare {
         Some((job.received, job.pairs.len()))
     }
 
-    /// Of the last compare of the shown trees, finished or cancelled.
     pub fn compare_time(&self) -> Option<Duration> {
         self.compare_time
     }
