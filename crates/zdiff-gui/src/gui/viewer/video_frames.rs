@@ -231,6 +231,9 @@ impl VideoFrameProcessor {
         self.fetching = [None, None];
         self.frames = [None, None];
         self.time_secs = 0.0;
+        // A pending side keeps its shown image; the new pair must not show the old pair's frames.
+        self.image
+            .set_images([ImageSide::Empty, ImageSide::Empty], usize::MAX);
         let Some(ffmpeg) = self.ffmpeg.clone() else {
             return;
         };
@@ -628,5 +631,29 @@ mod tests {
         assert_eq!((frame.width, frame.height, frame.rgba.len()), (4, 2, 32));
         assert!(frame_image(&track, 3, vec![7; 31]).is_err());
         assert!(frame_image(&track, 249, Vec::new()).is_err());
+    }
+
+    #[test]
+    fn a_new_pair_drops_the_old_pairs_frames() {
+        let file = |name: &str| {
+            Some(LoadedFile::Binary(Arc::new(crate::file::BinaryFile {
+                path: zdiff::universal_path::UniversalPath::from(name),
+                bytes: vec![0; 4],
+            })))
+        };
+        let ffmpeg = FfmpegPaths {
+            ffmpeg: "missing-ffmpeg".into(),
+            ffprobe: "missing-ffprobe".into(),
+        };
+        let mut processor = VideoFrameProcessor::default();
+        let frame = Arc::new(frame_image(&track(25.0, 1), 0, vec![7; 32]).unwrap());
+        processor.image.set_images(
+            [ImageSide::Image(frame.clone()), ImageSide::Image(frame)],
+            usize::MAX,
+        );
+        assert_eq!(processor.image.status_text().0, "4 x 2");
+
+        processor.request([file("a.mp4"), file("b.mp4")], Some(&ffmpeg));
+        assert_eq!(processor.image.status_text(), (String::new(), false));
     }
 }
