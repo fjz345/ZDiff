@@ -12,11 +12,12 @@ use zhashdiff::{
     external_diff_tool::DiffToolConfig,
     filter::PathFilter,
     fs::FileSystemModel,
+    uasset::BlueprintDetector,
 };
 
 use crate::ui_egui::{
     duplicate_files_pane::DuplicateFilesPane,
-    fs_tree::{FileCompareCache, FileSystemView, VisibleRowTwoFolderDiff},
+    fs_tree::{FileCompareCache, FileSystemView, VisibleRowTwoFolderDiff, apply_blueprint_results},
     panes::{Pane, PathDiffView, TreeBehavior},
     path_diff_pane::PathDiffPane,
     roots::{LaunchArgs, Side, apply_launch_args, clear_root, set_root},
@@ -41,6 +42,8 @@ pub struct AppStateCtx {
     two_folder_diff_visible_rows: Option<Vec<VisibleRowTwoFolderDiff>>,
     #[serde(skip)]
     two_folder_diff_compare_cache: FileCompareCache,
+    #[serde(skip)]
+    blueprint_detector: BlueprintDetector,
     /// The filter `two_folder_diff_visible_rows` were built with.
     #[serde(skip)]
     two_folder_diff_rows_filter: PathFilter,
@@ -89,6 +92,7 @@ impl AppStateCtx {
                 &KindTable::default(),
                 &mut self.two_folder_diff_compare_cache,
                 |path_1, path_2| compare_paths(path_1, path_2, &PathComparissonMethod::CrC),
+                |path, meta| self.blueprint_detector.check(path, meta),
             )
             .ok()
             .map(|rows| arrange_two_folder_rows(rows, self.diff_filter, self.tree_sort));
@@ -102,6 +106,25 @@ impl AppStateCtx {
                     .map_or(0, Vec::len)
             );
         }
+    }
+
+    /// True while uasset checks are still pending.
+    fn poll_blueprint_detector(&mut self) -> bool {
+        let results = self.blueprint_detector.poll();
+        if let Some(rows) = self.two_folder_diff_visible_rows.as_mut()
+            && !results.is_empty()
+        {
+            let root = |view: &Option<FileSystemView>| {
+                view.as_ref()
+                    .map(|v| v.file_system.get_root().as_path().as_ref().to_path_buf())
+            };
+            let roots = [
+                root(&self.file_system_model_1_view),
+                root(&self.file_system_model_2_view),
+            ];
+            apply_blueprint_results(rows, [roots[0].as_deref(), roots[1].as_deref()], &results);
+        }
+        self.blueprint_detector.pending() > 0
     }
 }
 
@@ -574,6 +597,9 @@ impl eframe::App for ZApp {
                     state.two_folder_diff_visible_rows = None;
                 }
                 state.build_two_folder_diff_rows_if_stale();
+                if state.poll_blueprint_detector() {
+                    ctx.request_repaint_after(Duration::from_millis(100));
+                }
 
                 self.ui(ctx, frame, &mut state);
 

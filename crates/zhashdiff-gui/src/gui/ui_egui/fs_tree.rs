@@ -13,7 +13,7 @@ use zcommon::{
     kinds::{FileKind, KindTable},
 };
 use zhashdiff::{
-    comparison::PathComparisonResult,
+    comparison::{FileMeta, PathComparisonResult},
     external_diff_tool::{
         CantDiff, DiffPair, DiffToolConfig, cant_diff, folder_labels, open_diff_tool,
     },
@@ -47,6 +47,7 @@ pub struct VisibleRowTwoFolderDiff {
     pub depth: FsNodeDepth,
     pub diff_state: DiffState,
     pub file_kinds: [Option<FileKind>; 2],
+    pub blueprints: [bool; 2],
 }
 
 /// File comparison results of the two loaded trees, so rebuilding the two-folder rows
@@ -194,6 +195,7 @@ impl FileSystemView {
         kinds: &KindTable,
         compare_cache: &mut FileCompareCache,
         mut compare: impl FnMut(&Path, &Path) -> io::Result<PathComparisonResult>,
+        mut blueprint: impl FnMut(&Path, FileMeta) -> Option<bool>,
     ) -> io::Result<Vec<VisibleRowTwoFolderDiff>> {
         compare_cache.retain_for(file_system_1, file_system_2);
 
@@ -335,12 +337,28 @@ impl FileSystemView {
                     .map(|_| kinds.kind(extension))
             };
 
+            let file_kinds = [file_kind(left), file_kind(right)];
+            let mut blueprints = [false, false];
+            for (i, side) in [left, right].into_iter().enumerate() {
+                if file_kinds[i] == Some(FileKind::UnrealAsset)
+                    && let Some((_, node, _)) = side
+                    && let Some(modified) = node.modified
+                {
+                    let meta = FileMeta {
+                        size: node.size,
+                        modified,
+                    };
+                    blueprints[i] = blueprint(node.as_path().as_ref(), meta).unwrap_or(false);
+                }
+            }
+
             out_rows.push(VisibleRowTwoFolderDiff {
                 rel_path: rel_path.clone(),
                 is_dir,
                 depth,
                 diff_state,
-                file_kinds: [file_kind(left), file_kind(right)],
+                file_kinds,
+                blueprints,
             });
         }
 
@@ -470,11 +488,40 @@ pub fn two_folder_cursor_rows<'a>(
         .collect()
 }
 
+pub fn apply_blueprint_results(
+    rows: &mut [VisibleRowTwoFolderDiff],
+    roots: [Option<&Path>; 2],
+    results: &[(PathBuf, bool)],
+) {
+    let mut by_rel_path: HashMap<String, Vec<(usize, bool)>> = HashMap::new();
+    for (path, blueprint) in results {
+        for (side, root) in roots.iter().enumerate() {
+            let Some(rel) = root.and_then(|root| path.strip_prefix(root).ok()) else {
+                continue;
+            };
+            let rel = rel
+                .components()
+                .map(|c| c.as_os_str().to_string_lossy())
+                .collect::<Vec<_>>()
+                .join("/");
+            by_rel_path.entry(rel).or_default().push((side, *blueprint));
+        }
+    }
+    for row in rows {
+        for &(side, blueprint) in by_rel_path.get(&row.rel_path).into_iter().flatten() {
+            if row.file_kinds[side] == Some(FileKind::UnrealAsset) {
+                row.blueprints[side] = blueprint;
+            }
+        }
+    }
+}
+
 pub const PENDING_DELETION_COLOR: egui::Color32 = egui::Color32::LIGHT_RED;
 const FOLDER_ROW_TINT: egui::Color32 =
     egui::Color32::from_rgba_unmultiplied_const(120, 150, 255, 14);
 const DIMMED_TEXT_COLOR: egui::Color32 = egui::Color32::from_gray(105);
 const GUIDE_LINE_COLOR: egui::Color32 = egui::Color32::from_gray(95);
+const BLUEPRINT_TAG_COLOR: egui::Color32 = egui::Color32::from_rgb(70, 120, 255);
 const TREE_INDENT: f32 = 16.0;
 const EXPANDER_WIDTH: f32 = 12.0;
 
@@ -1333,7 +1380,7 @@ fn render_row_folder_tree_diff_column(
         }
     };
     let undiffable = undiffable(entry, diff_tool_config);
-    let tag = |row: &mut egui_extras::TableRow, kind: Option<FileKind>| {
+    let tag = |row: &mut egui_extras::TableRow, side: usize| {
         let (_, response) = row.col(|ui| {
             tint(ui);
             if undiffable.is_some() {
@@ -1344,9 +1391,14 @@ fn render_row_folder_tree_diff_column(
             if dimmed {
                 ui.multiply_opacity(0.5);
             }
-            if let Some(kind) = kind {
+            if let Some(kind) = entry.file_kinds[side] {
+                let (text, color) = if entry.blueprints[side] {
+                    ("BP", BLUEPRINT_TAG_COLOR)
+                } else {
+                    (kind.tag(), tag_color(kind))
+                };
                 // Not selectable: a selectable label takes the hover, hiding the cell's tooltip.
-                let text = RichText::new(kind.tag()).monospace().color(tag_color(kind));
+                let text = RichText::new(text).monospace().color(color);
                 ui.add(egui::Label::new(text).selectable(false));
             }
         });
@@ -1382,7 +1434,7 @@ fn render_row_folder_tree_diff_column(
             || should_toggle_row = true,
         );
     });
-    tag(row, entry.file_kinds[0]);
+    tag(row, 0);
     // --- Middle Column (Diff Status) ---
     row.col(|ui| {
         tint(ui);
@@ -1393,7 +1445,7 @@ fn render_row_folder_tree_diff_column(
             ui_custom_diff_state(ui, &entry.diff_state);
         });
     });
-    tag(row, entry.file_kinds[1]);
+    tag(row, 1);
     // --- Right Column (Folder 2) ---
     row.col(|ui| {
         tint(ui);
@@ -1741,8 +1793,8 @@ fn get_folder_selection_state(
 mod tests {
     use crate::ui_egui::fs_tree::{
         DiffJump, DiffState, FileCompareCache, FileSystemView, VisibleRowTwoFolderDiff,
-        aggregate_folder_state, apply_cursor_request, cursor_keys, diff_jump_keys, tree_hidden,
-        two_folder_cursor_rows,
+        aggregate_folder_state, apply_blueprint_results, apply_cursor_request, cursor_keys,
+        diff_jump_keys, tree_hidden, two_folder_cursor_rows,
     };
     use crate::ui_egui::tree_cursor::{CursorRequest, TreeCursor};
     use crate::ui_egui::tree_filter::{DiffFilter, arrange_two_folder_rows};
@@ -1989,6 +2041,7 @@ mod tests {
                 comparisons.set(comparisons.get() + 1);
                 compare_crc(a, b)
             },
+            |_, _| None,
         )
         .unwrap()
     }
@@ -2552,6 +2605,7 @@ mod tests {
             &kinds,
             &mut FileCompareCache::default(),
             |a, b| compare_crc(a, b),
+            |_, _| None,
         )
         .unwrap();
 
@@ -2577,6 +2631,129 @@ mod tests {
                 ("y.zzz", both(FileKind::Model)),
             ]
         );
+    }
+
+    fn blueprint_trees() -> (TempDir, TempDir) {
+        let left = tempdir().unwrap();
+        let right = tempdir().unwrap();
+        write_files(
+            left.path(),
+            &[
+                ("a.uasset", "a"),
+                ("b.txt", "b"),
+                ("sub/c.uasset", "c"),
+                ("left_only.uasset", "l"),
+            ],
+        );
+        write_files(
+            right.path(),
+            &[("a.uasset", "a2"), ("b.txt", "b"), ("sub/c.uasset", "c")],
+        );
+        (left, right)
+    }
+
+    fn blueprint_columns(rows: &[VisibleRowTwoFolderDiff]) -> Vec<(&str, [bool; 2])> {
+        rows.iter()
+            .map(|r| (r.rel_path.as_str(), r.blueprints))
+            .collect()
+    }
+
+    #[test]
+    fn rows_check_each_sides_uasset_files_and_carry_known_blueprints() {
+        let (left_dir, right_dir) = blueprint_trees();
+        let left = load_view(left_dir.path());
+        let right = load_view(right_dir.path());
+        let known_blueprint = left_dir.path().join("a.uasset");
+        let mut checked = Vec::new();
+
+        let rows = FileSystemView::build_two_folder_diff_rows(
+            Some(&left),
+            Some(&right),
+            &PathFilter::default(),
+            &KindTable::default(),
+            &mut FileCompareCache::default(),
+            |a, b| compare_crc(a, b),
+            |path, meta| {
+                checked.push((path.to_path_buf(), meta.size));
+                (path == known_blueprint).then_some(true)
+            },
+        )
+        .unwrap();
+
+        checked.sort();
+        let mut expected = vec![
+            (left_dir.path().join("a.uasset"), 1),
+            (left_dir.path().join("left_only.uasset"), 1),
+            (left_dir.path().join("sub").join("c.uasset"), 1),
+            (right_dir.path().join("a.uasset"), 2),
+            (right_dir.path().join("sub").join("c.uasset"), 1),
+        ];
+        expected.sort();
+        assert_eq!(checked, expected);
+        assert_eq!(
+            blueprint_columns(&rows),
+            [
+                ("", [false, false]),
+                ("a.uasset", [true, false]),
+                ("b.txt", [false, false]),
+                ("left_only.uasset", [false, false]),
+                ("sub", [false, false]),
+                ("sub/c.uasset", [false, false]),
+            ]
+        );
+    }
+
+    #[test]
+    fn blueprint_results_patch_the_matching_side_of_the_rows() {
+        let (left_dir, right_dir) = blueprint_trees();
+        let left = load_view(left_dir.path());
+        let right = load_view(right_dir.path());
+        let mut rows = FileSystemView::build_two_folder_diff_rows(
+            Some(&left),
+            Some(&right),
+            &PathFilter::default(),
+            &KindTable::default(),
+            &mut FileCompareCache::default(),
+            |a, b| compare_crc(a, b),
+            |_, _| None,
+        )
+        .unwrap();
+        let roots = [Some(left_dir.path()), Some(right_dir.path())];
+        let elsewhere = tempdir().unwrap();
+
+        apply_blueprint_results(
+            &mut rows,
+            roots,
+            &[
+                (left_dir.path().join("a.uasset"), true),
+                (right_dir.path().join("sub").join("c.uasset"), true),
+                (left_dir.path().join("b.txt"), true),
+                (left_dir.path().join("sub"), true),
+                (elsewhere.path().join("a.uasset"), true),
+            ],
+        );
+        assert_eq!(
+            blueprint_columns(&rows),
+            [
+                ("", [false, false]),
+                ("a.uasset", [true, false]),
+                ("b.txt", [false, false]),
+                ("left_only.uasset", [false, false]),
+                ("sub", [false, false]),
+                ("sub/c.uasset", [false, true]),
+            ]
+        );
+
+        apply_blueprint_results(
+            &mut rows,
+            [None, Some(right_dir.path())],
+            &[
+                (left_dir.path().join("left_only.uasset"), true),
+                (right_dir.path().join("sub").join("c.uasset"), false),
+            ],
+        );
+        assert_eq!(rows[3].blueprints, [false, false]);
+        assert_eq!(rows[5].blueprints, [false, false]);
     }
 
     #[test]
@@ -2985,6 +3162,7 @@ mod tests {
             depth: 0,
             diff_state,
             file_kinds: [None, None],
+            blueprints: [false, false],
         };
         let rows = [
             row("", true, DiffState::Different(0, 0)),

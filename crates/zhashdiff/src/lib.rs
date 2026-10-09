@@ -5,3 +5,4 @@ pub mod filter;
 pub mod fs;
 pub mod likeness;
 pub mod scan;
+pub mod uasset;
