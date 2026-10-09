@@ -10,6 +10,7 @@ pub mod tools_window;
 pub mod tree_compare;
 pub mod tree_cursor;
 pub mod tree_filter;
+pub mod tree_find;
 pub mod tree_guides;
 pub mod tree_likeness;
 pub mod tree_menu;

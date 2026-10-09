@@ -11,7 +11,16 @@ use std::{
     },
     time::{Duration, Instant},
 };
-use zcommon::{hash::HashService, kinds::KindTable, logger::LogBuffer, ui_egui::keymap::Keymap};
+use zcommon::{
+    find::{FindError, Matcher},
+    hash::HashService,
+    kinds::KindTable,
+    logger::LogBuffer,
+    ui_egui::{
+        find_popup::{FindPopupEvent, find_popup},
+        keymap::Keymap,
+    },
+};
 use zhashdiff::{
     external_diff_tool::DiffToolConfig,
     filter::PathFilter,
@@ -31,6 +40,7 @@ use crate::ui_egui::{
     tools_window::ToolsWindow,
     tree_compare::{CompareUpdate, PairLikeness, TreeCompare, patch_row_states},
     tree_filter::{DiffFilter, arrange_two_folder_rows},
+    tree_find::{FolderFind, find_mask},
     tree_sort::TreeSort,
     tree_tolerance::Tolerance,
 };
@@ -53,6 +63,9 @@ pub struct AppStateCtx {
     file_system_2_scan: SideScan,
     #[serde(skip)]
     two_folder_diff_visible_rows: Option<Vec<VisibleRowTwoFolderDiff>>,
+    /// The visible rows before find narrows them. Current only while the visible rows are set.
+    #[serde(skip)]
+    two_folder_diff_arranged_rows: Option<Vec<VisibleRowTwoFolderDiff>>,
     #[serde(skip)]
     tree_compare: TreeCompare,
     #[serde(skip)]
@@ -81,6 +94,17 @@ pub struct AppStateCtx {
     two_folder_diff_rows_tolerance: Tolerance,
     #[serde(default)]
     pub tolerance: Tolerance,
+    #[serde(skip)]
+    folder_find: FolderFind,
+    /// The last valid `folder_find`: an invalid regex keeps the filter it replaces.
+    #[serde(skip)]
+    find_applied: FolderFind,
+    #[serde(skip)]
+    find_error: Option<String>,
+    #[serde(skip)]
+    two_folder_diff_rows_find: FolderFind,
+    #[serde(skip)]
+    find_matches: Option<usize>,
 
     #[serde(skip)]
     pub active_conflict_hash: Option<String>,
@@ -114,35 +138,42 @@ impl AppStateCtx {
         {
             self.two_folder_diff_visible_rows = None;
         }
-        if self.two_folder_diff_visible_rows.is_none()
-            && (self.file_system_model_1_view.is_some() || self.file_system_model_2_view.is_some())
-        {
-            self.two_folder_diff_visible_rows = self
-                .build_rows(true)
-                .map(|rows| arrange_two_folder_rows(rows, self.diff_filter, self.tree_sort));
-            if let Some(rows) = &self.two_folder_diff_visible_rows {
-                self.tree_compare.start(
-                    rows,
-                    [
-                        self.file_system_model_1_view.as_ref(),
-                        self.file_system_model_2_view.as_ref(),
-                    ],
-                    Instant::now(),
+        if self.two_folder_diff_visible_rows.is_none() {
+            if self.file_system_model_1_view.is_some() || self.file_system_model_2_view.is_some() {
+                self.two_folder_diff_arranged_rows = self
+                    .build_rows(true)
+                    .map(|rows| arrange_two_folder_rows(rows, self.diff_filter, self.tree_sort));
+                // Before find: the compare covers the pairs find hides, so find never restarts it.
+                if let Some(rows) = &self.two_folder_diff_arranged_rows {
+                    self.tree_compare.start(
+                        rows,
+                        [
+                            self.file_system_model_1_view.as_ref(),
+                            self.file_system_model_2_view.as_ref(),
+                        ],
+                        Instant::now(),
+                    );
+                }
+                self.narrow_rows_to_find();
+                self.two_folder_diff_rows_filter = self.path_filter.clone();
+                self.two_folder_diff_rows_sort = self.tree_sort;
+                self.two_folder_diff_rows_diff_filter = self.diff_filter;
+                self.two_folder_diff_rows_tolerance = self.tolerance;
+                log::info!(
+                    "Two-folder rows rebuilt: {} rows",
+                    self.two_folder_diff_visible_rows
+                        .as_ref()
+                        .map_or(0, Vec::len)
                 );
             }
-            self.two_folder_diff_rows_filter = self.path_filter.clone();
-            self.two_folder_diff_rows_sort = self.tree_sort;
-            self.two_folder_diff_rows_diff_filter = self.diff_filter;
-            self.two_folder_diff_rows_tolerance = self.tolerance;
-            log::info!(
-                "Two-folder rows rebuilt: {} rows",
-                self.two_folder_diff_visible_rows
-                    .as_ref()
-                    .map_or(0, Vec::len)
-            );
-        } else if likeness_changed
+            return;
+        }
+        if self.two_folder_diff_rows_find != self.find_applied {
+            self.narrow_rows_to_find();
+        }
+        if likeness_changed
             && measure_likeness
-            && let Some(rows) = &self.two_folder_diff_visible_rows
+            && let Some(rows) = &self.two_folder_diff_arranged_rows
         {
             self.tree_compare.start(
                 rows,
@@ -152,6 +183,28 @@ impl AppStateCtx {
                 ],
                 Instant::now(),
             );
+        }
+    }
+
+    fn narrow_rows_to_find(&mut self) {
+        let flat = self.diff_filter.is_flat(self.tree_sort);
+        let (rows, matches) = self
+            .two_folder_diff_arranged_rows
+            .as_deref()
+            .map(|rows| narrow_to_find(rows, &self.find_applied, flat))
+            .unzip();
+        self.two_folder_diff_visible_rows = rows;
+        self.find_matches = matches.flatten();
+        self.two_folder_diff_rows_find = self.find_applied.clone();
+    }
+
+    fn apply_find(&mut self) {
+        match Matcher::new(&self.folder_find.query) {
+            Ok(_) | Err(FindError::EmptyQuery) => {
+                self.find_error = None;
+                self.find_applied = self.folder_find.clone();
+            }
+            Err(e) => self.find_error = Some(e.to_string()),
         }
     }
 
@@ -194,9 +247,10 @@ impl AppStateCtx {
             CompareUpdate::Patch => {
                 if self.two_folder_diff_visible_rows.is_some()
                     && let Some(fresh) = self.build_rows(false)
-                    && let Some(rows) = self.two_folder_diff_visible_rows.as_mut()
+                    && let Some(rows) = self.two_folder_diff_arranged_rows.as_mut()
                 {
                     patch_row_states(rows, fresh);
+                    self.narrow_rows_to_find();
                 }
             }
             CompareUpdate::Finished => self.two_folder_diff_visible_rows = None,
@@ -206,7 +260,8 @@ impl AppStateCtx {
     /// True while uasset checks are still pending.
     fn poll_blueprint_detector(&mut self) -> bool {
         let results = self.blueprint_detector.poll();
-        if let Some(rows) = self.two_folder_diff_visible_rows.as_mut()
+        if self.two_folder_diff_visible_rows.is_some()
+            && let Some(rows) = self.two_folder_diff_arranged_rows.as_mut()
             && !results.is_empty()
         {
             let root = |view: &Option<FileSystemView>| {
@@ -218,6 +273,7 @@ impl AppStateCtx {
                 root(&self.file_system_model_2_view),
             ];
             apply_blueprint_results(rows, [roots[0].as_deref(), roots[1].as_deref()], &results);
+            self.narrow_rows_to_find();
         }
         self.blueprint_detector.pending() > 0
     }
@@ -249,6 +305,25 @@ impl AppStateCtx {
             repaint,
         );
     }
+}
+
+/// The rows `find` shows and its match count; all rows and None without a query.
+fn narrow_to_find(
+    rows: &[VisibleRowTwoFolderDiff],
+    find: &FolderFind,
+    flat: bool,
+) -> (Vec<VisibleRowTwoFolderDiff>, Option<usize>) {
+    let Ok(matcher) = Matcher::new(&find.query) else {
+        return (rows.to_vec(), None);
+    };
+    let mask = find_mask(rows, &matcher, find, flat);
+    let rows = rows
+        .iter()
+        .zip(mask.hidden)
+        .filter(|(_, hidden)| !hidden)
+        .map(|(row, _)| row.clone())
+        .collect();
+    (rows, Some(mask.matches))
 }
 
 /// One background scan of a side's root. Dropping it cancels the scan.
@@ -583,6 +658,8 @@ pub struct ZApp {
     tools_window: ToolsWindow,
     #[serde(skip)]
     keybindings_window: KeybindingsWindow,
+    #[serde(skip)]
+    find_open: bool,
 }
 
 const LONG_FRAME: Duration = Duration::from_millis(200);
@@ -633,6 +710,7 @@ impl ZApp {
             diff_mode_path_diff: true,
             tools_window: ToolsWindow::default(),
             keybindings_window: KeybindingsWindow::default(),
+            find_open: false,
         }
     }
 
@@ -810,6 +888,12 @@ impl ZApp {
             app_ctx.refresh();
             ctx.request_repaint();
         }
+        if actions.contains(&FolderAction::Find) && self.diff_mode_path_diff {
+            self.find_open = true;
+        }
+        if self.find_open {
+            self.show_find(ctx, app_ctx);
+        }
         let working = app_ctx.file_system_1_scan.is_scanning()
             || app_ctx.file_system_2_scan.is_scanning()
             || app_ctx.tree_compare.is_comparing();
@@ -934,6 +1018,41 @@ impl ZApp {
                 }
             });
         });
+    }
+
+    fn show_find(&mut self, ctx: &egui::Context, app_ctx: &mut AppStateCtx) {
+        let status = app_ctx.find_matches.map(|matches| match matches {
+            0 => "No results".to_owned(),
+            1 => "1 match".to_owned(),
+            n => format!("{n} matches"),
+        });
+        let find = &mut app_ctx.folder_find;
+        let event = find_popup(
+            ctx,
+            &mut find.query,
+            app_ctx.find_error.as_deref(),
+            status.as_deref(),
+            |ui| {
+                let path = ui.checkbox(&mut find.match_path, "Match path").changed();
+                let contents = ui
+                    .checkbox(&mut find.show_contents, "Show matched folder contents")
+                    .changed();
+                path || contents
+            },
+        );
+        match event {
+            Some(FindPopupEvent::Changed) => app_ctx.apply_find(),
+            Some(FindPopupEvent::Submitted) => {
+                app_ctx.apply_find();
+                self.find_open = app_ctx.find_error.is_some();
+            }
+            Some(FindPopupEvent::Closed) => {
+                self.find_open = false;
+                // Else the app quits on the same Esc.
+                ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
+            }
+            None => {}
+        }
     }
 
     fn request_shutdown(&mut self) {
@@ -1679,6 +1798,170 @@ mod tests {
         state.tree_sort = state.tree_sort.clicked(SortKey::State);
         state.build_two_folder_diff_rows_if_stale();
         assert_eq!(row_paths(&state), ["", "z", "z/c.txt", "a.txt", "b.txt"]);
+    }
+
+    fn find_state(files: &[&str]) -> (TempDir, TempDir, AppStateCtx) {
+        let (left, right) = (tempdir().unwrap(), tempdir().unwrap());
+        for root in [left.path(), right.path()] {
+            for file in files {
+                let path = root.join(file);
+                fs::create_dir_all(path.parent().unwrap()).unwrap();
+                fs::write(path, root.to_string_lossy().as_bytes()).unwrap();
+            }
+        }
+        let state = AppStateCtx {
+            file_system_model_1_view: load_view(left.path()),
+            file_system_model_2_view: load_view(right.path()),
+            ..Default::default()
+        };
+        (left, right, state)
+    }
+
+    fn set_find(state: &mut AppStateCtx, text: &str) {
+        state.folder_find.query.text = text.to_owned();
+        state.apply_find();
+    }
+
+    const ART: [&str; 4] = [
+        "art/ui/button.png",
+        "art/ui/panel.png",
+        "src/main.rs",
+        "readme.md",
+    ];
+
+    #[test]
+    fn a_find_query_narrows_the_rows_on_the_next_update_and_counts_the_matches() {
+        let (_left, _right, mut state) = find_state(&ART);
+        state.build_two_folder_diff_rows_if_stale();
+        assert_eq!(state.find_matches, None);
+
+        set_find(&mut state, "panel");
+        state.build_two_folder_diff_rows_if_stale();
+        assert_eq!(row_paths(&state), ["", "art", "art/ui", "art/ui/panel.png"]);
+        assert_eq!(state.find_matches, Some(1));
+
+        let built = state
+            .two_folder_diff_visible_rows
+            .as_ref()
+            .unwrap()
+            .as_ptr();
+        state.build_two_folder_diff_rows_if_stale();
+        assert_eq!(
+            state
+                .two_folder_diff_visible_rows
+                .as_ref()
+                .unwrap()
+                .as_ptr(),
+            built
+        );
+
+        state.folder_find.show_contents = true;
+        set_find(&mut state, "ui");
+        state.build_two_folder_diff_rows_if_stale();
+        assert_eq!(
+            row_paths(&state),
+            ["", "art", "art/ui", "art/ui/button.png", "art/ui/panel.png"]
+        );
+
+        set_find(&mut state, "nothing");
+        state.build_two_folder_diff_rows_if_stale();
+        assert_eq!(row_paths(&state), [""]);
+        assert_eq!(state.find_matches, Some(0));
+
+        set_find(&mut state, "");
+        state.build_two_folder_diff_rows_if_stale();
+        assert_eq!(row_paths(&state).len(), 8);
+        assert_eq!(state.find_matches, None);
+    }
+
+    #[test]
+    fn find_never_reveals_a_row_the_filter_hides() {
+        let (_left, _right, mut state) = find_state(&["gen/a.obj", "keep/b.obj", "keep/c.txt"]);
+        state.path_filter = blacklist("*.obj");
+
+        set_find(&mut state, "obj");
+        state.build_two_folder_diff_rows_if_stale();
+        assert_eq!(row_paths(&state), [""]);
+        assert_eq!(state.find_matches, Some(0));
+
+        state.folder_find.show_contents = true;
+        set_find(&mut state, "keep");
+        state.build_two_folder_diff_rows_if_stale();
+        assert_eq!(row_paths(&state), ["", "keep", "keep/c.txt"]);
+    }
+
+    #[test]
+    fn an_invalid_regex_keeps_the_previous_find_and_reports_the_error() {
+        let (_left, _right, mut state) = find_state(&ART);
+        set_find(&mut state, "panel");
+        state.build_two_folder_diff_rows_if_stale();
+
+        state.folder_find.query.regex = true;
+        set_find(&mut state, "panel(");
+        state.build_two_folder_diff_rows_if_stale();
+        assert!(state.find_error.as_deref().unwrap().contains("regex"));
+        assert_eq!(row_paths(&state), ["", "art", "art/ui", "art/ui/panel.png"]);
+
+        set_find(&mut state, "^main");
+        state.build_two_folder_diff_rows_if_stale();
+        assert_eq!(state.find_error, None);
+        assert_eq!(row_paths(&state), ["", "src", "src/main.rs"]);
+    }
+
+    #[test]
+    fn a_find_change_keeps_the_running_compare_which_covers_the_hidden_pairs() {
+        let (_left, _right, mut state) = find_state(&ART);
+        set_find(&mut state, "panel");
+        state.build_two_folder_diff_rows_if_stale();
+        let (sender, _) = state.tree_compare.pause(Instant::now());
+        let queued: Vec<String> = state
+            .tree_compare
+            .queued()
+            .into_iter()
+            .map(|(rel_path, _, _)| rel_path.to_owned())
+            .collect();
+        assert_eq!(queued.len(), 4);
+
+        set_find(&mut state, "main");
+        state.build_two_folder_diff_rows_if_stale();
+        assert_eq!(row_paths(&state), ["", "src", "src/main.rs"]);
+        let result = PairResult {
+            compare: Some(PairCompare {
+                state: PairState::Different,
+                error: None,
+            }),
+            likeness: None,
+        };
+        assert!(
+            sender.send((0, result)).is_ok(),
+            "the compare was restarted"
+        );
+    }
+
+    #[test]
+    fn a_pair_compared_while_find_hides_it_shows_its_state_when_find_reveals_it() {
+        let (_left, _right, mut state) = find_state(&ART);
+        set_find(&mut state, "panel");
+        let start = Instant::now();
+        state.build_two_folder_diff_rows_if_stale();
+        let (sender, paths) = state.tree_compare.pause(start);
+        let i = paths.iter().position(|path| path == "readme.md").unwrap();
+        let result = PairResult {
+            compare: Some(PairCompare {
+                state: PairState::Different,
+                error: None,
+            }),
+            likeness: None,
+        };
+        sender.send((i, result)).unwrap();
+        state.update_compare(start + Duration::from_secs(1));
+        assert!(state.tree_compare.is_comparing());
+
+        set_find(&mut state, "readme");
+        state.build_two_folder_diff_rows_if_stale();
+        assert_eq!(row_paths(&state), ["", "readme.md"]);
+        let rows = state.two_folder_diff_visible_rows.as_ref().unwrap();
+        assert!(matches!(rows[1].diff_state, DiffState::Different(..)));
     }
 
     fn finish_scans(state: &mut AppStateCtx) {

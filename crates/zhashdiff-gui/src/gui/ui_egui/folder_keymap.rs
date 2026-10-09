@@ -18,6 +18,7 @@ pub enum FolderAction {
     PrevDiff,
     Refresh,
     OpenKeybindings,
+    Find,
 }
 
 impl Action for FolderAction {
@@ -27,6 +28,7 @@ impl Action for FolderAction {
             Self::PrevDiff,
             Self::Refresh,
             Self::OpenKeybindings,
+            Self::Find,
         ]
     }
 
@@ -36,6 +38,7 @@ impl Action for FolderAction {
             Self::PrevDiff => "prev_diff",
             Self::Refresh => "refresh",
             Self::OpenKeybindings => "open_keybindings",
+            Self::Find => "find",
         }
     }
 
@@ -45,6 +48,7 @@ impl Action for FolderAction {
             Self::PrevDiff => "Previous differing file",
             Self::Refresh => "Refresh",
             Self::OpenKeybindings => "Open Keybindings",
+            Self::Find => "Find",
         }
     }
 
@@ -76,6 +80,10 @@ impl Action for FolderAction {
             }],
             Self::OpenKeybindings => &[Shortcut {
                 key: Key::O,
+                modifiers: CTRL,
+            }],
+            Self::Find => &[Shortcut {
+                key: Key::F,
                 modifiers: CTRL,
             }],
         }
@@ -181,5 +189,25 @@ mod tests {
             [FolderAction::Refresh]
         );
         assert_eq!(FolderAction::Refresh.defaults()[0].format(), "F5");
+    }
+
+    #[test]
+    fn ctrl_f_finds_by_default_and_in_a_keymap_saved_before_find_existed() {
+        let ctrl_f = Event::Key {
+            key: Key::F,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: CTRL,
+        };
+        let mut json = serde_json::to_value(Keymap::<FolderAction>::default()).unwrap();
+        json.as_object_mut().unwrap().remove("find").unwrap();
+        let restored: Keymap<FolderAction> = serde_json::from_value(json).unwrap();
+        for keymap in [Keymap::default(), restored] {
+            assert_eq!(
+                keymap.dispatch(std::slice::from_ref(&ctrl_f), false),
+                [FolderAction::Find]
+            );
+        }
     }
 }

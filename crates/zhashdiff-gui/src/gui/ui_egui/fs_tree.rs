@@ -45,7 +45,7 @@ pub struct FileSystemView {
     pub selected: HashMap<FsNodeId, bool>,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct VisibleRowTwoFolderDiff {
     /// Relative to the roots, with `/` separators. Empty for the root row.
     pub rel_path: String,
@@ -710,7 +710,7 @@ pub fn draw_ui_two_folder_tree_with_diff(
         let target = match action {
             FolderAction::NextDiff => cursor.next_diff(&cursor_rows),
             FolderAction::PrevDiff => cursor.prev_diff(&cursor_rows),
-            FolderAction::Refresh | FolderAction::OpenKeybindings => continue,
+            FolderAction::Refresh | FolderAction::OpenKeybindings | FolderAction::Find => continue,
         };
         let Some((moved, expand)) = target else {
             log::info!("No more diffs");
