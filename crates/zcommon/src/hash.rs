@@ -38,6 +38,7 @@ pub struct HashService {
     hashes: Arc<RwLock<HashMap<PathBuf, Option<HashRepresentation>>>>,
     tx: Sender<PathBuf>,
     rx: Arc<Mutex<Receiver<PathBuf>>>,
+    queued: Arc<AtomicUsize>,
     in_progress: Arc<AtomicUsize>,
     workers: Vec<WorkerHandle>,
 }
@@ -66,6 +67,7 @@ impl HashService {
             hashes,
             tx,
             rx,
+            queued: Arc::new(AtomicUsize::new(0)),
             in_progress,
             workers: Vec::new(),
         };
@@ -77,6 +79,7 @@ impl HashService {
     fn spawn_worker(&mut self, id: usize) {
         let rx = self.rx.clone();
         let hashes = self.hashes.clone();
+        let queued = self.queued.clone();
         let in_progress = self.in_progress.clone();
         let stop_flag = Arc::new(AtomicBool::new(false));
         let thread_stop_flag = stop_flag.clone();
@@ -98,6 +101,7 @@ impl HashService {
                 match msg {
                     Ok(path) => {
                         in_progress.fetch_add(1, Ordering::SeqCst);
+                        queued.fetch_sub(1, Ordering::SeqCst);
                         let hash = hash_file_mmap(&path).ok();
                         hashes.write().unwrap().insert(path, hash);
                         in_progress.fetch_sub(1, Ordering::SeqCst);
@@ -142,13 +146,31 @@ impl HashService {
         }
     }
 
-    pub fn request(&self, path: impl AsRef<Path>) {
+    /// Returns whether `path` was queued. A known path (hashed, queued or failed) is not
+    /// queued again until it is removed, cancelled or cleared.
+    pub fn request(&self, path: impl AsRef<Path>) -> bool {
         let mut hashes = self.hashes.write().unwrap();
-        if hashes.contains_key(path.as_ref().into()) {
-            return;
+        if hashes.contains_key(path.as_ref()) {
+            return false;
         }
         hashes.insert(path.as_ref().into(), None);
-        let _ = self.tx.send(path.as_ref().into());
+        self.queued.fetch_add(1, Ordering::SeqCst);
+        self.tx
+            .send(path.as_ref().into())
+            .expect("the service holds a receiver");
+        true
+    }
+
+    /// Drops the queued paths; hashes in progress still finish.
+    pub fn cancel(&self) {
+        // hashes before rx: request() holds hashes while sending, workers never hold rx
+        // while waiting for hashes.
+        let mut hashes = self.hashes.write().unwrap();
+        let rx = self.rx.lock().unwrap();
+        while let Ok(path) = rx.try_recv() {
+            self.queued.fetch_sub(1, Ordering::SeqCst);
+            hashes.remove(&path);
+        }
     }
 
     pub fn remove(&self, path: impl AsRef<Path>) {
@@ -165,6 +187,7 @@ impl HashService {
     }
 
     pub fn clear(&self) {
+        self.cancel();
         self.hashes.write().unwrap().clear();
     }
 
@@ -177,10 +200,7 @@ impl HashService {
     }
 
     pub fn count_hash_queue(&self) -> usize {
-        let hashes = self.hashes.read().unwrap();
-        let pending = hashes.values().filter(|v| v.is_none()).count();
-        let active = self.in_progress.load(Ordering::SeqCst);
-        pending.saturating_sub(active)
+        self.queued.load(Ordering::SeqCst)
     }
 
     pub fn snapshot(&self) -> HashServiceSnapshot {
@@ -196,8 +216,9 @@ impl HashService {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs::File;
+    use std::fs::{self, File};
     use std::io::Write;
+    use std::time::Instant;
     use tempfile::tempdir;
 
     #[test]
@@ -276,6 +297,97 @@ mod tests {
         service.request(&file_path);
         service.clear();
         assert_eq!(service.snapshot().hashes.len(), 0);
+    }
+
+    fn files(dir: &Path, count: usize) -> Vec<PathBuf> {
+        (0..count)
+            .map(|i| {
+                let p = dir.join(format!("{i}.txt"));
+                fs::write(&p, format!("{i}")).unwrap();
+                p
+            })
+            .collect()
+    }
+
+    fn wait_for_hash(service: &HashService, path: &Path) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while service.get_hash(path).is_none() {
+            assert!(Instant::now() < deadline, "{} not hashed", path.display());
+            thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    #[test]
+    fn cancel_drops_the_queued_hashes() {
+        let dir = tempdir().unwrap();
+        let paths = files(dir.path(), 3);
+        let mut service = HashService::new(0);
+        for p in &paths {
+            assert!(service.request(p));
+        }
+
+        service.cancel();
+
+        assert_eq!(service.count_hash_queue(), 0);
+        assert!(service.snapshot().hashes.is_empty());
+
+        service.resize_workers(1);
+        let late = dir.path().join("late.txt");
+        fs::write(&late, "late").unwrap();
+        service.request(&late);
+        wait_for_hash(&service, &late);
+        let hashes = service.snapshot().hashes;
+        assert_eq!(hashes.keys().collect::<Vec<_>>(), [&late]);
+    }
+
+    #[test]
+    fn a_cancelled_file_can_be_requested_again() {
+        let dir = tempdir().unwrap();
+        let paths = files(dir.path(), 1);
+        let mut service = HashService::new(0);
+        service.request(&paths[0]);
+        service.cancel();
+
+        assert!(service.request(&paths[0]));
+        service.resize_workers(1);
+        wait_for_hash(&service, &paths[0]);
+    }
+
+    #[test]
+    fn clear_drops_the_queued_hashes_too() {
+        let dir = tempdir().unwrap();
+        let paths = files(dir.path(), 2);
+        let mut service = HashService::new(0);
+        for p in &paths {
+            service.request(p);
+        }
+
+        service.clear();
+        for p in &paths {
+            service.request(p);
+        }
+
+        assert_eq!(service.count_hash_queue(), 2);
+        service.resize_workers(1);
+        for p in &paths {
+            wait_for_hash(&service, p);
+        }
+        assert_eq!(service.count_hash_queue(), 0);
+        assert_eq!(service.count_active_hashes(), 0);
+    }
+
+    #[test]
+    fn a_file_that_fails_to_hash_leaves_the_queue() {
+        let dir = tempdir().unwrap();
+        let mut service = HashService::new(0);
+        service.request(dir.path().join("missing.txt"));
+        let paths = files(dir.path(), 1);
+        service.request(&paths[0]);
+
+        service.resize_workers(1);
+        wait_for_hash(&service, &paths[0]);
+
+        assert_eq!(service.count_hash_queue(), 0);
     }
 
     #[test]

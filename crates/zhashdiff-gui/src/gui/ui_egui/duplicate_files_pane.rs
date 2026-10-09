@@ -5,6 +5,7 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Weak;
+use std::time::Duration;
 
 use eframe::egui;
 use serde::Deserialize;
@@ -14,10 +15,12 @@ use zcommon::hash::HashService;
 use zcommon::ui_egui::common::show_custom_popup;
 use zcommon::ui_egui::common::show_custom_popup_with_color;
 use zhashdiff::conflict::ResolutionSummary;
+use zhashdiff::conflict::SizedFile;
 use zhashdiff::conflict::execute_resolution;
 use zhashdiff::conflict::group_duplicates;
 use zhashdiff::conflict::plan_resolution;
 use zhashdiff::conflict::recycle;
+use zhashdiff::conflict::size_collisions;
 use zhashdiff::external_diff_tool::DiffToolConfig;
 use zhashdiff::filter::PathFilter;
 use zhashdiff::fs::FileSystemModel;
@@ -48,8 +51,8 @@ struct VisibleFileHashes {
     unhashed: usize,
 }
 
-/// Visible files of `view` paired with their hash; visible files without a hash yet
-/// are only counted.
+/// Visible files that can have a duplicate paired with their hash; those without a hash
+/// yet are only counted.
 fn visible_file_hashes(
     view: &FileSystemView,
     hidden: &[bool],
@@ -60,17 +63,7 @@ fn visible_file_hashes(
         unhashed: 0,
     };
 
-    for node_id in view.file_system.iter_files() {
-        if hidden[node_id] {
-            continue;
-        }
-        let path = view
-            .file_system
-            .get_node(node_id)
-            .expect("iter_files yields valid node ids")
-            .as_path()
-            .as_ref()
-            .to_path_buf();
+    for path in files_to_hash(view, hidden) {
         match hashes.get(&path) {
             Some(Some(hash)) => visible.hashed.push((path, hash.clone())),
             _ => visible.unhashed += 1,
@@ -80,20 +73,29 @@ fn visible_file_hashes(
     visible
 }
 
-/// The files "Request All Hash" queues: every file the filter leaves visible.
 fn files_to_hash(view: &FileSystemView, hidden: &[bool]) -> Vec<PathBuf> {
-    view.file_system
+    let files: Vec<SizedFile> = view
+        .file_system
         .iter_files()
-        .filter(|&node_id| !hidden[node_id])
         .map(|node_id| {
-            view.file_system
+            let node = view
+                .file_system
                 .get_node(node_id)
-                .expect("iter_files yields valid node ids")
-                .as_path()
-                .as_ref()
-                .to_path_buf()
+                .expect("iter_files yields valid node ids");
+            SizedFile {
+                path: node.as_path().as_ref().to_path_buf(),
+                size: node.size,
+                hidden: hidden[node_id],
+            }
         })
-        .collect()
+        .collect();
+    size_collisions(&files)
+}
+
+#[derive(Debug, PartialEq)]
+struct HashProgress {
+    hashed: usize,
+    queued: usize,
 }
 
 fn view_root(view: Option<&FileSystemView>) -> Option<PathBuf> {
@@ -179,6 +181,11 @@ pub struct DuplicateFilesPane {
     cursor_root: Option<PathBuf>,
     #[serde(skip)]
     tree_cache: Option<TreeRows>,
+    #[serde(skip)]
+    hashed_for: Option<(Weak<FileSystemModel>, PathFilter)>,
+    /// Files requested since hashing was last idle.
+    #[serde(skip)]
+    hash_batch: usize,
 }
 
 struct TreeRows {
@@ -224,7 +231,54 @@ impl DuplicateFilesPane {
             cursor: TreeCursor::default(),
             cursor_root: None,
             tree_cache: None,
+            hashed_for: None,
+            hash_batch: 0,
         }
+    }
+
+    /// Requests the size collisions once per scanned model and filter, so a Cancel holds
+    /// until Folder 1 is rescanned or the filter changes.
+    fn hash_size_collisions(&mut self, ctx: &mut DuplicateFilesPaneCtx) {
+        let Some(view) = ctx.path_diff_view.file_system_1_view.as_ref() else {
+            return;
+        };
+        let model = Arc::downgrade(&view.file_system);
+        let requested = self
+            .hashed_for
+            .as_ref()
+            .is_some_and(|(hashed, filter)| hashed.ptr_eq(&model) && filter == ctx.path_filter);
+        if requested {
+            return;
+        }
+        self.hashed_for = Some((model, ctx.path_filter.clone()));
+
+        if self.hash_progress(ctx.hash_service).is_none() {
+            self.hash_batch = 0;
+        }
+        let files = files_to_hash(view, &tree_hidden(view, ctx.path_filter));
+        self.hash_batch += files
+            .iter()
+            .filter(|path| ctx.hash_service.request(path))
+            .count();
+    }
+
+    fn hash_progress(&self, hash_service: &HashService) -> Option<HashProgress> {
+        let queued = hash_service.count_hash_queue() + hash_service.count_active_hashes();
+        (queued > 0).then(|| HashProgress {
+            hashed: self.hash_batch.saturating_sub(queued),
+            queued,
+        })
+    }
+
+    fn cancel_hashing(&mut self, ctx: &mut DuplicateFilesPaneCtx) {
+        ctx.hash_service.cancel();
+        self.hash_batch = ctx.hash_service.count_active_hashes();
+    }
+
+    fn clear_hashes(&mut self, ctx: &mut DuplicateFilesPaneCtx) {
+        self.cancel_hashing(ctx);
+        ctx.hash_service.clear();
+        self.hashed_for = None;
     }
 
     /// Rebuilt when Folder 1 is rescanned or replaced, or the filter or sort changed.
@@ -354,6 +408,7 @@ impl DuplicateFilesPane {
     ) -> egui_tiles::UiResponse {
         self.forget_stale_conflicts(ctx);
         self.forget_cursor_of_other_root(ctx.path_diff_view.file_system_1_view.as_ref());
+        self.hash_size_collisions(ctx);
 
         ui.vertical(|ui| {
             self.ui_popups(ui, ctx);
@@ -382,24 +437,15 @@ impl DuplicateFilesPane {
                     }
                 }
 
-                if ui.button("Request All Hash").clicked() {
-                    if let Some(file_system_view) = ctx.path_diff_view.file_system_1_view {
-                        let hidden = tree_hidden(file_system_view, ctx.path_filter);
-                        for path in files_to_hash(file_system_view, &hidden) {
-                            ctx.hash_service.request(path);
-                        }
-                    }
-                }
-
                 if ui.button("Clear Hashes").clicked() {
-                    ctx.hash_service.clear();
+                    self.clear_hashes(ctx);
                 }
 
                 ui.label("Concurrent Hashes");
                 let mut slider_concurrent_hashes = ctx.hash_service.count_threads();
                 let slider_response = ui.add(egui::Slider::new(
                     &mut slider_concurrent_hashes,
-                    0..=MAX_CONCURRENT_HASHES,
+                    1..=MAX_CONCURRENT_HASHES,
                 ));
                 if slider_response.changed() {
                     ctx.hash_service.resize_workers(slider_concurrent_hashes);
@@ -417,6 +463,25 @@ impl DuplicateFilesPane {
                     }
                 }
             });
+
+            if let Some(progress) = self.hash_progress(ctx.hash_service) {
+                ui.horizontal(|ui| {
+                    let total = progress.hashed + progress.queued;
+                    ui.add(
+                        egui::ProgressBar::new(progress.hashed as f32 / total as f32)
+                            .desired_width(300.0)
+                            .text(format!(
+                                "{} hashed, {} queued",
+                                progress.hashed, progress.queued
+                            )),
+                    );
+                    if ui.button("Cancel").clicked() {
+                        self.cancel_hashing(ctx);
+                    }
+                });
+                // Workers don't wake the ui.
+                ui.ctx().request_repaint_after(Duration::from_millis(100));
+            }
         });
 
         ui.separator();
@@ -743,6 +808,7 @@ mod tests {
     use std::fs;
     use std::io;
     use std::path::Path;
+    use std::time::Instant;
     use tempfile::{TempDir, tempdir};
     use zcommon::hash::hash_file_mmap;
     use zhashdiff::filter::PatternList;
@@ -891,7 +957,7 @@ mod tests {
     fn diff_reports_visible_files_that_are_not_hashed() {
         let (dir, view) = duplicate_tree();
         let root = dir.path();
-        // sub/c.txt is queued but not hashed, d.txt and e.txt were never requested.
+        // sub/c.txt is queued but not hashed, e.txt was never requested, d.txt has a unique size.
         let mut hashes = hashes_of(&[&root.join("a.txt"), &root.join("b.txt")]);
         hashes.insert(root.join("sub").join("c.txt"), None);
         let mut state = PaneState::new(view);
@@ -902,7 +968,7 @@ mod tests {
             .expect("unhashed visible files are reported");
 
         assert!(
-            notice.contains(" 3 "),
+            notice.contains(" 2 "),
             "notice doesn't name the count: {notice}"
         );
         assert!(pane.open_diff_popup);
@@ -1185,28 +1251,130 @@ mod tests {
         assert_eq!(pane.cursor, TreeCursor::default());
     }
 
+    fn requested(state: &PaneState) -> Vec<PathBuf> {
+        let mut paths: Vec<_> = state.hash_service.snapshot().hashes.into_keys().collect();
+        paths.sort();
+        paths
+    }
+
     #[test]
-    fn request_all_hash_queues_only_the_files_the_filter_leaves_visible() {
+    fn only_visible_files_sharing_a_size_are_requested_from_the_hash_service() {
         let (dir, _) = duplicate_tree();
         let root = dir.path();
-        fs::write(root.join("notes.md"), "md").unwrap();
+        fs::write(root.join("f.txt"), "diff").unwrap();
+        fs::write(root.join("notes.md"), "same").unwrap();
         let view = FileSystemView::new(Arc::new(FileSystemModel::new(root).unwrap()));
-        let filter = PathFilter {
+        let mut state = PaneState::new(view);
+        state.path_filter = PathFilter {
             blacklist: PatternList::new("b.txt"),
             whitelist: PatternList::new("*.txt"),
         };
+        let mut pane = DuplicateFilesPane::new(None);
 
-        let mut queued = files_to_hash(&view, &tree_hidden(&view, &filter));
-        queued.sort();
+        state.with_ctx(|ctx| pane.hash_size_collisions(ctx));
 
         assert_eq!(
-            queued,
+            requested(&state),
             [
                 root.join("a.txt"),
-                root.join("d.txt"),
                 root.join("e.txt"),
+                root.join("f.txt"),
                 root.join("sub").join("c.txt"),
             ]
+        );
+    }
+
+    #[test]
+    fn cancel_drops_the_queued_hashes_and_does_not_restart_them() {
+        let (_dir, view) = duplicate_tree();
+        let mut state = PaneState::new(view);
+        let mut pane = DuplicateFilesPane::new(None);
+        state.with_ctx(|ctx| pane.hash_size_collisions(ctx));
+        assert_eq!(state.hash_service.count_hash_queue(), 4);
+
+        state.with_ctx(|ctx| pane.cancel_hashing(ctx));
+        state.with_ctx(|ctx| pane.hash_size_collisions(ctx));
+
+        assert_eq!(state.hash_service.count_hash_queue(), 0);
+        assert!(requested(&state).is_empty());
+        assert_eq!(pane.hash_progress(&state.hash_service), None);
+    }
+
+    #[test]
+    fn clear_hashes_requests_the_collisions_again() {
+        let (_dir, view) = duplicate_tree();
+        let mut state = PaneState::new(view);
+        let mut pane = DuplicateFilesPane::new(None);
+        state.with_ctx(|ctx| pane.hash_size_collisions(ctx));
+
+        state.with_ctx(|ctx| pane.clear_hashes(ctx));
+        assert_eq!(state.hash_service.count_hash_queue(), 0);
+        state.with_ctx(|ctx| pane.hash_size_collisions(ctx));
+
+        assert_eq!(state.hash_service.count_hash_queue(), 4);
+        assert_eq!(requested(&state).len(), 4);
+    }
+
+    #[test]
+    fn a_rescan_or_a_filter_change_requests_the_new_collisions() {
+        let (dir, view) = duplicate_tree();
+        let root = dir.path();
+        let mut state = PaneState::new(view);
+        state.path_filter = blacklist("b.txt");
+        let mut pane = DuplicateFilesPane::new(None);
+        state.with_ctx(|ctx| pane.hash_size_collisions(ctx));
+        assert_eq!(requested(&state).len(), 3);
+
+        fs::write(root.join("g.txt"), "xx").unwrap();
+        fs::write(root.join("h.txt"), "yy").unwrap();
+        state.scan_1.request_rescan();
+        state.finish_rescan();
+        state.with_ctx(|ctx| pane.hash_size_collisions(ctx));
+        assert_eq!(requested(&state).len(), 5);
+        assert!(requested(&state).contains(&root.join("g.txt")));
+
+        state.path_filter = PathFilter::default();
+        state.with_ctx(|ctx| pane.hash_size_collisions(ctx));
+        assert_eq!(requested(&state).len(), 6);
+        assert!(requested(&state).contains(&root.join("b.txt")));
+    }
+
+    #[test]
+    fn the_progress_counts_the_files_hashed_and_queued_since_hashing_was_idle() {
+        let (dir, view) = duplicate_tree();
+        let root = dir.path();
+        let mut state = PaneState::new(view);
+        let mut pane = DuplicateFilesPane::new(None);
+        assert_eq!(pane.hash_progress(&state.hash_service), None);
+
+        state.with_ctx(|ctx| pane.hash_size_collisions(ctx));
+        assert_eq!(
+            pane.hash_progress(&state.hash_service),
+            Some(HashProgress {
+                hashed: 0,
+                queued: 4
+            })
+        );
+
+        state.hash_service.resize_workers(1);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while pane.hash_progress(&state.hash_service).is_some() {
+            assert!(Instant::now() < deadline, "hashing did not finish");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        state.hash_service.resize_workers(0);
+
+        fs::write(root.join("g.txt"), "xx").unwrap();
+        fs::write(root.join("h.txt"), "yy").unwrap();
+        state.scan_1.request_rescan();
+        state.finish_rescan();
+        state.with_ctx(|ctx| pane.hash_size_collisions(ctx));
+        assert_eq!(
+            pane.hash_progress(&state.hash_service),
+            Some(HashProgress {
+                hashed: 0,
+                queued: 2
+            })
         );
     }
 
