@@ -11,16 +11,12 @@ use std::{
 };
 
 use eframe::egui::{self, Color32, FontId, text::LayoutJob};
-use zcommon::ui_egui::table::SplitColumn;
+use zcommon::ui_egui::{style_window::role_color, table::SplitColumn};
 use zdiff::hex::{HexDiff, HexSide, hex_diff};
 
-use crate::{diff_ctx::ScrollSpan, file::LoadedFile};
+use crate::{diff_ctx::ScrollSpan, file::LoadedFile, ui_egui::file_role::FileRole};
 
 pub const HEX_ROW_BYTES: usize = 16;
-
-const DIFFERENT_BG: Color32 = Color32::from_rgba_premultiplied(110, 30, 30, 110);
-const ONLY_HERE_BG: Color32 = Color32::from_rgba_premultiplied(30, 90, 30, 110);
-const HIGHLIGHT: Color32 = Color32::from_rgb(255, 210, 60);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HexByteState {
@@ -347,10 +343,10 @@ pub fn cell(ui: &mut egui::Ui, ctx: &HexViewCtx, row_index: usize, column: Split
             } else {
                 " "
             };
+            let color = role_color(ui.ctx(), FileRole::LineNumber);
             ui.centered_and_justified(|ui| {
                 ui.add(
-                    egui::Label::new(egui::RichText::new(marker).color(Color32::DARK_GRAY))
-                        .selectable(false),
+                    egui::Label::new(egui::RichText::new(marker).color(color)).selectable(false),
                 );
             });
         }
@@ -370,9 +366,23 @@ fn side_row_label(
     highlight: Option<&Range<usize>>,
 ) {
     let font_id = egui::TextStyle::Monospace.resolve(ui.style());
-    let text_color = ui.style().visuals.text_color();
-    let job = side_row_job(bytes, states, row, highlight, font_id, text_color);
+    let colors = HexColors {
+        text: ui.style().visuals.text_color(),
+        offset: role_color(ui.ctx(), FileRole::LineNumber),
+        different: role_color(ui.ctx(), FileRole::HexDifferent),
+        only_here: role_color(ui.ctx(), FileRole::HexOnlyHere),
+        highlight: role_color(ui.ctx(), FileRole::HexGoto),
+    };
+    let job = side_row_job(bytes, states, row, highlight, font_id, &colors);
     ui.add(egui::Label::new(job).selectable(false).extend());
+}
+
+struct HexColors {
+    text: Color32,
+    offset: Color32,
+    different: Color32,
+    only_here: Color32,
+    highlight: Color32,
 }
 
 fn side_row_job(
@@ -381,8 +391,9 @@ fn side_row_job(
     row: usize,
     highlight: Option<&Range<usize>>,
     font_id: FontId,
-    text_color: Color32,
+    colors: &HexColors,
 ) -> LayoutJob {
+    let text_color = colors.text;
     let row_start = row * HEX_ROW_BYTES;
     let mut job = LayoutJob::default();
     let append = |job: &mut LayoutJob, text: &str, color: Color32, background: Color32| {
@@ -398,8 +409,8 @@ fn side_row_job(
         );
     };
     let background = |state: HexByteState| match state {
-        HexByteState::Different => DIFFERENT_BG,
-        HexByteState::OnlyHere => ONLY_HERE_BG,
+        HexByteState::Different => colors.different,
+        HexByteState::OnlyHere => colors.only_here,
         HexByteState::Missing | HexByteState::Same => Color32::TRANSPARENT,
     };
     // The goto or navigation target is recolored and underlined, so the diff background stays.
@@ -412,10 +423,10 @@ fn side_row_job(
             0.0,
             egui::TextFormat {
                 font_id: font_id.clone(),
-                color: if marked { HIGHLIGHT } else { text_color },
+                color: if marked { colors.highlight } else { text_color },
                 background: background(state),
                 underline: if marked {
-                    egui::Stroke::new(1.0, HIGHLIGHT)
+                    egui::Stroke::new(1.0, colors.highlight)
                 } else {
                     egui::Stroke::NONE
                 },
@@ -427,7 +438,7 @@ fn side_row_job(
     append(
         &mut job,
         &format!("{row_start:08X}  "),
-        Color32::from_gray(100),
+        colors.offset,
         Color32::TRANSPARENT,
     );
     for (i, &state) in states.iter().enumerate() {
@@ -541,6 +552,41 @@ mod tests {
         processor.clear_highlight();
         assert_eq!(processor.highlight, None);
         assert_eq!(processor.scroll_to_row(0), None);
+    }
+
+    #[test]
+    fn row_colors_come_from_the_given_colors() {
+        let colors = HexColors {
+            text: Color32::from_rgb(1, 1, 1),
+            offset: Color32::from_rgb(2, 2, 2),
+            different: Color32::from_rgb(3, 3, 3),
+            only_here: Color32::from_rgb(4, 4, 4),
+            highlight: Color32::from_rgb(5, 5, 5),
+        };
+        let mut states = [HexByteState::Same; HEX_ROW_BYTES];
+        states[0] = HexByteState::Different;
+        states[1] = HexByteState::OnlyHere;
+        let bytes = [0u8; HEX_ROW_BYTES];
+        let job = side_row_job(
+            &bytes,
+            &states,
+            0,
+            Some(&(2..3)),
+            FontId::default(),
+            &colors,
+        );
+
+        let format = |section: usize| &job.sections[section].format;
+        assert_eq!(format(0).color, colors.offset);
+        assert_eq!(format(1).background, colors.different);
+        assert_eq!(format(1).color, colors.text);
+        assert_eq!(format(3).background, colors.only_here);
+        assert_eq!(format(5).background, Color32::TRANSPARENT);
+        assert_eq!(format(5).color, colors.highlight);
+        assert_eq!(
+            format(5).underline,
+            egui::Stroke::new(1.0, colors.highlight)
+        );
     }
 
     #[test]

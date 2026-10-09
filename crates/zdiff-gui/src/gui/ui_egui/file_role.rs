@@ -15,6 +15,10 @@ pub enum FileRole {
     VoidRow,
     TableBackground,
     LineNumber,
+    HexDifferent,
+    HexOnlyHere,
+    HexGoto,
+    ImageDiff,
 }
 
 impl Role for FileRole {
@@ -33,6 +37,10 @@ impl Role for FileRole {
             FileRole::VoidRow,
             FileRole::TableBackground,
             FileRole::LineNumber,
+            FileRole::HexDifferent,
+            FileRole::HexOnlyHere,
+            FileRole::HexGoto,
+            FileRole::ImageDiff,
         ]
     }
 
@@ -51,6 +59,10 @@ impl Role for FileRole {
             FileRole::VoidRow => "file_void_row",
             FileRole::TableBackground => "file_table_background",
             FileRole::LineNumber => "file_line_number",
+            FileRole::HexDifferent => "file_hex_different",
+            FileRole::HexOnlyHere => "file_hex_only_here",
+            FileRole::HexGoto => "file_hex_goto",
+            FileRole::ImageDiff => "file_image_diff",
         }
     }
 
@@ -69,6 +81,10 @@ impl Role for FileRole {
             FileRole::VoidRow => "Void row",
             FileRole::TableBackground => "Table background",
             FileRole::LineNumber => "Line numbers",
+            FileRole::HexDifferent => "Hex different bytes",
+            FileRole::HexOnlyHere => "Hex bytes on one side only",
+            FileRole::HexGoto => "Hex goto highlight",
+            FileRole::ImageDiff => "Image difference",
         }
     }
 
@@ -88,6 +104,10 @@ impl Role for FileRole {
             FileRole::VoidRow => Rgba8([30, 30, 30, 255]),
             FileRole::TableBackground => Rgba8([15, 15, 15, 255]),
             FileRole::LineNumber => Rgba8([96, 96, 96, 255]),
+            FileRole::HexDifferent => Rgba8([255, 70, 70, 110]),
+            FileRole::HexOnlyHere => Rgba8([70, 209, 70, 110]),
+            FileRole::HexGoto => Rgba8([255, 210, 60, 255]),
+            FileRole::ImageDiff => Rgba8([255, 0, 255, 255]),
         }
     }
 
@@ -106,6 +126,10 @@ impl Role for FileRole {
             FileRole::VoidRow => Rgba8([225, 225, 225, 255]),
             FileRole::TableBackground => Rgba8([248, 248, 248, 255]),
             FileRole::LineNumber => Rgba8([150, 150, 150, 255]),
+            FileRole::HexDifferent => Rgba8([255, 80, 80, 80]),
+            FileRole::HexOnlyHere => Rgba8([0, 190, 0, 70]),
+            FileRole::HexGoto => Rgba8([190, 120, 0, 255]),
+            FileRole::ImageDiff => Rgba8([255, 0, 255, 255]),
         }
     }
 
@@ -120,6 +144,8 @@ impl Role for FileRole {
                 | FileRole::Find
                 | FileRole::FindCurrent
                 | FileRole::Occurrence
+                | FileRole::HexDifferent
+                | FileRole::HexOnlyHere
         )
     }
 }

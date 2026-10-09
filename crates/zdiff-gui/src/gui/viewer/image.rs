@@ -15,10 +15,11 @@ use eframe::egui::{
     self, Color32, ColorImage, Pos2, Rect, Sense, Stroke, StrokeKind, TextureFilter, TextureHandle,
     TextureOptions, Vec2, pos2, vec2,
 };
+use zcommon::ui_egui::style_window::role_color;
 use zdiff::pixel::{PixelDiff, PixelStats, RgbaBuffer, pixel_diff};
 
 use super::{hex::is_same_side, path_extension};
-use crate::file::LoadedFile;
+use crate::{file::LoadedFile, ui_egui::file_role::FileRole};
 
 /// A decoded image. Animated formats keep their first frame.
 pub struct DecodedImage {
@@ -195,16 +196,14 @@ fn overlay_tint(opacity: f32) -> Color32 {
     Color32::WHITE.gamma_multiply(opacity.clamp(0.0, 1.0))
 }
 
-/// Changed pixels in the difference map.
-const DIFF_COLOR: Color32 = Color32::from_rgb(255, 0, 255);
-
+// White so the role color tints it when painted; a palette change needs no new texture.
 fn mask_image(diff: &PixelDiff) -> ColorImage {
     let pixels = diff
         .mask
         .iter()
         .map(|&changed| {
             if changed {
-                DIFF_COLOR
+                Color32::WHITE
             } else {
                 Color32::TRANSPARENT
             }
@@ -596,6 +595,7 @@ pub fn show(ui: &mut egui::Ui, processor: &mut ImageDiffProcessor, left_width: f
         }
         _ => None,
     };
+    let diff_color = role_color(ui.ctx(), FileRole::ImageDiff);
     let text_color = ui.visuals().text_color();
     let font = egui::TextStyle::Monospace.resolve(ui.style());
     for (index, side) in processor.sides.iter_mut().enumerate() {
@@ -678,7 +678,7 @@ pub fn show(ui: &mut egui::Ui, processor: &mut ImageDiffProcessor, left_width: f
                         *mask,
                         Rect::from_min_size(origin, *canvas * view.zoom),
                         uv,
-                        Color32::WHITE,
+                        diff_color,
                     );
                     if let Some(bounds) = bounds {
                         let corner = |x: u32, y: u32| origin + vec2(x as f32, y as f32) * view.zoom;
@@ -694,7 +694,7 @@ pub fn show(ui: &mut egui::Ui, processor: &mut ImageDiffProcessor, left_width: f
                         painter.rect_stroke(
                             changed.expand(2.0),
                             0.0,
-                            Stroke::new(1.5, DIFF_COLOR),
+                            Stroke::new(1.5, diff_color),
                             StrokeKind::Outside,
                         );
                     }
@@ -944,7 +944,7 @@ mod tests {
         };
         let mask = mask_image(&diff);
         assert_eq!(mask.size, [2, 1]);
-        assert_eq!(mask.pixels, vec![Color32::TRANSPARENT, DIFF_COLOR]);
+        assert_eq!(mask.pixels, vec![Color32::TRANSPARENT, Color32::WHITE]);
     }
 
     #[test]
