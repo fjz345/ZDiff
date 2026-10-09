@@ -51,8 +51,9 @@ use crate::{
     },
     viewer::{
         FfmpegSetting, LoadedSide, SharedKinds, ViewerKind, ViewerOverride,
+        audio::{AudioDiffProcessor, AudioSettings},
         audio_meta::AudioMetaProcessor,
-        conflict_count, ffmpeg_fallback,
+        conflict_count, decode_fallback, ffmpeg_fallback,
         hex::{HexDiffProcessor, parse_hex_offset},
         image::ImageDiffProcessor,
         image_decode_fallback, resolve_viewer, ui_extension_map, ui_ffmpeg_setting,
@@ -71,6 +72,10 @@ pub struct AppStateCtx {
     pub hex_processor: HexDiffProcessor,
     #[cfg_attr(feature = "serde", serde(skip), serde(default))]
     pub image_processor: ImageDiffProcessor,
+    #[cfg_attr(feature = "serde", serde(skip), serde(default))]
+    pub audio_processor: AudioDiffProcessor,
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub audio_settings: AudioSettings,
     #[cfg_attr(feature = "serde", serde(skip), serde(default))]
     pub audio_meta: AudioMetaProcessor,
     /// Resolved each frame from the loaded files; `None` while neither side is loaded.
@@ -151,6 +156,8 @@ impl Default for AppStateCtx {
             diff_processor: Default::default(),
             hex_processor: Default::default(),
             image_processor: Default::default(),
+            audio_processor: Default::default(),
+            audio_settings: Default::default(),
             audio_meta: Default::default(),
             viewer_kind: None,
             viewer_override: Default::default(),
@@ -857,6 +864,8 @@ impl<'a> ZApp {
                 diff_processor,
                 hex_processor,
                 image_processor,
+                audio_processor,
+                audio_settings,
                 audio_meta,
                 viewer_kind,
                 viewer_override,
@@ -1035,6 +1044,8 @@ impl<'a> ZApp {
                     block_toggle_request: &mut block_toggle_request,
                     hex_view: is_hex.then(|| hex_processor.view_ctx()),
                     image_view: is_image.then_some(image_processor),
+                    audio_view: (media_view == Some(ViewerKind::Audio))
+                        .then_some((audio_processor, audio_settings)),
                     media_view,
                     audio_meta: (media_view == Some(ViewerKind::Audio)).then_some(audio_meta),
                     viewer_override: &mut viewer_override.kind,
@@ -1623,6 +1634,20 @@ impl eframe::App for ZApp {
                     }
                     _ => r,
                 });
+                if resolution.as_ref().map(|r| r.kind) == Some(ViewerKind::Audio)
+                    && let Ok(ffmpeg) = state.ffmpeg.lookup()
+                {
+                    state
+                        .audio_processor
+                        .request(ffmpeg, loaded_1.clone(), loaded_2.clone());
+                } else {
+                    // Kills running decodes and drops the old pair's samples.
+                    state.audio_processor.clear();
+                }
+                state.audio_processor.poll();
+                let resolution = resolution.map(|r| {
+                    decode_fallback(r, ViewerKind::Audio, &state.audio_processor.failures())
+                });
                 // Resolved every frame, so only a changed reason is logged.
                 let fallback = resolution.as_ref().and_then(|r| r.fallback.clone());
                 if fallback != state.viewer_fallback {
@@ -1927,6 +1952,7 @@ fn diff_against_local_file(
 #[cfg(all(test, feature = "serde"))]
 mod tests {
     use super::*;
+    use crate::viewer::audio::AudioMode;
     use zdiff::ignore::IgnorePatterns;
 
     #[test]
@@ -1975,6 +2001,19 @@ mod tests {
         json.as_object_mut().unwrap().remove("ffmpeg");
         let older: AppStateCtx = serde_json::from_value(json).unwrap();
         assert_eq!(older.ffmpeg.path, "");
+    }
+
+    #[test]
+    fn the_audio_view_mode_is_saved_and_older_saves_have_lanes() {
+        let mut ctx = AppStateCtx::default();
+        ctx.audio_settings.mode = AudioMode::Overlay;
+        let mut json = serde_json::to_value(&ctx).unwrap();
+        let restored: AppStateCtx = serde_json::from_value(json.clone()).unwrap();
+        assert_eq!(restored.audio_settings.mode, AudioMode::Overlay);
+
+        json.as_object_mut().unwrap().remove("audio_settings");
+        let older: AppStateCtx = serde_json::from_value(json).unwrap();
+        assert_eq!(older.audio_settings.mode, AudioMode::Lanes);
     }
 
     #[test]

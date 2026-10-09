@@ -18,6 +18,7 @@ use crate::{
     },
     viewer::{
         ViewerKind,
+        audio::{self, AudioDiffProcessor, AudioSettings},
         audio_meta::{self, AudioMetaProcessor},
         hex::{self, HexViewCtx},
         image::{self, ImageDiffProcessor},
@@ -107,6 +108,7 @@ pub struct FileDiffPaneCtx<'a> {
     pub hex_view: Option<HexViewCtx<'a>>,
     /// Set when the pair resolved to the Image viewer; the images replace the table rows.
     pub image_view: Option<&'a mut ImageDiffProcessor>,
+    pub audio_view: Option<(&'a mut AudioDiffProcessor, &'a mut AudioSettings)>,
     pub media_view: Option<ViewerKind>,
     pub audio_meta: Option<&'a mut AudioMetaProcessor>,
     /// The toolbar's viewer switch for the current pair; `None` is Auto.
@@ -996,7 +998,9 @@ impl FileDiffPane {
                             {
                                 image::show(ui, image_view, left_width);
                             }
-                            if let Some(kind) = ctx.media_view {
+                            if let Some((processor, settings)) = ctx.audio_view.as_mut() {
+                                audio::show(ui, processor, settings);
+                            } else if let Some(kind) = ctx.media_view {
                                 media_placeholder(
                                     ui,
                                     kind,

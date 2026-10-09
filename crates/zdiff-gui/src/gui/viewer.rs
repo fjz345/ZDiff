@@ -10,6 +10,7 @@ use zcommon::ffmpeg::{FfmpegNotFound, FfmpegPaths, find_ffmpeg};
 use zcommon::kinds::{FileKind, KindTable, normalize_extension};
 use zdiff::universal_path::UniversalPath;
 
+pub mod audio;
 pub mod audio_meta;
 pub mod hex;
 pub mod image;
@@ -293,7 +294,16 @@ pub fn image_decode_fallback(
     resolution: ViewerResolution,
     failures: &[String],
 ) -> ViewerResolution {
-    if resolution.kind != ViewerKind::Image || failures.is_empty() {
+    decode_fallback(resolution, ViewerKind::Image, failures)
+}
+
+/// `failures` are from the decoder of viewer `decoded`; they apply to a pair resolved to it.
+pub fn decode_fallback(
+    resolution: ViewerResolution,
+    decoded: ViewerKind,
+    failures: &[String],
+) -> ViewerResolution {
+    if resolution.kind != decoded || failures.is_empty() {
         return resolution;
     }
     let mut reasons: Vec<String> = resolution.fallback.into_iter().collect();
@@ -813,6 +823,23 @@ mod tests {
         assert_eq!(
             image_decode_fallback(hex.clone(), &["stale".to_string()]),
             hex
+        );
+    }
+
+    #[test]
+    fn a_failed_audio_decode_falls_back_to_hex_with_a_reason() {
+        let audio = ViewerResolution {
+            kind: ViewerKind::Audio,
+            fallback: None,
+        };
+        let failure = ["a.wav can't be decoded as audio: bad".to_string()];
+        let resolution = decode_fallback(audio.clone(), ViewerKind::Audio, &failure);
+        assert_eq!(resolution.kind, ViewerKind::Hex);
+        assert!(resolution.fallback.unwrap().contains(&failure[0]));
+
+        assert_eq!(
+            decode_fallback(audio.clone(), ViewerKind::Image, &failure),
+            audio
         );
     }
 
