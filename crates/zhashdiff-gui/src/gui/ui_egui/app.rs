@@ -1,6 +1,11 @@
 use eframe::egui::{self, Layout, PointerButton};
 use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, path::PathBuf, sync::Arc};
+use std::{
+    collections::HashMap,
+    path::PathBuf,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 use zcommon::{hash::HashService, kinds::KindTable, logger::LogBuffer};
 use zhashdiff::{
     comparison::{PathComparissonMethod, compare_paths},
@@ -89,6 +94,12 @@ impl AppStateCtx {
             self.two_folder_diff_rows_filter = self.path_filter.clone();
             self.two_folder_diff_rows_sort = self.tree_sort;
             self.two_folder_diff_rows_diff_filter = self.diff_filter;
+            log::info!(
+                "Two-folder rows rebuilt: {} rows",
+                self.two_folder_diff_visible_rows
+                    .as_ref()
+                    .map_or(0, Vec::len)
+            );
         }
     }
 }
@@ -124,6 +135,8 @@ pub struct ZApp {
     #[serde(skip)]
     tools_window: ToolsWindow,
 }
+
+const LONG_FRAME: Duration = Duration::from_millis(200);
 
 fn default_zoom() -> f32 {
     1.0
@@ -473,6 +486,7 @@ impl eframe::App for ZApp {
                 AppState::Idle(state_ctx)
             }
             AppState::Idle(mut state) => {
+                let frame_start = Instant::now();
                 self.sync_zoom(ctx);
                 if self.is_path_diff() != self.diff_mode_path_diff {
                     if self.is_path_diff() {
@@ -544,6 +558,10 @@ impl eframe::App for ZApp {
                 self.ui(ctx, frame, &mut state);
 
                 self.process_ctx_inputs(ctx, frame);
+                let frame_time = frame_start.elapsed();
+                if frame_time > LONG_FRAME {
+                    log::warn!("UI frame took {} ms", frame_time.as_millis());
+                }
                 AppState::Idle(state)
             }
             AppState::Exit() => {
