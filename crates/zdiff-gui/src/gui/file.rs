@@ -7,7 +7,7 @@ use zdiff::cached_file::CachedFile;
 use zdiff::lexer::{LEXER_MODE_DEFAULT, RawToken};
 use zdiff::universal_path::{DepotRev, GitRev, UniversalPath};
 
-use crate::p4::P4Command;
+use crate::p4::{P4Command, P4Runner, print_file};
 use crate::viewer::{ViewerKind, sniff_viewer_kind};
 
 /// A file whose content was sniffed as not text, kept as raw bytes for the Hex viewer.
@@ -99,7 +99,7 @@ pub fn load_depot_file(
     display_path: UniversalPath,
     temp_root: &Path,
     lexer_mode: u8,
-    fetch: impl FnOnce(&UniversalPath) -> Result<Vec<u8>, String>,
+    p4: &impl P4Runner,
 ) -> Result<LoadedFile, String> {
     let UniversalPath::Depot(depot_str, rev) = &display_path else {
         return Err(format!("{display_path:?} is not a depot path"));
@@ -120,7 +120,8 @@ pub fn load_depot_file(
             .map_err(|e| format!("Failed to create directories for {}: {}", depot_str, e))?;
     }
 
-    let bytes = fetch(&display_path).map_err(|e| {
+    let revision = rev.map(|r| r.to_string()).unwrap_or_default();
+    let bytes = print_file(p4, depot_str, &revision).map_err(|e| {
         format!(
             "P4 command failed for {}: {}",
             display_path.to_p4_string(),
@@ -453,7 +454,7 @@ impl FileProcessor {
                         path_clone.clone(),
                         &std::env::temp_dir(),
                         diff_lexer_mode,
-                        P4Command::get_depot_file_bytes,
+                        &P4Command::new(false).for_file(path_clone.clone()),
                     ),
                     UniversalPath::Git(..) => load_git_file(
                         path_clone.clone(),
@@ -484,6 +485,7 @@ mod tests {
     use crate::viewer::ViewerKind;
     use std::path::PathBuf;
     use zcommon::vcs::git::{GitError, GitErrorKind};
+    use zcommon::vcs::p4::FakeP4;
     #[test]
     fn test_is_root_valid_local() {
         let root = UniversalPath::Local(PathBuf::from(r"E:\Github\ZHashDiff\crates"));
@@ -602,6 +604,18 @@ mod tests {
         assert_eq!(loaded.bytes(), bytes);
     }
 
+    struct BytesP4<'a>(Result<&'a [u8], &'a str>);
+
+    impl P4Runner for BytesP4<'_> {
+        fn run(&self, _: &[&str]) -> Result<String, String> {
+            unreachable!("depot loads read bytes")
+        }
+
+        fn run_bytes(&self, _: &[&str]) -> Result<Vec<u8>, String> {
+            self.0.map(<[u8]>::to_vec).map_err(str::to_string)
+        }
+    }
+
     fn load_depot(
         temp_root: &Path,
         depot: &str,
@@ -609,9 +623,50 @@ mod tests {
         fetched: Result<&[u8], &str>,
     ) -> Result<LoadedFile, String> {
         let path = UniversalPath::Depot(depot.into(), rev.map(DepotRev::Rev));
-        load_depot_file(path, temp_root, LEXER_MODE_DEFAULT, |_| {
-            fetched.map(<[u8]>::to_vec).map_err(str::to_string)
-        })
+        load_depot_file(path, temp_root, LEXER_MODE_DEFAULT, &BytesP4(fetched))
+    }
+
+    fn print_args(file: &str) -> Vec<Vec<String>> {
+        vec![vec!["print".into(), "-q".into(), file.into()]]
+    }
+
+    #[test]
+    fn depot_changelist_prints_the_file_at_the_change() {
+        let temp = tempfile::tempdir().unwrap();
+        let p4 = FakeP4::new(|_: &[&str]| Ok("at change\n".to_string()));
+        let path = UniversalPath::Depot("//depot/src/a.rs".into(), Some(DepotRev::Change(1234)));
+
+        let loaded = load_depot_file(path.clone(), temp.path(), LEXER_MODE_DEFAULT, &p4).unwrap();
+
+        assert_eq!(p4.calls(), print_args("//depot/src/a.rs@1234"));
+        assert_eq!(loaded.bytes(), b"at change\n");
+        assert_eq!(loaded.path(), &path);
+    }
+
+    #[test]
+    fn depot_shelf_prints_the_shelved_file() {
+        let temp = tempfile::tempdir().unwrap();
+        let p4 = FakeP4::new(|_: &[&str]| Ok("shelved\n".to_string()));
+        let path = UniversalPath::Depot("//depot/src/a.rs".into(), Some(DepotRev::Shelf(77)));
+
+        let loaded = load_depot_file(path.clone(), temp.path(), LEXER_MODE_DEFAULT, &p4).unwrap();
+
+        assert_eq!(p4.calls(), print_args("//depot/src/a.rs@=77"));
+        assert_eq!(loaded.bytes(), b"shelved\n");
+        assert_eq!(loaded.path(), &path);
+    }
+
+    #[test]
+    fn depot_head_and_revision_print_the_plain_path_and_rev() {
+        let temp = tempfile::tempdir().unwrap();
+        let p4 = FakeP4::new(|_: &[&str]| Ok("x".to_string()));
+        for rev in [None, Some(DepotRev::Rev(3))] {
+            let path = UniversalPath::Depot("//depot/src/a.rs".into(), rev);
+            load_depot_file(path, temp.path(), LEXER_MODE_DEFAULT, &p4).unwrap();
+        }
+        let mut expected = print_args("//depot/src/a.rs");
+        expected.extend(print_args("//depot/src/a.rs#3"));
+        assert_eq!(p4.calls(), expected);
     }
 
     #[test]
