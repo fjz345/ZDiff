@@ -4,7 +4,10 @@ use std::sync::Arc;
 use eframe::egui::{self, Color32, Id, Theme, ThemePreference};
 
 use super::common::show_custom_popup;
-use crate::style::{Mode, Palette, Rgba8, Role, RowLook, SharedRole, Style, Tone, style_file_path};
+use crate::style::{
+    Mode, Palette, Rgba8, Role, RowLook, SYNTAX_PRESETS, SharedRole, Style, SyntaxCategory,
+    SyntaxColors, Tone, style_file_path,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NoRole {}
@@ -68,6 +71,15 @@ pub fn collapsed_look(ctx: &egui::Context) -> RowLook {
     row_looks(ctx).1
 }
 
+pub fn syntax_colors(ctx: &egui::Context) -> SyntaxColors {
+    let tone = tone(ctx);
+    let palette = ctx.data(|d| d.get_temp::<Arc<Palette>>(palette_id()));
+    match palette {
+        Some(palette) => palette.syntax_colors(tone),
+        None => Palette::default().syntax_colors(tone),
+    }
+}
+
 fn theme_preference(mode: Mode) -> ThemePreference {
     match mode {
         Mode::Dark => ThemePreference::Dark,
@@ -91,13 +103,21 @@ pub struct StyleWindow {
     path: Option<PathBuf>,
     dirty: bool,
     row_looks: bool,
+    syntax: bool,
 }
 
 impl StyleWindow {
-    pub fn with_row_looks() -> Self {
+    pub fn with_row_looks(self) -> Self {
         Self {
             row_looks: true,
-            ..Self::default()
+            ..self
+        }
+    }
+
+    pub fn with_syntax(self) -> Self {
+        Self {
+            syntax: true,
+            ..self
         }
     }
 
@@ -129,7 +149,7 @@ impl StyleWindow {
         if self.open {
             let mut changed = false;
             show_custom_popup(ctx, &mut self.open, "Style", true, |ui| {
-                changed = style_ui::<R>(ui, &mut self.style, app_group);
+                changed = style_ui::<R>(ui, &mut self.style, app_group, self.syntax);
                 if self.row_looks {
                     changed |= row_looks_ui(ui, &mut self.style);
                 }
@@ -155,7 +175,7 @@ impl StyleWindow {
     }
 }
 
-fn style_ui<R: Role>(ui: &mut egui::Ui, style: &mut Style, app_group: &str) -> bool {
+fn style_ui<R: Role>(ui: &mut egui::Ui, style: &mut Style, app_group: &str, syntax: bool) -> bool {
     let mut changed = false;
     let tone = tone(ui.ctx());
     ui.horizontal(|ui| {
@@ -170,6 +190,9 @@ fn style_ui<R: Role>(ui: &mut egui::Ui, style: &mut Style, app_group: &str) -> b
         if ui.button("Reset all").clicked() {
             style.palette.reset_all::<SharedRole>();
             style.palette.reset_all::<R>();
+            if syntax {
+                style.palette.reset_all::<SyntaxCategory>();
+            }
             changed = true;
         }
     });
@@ -181,6 +204,35 @@ fn style_ui<R: Role>(ui: &mut egui::Ui, style: &mut Style, app_group: &str) -> b
     if !R::all().is_empty() {
         changed |= role_group::<R>(ui, app_group, &mut style.palette, tone);
     }
+    if syntax {
+        changed |= syntax_group(ui, &mut style.palette, tone);
+    }
+    changed
+}
+
+fn syntax_group(ui: &mut egui::Ui, palette: &mut Palette, tone: Tone) -> bool {
+    let mut changed = role_group::<SyntaxCategory>(ui, "Syntax", palette, tone);
+    let current = palette.syntax_colors(tone);
+    let selected = SYNTAX_PRESETS
+        .iter()
+        .find(|preset| preset.colors == current)
+        .map_or("Custom", |preset| preset.name);
+    ui.horizontal(|ui| {
+        ui.label("Preset");
+        egui::ComboBox::from_id_salt("style_syntax_preset")
+            .selected_text(selected)
+            .show_ui(ui, |ui| {
+                for preset in SYNTAX_PRESETS {
+                    if ui
+                        .selectable_label(preset.name == selected, preset.name)
+                        .clicked()
+                    {
+                        preset.apply(palette, tone);
+                        changed = true;
+                    }
+                }
+            });
+    });
     changed
 }
 

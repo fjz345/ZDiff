@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 // Unmultiplied sRGB with alpha, as egui's from_rgba_unmultiplied and its pickers take it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(
     feature = "serde",
     derive(serde::Serialize, serde::Deserialize),
@@ -115,6 +115,218 @@ impl Role for SharedRole {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SyntaxCategory {
+    Keyword,
+    Type,
+    Function,
+    String,
+    Number,
+    Comment,
+    Punctuation,
+    PlainText,
+    Background,
+}
+
+impl SyntaxCategory {
+    pub const ALL: [SyntaxCategory; 9] = [
+        SyntaxCategory::Keyword,
+        SyntaxCategory::Type,
+        SyntaxCategory::Function,
+        SyntaxCategory::String,
+        SyntaxCategory::Number,
+        SyntaxCategory::Comment,
+        SyntaxCategory::Punctuation,
+        SyntaxCategory::PlainText,
+        SyntaxCategory::Background,
+    ];
+}
+
+impl Role for SyntaxCategory {
+    fn all() -> &'static [Self] {
+        &Self::ALL
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            SyntaxCategory::Keyword => "syntax_keyword",
+            SyntaxCategory::Type => "syntax_type",
+            SyntaxCategory::Function => "syntax_function",
+            SyntaxCategory::String => "syntax_string",
+            SyntaxCategory::Number => "syntax_number",
+            SyntaxCategory::Comment => "syntax_comment",
+            SyntaxCategory::Punctuation => "syntax_punctuation",
+            SyntaxCategory::PlainText => "syntax_plain_text",
+            SyntaxCategory::Background => "syntax_background",
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            SyntaxCategory::Keyword => "Keyword",
+            SyntaxCategory::Type => "Type",
+            SyntaxCategory::Function => "Function",
+            SyntaxCategory::String => "String",
+            SyntaxCategory::Number => "Number",
+            SyntaxCategory::Comment => "Comment",
+            SyntaxCategory::Punctuation => "Punctuation",
+            SyntaxCategory::PlainText => "Plain text",
+            SyntaxCategory::Background => "Background",
+        }
+    }
+
+    fn dark(self) -> Rgba8 {
+        DEFAULT_SYNTAX_DARK.get(self)
+    }
+
+    fn light(self) -> Rgba8 {
+        DEFAULT_SYNTAX_LIGHT.get(self)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct SyntaxColors(pub [Rgba8; 9]);
+
+impl SyntaxColors {
+    pub fn get(&self, category: SyntaxCategory) -> Rgba8 {
+        self.0[category as usize]
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SyntaxPreset {
+    pub name: &'static str,
+    pub colors: SyntaxColors,
+}
+
+impl SyntaxPreset {
+    pub fn apply(&self, palette: &mut Palette, tone: Tone) {
+        for category in SyntaxCategory::ALL {
+            palette.set(category, tone, self.colors.get(category));
+        }
+    }
+}
+
+const fn rgb(r: u8, g: u8, b: u8) -> Rgba8 {
+    Rgba8([r, g, b, 255])
+}
+
+// Converted from syntect's bundled themes; order as in SyntaxCategory::ALL.
+const BASE16_MOCHA_DARK: SyntaxColors = SyntaxColors([
+    rgb(168, 155, 185),
+    rgb(244, 188, 135),
+    rgb(138, 179, 181),
+    rgb(190, 181, 91),
+    rgb(210, 139, 113),
+    rgb(126, 112, 90),
+    rgb(208, 200, 198),
+    rgb(208, 200, 198),
+    rgb(59, 50, 40),
+]);
+
+const SOLARIZED_LIGHT: SyntaxColors = SyntaxColors([
+    rgb(133, 153, 0),
+    rgb(181, 137, 0),
+    rgb(181, 137, 0),
+    rgb(42, 161, 152),
+    rgb(108, 113, 196),
+    rgb(147, 161, 161),
+    rgb(101, 123, 131),
+    rgb(101, 123, 131),
+    rgb(253, 246, 227),
+]);
+
+pub const SYNTAX_PRESETS: &[SyntaxPreset] = &[
+    SyntaxPreset {
+        name: "Base16 Eighties (dark)",
+        colors: SyntaxColors([
+            rgb(204, 153, 204),
+            rgb(255, 204, 102),
+            rgb(102, 153, 204),
+            rgb(153, 204, 153),
+            rgb(249, 145, 87),
+            rgb(116, 115, 105),
+            rgb(211, 208, 200),
+            rgb(211, 208, 200),
+            rgb(45, 45, 45),
+        ]),
+    },
+    SyntaxPreset {
+        name: "Base16 Mocha (dark)",
+        colors: BASE16_MOCHA_DARK,
+    },
+    SyntaxPreset {
+        name: "Base16 Ocean (dark)",
+        colors: SyntaxColors([
+            rgb(180, 142, 173),
+            rgb(235, 203, 139),
+            rgb(143, 161, 179),
+            rgb(163, 190, 140),
+            rgb(208, 135, 112),
+            rgb(101, 115, 126),
+            rgb(192, 197, 206),
+            rgb(192, 197, 206),
+            rgb(43, 48, 59),
+        ]),
+    },
+    SyntaxPreset {
+        name: "Base16 Ocean (light)",
+        colors: SyntaxColors([
+            rgb(180, 142, 173),
+            rgb(208, 135, 112),
+            rgb(143, 161, 179),
+            rgb(163, 190, 140),
+            rgb(208, 135, 112),
+            rgb(167, 173, 186),
+            rgb(79, 91, 102),
+            rgb(79, 91, 102),
+            rgb(239, 241, 245),
+        ]),
+    },
+    SyntaxPreset {
+        name: "InspiredGitHub (light)",
+        colors: SyntaxColors([
+            rgb(167, 29, 93),
+            rgb(0, 134, 179),
+            rgb(121, 93, 163),
+            rgb(24, 54, 145),
+            rgb(0, 134, 179),
+            rgb(150, 152, 150),
+            rgb(50, 50, 50),
+            rgb(50, 50, 50),
+            rgb(255, 255, 255),
+        ]),
+    },
+    SyntaxPreset {
+        name: "Solarized (dark)",
+        colors: SyntaxColors([
+            rgb(133, 153, 0),
+            rgb(181, 137, 0),
+            rgb(181, 137, 0),
+            rgb(42, 161, 152),
+            rgb(108, 113, 196),
+            rgb(88, 110, 117),
+            rgb(131, 148, 150),
+            rgb(131, 148, 150),
+            rgb(0, 43, 54),
+        ]),
+    },
+    SyntaxPreset {
+        name: "Solarized (light)",
+        colors: SOLARIZED_LIGHT,
+    },
+];
+
+const fn with_background(colors: SyntaxColors, background: Rgba8) -> SyntaxColors {
+    let mut colors = colors.0;
+    colors[SyntaxCategory::Background as usize] = background;
+    SyntaxColors(colors)
+}
+
+// egui's default code themes over the file diff's table background, so the default look is unchanged.
+const DEFAULT_SYNTAX_DARK: SyntaxColors = with_background(BASE16_MOCHA_DARK, rgb(15, 15, 15));
+const DEFAULT_SYNTAX_LIGHT: SyntaxColors = with_background(SOLARIZED_LIGHT, rgb(248, 248, 248));
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct RoleColors {
@@ -176,6 +388,10 @@ impl Palette {
         for role in R::all() {
             self.0.remove(role.name());
         }
+    }
+
+    pub fn syntax_colors(&self, tone: Tone) -> SyntaxColors {
+        SyntaxColors(SyntaxCategory::ALL.map(|category| self.get(category, tone)))
     }
 }
 
@@ -344,6 +560,7 @@ mod tests {
     #[test]
     fn role_names_are_unique() {
         let mut names: Vec<&str> = SharedRole::all().iter().map(|r| r.name()).collect();
+        names.extend(SyntaxCategory::all().iter().map(|r| r.name()));
         let count = names.len();
         names.sort_unstable();
         names.dedup();
@@ -394,6 +611,66 @@ mod tests {
         assert_eq!(palette.get(TestRole::A, Tone::Dark), TestRole::A.dark());
         assert_eq!(palette.get(TestRole::B, Tone::Light), TestRole::B.light());
         assert_eq!(palette.get(SharedRole::DeleteText, Tone::Dark), RED);
+    }
+
+    fn distinct_preset() -> SyntaxPreset {
+        SyntaxPreset {
+            name: "test",
+            colors: SyntaxColors(std::array::from_fn(|i| Rgba8([i as u8 * 20, 7, 9, 255]))),
+        }
+    }
+
+    #[test]
+    fn picking_a_preset_fills_every_category_of_that_tone_only() {
+        let preset = distinct_preset();
+        let mut palette = Palette::default();
+        preset.apply(&mut palette, Tone::Light);
+        assert_eq!(palette.syntax_colors(Tone::Light), preset.colors);
+        for category in SyntaxCategory::ALL {
+            assert_eq!(
+                palette.get(category, Tone::Light),
+                preset.colors.get(category)
+            );
+            assert_eq!(palette.get(category, Tone::Dark), category.dark());
+        }
+    }
+
+    #[test]
+    fn editing_one_category_after_a_preset_keeps_the_others() {
+        let preset = distinct_preset();
+        let mut palette = Palette::default();
+        preset.apply(&mut palette, Tone::Dark);
+        palette.set(SyntaxCategory::String, Tone::Dark, RED);
+        let colors = palette.syntax_colors(Tone::Dark);
+        for category in SyntaxCategory::ALL {
+            let expected = if category == SyntaxCategory::String {
+                RED
+            } else {
+                preset.colors.get(category)
+            };
+            assert_eq!(colors.get(category), expected);
+        }
+    }
+
+    #[test]
+    fn syntax_colors_default_to_the_category_defaults() {
+        let palette = Palette::default();
+        for tone in [Tone::Dark, Tone::Light] {
+            let colors = palette.syntax_colors(tone);
+            for category in SyntaxCategory::ALL {
+                assert_eq!(colors.get(category), category.default_color(tone));
+            }
+        }
+    }
+
+    #[test]
+    fn syntax_preset_names_are_unique() {
+        let mut names: Vec<&str> = SYNTAX_PRESETS.iter().map(|p| p.name).collect();
+        let count = names.len();
+        assert!(count > 0);
+        names.sort_unstable();
+        names.dedup();
+        assert_eq!(names.len(), count);
     }
 
     fn content_segments(min: [f32; 2], max: [f32; 2], origin: [f32; 2]) -> Vec<Segment> {

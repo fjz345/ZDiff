@@ -158,7 +158,7 @@ impl Role for FileRole {
 
 #[cfg(test)]
 mod tests {
-    use zcommon::style::{Role, SharedRole};
+    use zcommon::style::{Role, SharedRole, SyntaxCategory};
 
     use super::FileRole;
 
@@ -166,6 +166,7 @@ mod tests {
     fn file_role_names_are_unique_against_the_shared_roles() {
         let mut names: Vec<&str> = SharedRole::all().iter().map(|r| r.name()).collect();
         names.extend(FileRole::all().iter().map(|r| r.name()));
+        names.extend(SyntaxCategory::all().iter().map(|r| r.name()));
         let count = names.len();
         names.sort_unstable();
         names.dedup();

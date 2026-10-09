@@ -350,7 +350,7 @@ impl<'a> ZApp {
             tree: Self::create_tree(),
             open_shortcuts_window: false,
             keymap_editor: KeymapEditor::default(),
-            style_window: StyleWindow::with_row_looks(),
+            style_window: StyleWindow::default().with_row_looks().with_syntax(),
             open_universal_path_window: false,
             open_viewers_window: false,
             open_phase_trace_window: false,

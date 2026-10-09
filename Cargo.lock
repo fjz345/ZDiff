@@ -5086,6 +5086,7 @@ dependencies = [
  "serde",
  "serde_json",
  "stats_alloc",
+ "syntect",
  "tempfile",
  "zcommon",
  "zdiff",

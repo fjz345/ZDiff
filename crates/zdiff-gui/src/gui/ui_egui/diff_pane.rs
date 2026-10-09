@@ -15,6 +15,7 @@ use crate::{
         file_role::FileRole,
         occurrence::{OccurrenceState, RowFind, find_ranges},
         panes::ZAppPane,
+        syntax,
     },
     viewer::{
         ViewerKind,
@@ -33,13 +34,13 @@ use zcommon::{
     find::Matcher,
     path::{PathSegment, common_parent, split_path},
     presets::{BuiltinPreset, UserPresets},
-    style::{RowLook, SharedRole, stripe_segments},
+    style::{Rgba8, RowLook, SharedRole, SyntaxCategory, stripe_segments},
     ui_egui::{
         h_scroll,
         keymap::{Action, Keymap},
         pathbar::{PathBarAction, path_bar},
         presets::presets_menu,
-        style_window::{collapsed_look, role_color, void_look},
+        style_window::{collapsed_look, role_color, syntax_colors, void_look},
         table::{Rows, Split, SplitColumn, SplitTable, shared_width},
         toggle::{TOGGLE_BUTTON_SIZE, toggle_button},
     },
@@ -1183,6 +1184,10 @@ impl FileDiffPane {
                 bg,
                 changed_chars,
             } => {
+                let code_colors = syntax_colors(ui.ctx());
+                let Rgba8([r, g, b, _]) = code_colors.get(SyntaxCategory::Background);
+                ui.painter()
+                    .rect_filled(extended_rect, 0.0, egui::Color32::from_rgb(r, g, b));
                 ui.scope_builder(UiBuilder::new().max_rect(rect), |ui| {
                     let add_contents = |ui: &mut egui::Ui| {
                         ui.spacing_mut().item_spacing.x = 0.0;
@@ -1215,14 +1220,10 @@ impl FileDiffPane {
                             file_target.as_deref(),
                         );
 
-                        let theme = egui_extras::syntax_highlighting::CodeTheme::from_memory(
+                        let mut layout_job = syntax::highlight(
                             ui.ctx(),
                             ui.style(),
-                        );
-                        let mut layout_job = egui_extras::syntax_highlighting::highlight(
-                            ui.ctx(),
-                            ui.style(),
-                            &theme,
+                            &code_colors,
                             &row_text.text,
                             code_language,
                         );
