@@ -8,4 +8,5 @@ pub mod tools_window;
 pub mod tree_cursor;
 pub mod tree_filter;
 pub mod tree_guides;
+pub mod tree_menu;
 pub mod tree_sort;

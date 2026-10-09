@@ -30,6 +30,7 @@ use crate::ui_egui::tools_window::resolve_tool_exe;
 use crate::ui_egui::tree_cursor::{CursorRequest, CursorRow, TreeCursor};
 use crate::ui_egui::tree_filter::DiffFilter;
 use crate::ui_egui::tree_guides::{Guide, tree_guides};
+use crate::ui_egui::tree_menu::{Entry, RowAction, apply_row_action, row_menu, show_row_menu};
 use crate::ui_egui::tree_sort::{SortKey, TreeSort};
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -798,6 +799,7 @@ pub fn draw_ui_two_folder_tree_with_diff(
     let mut col0_rect = egui::Rect::NOTHING;
     let mut col2_rect = egui::Rect::NOTHING;
     let table_top = ui.cursor().top();
+    let mut row_action = None;
 
     let frame_output = egui::Frame::default()
         .fill(egui::Color32::from_gray(20))
@@ -900,7 +902,7 @@ pub fn draw_ui_two_folder_tree_with_diff(
                         });
                         let is_cursor = cursor.is_at(&entry.rel_path);
                         row.set_selected(is_cursor);
-                        let clicked = render_row_folder_tree_diff_column(
+                        let (clicked, action) = render_row_folder_tree_diff_column(
                             file_system_1_view.as_mut(),
                             file_system_2_view.as_mut(),
                             &mut row,
@@ -914,6 +916,9 @@ pub fn draw_ui_two_folder_tree_with_diff(
                         if clicked {
                             *cursor = TreeCursor::at(&entry.rel_path);
                         }
+                        if action.is_some() {
+                            row_action = action;
+                        }
                     });
                 });
         });
@@ -925,6 +930,9 @@ pub fn draw_ui_two_folder_tree_with_diff(
     col2_rect.set_bottom(table_bottom);
 
     handle_drops(ui, root_1, root_2, col0_rect, col2_rect);
+    if let Some(action) = row_action {
+        apply_row_action(ui.ctx(), action, root_1, root_2);
+    }
 
     frame_output.response
 }
@@ -1271,7 +1279,7 @@ fn render_diff_side(
     mut on_select: impl FnMut(),
     mut on_open: impl FnMut(),
     mut on_toggle: impl FnMut(),
-) {
+) -> Option<egui::Response> {
     let name_text = |text: String| {
         let text = RichText::new(text);
         let text = if is_dir { text.strong() } else { text };
@@ -1297,9 +1305,10 @@ fn render_diff_side(
                     if label_resp.double_clicked() && !is_dir {
                         on_open();
                     }
+                    return Some(label_resp);
                 }
             }
-            return;
+            return None;
         }
 
         ui.add_space((depth as f32) * TREE_INDENT);
@@ -1329,6 +1338,7 @@ fn render_diff_side(
                     if label_resp.double_clicked() {
                         on_toggle();
                     }
+                    return Some(label_resp);
                 } else {
                     let mut label_resp = ui
                         .label(name_text(node.display_name().to_string()))
@@ -1343,10 +1353,13 @@ fn render_diff_side(
                     if label_resp.double_clicked() {
                         on_open();
                     }
+                    return Some(label_resp);
                 }
             }
         }
-    });
+        None
+    })
+    .inner
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -1367,8 +1380,8 @@ fn undiffable(entry: &VisibleRowTwoFolderDiff, config: &DiffToolConfig) -> Optio
     cant_diff(entry.file_kinds, tool)
 }
 
-/// Draws a row that `two_folder_cursor_rows` doesn't hide. Returns whether it was clicked,
-/// which moves the cursor to it.
+/// Draws a row that `two_folder_cursor_rows` doesn't hide. Returns whether it was clicked with
+/// either button, which moves the cursor to it, and the action picked in its menu.
 fn render_row_folder_tree_diff_column(
     mut file_system_1_view: Option<&mut FileSystemView>,
     mut file_system_2_view: Option<&mut FileSystemView>,
@@ -1379,7 +1392,7 @@ fn render_row_folder_tree_diff_column(
     diff_tool_config: &DiffToolConfig,
     layout: RowLayout,
     guides: [&[Guide]; 2],
-) -> bool {
+) -> (bool, Option<RowAction>) {
     let rel_path = |shown: RowLayout| (layout == shown).then_some(entry.rel_path.as_str());
     let flat_rel_path = rel_path(RowLayout::RelPaths);
     let list_rel_path = rel_path(RowLayout::FileList);
@@ -1435,11 +1448,13 @@ fn render_row_folder_tree_diff_column(
         }
     };
 
+    let mut label_1 = None;
+    let mut label_2 = None;
     // --- Left Column (Folder 1) ---
-    row.col(|ui| {
+    let (_, cell_1) = row.col(|ui| {
         tint(ui);
         paint_guides(ui, guides[0]);
-        render_diff_side(
+        label_1 = render_diff_side(
             ui,
             file_system_1_view.as_deref(),
             first_node_id,
@@ -1475,10 +1490,10 @@ fn render_row_folder_tree_diff_column(
     });
     tag(row, 1);
     // --- Right Column (Folder 2) ---
-    row.col(|ui| {
+    let (_, cell_2) = row.col(|ui| {
         tint(ui);
         paint_guides(ui, guides[1]);
-        render_diff_side(
+        label_2 = render_diff_side(
             ui,
             file_system_2_view.as_deref(),
             second_node_id,
@@ -1515,8 +1530,45 @@ fn render_row_folder_tree_diff_column(
         }
     }
 
+    let nodes = [
+        side_node(file_system_1_view.as_deref(), first_node_id),
+        side_node(file_system_2_view.as_deref(), second_node_id),
+    ];
+    let entries = nodes.map(|node| {
+        node.map(|n| {
+            if n.is_dir() {
+                Entry::Folder
+            } else {
+                Entry::File
+            }
+        })
+    });
+    let mut action = None;
+    let sides = [
+        (Side::Folder1, cell_1, label_1),
+        (Side::Folder2, cell_2, label_2),
+    ];
+    for (side, cell, label) in sides {
+        // Labels take their own clicks, so the cell alone misses a right-click on the name.
+        let response = label.map_or(cell.clone(), |label| cell | label);
+        should_select_row |= response.secondary_clicked();
+        if let Some(menu) = row_menu(entries, side) {
+            response.context_menu(|ui| {
+                let paths = nodes.map(|node| node.map(|n| n.as_path()));
+                let paths = [0, 1].map(|i| paths[i].as_ref().map(|p| p.as_ref()));
+                action = show_row_menu(ui, &menu, paths, side);
+            });
+        }
+    }
+
     // Labels take their own clicks; this catches clicks elsewhere on the row.
-    should_select_row || row.response().clicked()
+    let row_response = row.response();
+    let clicked = should_select_row || row_response.clicked() || row_response.secondary_clicked();
+    (clicked, action)
+}
+
+fn side_node(view: Option<&FileSystemView>, id: Option<FsNodeId>) -> Option<&FsNode> {
+    view?.file_system.get_node(id?)
 }
 
 /// Each line sits under its folder's expander, in the children's indentation.
