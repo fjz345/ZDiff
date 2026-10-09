@@ -421,7 +421,7 @@ struct RenderKey {
     generations: [u64; 2],
 }
 
-const LANES: [&str; 3] = ["Left", "Right", "Difference"];
+pub(super) const LANES: [&str; 3] = ["Left", "Right", "Difference"];
 const DIFF_NEUTRAL: Color32 = Color32::from_gray(24);
 
 type ComputeResult = (usize, u64, Result<Spectrogram, Option<String>>);

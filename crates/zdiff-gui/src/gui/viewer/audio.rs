@@ -825,7 +825,21 @@ pub fn show(ui: &mut egui::Ui, processor: &mut AudioDiffProcessor, settings: &mu
     let view = processor.view;
 
     draw_ruler(ui, ruler_rect, view);
-    if settings.mode == AudioMode::Spectrogram {
+    let lanes = lanes(processor, settings.mode);
+    let spectrum_lanes = match settings.mode {
+        AudioMode::Spectrogram => audio_spectrum::LANES.len(),
+        AudioMode::Lanes | AudioMode::Overlay => 0,
+    };
+    let wave_lanes = lanes.len() + spectrum_lanes;
+    let difference_lanes = processor.difference.lanes();
+    let lane_height = lanes_rect.height() / (wave_lanes + difference_lanes) as f32;
+    let lane_rect = |i: usize| {
+        Rect::from_min_size(
+            pos2(lanes_rect.left(), lanes_rect.top() + i as f32 * lane_height),
+            vec2(lanes_rect.width(), lane_height),
+        )
+    };
+    if spectrum_lanes > 0 {
         let audio = [0, 1].map(|index| processor.decoded(index).cloned());
         let colors = [0, 1].map(|index| side_color(ui.ctx(), index));
         let sides = [0, 1].map(|index| {
@@ -834,7 +848,7 @@ pub fn show(ui: &mut egui::Ui, processor: &mut AudioDiffProcessor, settings: &mu
         });
         audio_spectrum::show_lanes(
             ui,
-            lanes_rect,
+            lane_rect(0).union(lane_rect(spectrum_lanes - 1)),
             &mut processor.spectrum,
             sides,
             view,
@@ -842,15 +856,6 @@ pub fn show(ui: &mut egui::Ui, processor: &mut AudioDiffProcessor, settings: &mu
             colors,
         );
     }
-    let lanes = lanes(processor, settings.mode);
-    let difference_lanes = processor.difference.lanes();
-    let lane_height = lanes_rect.height() / (lanes.len() + difference_lanes) as f32;
-    let lane_rect = |i: usize| {
-        Rect::from_min_size(
-            pos2(lanes_rect.left(), lanes_rect.top() + i as f32 * lane_height),
-            vec2(lanes_rect.width(), lane_height),
-        )
-    };
     let painter = ui.painter_at(lanes_rect);
     let visuals = ui.visuals();
     let line = Stroke::new(1.0, visuals.widgets.noninteractive.bg_stroke.color);
@@ -891,7 +896,7 @@ pub fn show(ui: &mut egui::Ui, processor: &mut AudioDiffProcessor, settings: &mu
         }
     }
     for channel in 0..difference_lanes {
-        let rect = lane_rect(lanes.len() + channel);
+        let rect = lane_rect(wave_lanes + channel);
         painter.hline(rect.x_range(), rect.center().y, line);
         painter.hline(rect.x_range(), rect.bottom(), line);
         processor
