@@ -891,6 +891,9 @@ impl ZApp {
         if actions.contains(&FolderAction::Find) && self.diff_mode_path_diff {
             self.find_open = true;
         }
+        if !self.diff_mode_path_diff {
+            self.find_open = false;
+        }
         if self.find_open {
             self.show_find(ctx, app_ctx);
         }
