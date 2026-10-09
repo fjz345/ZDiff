@@ -972,6 +972,7 @@ impl MergeView {
     }
 
     pub fn request_save(&mut self) {
+        self.store_edit();
         let Some(doc) = &self.doc else {
             log::warn!("Save merge: the inputs are not loaded");
             return;
@@ -1009,6 +1010,7 @@ impl MergeView {
 
     /// `Some` when the view can close now; otherwise it prompts and `ui` returns it later.
     pub fn request_close(&mut self, closing: Closing) -> Option<Closing> {
+        self.store_edit();
         if self.doc.is_none() || self.exit_code() == 0 {
             return Some(closing);
         }
@@ -1852,6 +1854,33 @@ mod tests {
 
         doc.pick(0, Pick::Yours);
         assert_eq!(exit_code(Some(&second), doc.output_text()), 1);
+    }
+
+    #[test]
+    fn save_and_close_include_the_text_in_an_open_edit_box() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = |name: &str| dir.path().join(name).to_str().unwrap().to_string();
+        for (name, text) in [("b", "1\n2\n3\n"), ("t", "1\nT\n3\n"), ("y", "1\nY\n3\n")] {
+            std::fs::write(path(name), text).unwrap();
+        }
+        let request = merge_request(&fields(&path("b"), &path("t"), &path("y"), &path("o")));
+        let mut view = MergeView::new(request.unwrap(), MyersDiffAlgorithm::Linear);
+        let start = std::time::Instant::now();
+        while view.doc.is_none() {
+            assert!(start.elapsed().as_secs() < 10, "{:?}", view.poll());
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            view.poll().unwrap();
+        }
+
+        view.click(ChunkClick::Edit(1));
+        view.edit.as_mut().unwrap().text = "E\n".to_string();
+        view.request_save();
+        assert_eq!(std::fs::read_to_string(path("o")).unwrap(), "1\nE\n3\n");
+        assert_eq!(view.exit_code(), 0);
+
+        view.edit.as_mut().unwrap().text = "F\n".to_string();
+        assert_eq!(view.request_close(Closing::Merge), None);
+        assert_eq!(view.exit_code(), 1);
     }
 
     fn fields(base: &str, theirs: &str, yours: &str, output: &str) -> [String; 4] {
