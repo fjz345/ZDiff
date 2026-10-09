@@ -32,9 +32,12 @@ pub fn likeness_cell<'a>(
     }
     let known = match entry.diff_state {
         DiffState::Same(..) => return LikenessCell::Same,
-        DiffState::Different(..) | DiffState::Similar(..) => {
-            compare.likeness_of(&entry.rel_path, [left, right])
+        DiffState::Different(..) => compare.likeness_of(&entry.rel_path, [left, right]),
+        // Similar before its compare: never read, so never measured.
+        DiffState::Similar(..) if compare.state_of(&entry.rel_path, [left, right]).is_none() => {
+            return LikenessCell::Empty;
         }
+        DiffState::Similar(..) => compare.likeness_of(&entry.rel_path, [left, right]),
         DiffState::Pending(..) => None,
         _ => return LikenessCell::Empty,
     };

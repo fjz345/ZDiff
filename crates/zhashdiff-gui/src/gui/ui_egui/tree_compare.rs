@@ -571,6 +571,7 @@ mod tests {
         pending_pairs,
     };
     use crate::ui_egui::fs_tree::{DiffState, FileSystemView, VisibleRowTwoFolderDiff};
+    use crate::ui_egui::tree_likeness::{LikenessCell, likeness_cell};
     use crate::ui_egui::tree_tolerance::{SizeDelta, Tolerance};
     use std::{
         fs::{self, File},
@@ -976,8 +977,7 @@ mod tests {
         assert_eq!(compare.queued(), [("b.txt", false, true)]);
     }
 
-    #[test]
-    fn a_pair_similar_by_modification_time_is_neither_compared_nor_measured() {
+    fn time_similar_trees() -> (TempDir, TempDir) {
         let (left_dir, right_dir) = trees();
         write_files(left_dir.path(), &[("x.txt", "aaaa")]);
         write_files(right_dir.path(), &[("x.txt", "bbbb")]);
@@ -990,15 +990,45 @@ mod tests {
                 .set_modified(time)
                 .unwrap();
         }
+        (left_dir, right_dir)
+    }
+
+    const TIME_ONLY: Tolerance = Tolerance {
+        enabled: true,
+        size: false,
+        max_size_delta: SizeDelta::Bytes(0),
+        same_size_and_time: true,
+    };
+
+    #[test]
+    fn a_pair_similar_by_modification_time_shows_no_likeness_spinner() {
+        let (left_dir, right_dir) = time_similar_trees();
         let (left, right) = (load_view(left_dir.path()), load_view(right_dir.path()));
         let mut compare = TreeCompare::default();
         compare.set_likeness(true);
-        let tolerance = Tolerance {
-            enabled: true,
-            size: false,
-            same_size_and_time: true,
-            ..Tolerance::default()
-        };
+        let rows = build_tolerant(&mut compare, &left, &right, &TIME_ONLY);
+        compare.start(&rows, [Some(&left), Some(&right)], Instant::now());
+        let _sender = compare.pause(Instant::now());
+        assert!(compare.is_comparing());
+
+        let row = rows.iter().find(|row| row.rel_path == "x.txt").unwrap();
+        let nodes = [
+            left.file_system.get_node(row.diff_state.first().unwrap()),
+            right.file_system.get_node(row.diff_state.second().unwrap()),
+        ];
+        assert!(matches!(
+            likeness_cell(row, nodes, &compare),
+            LikenessCell::Empty
+        ));
+    }
+
+    #[test]
+    fn a_pair_similar_by_modification_time_is_neither_compared_nor_measured() {
+        let (left_dir, right_dir) = time_similar_trees();
+        let (left, right) = (load_view(left_dir.path()), load_view(right_dir.path()));
+        let mut compare = TreeCompare::default();
+        compare.set_likeness(true);
+        let tolerance = TIME_ONLY;
 
         let rows = build_tolerant(&mut compare, &left, &right, &tolerance);
         compare.start(&rows, [Some(&left), Some(&right)], Instant::now());
