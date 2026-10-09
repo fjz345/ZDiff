@@ -1234,6 +1234,11 @@ impl<'a> ZApp {
                         FileAction::OpenUniversalPath => self.open_universal_path_window = true,
                         FileAction::Find => app_state_ctx.find_open = true,
                         FileAction::Goto => app_state_ctx.goto_open = true,
+                        FileAction::NextConflict | FileAction::PrevConflict
+                            if let Some(merge) = &mut self.merge =>
+                        {
+                            merge.navigate(action == FileAction::NextConflict);
+                        }
                         FileAction::NextConflict => {
                             app_state_ctx.diff_processor.conflict_cursor.inc();
                             log::info!(

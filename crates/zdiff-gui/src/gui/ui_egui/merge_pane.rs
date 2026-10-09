@@ -110,6 +110,24 @@ pub fn counts(merge: &Merge) -> MergeCounts {
     }
 }
 
+/// The next chunk after (or before) `current`, wrapping: unresolved conflicts while any are
+/// left, else every changed chunk.
+pub fn step_chunk(merge: &Merge, current: Option<usize>, forward: bool) -> Option<usize> {
+    let len = merge.chunks().len();
+    let any_unresolved = merge.resolutions().contains(&Resolution::Unresolved);
+    let wanted = |i: &usize| {
+        merge.chunks()[*i].kind != ChunkKind::Unchanged
+            && (!any_unresolved || merge.resolutions()[*i] == Resolution::Unresolved)
+    };
+    if forward {
+        let after = current.map_or(0, |c| c + 1);
+        (after..len).chain(0..after).find(wanted)
+    } else {
+        let before = current.unwrap_or(len);
+        (0..before).rev().chain((before..len).rev()).find(wanted)
+    }
+}
+
 pub fn picks(has_base: bool) -> Vec<Pick> {
     let mut picks = vec![
         Pick::Theirs,
@@ -176,6 +194,7 @@ pub struct MergeDoc {
     rows: Vec<MergeRow>,
     output: Arc<CachedFile<RawToken>>,
     output_lines: Vec<Range<usize>>,
+    current: Option<usize>,
 }
 
 impl MergeDoc {
@@ -204,6 +223,7 @@ impl MergeDoc {
             merge: Merge::new(chunks),
             output: Arc::new(text_file(UniversalPath::new(""), String::new())),
             output_lines: Vec::new(),
+            current: None,
             base,
             theirs,
             yours,
@@ -238,6 +258,17 @@ impl MergeDoc {
 
     pub fn output_text(&self) -> &str {
         &self.output.contents
+    }
+
+    pub fn current(&self) -> Option<usize> {
+        self.current
+    }
+
+    /// Steps the current chunk and returns its first row.
+    pub fn navigate(&mut self, forward: bool) -> Option<usize> {
+        self.current = step_chunk(&self.merge, self.current, forward);
+        let chunk = self.current?;
+        self.rows.iter().position(|row| row.chunk == chunk)
     }
 
     pub fn pick(&mut self, chunk: usize, pick: Pick) {
@@ -372,6 +403,7 @@ fn top_panes_ui(
     doc: &MergeDoc,
     occurrences: &mut [OccurrenceState; 3],
     code_language: &str,
+    scroll_to_row: Option<usize>,
 ) -> Option<(usize, Pick)> {
     let row_h = ui.text_style_height(&egui::TextStyle::Monospace);
     let pane_w = ((ui.available_width() - STRIP_WIDTH) / 3.0).max(0.0);
@@ -403,54 +435,62 @@ fn top_panes_ui(
     let has_base = doc.base.is_some();
     let mut picked = None;
     ui.spacing_mut().item_spacing.y = 0.0;
-    egui::ScrollArea::vertical()
+    let mut scroll = egui::ScrollArea::vertical()
         .id_salt("merge_top_panes")
-        .auto_shrink(false)
-        .show_rows(ui, row_h, doc.rows.len(), |ui, range| {
-            for i in range {
-                let row = doc.rows[i];
-                let resolution = &doc.merge.resolutions()[row.chunk];
-                let kind = doc.merge.chunks()[row.chunk].kind;
-                let bg = chunk_bg(kind, resolution);
-                let (rect, _) = ui.allocate_exact_size(
-                    egui::vec2(ui.available_width(), row_h),
-                    egui::Sense::hover(),
+        .auto_shrink(false);
+    if let Some(row) = scroll_to_row {
+        scroll = scroll.vertical_scroll_offset(row as f32 * row_h);
+    }
+    scroll.show_rows(ui, row_h, doc.rows.len(), |ui, range| {
+        for i in range {
+            let row = doc.rows[i];
+            let resolution = &doc.merge.resolutions()[row.chunk];
+            let kind = doc.merge.chunks()[row.chunk].kind;
+            let bg = chunk_bg(kind, resolution);
+            let (rect, _) = ui.allocate_exact_size(
+                egui::vec2(ui.available_width(), row_h),
+                egui::Sense::hover(),
+            );
+            let lines = [row.theirs, row.base, row.yours];
+            for pane in 0..3 {
+                let cell = egui::Rect::from_min_size(
+                    rect.min + egui::vec2(pane as f32 * pane_w, 0.0),
+                    egui::vec2(pane_w, row_h),
                 );
-                let lines = [row.theirs, row.base, row.yours];
-                for pane in 0..3 {
-                    let cell = egui::Rect::from_min_size(
-                        rect.min + egui::vec2(pane as f32 * pane_w, 0.0),
-                        egui::vec2(pane_w, row_h),
-                    );
-                    let content = line_content(&doc.lines[pane], lines[pane], bg);
-                    let file = files[pane].cloned();
-                    draw_line(
-                        ui,
-                        cell,
-                        i,
-                        &mut occurrences[pane],
-                        file,
-                        &content,
-                        code_language,
-                    );
-                }
-                if row.first && kind != ChunkKind::Unchanged {
-                    let strip = egui::Rect::from_min_size(
-                        rect.min + egui::vec2(3.0 * pane_w + 4.0, 0.0),
-                        egui::vec2(STRIP_WIDTH - 4.0, row_h),
-                    );
-                    let mut strip_ui = ui.new_child(
-                        UiBuilder::new()
-                            .max_rect(strip)
-                            .layout(Layout::left_to_right(egui::Align::Center)),
-                    );
-                    strip_ui.set_clip_rect(strip.intersect(ui.clip_rect()));
-                    if let Some(pick) = chunk_strip(&mut strip_ui, resolution, has_base, row_h) {
-                        picked = Some((row.chunk, pick));
-                    }
+                let content = line_content(&doc.lines[pane], lines[pane], bg);
+                let file = files[pane].cloned();
+                draw_line(
+                    ui,
+                    cell,
+                    i,
+                    &mut occurrences[pane],
+                    file,
+                    &content,
+                    code_language,
+                );
+            }
+            if doc.current == Some(row.chunk) {
+                let bar = egui::Rect::from_min_size(rect.min, egui::vec2(3.0, row_h));
+                ui.painter()
+                    .rect_filled(bar, 0.0, ui.visuals().selection.bg_fill);
+            }
+            if row.first && kind != ChunkKind::Unchanged {
+                let strip = egui::Rect::from_min_size(
+                    rect.min + egui::vec2(3.0 * pane_w + 4.0, 0.0),
+                    egui::vec2(STRIP_WIDTH - 4.0, row_h),
+                );
+                let mut strip_ui = ui.new_child(
+                    UiBuilder::new()
+                        .max_rect(strip)
+                        .layout(Layout::left_to_right(egui::Align::Center)),
+                );
+                strip_ui.set_clip_rect(strip.intersect(ui.clip_rect()));
+                if let Some(pick) = chunk_strip(&mut strip_ui, resolution, has_base, row_h) {
+                    picked = Some((row.chunk, pick));
                 }
             }
-        });
+        }
+    });
     picked
 }
 
@@ -504,6 +544,7 @@ pub struct MergeView {
     doc: Option<MergeDoc>,
     top_occurrences: [OccurrenceState; 3],
     output_occurrences: OccurrenceState,
+    scroll_to_row: Option<usize>,
 }
 
 impl MergeView {
@@ -522,6 +563,13 @@ impl MergeView {
             doc: None,
             top_occurrences: Default::default(),
             output_occurrences: OccurrenceState::default(),
+            scroll_to_row: None,
+        }
+    }
+
+    pub fn navigate(&mut self, forward: bool) {
+        if let Some(doc) = &mut self.doc {
+            self.scroll_to_row = doc.navigate(forward);
         }
     }
 
@@ -573,6 +621,7 @@ impl MergeView {
     /// True when the view asks to be closed.
     pub fn ui(&mut self, ui: &mut egui::Ui, code_language: &str) -> bool {
         let status = self.poll();
+        let scroll_to_row = self.scroll_to_row.take();
         let mut close = false;
         egui::TopBottomPanel::top("merge_toolbar").show_inside(ui, |ui| {
             ui.horizontal(|ui| {
@@ -610,7 +659,13 @@ impl MergeView {
             });
         let picked = egui::CentralPanel::default()
             .show_inside(ui, |ui| {
-                top_panes_ui(ui, doc, &mut self.top_occurrences, code_language)
+                top_panes_ui(
+                    ui,
+                    doc,
+                    &mut self.top_occurrences,
+                    code_language,
+                    scroll_to_row,
+                )
             })
             .inner;
         if let Some((chunk, pick)) = picked {
@@ -831,6 +886,70 @@ mod tests {
                 total: 2
             }
         );
+    }
+
+    #[test]
+    fn stepping_visits_unresolved_conflicts_first_then_all_changed_chunks() {
+        use ChunkKind::*;
+        let mut merge = Merge::new(
+            [
+                Unchanged, Conflict, TheirsOnly, Conflict, Unchanged, Conflict, YoursOnly,
+            ]
+            .map(|kind| chunk(kind, 0..0, 0..0, 0..0))
+            .to_vec(),
+        );
+        let next = |merge: &Merge, at| step_chunk(merge, at, true);
+        let prev = |merge: &Merge, at| step_chunk(merge, at, false);
+
+        assert_eq!(next(&merge, None), Some(1));
+        assert_eq!(prev(&merge, None), Some(5));
+        assert_eq!(next(&merge, Some(1)), Some(3));
+        assert_eq!(next(&merge, Some(3)), Some(5));
+        assert_eq!(next(&merge, Some(5)), Some(1));
+        assert_eq!(prev(&merge, Some(1)), Some(5));
+        assert_eq!(next(&merge, Some(2)), Some(3));
+        assert_eq!(prev(&merge, Some(2)), Some(1));
+
+        merge.pick(3, Pick::Theirs);
+        assert_eq!(next(&merge, Some(3)), Some(5));
+        assert_eq!(prev(&merge, Some(3)), Some(1));
+        assert_eq!(next(&merge, Some(1)), Some(5));
+
+        merge.pick(1, Pick::Yours);
+        assert_eq!(next(&merge, Some(5)), Some(5));
+        assert_eq!(prev(&merge, Some(5)), Some(5));
+
+        merge.pick(5, Pick::Base);
+        assert_eq!(next(&merge, None), Some(1));
+        assert_eq!(next(&merge, Some(1)), Some(2));
+        assert_eq!(next(&merge, Some(3)), Some(5));
+        assert_eq!(next(&merge, Some(6)), Some(1));
+        assert_eq!(prev(&merge, Some(1)), Some(6));
+        assert_eq!(prev(&merge, Some(5)), Some(3));
+        assert_eq!(prev(&merge, None), Some(6));
+    }
+
+    #[test]
+    fn stepping_without_changed_chunks_goes_nowhere() {
+        let unchanged = Merge::new(vec![chunk(ChunkKind::Unchanged, 0..1, 0..1, 0..1)]);
+        assert_eq!(step_chunk(&unchanged, Some(0), true), None);
+        assert_eq!(step_chunk(&unchanged, Some(0), false), None);
+        for merge in [unchanged, Merge::new(Vec::new())] {
+            assert_eq!(step_chunk(&merge, None, true), None);
+            assert_eq!(step_chunk(&merge, None, false), None);
+        }
+    }
+
+    #[test]
+    fn navigating_the_doc_goes_to_the_first_row_of_the_chunk() {
+        let mut doc = doc(Some("1\n2\n3\n4\n"), "1\nT\n3\n4\nend\n", "1\nY\n3\n4\n");
+        assert_eq!(doc.current(), None);
+        assert_eq!(doc.navigate(true), Some(1));
+        assert_eq!(doc.current(), Some(1));
+        doc.pick(1, Pick::Theirs);
+        assert_eq!(doc.navigate(true), Some(4));
+        assert_eq!(doc.current(), Some(3));
+        assert_eq!(doc.navigate(false), Some(1));
     }
 
     #[test]
