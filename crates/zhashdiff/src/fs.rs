@@ -5,7 +5,10 @@ use std::{
     time::SystemTime,
 };
 
-use crate::scan::{LocalDisk, scan};
+use crate::{
+    scan::{ContentHash, LocalDisk, scan},
+    vcs_source::ContentSource,
+};
 
 pub type FsNodeId = usize;
 pub type FsNodeDepth = u16;
@@ -50,6 +53,7 @@ pub struct FsNode {
     pub kind: FsNodeKind,
     pub size: u64,
     pub modified: Option<SystemTime>,
+    pub hash: Option<ContentHash>,
 }
 
 impl FsNode {
@@ -134,6 +138,7 @@ pub struct FileSystemModel {
     root_path: PathBuf,
     root_id: FsNodeId,
     nodes: Vec<FsNode>,
+    content: ContentSource,
 }
 
 impl FileSystemModel {
@@ -156,7 +161,16 @@ impl FileSystemModel {
             root_path: root_path.as_ref().to_path_buf(),
             root_id: 0,
             nodes: Vec::new(),
+            content: ContentSource::Disk,
         }
+    }
+
+    pub fn content(&self) -> &ContentSource {
+        &self.content
+    }
+
+    pub(crate) fn set_content(&mut self, content: ContentSource) {
+        self.content = content;
     }
 
     pub fn get_node(&self, node_id: FsNodeId) -> Option<&FsNode> {
@@ -257,12 +271,14 @@ impl FileSystemModel {
         kind: FsNodeKind,
         size: u64,
         modified: Option<SystemTime>,
+        hash: Option<ContentHash>,
     ) -> FsNodeId {
         let new_node = FsNode {
             parent,
             kind,
             size,
             modified,
+            hash,
         };
         let next_node_id: FsNodeId = self.nodes.len();
         self.nodes.push(new_node);

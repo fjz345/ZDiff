@@ -6,3 +6,4 @@ pub mod fs;
 pub mod likeness;
 pub mod scan;
 pub mod uasset;
+pub mod vcs_source;

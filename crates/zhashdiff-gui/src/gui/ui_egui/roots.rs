@@ -4,6 +4,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use zcommon::universal_path::UniversalPath;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Side {
     Folder1,
@@ -36,7 +38,14 @@ impl fmt::Display for InvalidRoot {
     }
 }
 
+/// A `folder@git:<rev>` root is not checked on disk: the folder may exist only at that revision.
 pub fn validate_root(path: &Path) -> Result<PathBuf, InvalidRoot> {
+    if let UniversalPath::Git(local, rev) = UniversalPath::from(path) {
+        // Only the folder goes through `absolute`, which would turn `origin/main` into `origin\main`.
+        let local = std::path::absolute(&local)
+            .map_err(|e| InvalidRoot::Unreadable(path.to_path_buf(), e.to_string()))?;
+        return Ok(PathBuf::from(UniversalPath::Git(local, rev).to_string()));
+    }
     match std::fs::metadata(path) {
         Ok(meta) if meta.is_dir() => std::path::absolute(path)
             .map_err(|e| InvalidRoot::Unreadable(path.to_path_buf(), e.to_string())),
@@ -109,6 +118,7 @@ pub fn apply_launch_args(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use zcommon::universal_path::GitRev;
 
     fn args(list: &[&Path]) -> LaunchArgs {
         parse_launch_args(list.iter().map(|p| p.as_os_str().to_owned()))
@@ -158,6 +168,29 @@ mod tests {
         let root = root.unwrap();
         assert!(root.is_absolute());
         assert!(root.ends_with("src"));
+    }
+
+    #[test]
+    fn git_revision_folder_is_stored_absolute_with_its_revision() {
+        let mut root = None;
+        set_root(&mut root, Side::Folder1, Path::new("src@git:origin/main")).unwrap();
+        let root = root.unwrap();
+        let UniversalPath::Git(local, rev) = UniversalPath::from(root.as_path()) else {
+            panic!("not a git root: {}", root.display());
+        };
+        assert!(local.is_absolute());
+        assert!(local.ends_with("src"));
+        assert_eq!(rev, GitRev::Rev("origin/main".into()));
+        assert!(root.to_str().unwrap().ends_with(r"\src@git:origin/main"));
+    }
+
+    #[test]
+    fn git_revision_of_a_folder_missing_from_the_working_tree_is_accepted() {
+        let dir = tempfile::tempdir().unwrap();
+        let text = format!("{}@git:index", dir.path().join("gone").display());
+        let mut root = None;
+        assert_eq!(set_root(&mut root, Side::Folder2, Path::new(&text)), Ok(()));
+        assert_eq!(root, Some(PathBuf::from(text)));
     }
 
     #[test]

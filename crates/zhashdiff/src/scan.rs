@@ -1,13 +1,26 @@
 use std::{
+    collections::HashMap,
     io,
     path::{Path, PathBuf},
     sync::atomic::{AtomicBool, AtomicUsize, Ordering},
     time::SystemTime,
 };
 
-use zcommon::hash::HashRepresentation;
-
 use crate::fs::{FileSystemModel, FsNodeId, FsNodeKind};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum HashKind {
+    GitBlob,
+}
+
+/// Only comparable with a hash of the same kind.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct ContentHash {
+    pub kind: HashKind,
+    pub value: String,
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ListingEntry {
@@ -15,7 +28,7 @@ pub struct ListingEntry {
     pub is_dir: bool,
     pub size: u64,
     pub modified: Option<SystemTime>,
-    pub hash: Option<HashRepresentation>,
+    pub hash: Option<ContentHash>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -31,6 +44,80 @@ pub trait ListingSource {
 }
 
 pub struct LocalDisk;
+
+/// A file of a source that lists everything at once; `rel_path` is `/`-separated.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FlatEntry {
+    pub rel_path: String,
+    pub size: u64,
+    pub hash: Option<ContentHash>,
+}
+
+/// Folders are derived from the file paths, so it has no empty folders.
+#[derive(Debug)]
+pub struct FlatListing {
+    dirs: HashMap<PathBuf, Vec<Result<ListingEntry, SkippedEntry>>>,
+}
+
+impl FlatListing {
+    /// `skipped` is reported as entries of `root`.
+    pub fn new(root: &Path, files: Vec<FlatEntry>, skipped: Vec<SkippedEntry>) -> Self {
+        let mut dirs = HashMap::new();
+        dirs.insert(
+            root.to_path_buf(),
+            skipped.into_iter().map(Err).collect::<Vec<_>>(),
+        );
+        for file in files {
+            if file.rel_path.split('/').any(str::is_empty) {
+                dirs.get_mut(root).unwrap().push(Err(SkippedEntry {
+                    path: root.to_path_buf(),
+                    reason: format!("malformed path {:?}", file.rel_path),
+                }));
+                continue;
+            }
+            let (folders, name) = match file.rel_path.rsplit_once('/') {
+                Some((folders, name)) => (Some(folders), name),
+                None => (None, file.rel_path.as_str()),
+            };
+            // Segment by segment, so the paths have the platform separator like a disk scan's.
+            let mut dir = root.to_path_buf();
+            for segment in folders.into_iter().flat_map(|folders| folders.split('/')) {
+                let sub = dir.join(segment);
+                if !dirs.contains_key(&sub) {
+                    dirs.insert(sub.clone(), Vec::new());
+                    dirs.get_mut(&dir).unwrap().push(Ok(ListingEntry {
+                        path: sub.clone(),
+                        is_dir: true,
+                        size: 0,
+                        modified: None,
+                        hash: None,
+                    }));
+                }
+                dir = sub;
+            }
+            let path = dir.join(name);
+            dirs.get_mut(&dir).unwrap().push(Ok(ListingEntry {
+                path,
+                is_dir: false,
+                size: file.size,
+                modified: None,
+                hash: file.hash,
+            }));
+        }
+        Self { dirs }
+    }
+}
+
+impl ListingSource for FlatListing {
+    fn children(&self, dir: &Path) -> io::Result<Vec<Result<ListingEntry, SkippedEntry>>> {
+        self.dirs.get(dir).cloned().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("{} is not a listed folder", dir.display()),
+            )
+        })
+    }
+}
 
 impl ListingSource for LocalDisk {
     fn children(&self, dir: &Path) -> io::Result<Vec<Result<ListingEntry, SkippedEntry>>> {
@@ -89,7 +176,7 @@ pub fn scan(
         model: FileSystemModel::empty(root),
         skipped: Vec::new(),
     };
-    let root_id = scanner.push(None, FsNodeKind::new_empty_dir(root), 0, None);
+    let root_id = scanner.push(None, FsNodeKind::new_empty_dir(root), 0, None, None);
     assert_eq!(root_id, 0);
     scanner.add_children(root_id, listing)?;
 
@@ -114,9 +201,10 @@ impl Scanner<'_> {
         kind: FsNodeKind,
         size: u64,
         modified: Option<SystemTime>,
+        hash: Option<ContentHash>,
     ) -> FsNodeId {
         self.found.fetch_add(1, Ordering::Relaxed);
-        self.model.push_node(parent, kind, size, modified)
+        self.model.push_node(parent, kind, size, modified, hash)
     }
 
     fn add_children(
@@ -153,6 +241,7 @@ impl Scanner<'_> {
                     FsNodeKind::new_empty_dir(&entry.path),
                     entry.size,
                     entry.modified,
+                    None,
                 );
                 self.add_children(id, sub_listing)?;
                 id
@@ -162,6 +251,7 @@ impl Scanner<'_> {
                     FsNodeKind::new_file(&entry.path),
                     entry.size,
                     entry.modified,
+                    entry.hash,
                 )
             };
             children.push(child_id);
@@ -364,6 +454,106 @@ mod tests {
             model.total_files_and_folders()
         );
         FileSystemModel::assert_tree_consistency(model);
+    }
+
+    fn flat(rel_path: &str, size: u64, hash: Option<&str>) -> FlatEntry {
+        FlatEntry {
+            rel_path: rel_path.into(),
+            size,
+            hash: hash.map(|value| ContentHash {
+                kind: HashKind::GitBlob,
+                value: value.into(),
+            }),
+        }
+    }
+
+    fn scan_flat(root: &Path, listing: &FlatListing) -> ScanOutput {
+        scan(listing, root, &AtomicBool::new(false), &AtomicUsize::new(0))
+            .unwrap()
+            .unwrap()
+    }
+
+    #[test]
+    fn flat_listing_derives_nested_folders() {
+        let root = Path::new(r"D:\repo\src@git:main");
+        let skipped = SkippedEntry {
+            path: root.join("sub"),
+            reason: "submodule".into(),
+        };
+        let listing = FlatListing::new(
+            root,
+            vec![
+                flat("deep/x/y.rs", 3, Some("1111")),
+                flat("a.txt", 5, Some("2222")),
+                flat("lib/lib.rs", 7, None),
+                flat("deep/z.rs", 9, Some("3333")),
+            ],
+            vec![skipped.clone()],
+        );
+
+        let output = scan_flat(root, &listing);
+        let model = &output.model;
+
+        assert_eq!(output.skipped, vec![skipped]);
+        assert_eq!(model.total_folders(), 4);
+        assert_eq!(model.total_files(), 4);
+        FileSystemModel::assert_tree_consistency(model);
+        let (deep, x, lib) = (
+            root.join("deep"),
+            root.join("deep").join("x"),
+            root.join("lib"),
+        );
+        assert_eq!(
+            child_paths(model, model.get_root()),
+            vec![root.join("a.txt"), deep.clone(), lib.clone()]
+        );
+        assert_eq!(
+            child_paths(model, node_at(model, &deep)),
+            vec![x.clone(), deep.join("z.rs")]
+        );
+        assert_eq!(
+            child_paths(model, node_at(model, &lib)),
+            vec![lib.join("lib.rs")]
+        );
+        assert_eq!(node_at(model, &x).parent, model.find_path(&deep));
+        let y = node_at(model, &x.join("y.rs"));
+        assert!(matches!(y.kind, FsNodeKind::File { .. }));
+        assert_eq!(y.parent, model.find_path(&x));
+        assert_eq!(y.size, 3);
+        assert_eq!(
+            y.hash,
+            Some(ContentHash {
+                kind: HashKind::GitBlob,
+                value: "1111".into()
+            })
+        );
+        assert_eq!(node_at(model, &lib.join("lib.rs")).hash, None);
+        assert_eq!(node_at(model, &deep).hash, None);
+    }
+
+    #[test]
+    fn flat_listing_without_files_is_an_empty_root() {
+        let root = Path::new(r"D:\repo@git:main");
+        let output = scan_flat(root, &FlatListing::new(root, Vec::new(), Vec::new()));
+        assert_eq!(output.model.total_files_and_folders(), 1);
+        assert!(output.model.get_root().children().unwrap().is_empty());
+    }
+
+    #[test]
+    fn flat_listing_skips_paths_with_empty_segments() {
+        let root = Path::new("root");
+        let listing = FlatListing::new(
+            root,
+            vec![flat("a//b.txt", 1, None), flat("c.txt", 1, None)],
+            Vec::new(),
+        );
+        let output = scan_flat(root, &listing);
+        assert_eq!(output.skipped.len(), 1);
+        assert!(output.skipped[0].reason.contains("a//b.txt"));
+        assert_eq!(
+            child_paths(&output.model, output.model.get_root()),
+            vec![root.join("c.txt")]
+        );
     }
 
     #[test]

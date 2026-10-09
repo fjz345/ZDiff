@@ -7,6 +7,8 @@ use std::time::SystemTime;
 
 use zcommon::hash::hash_file_mmap;
 
+use crate::scan::ContentHash;
+
 pub enum PathComparissonMethod {
     Byte,
     Hash,
@@ -159,6 +161,7 @@ pub struct PairSide<'a> {
     pub rel_path: &'a str,
     pub path: &'a Path,
     pub meta: FileMeta,
+    pub hash: Option<&'a ContentHash>,
 }
 
 pub trait FileReader {
@@ -189,7 +192,17 @@ pub struct PairCompare {
 }
 
 pub fn compare_pair(reader: &impl FileReader, left: &PairSide, right: &PairSide) -> PairCompare {
-    let (state, error) = match compare_pair_bytes(reader, left, right) {
+    compare_pair_with(reader, reader, left, right)
+}
+
+/// Hashes of one kind decide without a read; otherwise the content is compared.
+pub fn compare_pair_with(
+    left_reader: &impl FileReader,
+    right_reader: &impl FileReader,
+    left: &PairSide,
+    right: &PairSide,
+) -> PairCompare {
+    let (state, error) = match compare_pair_bytes(left_reader, right_reader, left, right) {
         Ok(true) => (PairState::Same, None),
         Ok(false) => (PairState::Different, None),
         Err(e) => (PairState::Different, Some(e)),
@@ -198,18 +211,24 @@ pub fn compare_pair(reader: &impl FileReader, left: &PairSide, right: &PairSide)
 }
 
 fn compare_pair_bytes(
-    reader: &impl FileReader,
+    left_reader: &impl FileReader,
+    right_reader: &impl FileReader,
     left: &PairSide,
     right: &PairSide,
 ) -> io::Result<bool> {
+    if let (Some(left_hash), Some(right_hash)) = (left.hash, right.hash)
+        && left_hash.kind == right_hash.kind
+    {
+        return Ok(left_hash.value == right_hash.value);
+    }
     if left.meta.size != right.meta.size {
         return Ok(false);
     }
     if left.meta.size == 0 {
         return Ok(true);
     }
-    let mut file1 = reader.open(left.path)?;
-    let mut file2 = reader.open(right.path)?;
+    let mut file1 = left_reader.open(left.path)?;
+    let mut file2 = right_reader.open(right.path)?;
     let mut buf1 = vec![0u8; PAIR_CHUNK_SIZE];
     let mut buf2 = vec![0u8; PAIR_CHUNK_SIZE];
     loop {
@@ -275,6 +294,7 @@ impl PairCompareCache {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::scan::HashKind;
     use std::cell::Cell;
     use std::path::PathBuf;
     use std::rc::Rc;
@@ -354,6 +374,7 @@ mod tests {
                 size: size as u64,
                 modified,
             },
+            hash: None,
         }
     }
 
@@ -433,6 +454,70 @@ mod tests {
         assert_eq!(result.error.unwrap().kind(), io::ErrorKind::NotFound);
     }
 
+    fn blob(value: &str) -> ContentHash {
+        ContentHash {
+            kind: HashKind::GitBlob,
+            value: value.into(),
+        }
+    }
+
+    fn hashed<'a>(path: &'a str, size: usize, hash: &'a ContentHash) -> PairSide<'a> {
+        PairSide {
+            hash: Some(hash),
+            ..side(path, size, time(1))
+        }
+    }
+
+    #[test]
+    fn equal_hashes_of_one_kind_are_same_without_reading() {
+        let reader = CountingReader::with(&[("a", vec![1; 10]), ("b", vec![2; 10])]);
+        let (h1, h2) = (blob("aaaa"), blob("aaaa"));
+        let result = compare_pair(&reader, &hashed("a", 10, &h1), &hashed("b", 10, &h2));
+        assert_eq!(result.state, PairState::Same);
+        assert!(result.error.is_none());
+        assert_eq!(reader.reads(), (0, 0));
+    }
+
+    #[test]
+    fn different_hashes_of_one_kind_are_different_without_reading() {
+        let reader = CountingReader::with(&[("a", vec![1; 10]), ("b", vec![1; 10])]);
+        let (h1, h2) = (blob("aaaa"), blob("bbbb"));
+        let result = compare_pair(&reader, &hashed("a", 10, &h1), &hashed("b", 10, &h2));
+        assert_eq!(result.state, PairState::Different);
+        assert_eq!(reader.reads(), (0, 0));
+    }
+
+    #[test]
+    fn hash_on_one_side_only_compares_content() {
+        let left = CountingReader::with(&[("a", vec![1; 10])]);
+        let right = CountingReader::with(&[("a", vec![1; 10])]);
+        let hash = blob("aaaa");
+        let result = compare_pair_with(
+            &left,
+            &right,
+            &hashed("a", 10, &hash),
+            &side("a", 10, time(1)),
+        );
+        assert_eq!(result.state, PairState::Same);
+        assert_eq!(left.reads(), (1, 10));
+        assert_eq!(right.reads(), (1, 10));
+    }
+
+    #[test]
+    fn each_side_reads_through_its_own_reader() {
+        let left = CountingReader::with(&[("a", vec![1; 10])]);
+        let right = CountingReader::with(&[("a", vec![2; 10])]);
+        let result = compare_pair_with(
+            &left,
+            &right,
+            &side("a", 10, time(1)),
+            &side("a", 10, time(1)),
+        );
+        assert_eq!(result.state, PairState::Different);
+        assert_eq!(left.reads().0, 1);
+        assert_eq!(right.reads().0, 1);
+    }
+
     #[test]
     fn disk_reader_compares_files() {
         let dir = tempfile::tempdir().unwrap();
@@ -452,6 +537,7 @@ mod tests {
                     size: 4,
                     modified: std::fs::metadata(path).unwrap().modified().unwrap(),
                 },
+                hash: None,
             }
         }
         let same = compare_pair(&DiskReader, &side("a", &a), &side("b", &b));

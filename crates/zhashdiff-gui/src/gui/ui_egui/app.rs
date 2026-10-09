@@ -21,13 +21,15 @@ use zcommon::{
         keymap::Keymap,
         style_window::StyleWindow,
     },
+    vcs::git::GitCommand,
 };
 use zhashdiff::{
     external_diff_tool::DiffToolConfig,
     filter::PathFilter,
     fs::{FileSystemModel, FsNodeId},
-    scan::{LocalDisk, ScanOutput, scan},
+    scan::ScanOutput,
     uasset::BlueprintDetector,
+    vcs_source::scan_side,
 };
 
 use crate::ui_egui::{
@@ -360,7 +362,12 @@ impl ScanJob {
         std::thread::Builder::new()
             .name("folder scan".into())
             .spawn(move || {
-                let output = scan(&LocalDisk, &thread_root, &thread_cancel, &thread_found);
+                let output = scan_side(
+                    &GitCommand::default(),
+                    &thread_root,
+                    &thread_cancel,
+                    &thread_found,
+                );
                 // The job was dropped when the receiver is gone; nobody wants the result.
                 let _ = sender.send(output);
                 repaint.request_repaint();

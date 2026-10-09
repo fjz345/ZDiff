@@ -14,11 +14,11 @@ use std::{
 use memmap2::Mmap;
 use zcommon::kinds::KindTable;
 use zhashdiff::{
-    comparison::{
-        DiskReader, FileMeta, PairCompare, PairCompareCache, PairSide, PairState, compare_pair,
-    },
+    comparison::{FileMeta, PairCompare, PairCompareCache, PairSide, PairState, compare_pair_with},
     fs::{FileSystemModel, FsNode},
     likeness::{Likeness, likeness},
+    scan::ContentHash,
+    vcs_source::ContentSource,
 };
 
 use crate::ui_egui::fs_tree::{DiffState, FileSystemView, VisibleRowTwoFolderDiff};
@@ -50,20 +50,24 @@ pub struct PendingPair {
     pub paths: [PathBuf; 2],
     sizes: [u64; 2],
     modified: [Option<SystemTime>; 2],
+    hashes: [Option<ContentHash>; 2],
+    sources: [ContentSource; 2],
 }
 
 impl PendingPair {
-    fn new(rel_path: &str, nodes: [&FsNode; 2]) -> Self {
+    fn new(rel_path: &str, nodes: [&FsNode; 2], sources: [&ContentSource; 2]) -> Self {
         Self {
             rel_path: rel_path.to_owned(),
             paths: nodes.map(|node| node.as_path().as_ref().to_path_buf()),
             sizes: nodes.map(|node| node.size),
             modified: nodes.map(|node| node.modified),
+            hashes: nodes.map(|node| node.hash.clone()),
+            sources: sources.map(Clone::clone),
         }
     }
 
     pub fn compare(&self) -> PairCompare {
-        // compare_pair decides on the sizes and the content; the time is only a cache key.
+        // compare_pair decides on the hashes, sizes and content; the time is only a cache key.
         let side = |i: usize| PairSide {
             rel_path: &self.rel_path,
             path: &self.paths[i],
@@ -71,8 +75,9 @@ impl PendingPair {
                 size: self.sizes[i],
                 modified: self.modified[i].unwrap_or(SystemTime::UNIX_EPOCH),
             },
+            hash: self.hashes[i].as_ref(),
         };
-        compare_pair(&DiskReader, &side(0), &side(1))
+        compare_pair_with(&self.sources[0], &self.sources[1], &side(0), &side(1))
     }
 
     /// `None` when cancelled.
@@ -132,6 +137,7 @@ fn cache_side<'a>(
             size,
             modified: modified?,
         },
+        hash: None,
     })
 }
 
@@ -155,6 +161,10 @@ pub fn pending_pairs(
             DiffState::Pending(l_id, r_id) => Some(PendingPair::new(
                 &row.rel_path,
                 [node(0, l_id)?, node(1, r_id)?],
+                [
+                    views[0]?.file_system.content(),
+                    views[1]?.file_system.content(),
+                ],
             )),
             _ => None,
         })
@@ -397,6 +407,10 @@ impl TreeCompare {
                     return None;
                 };
                 let nodes = [node(0, l_id)?, node(1, r_id)?];
+                let sources = [
+                    views[0]?.file_system.content(),
+                    views[1]?.file_system.content(),
+                ];
                 // Rows patched less often than results arrive can still be Pending.
                 let state = match row.diff_state {
                     DiffState::Pending(..) => self.state_of(&row.rel_path, nodes),
@@ -409,9 +423,11 @@ impl TreeCompare {
                 let likeness = self.measure_likeness
                     && state != Some(PairState::Same)
                     && nodes.iter().all(|node| node.is_file())
+                    // Likeness maps the files from disk.
+                    && sources.iter().all(|source| **source == ContentSource::Disk)
                     && self.likeness_of(&row.rel_path, nodes).is_none();
                 (compare || likeness).then(|| PairTask {
-                    pair: PendingPair::new(&row.rel_path, nodes),
+                    pair: PendingPair::new(&row.rel_path, nodes, sources),
                     compare,
                     likeness,
                 })
