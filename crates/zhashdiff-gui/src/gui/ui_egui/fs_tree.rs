@@ -471,7 +471,7 @@ pub const PENDING_DELETION_COLOR: egui::Color32 = egui::Color32::LIGHT_RED;
 const FOLDER_ROW_TINT: egui::Color32 =
     egui::Color32::from_rgba_unmultiplied_const(120, 150, 255, 14);
 const DIMMED_TEXT_COLOR: egui::Color32 = egui::Color32::from_gray(105);
-const GUIDE_LINE_COLOR: egui::Color32 = egui::Color32::from_gray(75);
+const GUIDE_LINE_COLOR: egui::Color32 = egui::Color32::from_gray(95);
 const TREE_INDENT: f32 = 16.0;
 const EXPANDER_WIDTH: f32 = 12.0;
 
