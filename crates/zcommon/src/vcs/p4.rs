@@ -192,7 +192,7 @@ pub fn resolve_p4_env(config: &P4Config, file: Option<&UniversalPath>, gui: bool
 fn depot_path_without_revision(file: &UniversalPath) -> Result<&str, String> {
     match file {
         UniversalPath::Depot(path, _rev) => Ok(path),
-        UniversalPath::Local(path) => Err(format!("{} is not a depot path", path.display())),
+        _ => Err(format!("{file} is not a depot path")),
     }
 }
 
@@ -428,6 +428,7 @@ impl<F: Fn(&[&str]) -> Result<String, String>> P4Runner for FakeP4<F> {
 #[cfg(test)]
 mod tests {
     use std::ffi::OsStr;
+    use crate::universal_path::DepotRev;
 
     use super::*;
 
@@ -639,7 +640,7 @@ mod tests {
 
     #[test]
     fn a_depot_path_a_relative_path_or_no_file_keep_the_cwd() {
-        let depot = UniversalPath::Depot("//depot/main/a.txt".into(), Some(3));
+        let depot = UniversalPath::Depot("//depot/main/a.txt".into(), Some(DepotRev::Rev(3)));
         let bare = UniversalPath::Local(PathBuf::from("a.txt"));
         let relative = UniversalPath::Local(PathBuf::from("sub").join("a.txt"));
         for file in [Some(&depot), Some(&bare), Some(&relative), None] {
@@ -752,7 +753,8 @@ mod tests {
     #[test]
     fn local_path_of_a_depot_file_asks_p4_where_without_the_revision() {
         let p4 = FakeP4::new(|_: &[&str]| Ok(WHERE_SPACES.to_string()));
-        let depot = UniversalPath::Depot("//depot/main/my dir/a b.txt".into(), Some(3));
+        let depot =
+            UniversalPath::Depot("//depot/main/my dir/a b.txt".into(), Some(DepotRev::Rev(3)));
         assert_eq!(
             local_path_of_depot_file(&depot, &p4),
             Ok(PathBuf::from(r"C:\ws\main\my dir\a b.txt"))

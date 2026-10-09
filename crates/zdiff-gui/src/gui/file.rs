@@ -4,7 +4,7 @@ use std::sync::{Arc, mpsc};
 
 use zdiff::cached_file::CachedFile;
 use zdiff::lexer::{LEXER_MODE_DEFAULT, RawToken};
-use zdiff::universal_path::UniversalPath;
+use zdiff::universal_path::{DepotRev, UniversalPath};
 
 use crate::p4::P4Command;
 use crate::viewer::{ViewerKind, sniff_viewer_kind};
@@ -106,7 +106,11 @@ pub fn load_depot_file(
     let mut temp_path = temp_root.join(depot_str.trim_start_matches('/'));
     if let Some(r) = rev {
         let mut filename = temp_path.file_name().unwrap_or_default().to_os_string();
-        filename.push(format!("_rev{}", r));
+        filename.push(match r {
+            DepotRev::Rev(n) => format!("_rev{n}"),
+            DepotRev::Change(n) => format!("_change{n}"),
+            DepotRev::Shelf(n) => format!("_shelf{n}"),
+        });
         temp_path.set_file_name(filename);
     }
 
@@ -402,6 +406,9 @@ impl FileProcessor {
                         diff_lexer_mode,
                         P4Command::get_depot_file_bytes,
                     ),
+                    UniversalPath::Git(..) => Err(format!(
+                        "Cannot load {path_clone}: git revisions are not supported yet"
+                    )),
                 };
                 let loaded_file_opt = loaded.inspect_err(|e| log::error!("{e}")).ok();
 
@@ -458,7 +465,7 @@ mod tests {
             ),
             (
                 UniversalPath::Depot("//depot/folder".into(), None),
-                UniversalPath::Depot("//depot/folder/file.rs".into(), Some(5)),
+                UniversalPath::Depot("//depot/folder/file.rs".into(), Some(DepotRev::Rev(5))),
                 true,
             ),
             (
@@ -505,7 +512,7 @@ mod tests {
     #[test]
     fn test_is_root_valid_mixed() {
         let local = UniversalPath::Local(PathBuf::from(r"E:\Github\ZHashDiff"));
-        let depot = UniversalPath::Depot("//depot/folder/file.rs".into(), Some(2));
+        let depot = UniversalPath::Depot("//depot/folder/file.rs".into(), Some(DepotRev::Rev(2)));
 
         assert!(FileProcessor::is_root_valid(&local, &depot));
         assert!(FileProcessor::is_root_valid(&depot, &local));
@@ -548,7 +555,7 @@ mod tests {
         rev: Option<u32>,
         fetched: Result<&[u8], &str>,
     ) -> Result<LoadedFile, String> {
-        let path = UniversalPath::Depot(depot.into(), rev);
+        let path = UniversalPath::Depot(depot.into(), rev.map(DepotRev::Rev));
         load_depot_file(path, temp_root, LEXER_MODE_DEFAULT, |_| {
             fetched.map(<[u8]>::to_vec).map_err(str::to_string)
         })
@@ -563,7 +570,7 @@ mod tests {
         assert_eq!(loaded.bytes(), bytes);
         assert_eq!(
             loaded.path(),
-            &UniversalPath::Depot("//depot/art/logo.png".into(), Some(3))
+            &UniversalPath::Depot("//depot/art/logo.png".into(), Some(DepotRev::Rev(3)))
         );
     }
 

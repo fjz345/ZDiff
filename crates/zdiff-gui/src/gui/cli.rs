@@ -362,6 +362,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use zdiff::universal_path::DepotRev;
 
     fn parse(args: &[&str]) -> Result<Launch, LaunchError> {
         parse_launch_args(args.iter().copied())
@@ -463,7 +464,7 @@ mod tests {
             launch.request,
             diff(
                 Side {
-                    path: UniversalPath::Depot("//depot/main/a.cpp".into(), Some(3)),
+                    path: UniversalPath::Depot("//depot/main/a.cpp".into(), Some(DepotRev::Rev(3))),
                     label: None
                 },
                 Side {

@@ -64,7 +64,7 @@ pub fn sniff_viewer_kind(bytes: &[u8]) -> ViewerKind {
 /// the string, so `//depot/a.png#3` still gives `png`.
 pub fn path_extension(path: &UniversalPath) -> Option<String> {
     let name = match path {
-        UniversalPath::Local(path) => path.file_name()?.to_str()?,
+        UniversalPath::Local(path) | UniversalPath::Git(path, _) => path.file_name()?.to_str()?,
         UniversalPath::Depot(path, _) => path.rsplit('/').next()?,
     };
     let (stem, extension) = name.rsplit_once('.')?;
@@ -483,6 +483,7 @@ pub fn conflict_count(kind: Option<ViewerKind>, text: usize, hex: usize) -> usiz
 mod tests {
     use super::*;
     use zcommon::ffmpeg::resolve_ffmpeg;
+    use zdiff::universal_path::DepotRev;
 
     #[test]
     fn conflict_navigation_counts_the_shown_viewers_stops() {
@@ -667,7 +668,7 @@ mod tests {
         assert_eq!(
             path_extension(&UniversalPath::Depot(
                 "//depot/a.b/Image.Png".into(),
-                Some(5)
+                Some(DepotRev::Rev(5))
             )),
             Some("png".into())
         );
@@ -689,7 +690,7 @@ mod tests {
     fn map_lookup_uses_the_paths_extension_in_any_case() {
         let map = zbin_hex_map();
         let upper = UniversalPath::from(r"C:\x\DATA.ZBIN");
-        let depot = UniversalPath::Depot("//depot/x/data.Zbin".into(), Some(3));
+        let depot = UniversalPath::Depot("//depot/x/data.Zbin".into(), Some(DepotRev::Rev(3)));
         assert_eq!(
             kind(resolve_viewer(
                 None,

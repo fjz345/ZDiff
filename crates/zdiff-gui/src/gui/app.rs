@@ -1393,7 +1393,7 @@ impl<'a> ZApp {
                                     Err(e) => log::error!("Failed to open revision graph: {e}"),
                                 }
                             }
-                            UniversalPath::Local(path_buf) => {
+                            UniversalPath::Local(path_buf) | UniversalPath::Git(path_buf, _) => {
                                 log::info!(
                                     "Can not open revision graph for local path {}",
                                     path_buf.display()
@@ -1409,7 +1409,7 @@ impl<'a> ZApp {
                                     Err(e) => log::error!("Failed to open timelapse view: {e}"),
                                 }
                             }
-                            UniversalPath::Local(path_buf) => {
+                            UniversalPath::Local(path_buf) | UniversalPath::Git(path_buf, _) => {
                                 log::info!(
                                     "Can not open timelapse view for local path {}",
                                     path_buf.display()
