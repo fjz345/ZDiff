@@ -3,8 +3,6 @@ use std::time::SystemTime;
 use serde::{Deserialize, Serialize};
 use zhashdiff::{comparison::PairState, fs::FsNode};
 
-use crate::ui_egui::tree_likeness::percent;
-
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Tolerance {
@@ -161,8 +159,8 @@ pub fn similar_tooltip(
                 format!("same size ({size} bytes) and modification time")
             }
             Passed::Likeness { ratio } => format!(
-                "likeness {} %, at least {} %",
-                percent(ratio),
+                "likeness {:.2} %, at least {} %",
+                ratio * 100.0,
                 tolerance.min_likeness
             ),
         };
@@ -278,7 +276,11 @@ mod tests {
         assert_eq!(likeness_only(99.0).passed([left, right], Some(0.98)), []);
         assert_eq!(
             similar_tooltip(&likeness_only(99.0), Some([left, right]), Some(0.995)),
-            "Similar:\nlikeness 99 %, at least 99 %"
+            "Similar:\nlikeness 99.50 %, at least 99 %"
+        );
+        assert_eq!(
+            similar_tooltip(&likeness_only(99.5), Some([left, right]), Some(0.997)),
+            "Similar:\nlikeness 99.70 %, at least 99.5 %"
         );
     }
 
