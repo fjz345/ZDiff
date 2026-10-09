@@ -1,10 +1,8 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fmt::Display;
-use std::io;
 use std::path::Path;
 use std::path::PathBuf;
-use std::sync::Arc;
 
 use eframe::egui;
 use serde::Deserialize;
@@ -19,8 +17,6 @@ use zhashdiff::conflict::group_duplicates;
 use zhashdiff::conflict::plan_resolution;
 use zhashdiff::conflict::recycle;
 use zhashdiff::filter::PathFilter;
-use zhashdiff::fs::FileSystemModel;
-use zhashdiff::fs::FsNodeId;
 
 use crate::ui_egui::fs_tree::FileSystemView;
 use crate::ui_egui::fs_tree::PENDING_DELETION_COLOR;
@@ -112,39 +108,6 @@ fn pending_deletions(
         .deletions
         .into_iter()
         .collect()
-}
-
-/// A fresh scan of the view's folder that keeps the checked and collapsed state of
-/// every path still present.
-fn rescan(view: &FileSystemView) -> io::Result<FileSystemView> {
-    let node_path = |model: &FileSystemModel, id: FsNodeId| {
-        model
-            .get_node(id)
-            .expect("iter_nodes yields valid node ids")
-            .as_path()
-            .as_ref()
-            .to_path_buf()
-    };
-    let old_model = &view.file_system;
-    let old_ids: HashMap<PathBuf, FsNodeId> = old_model
-        .iter_nodes()
-        .map(|id| (node_path(old_model, id), id))
-        .collect();
-
-    let model = FileSystemModel::new(old_model.get_root().as_path())?;
-    let mut rescanned = FileSystemView::new(Arc::new(model));
-    for id in rescanned.file_system.iter_nodes() {
-        let Some(old_id) = old_ids.get(&node_path(&rescanned.file_system, id)) else {
-            continue;
-        };
-        if let Some(&selected) = view.selected.get(old_id) {
-            rescanned.selected.insert(id, selected);
-        }
-        if let Some(&collapsed) = view.collapsed.get(old_id) {
-            rescanned.collapsed.insert(id, collapsed);
-        }
-    }
-    Ok(rescanned)
 }
 
 /// The only way keepers are stored, so a group is either without a keeper or kept by
@@ -289,15 +252,8 @@ impl DuplicateFilesPane {
         *ctx.active_conflict_hash = None;
         self.open_diff_popup = false;
 
-        if let Some(view) = ctx.path_diff_view.file_system_1_view.as_mut() {
-            match rescan(view) {
-                Ok(rescanned) => {
-                    *view = rescanned;
-                    // The two-folder rows hold node ids of the old tree.
-                    *ctx.path_diff_view.visible_rows = None;
-                }
-                Err(e) => log::error!("Failed to rescan the folder after resolving: {e}"),
-            }
+        if ctx.path_diff_view.file_system_1_view.is_some() {
+            ctx.path_diff_view.file_system_1_scan.request_rescan();
         }
 
         self.resolution_summary = Some(summary);
@@ -410,7 +366,12 @@ impl DuplicateFilesPane {
             });
 
         if show_diff_button {
-            if ui.button("Diff").clicked() {
+            // While the folder is rescanned the tree may still list files a resolve removed.
+            let rescanning = ctx.path_diff_view.file_system_1_scan.is_scanning();
+            if ui
+                .add_enabled(!rescanning, egui::Button::new("Diff"))
+                .clicked()
+            {
                 let snapshot = ctx.hash_service.snapshot();
                 self.diff_checked_files(ctx, &snapshot.hashes);
             }
@@ -703,6 +664,7 @@ impl DuplicateFilesPane {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ui_egui::app::{SideScan, finish_side_scan};
     use crate::ui_egui::fs_tree::VisibleRowTwoFolderDiff;
     use std::fs;
     use std::io;
@@ -719,6 +681,7 @@ mod tests {
         root_1: Option<PathBuf>,
         root_2: Option<PathBuf>,
         view_1: Option<FileSystemView>,
+        scan_1: SideScan,
         view_2: Option<FileSystemView>,
         visible_rows: Option<Vec<VisibleRowTwoFolderDiff>>,
         path_filter: PathFilter,
@@ -732,9 +695,10 @@ mod tests {
         fn new(view: FileSystemView) -> Self {
             Self {
                 hash_service: HashService::new(0),
-                root_1: None,
+                root_1: view_root(Some(&view)),
                 root_2: None,
                 view_1: Some(view),
+                scan_1: SideScan::default(),
                 view_2: None,
                 visible_rows: None,
                 path_filter: PathFilter::default(),
@@ -753,12 +717,23 @@ mod tests {
             self.with_ctx(|ctx| pane.diff_checked_files(ctx, hashes))
         }
 
+        fn finish_rescan(&mut self) {
+            finish_side_scan(
+                Side::Folder1,
+                &mut self.root_1,
+                &mut self.view_1,
+                &mut self.scan_1,
+                &mut self.visible_rows,
+            );
+        }
+
         fn with_ctx<R>(&mut self, f: impl FnOnce(&mut DuplicateFilesPaneCtx) -> R) -> R {
             let mut path_diff_view = PathDiffView {
                 file_system_1_root_path: &mut self.root_1,
                 file_system_2_root_path: &mut self.root_2,
                 file_system_1_view: &mut self.view_1,
                 file_system_2_view: &mut self.view_2,
+                file_system_1_scan: &mut self.scan_1,
                 visible_rows: &mut self.visible_rows,
             };
             let mut ctx = DuplicateFilesPaneCtx {
@@ -1177,6 +1152,7 @@ mod tests {
         state.active_conflict_hash = Some(hash.clone());
 
         state.with_ctx(|ctx| pane.resolve_selected(ctx, remove_except(&c)));
+        state.finish_rescan();
 
         let summary = pane
             .resolution_summary
@@ -1235,6 +1211,7 @@ mod tests {
         );
 
         state.with_ctx(|ctx| pane.resolve_selected(ctx, remove_except(Path::new(""))));
+        state.finish_rescan();
 
         assert!(state.visible_rows.is_none());
         let view = state.view_1.as_ref().unwrap();

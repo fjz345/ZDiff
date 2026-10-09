@@ -2,8 +2,13 @@ use eframe::egui::{self, Layout, PointerButton};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
-    path::PathBuf,
-    sync::Arc,
+    io,
+    path::{Path, PathBuf},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+        mpsc,
+    },
     time::{Duration, Instant},
 };
 use zcommon::{hash::HashService, kinds::KindTable, logger::LogBuffer};
@@ -11,7 +16,8 @@ use zhashdiff::{
     comparison::{PathComparissonMethod, compare_paths},
     external_diff_tool::DiffToolConfig,
     filter::PathFilter,
-    fs::FileSystemModel,
+    fs::{FileSystemModel, FsNodeId},
+    scan::{LocalDisk, ScanOutput, scan},
     uasset::BlueprintDetector,
 };
 
@@ -38,6 +44,10 @@ pub struct AppStateCtx {
     pub file_system_model_1_view: Option<FileSystemView>,
     #[serde(skip)]
     pub file_system_model_2_view: Option<FileSystemView>,
+    #[serde(skip)]
+    file_system_1_scan: SideScan,
+    #[serde(skip)]
+    file_system_2_scan: SideScan,
     #[serde(skip)]
     two_folder_diff_visible_rows: Option<Vec<VisibleRowTwoFolderDiff>>,
     #[serde(skip)]
@@ -126,6 +136,296 @@ impl AppStateCtx {
         }
         self.blueprint_detector.pending() > 0
     }
+
+    fn update_scans(&mut self, repaint: &egui::Context) {
+        update_side_scan(
+            Side::Folder1,
+            &mut self.file_system_1_root_path,
+            &mut self.file_system_model_1_view,
+            &mut self.file_system_1_scan,
+            &mut self.two_folder_diff_visible_rows,
+            repaint,
+        );
+        update_side_scan(
+            Side::Folder2,
+            &mut self.file_system_2_root_path,
+            &mut self.file_system_model_2_view,
+            &mut self.file_system_2_scan,
+            &mut self.two_folder_diff_visible_rows,
+            repaint,
+        );
+    }
+}
+
+/// One background scan of a side's root. Dropping it cancels the scan.
+#[derive(Debug)]
+pub struct ScanJob {
+    root: PathBuf,
+    cancel: Arc<AtomicBool>,
+    found: Arc<AtomicUsize>,
+    result: mpsc::Receiver<Option<io::Result<ScanOutput>>>,
+}
+
+impl ScanJob {
+    fn start(root: PathBuf, repaint: egui::Context) -> Self {
+        let cancel = Arc::new(AtomicBool::new(false));
+        let found = Arc::new(AtomicUsize::new(0));
+        let (sender, result) = mpsc::channel();
+        let (thread_root, thread_cancel, thread_found) =
+            (root.clone(), cancel.clone(), found.clone());
+        std::thread::Builder::new()
+            .name("folder scan".into())
+            .spawn(move || {
+                let output = scan(&LocalDisk, &thread_root, &thread_cancel, &thread_found);
+                // The job was dropped when the receiver is gone; nobody wants the result.
+                let _ = sender.send(output);
+                repaint.request_repaint();
+            })
+            .expect("failed to spawn the folder scan thread");
+        Self {
+            root,
+            cancel,
+            found,
+            result,
+        }
+    }
+
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    pub fn found(&self) -> usize {
+        self.found.load(Ordering::Relaxed)
+    }
+}
+
+impl Drop for ScanJob {
+    fn drop(&mut self) {
+        self.cancel.store(true, Ordering::Relaxed);
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct SideScan {
+    job: Option<ScanJob>,
+    rescan: bool,
+}
+
+impl SideScan {
+    pub fn request_rescan(&mut self) {
+        self.rescan = true;
+    }
+
+    pub fn job(&self) -> Option<&ScanJob> {
+        self.job.as_ref()
+    }
+
+    pub fn is_scanning(&self) -> bool {
+        self.job.is_some()
+    }
+}
+
+#[derive(Debug, PartialEq)]
+enum ScanAction {
+    Keep,
+    Start(PathBuf),
+    Stop,
+    Clear,
+}
+
+fn scan_action(
+    root: Option<&Path>,
+    shown: Option<&Path>,
+    job: Option<&Path>,
+    rescan: bool,
+) -> ScanAction {
+    let Some(root) = root else {
+        return ScanAction::Clear;
+    };
+    if job == Some(root) {
+        ScanAction::Keep
+    } else if shown == Some(root) && !rescan {
+        ScanAction::Stop
+    } else {
+        ScanAction::Start(root.to_path_buf())
+    }
+}
+
+fn shown_root(view: Option<&FileSystemView>) -> Option<PathBuf> {
+    view.map(|view| view.file_system.get_root().as_path().as_ref().to_path_buf())
+}
+
+/// A rescan of the shown root keeps the checked and collapsed state of every path still present.
+fn install_scanned(old: Option<&FileSystemView>, model: FileSystemModel) -> FileSystemView {
+    let mut view = FileSystemView::new(Arc::new(model));
+    let Some(old) = old.filter(|old| shown_root(Some(old)) == shown_root(Some(&view))) else {
+        return view;
+    };
+    let node_path = |model: &FileSystemModel, id: FsNodeId| {
+        model
+            .get_node(id)
+            .expect("iter_nodes yields valid node ids")
+            .as_path()
+            .as_ref()
+            .to_path_buf()
+    };
+    let old_ids: HashMap<PathBuf, FsNodeId> = old
+        .file_system
+        .iter_nodes()
+        .map(|id| (node_path(&old.file_system, id), id))
+        .collect();
+    for id in view.file_system.iter_nodes() {
+        let Some(old_id) = old_ids.get(&node_path(&view.file_system, id)) else {
+            continue;
+        };
+        if let Some(&selected) = old.selected.get(old_id) {
+            view.selected.insert(id, selected);
+        }
+        if let Some(&collapsed) = old.collapsed.get(old_id) {
+            view.collapsed.insert(id, collapsed);
+        }
+    }
+    view
+}
+
+/// Back to the root of the shown view, so the next frame does not scan the abandoned root again.
+fn revert_root(side: Side, root: &mut Option<PathBuf>, view: Option<&FileSystemView>) {
+    match shown_root(view) {
+        Some(shown) => {
+            if set_root(root, side, &shown).is_err() {
+                clear_root(root);
+            }
+        }
+        None => clear_root(root),
+    }
+}
+
+pub(crate) fn update_side_scan(
+    side: Side,
+    root: &mut Option<PathBuf>,
+    view: &mut Option<FileSystemView>,
+    scan: &mut SideScan,
+    rows: &mut Option<Vec<VisibleRowTwoFolderDiff>>,
+    repaint: &egui::Context,
+) {
+    let action = scan_action(
+        root.as_deref(),
+        shown_root(view.as_ref()).as_deref(),
+        scan.job.as_ref().map(ScanJob::root),
+        scan.rescan,
+    );
+    match action {
+        ScanAction::Keep => {}
+        ScanAction::Start(path) => {
+            scan.job = Some(ScanJob::start(path, repaint.clone()));
+            scan.rescan = false;
+            return;
+        }
+        ScanAction::Stop => scan.job = None,
+        ScanAction::Clear => {
+            scan.job = None;
+            scan.rescan = false;
+            if view.take().is_some() {
+                *rows = None;
+            }
+        }
+    }
+
+    let Some(job) = &scan.job else {
+        return;
+    };
+    let result = match job.result.try_recv() {
+        Ok(result) => result,
+        Err(mpsc::TryRecvError::Empty) => return,
+        Err(mpsc::TryRecvError::Disconnected) => {
+            log::error!(
+                "{side}: the scan of {} stopped without a result",
+                job.root.display()
+            );
+            scan.job = None;
+            revert_root(side, root, view.as_ref());
+            return;
+        }
+    };
+    let job = scan.job.take().expect("checked above");
+    match result {
+        Some(Ok(output)) => {
+            for skipped in &output.skipped {
+                log::warn!("Skipped {}: {}", skipped.path.display(), skipped.reason);
+            }
+            *view = Some(install_scanned(view.as_ref(), output.model));
+            *rows = None;
+        }
+        Some(Err(e)) => {
+            log::error!("{side}: {}: {e}", job.root.display());
+            revert_root(side, root, view.as_ref());
+        }
+        None => {
+            log::info!("{side}: scan of {} cancelled", job.root.display());
+            revert_root(side, root, view.as_ref());
+        }
+    }
+}
+
+/// Keeps the previous view, or the empty state when there was none.
+pub(crate) fn cancel_scan(
+    side: Side,
+    root: &mut Option<PathBuf>,
+    view: Option<&FileSystemView>,
+    scan: &mut SideScan,
+) {
+    if let Some(job) = scan.job.take() {
+        log::info!("{side}: scan of {} cancelled", job.root.display());
+    }
+    scan.rescan = false;
+    revert_root(side, root, view);
+}
+
+fn ui_scan_progress(
+    ui: &mut egui::Ui,
+    side: Side,
+    root: &mut Option<PathBuf>,
+    view: Option<&FileSystemView>,
+    scan: &mut SideScan,
+) {
+    let Some(job) = scan.job() else {
+        return;
+    };
+    let progress = format!(
+        "Scanning {side}: {} entries in {}",
+        job.found(),
+        job.root().display()
+    );
+    let cancelled = ui
+        .horizontal(|ui| {
+            ui.spinner();
+            ui.label(progress);
+            ui.button("Cancel").clicked()
+        })
+        .inner;
+    if cancelled {
+        cancel_scan(side, root, view, scan);
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn finish_side_scan(
+    side: Side,
+    root: &mut Option<PathBuf>,
+    view: &mut Option<FileSystemView>,
+    scan: &mut SideScan,
+    rows: &mut Option<Vec<VisibleRowTwoFolderDiff>>,
+) {
+    let repaint = egui::Context::default();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        update_side_scan(side, root, view, scan, rows, &repaint);
+        if !scan.is_scanning() {
+            return;
+        }
+        assert!(Instant::now() < deadline, "{side} scan did not finish");
+        std::thread::sleep(Duration::from_millis(1));
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -161,6 +461,7 @@ pub struct ZApp {
 }
 
 const LONG_FRAME: Duration = Duration::from_millis(200);
+const SCAN_PROGRESS_INTERVAL: Duration = Duration::from_millis(100);
 
 fn default_zoom() -> f32 {
     1.0
@@ -352,6 +653,24 @@ impl ZApp {
         // Read before any widget runs: a single-line TextEdit gives up focus on Enter without
         // consuming the key, so a later check would hand that Enter to the tree cursor.
         let keyboard_taken = ctx.wants_keyboard_input();
+        if app_ctx.file_system_1_scan.is_scanning() || app_ctx.file_system_2_scan.is_scanning() {
+            egui::TopBottomPanel::bottom("scan_progress").show(ctx, |ui| {
+                ui_scan_progress(
+                    ui,
+                    Side::Folder1,
+                    &mut app_ctx.file_system_1_root_path,
+                    app_ctx.file_system_model_1_view.as_ref(),
+                    &mut app_ctx.file_system_1_scan,
+                );
+                ui_scan_progress(
+                    ui,
+                    Side::Folder2,
+                    &mut app_ctx.file_system_2_root_path,
+                    app_ctx.file_system_model_2_view.as_ref(),
+                    &mut app_ctx.file_system_2_scan,
+                );
+            });
+        }
         egui::CentralPanel::default().show(ctx, |ui| {
             self.show_menu(ui, app_ctx);
 
@@ -362,6 +681,7 @@ impl ZApp {
                 let mut path_diff_view = PathDiffView {
                     file_system_1_view: &mut app_ctx.file_system_model_1_view,
                     file_system_2_view: &mut app_ctx.file_system_model_2_view,
+                    file_system_1_scan: &mut app_ctx.file_system_1_scan,
                     file_system_1_root_path: &mut app_ctx.file_system_1_root_path,
                     file_system_2_root_path: &mut app_ctx.file_system_2_root_path,
                     visible_rows: &mut app_ctx.two_folder_diff_visible_rows,
@@ -553,48 +873,10 @@ impl eframe::App for ZApp {
                         let _ = set_root(&mut state.file_system_2_root_path, Side::Folder2, &path);
                     }
                 }
-                // Invalidate state
-                if let Some(path) = &state.file_system_1_root_path {
-                    let needs_reload = state.file_system_model_1_view.as_ref().map_or(true, |v| {
-                        v.file_system.get_root().as_path().as_ref() != path
-                    });
-                    if needs_reload {
-                        match FileSystemModel::new(path) {
-                            Ok(new_model) => {
-                                state.file_system_model_1_view =
-                                    Some(FileSystemView::new(Arc::new(new_model)));
-                                state.two_folder_diff_visible_rows = None;
-                            }
-                            Err(e) => {
-                                log::error!("{e}");
-                                clear_root(&mut state.file_system_1_root_path);
-                            }
-                        }
-                    }
-                } else {
-                    state.file_system_model_1_view = None;
-                    state.two_folder_diff_visible_rows = None;
-                }
-                if let Some(path) = &state.file_system_2_root_path {
-                    let needs_reload = state.file_system_model_2_view.as_ref().map_or(true, |v| {
-                        v.file_system.get_root().as_path().as_ref() != path
-                    });
-                    if needs_reload {
-                        match FileSystemModel::new(path) {
-                            Ok(new_model) => {
-                                state.file_system_model_2_view =
-                                    Some(FileSystemView::new(Arc::new(new_model)));
-                                state.two_folder_diff_visible_rows = None;
-                            }
-                            Err(e) => {
-                                log::error!("{e}");
-                                clear_root(&mut state.file_system_2_root_path);
-                            }
-                        }
-                    }
-                } else {
-                    state.file_system_model_2_view = None;
-                    state.two_folder_diff_visible_rows = None;
+                state.update_scans(ctx);
+                if state.file_system_1_scan.is_scanning() || state.file_system_2_scan.is_scanning()
+                {
+                    ctx.request_repaint_after(SCAN_PROGRESS_INTERVAL);
                 }
                 state.build_two_folder_diff_rows_if_stale();
                 if state.poll_blueprint_detector() {
@@ -628,11 +910,20 @@ impl eframe::App for ZApp {
 
 #[cfg(test)]
 mod tests {
-    use super::{AppState, AppStateCtx, ZApp};
+    use super::{
+        AppState, AppStateCtx, ScanAction, ZApp, cancel_scan, finish_side_scan, scan_action,
+        update_side_scan,
+    };
     use crate::ui_egui::fs_tree::FileSystemView;
+    use crate::ui_egui::roots::{Side, clear_root, set_root};
     use crate::ui_egui::tree_filter::DiffFilter;
     use crate::ui_egui::tree_sort::{SortKey, TreeSort};
-    use std::{fs, path::Path, sync::Arc};
+    use eframe::egui;
+    use std::{
+        fs,
+        path::{Path, PathBuf},
+        sync::Arc,
+    };
     use tempfile::tempdir;
     use zcommon::logger::LogBuffer;
     use zhashdiff::{
@@ -866,5 +1157,280 @@ mod tests {
         state.tree_sort = state.tree_sort.clicked(SortKey::State);
         state.build_two_folder_diff_rows_if_stale();
         assert_eq!(row_paths(&state), ["", "z", "z/c.txt", "a.txt", "b.txt"]);
+    }
+
+    fn finish_scans(state: &mut AppStateCtx) {
+        finish_side_scan(
+            Side::Folder1,
+            &mut state.file_system_1_root_path,
+            &mut state.file_system_model_1_view,
+            &mut state.file_system_1_scan,
+            &mut state.two_folder_diff_visible_rows,
+        );
+        finish_side_scan(
+            Side::Folder2,
+            &mut state.file_system_2_root_path,
+            &mut state.file_system_model_2_view,
+            &mut state.file_system_2_scan,
+            &mut state.two_folder_diff_visible_rows,
+        );
+    }
+
+    fn shown(view: &Option<FileSystemView>) -> Option<PathBuf> {
+        view.as_ref()
+            .map(|view| view.file_system.get_root().as_path().as_ref().to_path_buf())
+    }
+
+    fn loaded(root_1: &Path, root_2: &Path) -> AppStateCtx {
+        let mut state = AppStateCtx::default();
+        set_root(&mut state.file_system_1_root_path, Side::Folder1, root_1).unwrap();
+        set_root(&mut state.file_system_2_root_path, Side::Folder2, root_2).unwrap();
+        finish_scans(&mut state);
+        state
+    }
+
+    fn update_side_1(state: &mut AppStateCtx) {
+        update_side_scan(
+            Side::Folder1,
+            &mut state.file_system_1_root_path,
+            &mut state.file_system_model_1_view,
+            &mut state.file_system_1_scan,
+            &mut state.two_folder_diff_visible_rows,
+            &egui::Context::default(),
+        );
+    }
+
+    fn cancel_side_1(state: &mut AppStateCtx) {
+        cancel_scan(
+            Side::Folder1,
+            &mut state.file_system_1_root_path,
+            state.file_system_model_1_view.as_ref(),
+            &mut state.file_system_1_scan,
+        );
+    }
+
+    #[test]
+    fn a_side_without_a_root_is_cleared() {
+        let a = Path::new("a");
+        assert_eq!(
+            scan_action(None, Some(a), Some(a), false),
+            ScanAction::Clear
+        );
+        assert_eq!(scan_action(None, None, None, true), ScanAction::Clear);
+    }
+
+    #[test]
+    fn a_new_root_starts_a_scan() {
+        let (a, b) = (Path::new("a"), Path::new("b"));
+        assert_eq!(
+            scan_action(Some(b), Some(a), None, false),
+            ScanAction::Start(b.into())
+        );
+        assert_eq!(
+            scan_action(Some(b), None, None, false),
+            ScanAction::Start(b.into())
+        );
+    }
+
+    #[test]
+    fn a_new_root_replaces_the_scan_of_another_root() {
+        let (a, b, c) = (Path::new("a"), Path::new("b"), Path::new("c"));
+        assert_eq!(
+            scan_action(Some(b), Some(a), Some(c), false),
+            ScanAction::Start(b.into())
+        );
+    }
+
+    #[test]
+    fn the_scan_of_the_root_keeps_running() {
+        let (a, b) = (Path::new("a"), Path::new("b"));
+        assert_eq!(
+            scan_action(Some(b), Some(a), Some(b), false),
+            ScanAction::Keep
+        );
+        assert_eq!(scan_action(Some(b), None, Some(b), false), ScanAction::Keep);
+        assert_eq!(
+            scan_action(Some(a), Some(a), Some(a), false),
+            ScanAction::Keep
+        );
+    }
+
+    #[test]
+    fn the_shown_root_needs_no_scan() {
+        let (a, b) = (Path::new("a"), Path::new("b"));
+        assert_eq!(scan_action(Some(a), Some(a), None, false), ScanAction::Stop);
+        assert_eq!(
+            scan_action(Some(a), Some(a), Some(b), false),
+            ScanAction::Stop
+        );
+    }
+
+    #[test]
+    fn a_rescan_scans_the_shown_root_again() {
+        let a = Path::new("a");
+        assert_eq!(
+            scan_action(Some(a), Some(a), None, true),
+            ScanAction::Start(a.into())
+        );
+    }
+
+    #[test]
+    fn launch_with_remembered_roots_scans_both_sides_in_the_background() {
+        let (left, right) = (tempdir().unwrap(), tempdir().unwrap());
+        fs::write(left.path().join("a.txt"), "a").unwrap();
+        fs::write(right.path().join("b.txt"), "b").unwrap();
+        let mut state = AppStateCtx::default();
+        set_root(
+            &mut state.file_system_1_root_path,
+            Side::Folder1,
+            left.path(),
+        )
+        .unwrap();
+        set_root(
+            &mut state.file_system_2_root_path,
+            Side::Folder2,
+            right.path(),
+        )
+        .unwrap();
+
+        state.update_scans(&egui::Context::default());
+        assert!(state.file_system_1_scan.is_scanning());
+        assert!(state.file_system_2_scan.is_scanning());
+
+        finish_scans(&mut state);
+        assert_eq!(
+            shown(&state.file_system_model_1_view),
+            Some(left.path().into())
+        );
+        assert_eq!(
+            shown(&state.file_system_model_2_view),
+            Some(right.path().into())
+        );
+        let view_2 = state.file_system_model_2_view.as_ref().unwrap();
+        assert!(
+            view_2
+                .file_system
+                .find_path(right.path().join("b.txt"))
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn changing_one_root_rescans_only_that_side() {
+        let (left, right, other) = (tempdir().unwrap(), tempdir().unwrap(), tempdir().unwrap());
+        let mut state = loaded(left.path(), right.path());
+        let model_1 = state
+            .file_system_model_1_view
+            .as_ref()
+            .unwrap()
+            .file_system
+            .clone();
+        state.build_two_folder_diff_rows_if_stale();
+
+        set_root(
+            &mut state.file_system_2_root_path,
+            Side::Folder2,
+            other.path(),
+        )
+        .unwrap();
+        state.update_scans(&egui::Context::default());
+        assert!(!state.file_system_1_scan.is_scanning());
+        let job = state.file_system_2_scan.job().expect("side 2 scans");
+        assert_eq!(job.root(), other.path());
+        assert_eq!(
+            shown(&state.file_system_model_2_view),
+            Some(right.path().into())
+        );
+        assert!(state.two_folder_diff_visible_rows.is_some());
+
+        finish_scans(&mut state);
+        let view_1 = state.file_system_model_1_view.as_ref().unwrap();
+        assert!(Arc::ptr_eq(&view_1.file_system, &model_1));
+        assert_eq!(
+            shown(&state.file_system_model_2_view),
+            Some(other.path().into())
+        );
+        assert!(state.two_folder_diff_visible_rows.is_none());
+    }
+
+    #[test]
+    fn cancelling_a_scan_keeps_the_previous_view() {
+        let (left, right, other) = (tempdir().unwrap(), tempdir().unwrap(), tempdir().unwrap());
+        let mut state = loaded(left.path(), right.path());
+        let model_1 = state
+            .file_system_model_1_view
+            .as_ref()
+            .unwrap()
+            .file_system
+            .clone();
+
+        set_root(
+            &mut state.file_system_1_root_path,
+            Side::Folder1,
+            other.path(),
+        )
+        .unwrap();
+        update_side_1(&mut state);
+        assert!(state.file_system_1_scan.is_scanning());
+        cancel_side_1(&mut state);
+
+        assert_eq!(state.file_system_1_root_path.as_deref(), Some(left.path()));
+        assert!(!state.file_system_1_scan.is_scanning());
+        update_side_1(&mut state);
+        assert!(!state.file_system_1_scan.is_scanning());
+        let view_1 = state.file_system_model_1_view.as_ref().unwrap();
+        assert!(Arc::ptr_eq(&view_1.file_system, &model_1));
+    }
+
+    #[test]
+    fn cancelling_the_first_scan_leaves_the_side_empty() {
+        let dir = tempdir().unwrap();
+        let mut state = AppStateCtx::default();
+        set_root(
+            &mut state.file_system_1_root_path,
+            Side::Folder1,
+            dir.path(),
+        )
+        .unwrap();
+        update_side_1(&mut state);
+        assert!(state.file_system_1_scan.is_scanning());
+        cancel_side_1(&mut state);
+
+        assert_eq!(state.file_system_1_root_path, None);
+        update_side_1(&mut state);
+        assert!(!state.file_system_1_scan.is_scanning());
+        assert!(state.file_system_model_1_view.is_none());
+    }
+
+    #[test]
+    fn a_failed_scan_keeps_the_previous_view() {
+        let (left, right, gone) = (tempdir().unwrap(), tempdir().unwrap(), tempdir().unwrap());
+        let mut state = loaded(left.path(), right.path());
+        let gone: PathBuf = gone.path().into();
+        set_root(&mut state.file_system_1_root_path, Side::Folder1, &gone).unwrap();
+        fs::remove_dir(&gone).unwrap();
+
+        finish_scans(&mut state);
+        assert_eq!(state.file_system_1_root_path.as_deref(), Some(left.path()));
+        assert_eq!(
+            shown(&state.file_system_model_1_view),
+            Some(left.path().into())
+        );
+    }
+
+    #[test]
+    fn clearing_a_root_drops_its_view_and_the_rows_once() {
+        let (left, right) = (tempdir().unwrap(), tempdir().unwrap());
+        let mut state = loaded(left.path(), right.path());
+        state.build_two_folder_diff_rows_if_stale();
+
+        clear_root(&mut state.file_system_2_root_path);
+        state.update_scans(&egui::Context::default());
+        assert!(state.file_system_model_2_view.is_none());
+        assert!(state.two_folder_diff_visible_rows.is_none());
+
+        state.build_two_folder_diff_rows_if_stale();
+        state.update_scans(&egui::Context::default());
+        assert!(state.two_folder_diff_visible_rows.is_some());
     }
 }

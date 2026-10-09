@@ -9,6 +9,7 @@ use zcommon::{
 use zhashdiff::{external_diff_tool::DiffToolConfig, filter::PathFilter};
 
 use crate::ui_egui::{
+    app::SideScan,
     duplicate_files_pane::{DuplicateFilesPane, DuplicateFilesPaneCtx},
     fs_tree::{FileSystemView, VisibleRowTwoFolderDiff},
     path_diff_pane::{PathDiffPane, PathDiffPaneCtx},
@@ -21,6 +22,7 @@ pub struct PathDiffView<'a> {
     pub file_system_2_root_path: &'a mut Option<PathBuf>,
     pub file_system_1_view: &'a mut Option<FileSystemView>,
     pub file_system_2_view: &'a mut Option<FileSystemView>,
+    pub file_system_1_scan: &'a mut SideScan,
     pub visible_rows: &'a mut Option<Vec<VisibleRowTwoFolderDiff>>,
 }
 
