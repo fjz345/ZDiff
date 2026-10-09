@@ -1505,6 +1505,8 @@ impl CenterLayout {
     }
 
     fn show(&self, ui: &mut egui::Ui, mut add: impl FnMut(CenterSlot, &mut egui::Ui)) {
+        // Selectable text would sit above the split strip and take its drag and double-click.
+        ui.style_mut().interaction.selectable_labels = false;
         for (i, (slot, width)) in self.slots().enumerate() {
             let (rect, _) = ui.allocate_exact_size(
                 egui::vec2(width, ui.available_height()),
