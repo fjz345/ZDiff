@@ -8,10 +8,7 @@ use std::{
 use eframe::egui::{self, RichText};
 use egui_extras::{Column, TableBuilder};
 use serde::{Deserialize, Serialize};
-use zcommon::{
-    hash::HashService,
-    kinds::{FileKind, KindTable},
-};
+use zcommon::kinds::{FileKind, KindTable};
 use zhashdiff::{
     comparison::{FileMeta, PairState},
     external_diff_tool::{
@@ -22,7 +19,6 @@ use zhashdiff::{
 };
 
 use zcommon::path::{common_parent, split_path};
-use zcommon::ui_egui::common::{CheckboxSelectState, hash_to_color, ui_custom_checkbox};
 use zcommon::ui_egui::h_scroll::text_width;
 use zcommon::ui_egui::pathbar::{PathBarAction, path_bar};
 use zcommon::ui_egui::table::{Rows, Split, SplitColumn, SplitTable};
@@ -37,14 +33,13 @@ use crate::ui_egui::tree_filter::DiffFilter;
 use crate::ui_egui::tree_guides::{Guide, tree_guides};
 use crate::ui_egui::tree_likeness::{likeness_cell, ui_likeness_cell};
 use crate::ui_egui::tree_menu::{Entry, RowAction, apply_row_action, row_menu, show_row_menu};
-use crate::ui_egui::tree_sort::{SortKey, TreeSort};
+use crate::ui_egui::tree_sort::{SortKey, TreeSort, sort_two_folder_rows};
 use crate::ui_egui::tree_tolerance::{SideMeta, Tolerance, similar_tooltip};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct FileSystemView {
     pub file_system: Arc<FileSystemModel>,
     pub collapsed: HashMap<FsNodeId, bool>,
-    pub selected: HashMap<FsNodeId, bool>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -74,19 +69,11 @@ pub struct TreeTable {
     offsets: [f32; 2],
 }
 
-#[derive(Debug)]
-pub struct VisibleRow {
-    pub path: FsNodeId,
-    pub is_dir: bool,
-    pub depth: FsNodeDepth,
-}
-
 impl FileSystemView {
     pub fn new(model: Arc<FileSystemModel>) -> Self {
         Self {
             file_system: model,
             collapsed: HashMap::new(),
-            selected: HashMap::new(),
         }
     }
 
@@ -160,13 +147,6 @@ impl FileSystemView {
     pub fn recursive_collapse_slice(&mut self, node_ids: &[FsNodeId], collapse: bool) {
         for node_id in node_ids {
             self.recursive_collapse(*node_id, collapse);
-        }
-    }
-
-    pub fn recursive_selection(&mut self, node_id: FsNodeId, value: bool) {
-        let ids: Vec<FsNodeId> = self.iter_nodes(node_id).map(|(id, _, _)| id).collect();
-        for id in ids {
-            self.selected.insert(id, value);
         }
     }
 
@@ -351,42 +331,6 @@ impl FileSystemView {
 
         Ok(out_rows)
     }
-
-    /// `hidden` is per node id of the view's model, as from [`tree_hidden`].
-    pub fn build_collapsed_rows(
-        &self,
-        start_id: FsNodeId,
-        start_depth: FsNodeDepth,
-        hidden: &[bool],
-    ) -> Vec<VisibleRow> {
-        let mut out = Vec::new();
-        let mut stack = vec![(start_id, start_depth)];
-
-        while let Some((id, depth)) = stack.pop() {
-            if hidden[id] {
-                continue;
-            }
-            if let Some(node) = self.file_system.get_node(id) {
-                let is_dir = node.is_dir();
-
-                out.push(VisibleRow {
-                    path: id,
-                    is_dir,
-                    depth,
-                });
-
-                let is_collapsed = self.collapsed.get(&id).copied().unwrap_or(false);
-                if is_dir && !is_collapsed {
-                    if let Some(children) = node.children() {
-                        for &child_id in children.iter().rev() {
-                            stack.push((child_id, depth + 1));
-                        }
-                    }
-                }
-            }
-        }
-        out
-    }
 }
 
 /// Per node id of the view's model, true when the filter hides the node: not kept by the filter,
@@ -442,6 +386,24 @@ pub fn tree_hidden(view: &FileSystemView, filter: &PathFilter) -> Vec<bool> {
         }
     }
     hidden
+}
+
+/// Folder 1's rows for the single-side tree: every row is `OnlyInFirst`.
+pub fn single_side_rows(
+    view: &FileSystemView,
+    filter: &PathFilter,
+    sort: TreeSort,
+) -> io::Result<Vec<VisibleRowTwoFolderDiff>> {
+    let rows = FileSystemView::build_two_folder_diff_rows(
+        Some(view),
+        None,
+        filter,
+        &KindTable::default(),
+        &Tolerance::default(),
+        |_, _| (None, None),
+        |_, _| None,
+    )?;
+    Ok(sort_two_folder_rows(rows, sort))
 }
 
 /// The two-folder rows as the cursor sees them. A row is hidden when it isn't drawn: the
@@ -530,106 +492,27 @@ fn tag_color(kind: FileKind) -> egui::Color32 {
     }
 }
 
-pub fn draw_ui_folder_tree_with_checkbox(
-    ui: &mut egui::Ui,
-    file_system_view: &mut FileSystemView,
-    hash_service: &mut HashService,
-    pending_deletion: &HashSet<PathBuf>,
-    hidden: &[bool],
-) -> egui::Response {
-    let root_id = file_system_view.file_system.get_root_node_id();
-    let root_path_clone = file_system_view
-        .file_system
-        .get_root()
-        .as_path()
-        .as_ref()
-        .to_path_buf();
-
-    let visible_rows = file_system_view.build_collapsed_rows(root_id, 0, hidden);
-    let row_count = visible_rows.len();
-
-    let available_height = ui.available_height();
-    let mut header_toggle_selection = false;
-
-    let root_selection_state = get_folder_selection_state(root_id, file_system_view);
-
-    let response = egui::Frame::new()
-        .fill(egui::Color32::from_gray(20))
-        .inner_margin(0.0)
-        .show(ui, |ui| {
-            ui.set_min_height(available_height);
-            let row_height = ui.text_style_height(&egui::TextStyle::Body);
-            let row_height_header = ui.text_style_height(&egui::TextStyle::Heading);
-
-            let font_id = egui::TextStyle::Monospace.resolve(ui.style());
-            const DUMMY_HASH: &str =
-                "321e84925aecc55ef828a41db03f0ccece66c7a6cd2a31975bcc5d029712db81";
-            let galley =
-                ui.painter()
-                    .layout_no_wrap(DUMMY_HASH.into(), font_id, egui::Color32::PLACEHOLDER);
-            let min_hash_width = galley.size().x + 20.0;
-
-            TableBuilder::new(ui)
-                .id_salt(root_path_clone)
-                .striped(true)
-                .resizable(true)
-                .auto_shrink([false, true])
-                .column(Column::exact(32.0))
-                .column(Column::remainder().at_least(100.0))
-                .column(
-                    Column::initial(min_hash_width)
-                        .at_least(min_hash_width)
-                        .resizable(false),
-                )
-                .header(row_height_header, |mut header| {
-                    header.col(|ui| {
-                        ui.centered_and_justified(|ui| {
-                            if ui_custom_checkbox(ui, root_selection_state.clone()).clicked() {
-                                header_toggle_selection = true;
-                            }
-                        });
-                    });
-                    header.col(|ui| {
-                        ui.centered_and_justified(|ui| {
-                            ui.label("Name");
-                        });
-                    });
-                    header.col(|ui| {
-                        ui.centered_and_justified(|ui| {
-                            ui.label("Hash");
-                        });
-                    });
-                })
-                .body(|body| {
-                    body.rows(row_height, row_count, |mut row| {
-                        let index = row.index();
-                        if let Some(entry) = visible_rows.get(index) {
-                            render_row_folder_tree_with_checkbox(
-                                hash_service,
-                                file_system_view,
-                                pending_deletion,
-                                &mut row,
-                                entry,
-                                row_height,
-                            );
-                        }
-                    });
-                });
-        });
-
-    if header_toggle_selection {
-        let is_currently_checked = matches!(root_selection_state, CheckboxSelectState::Checked);
-        file_system_view.recursive_selection(root_id, !is_currently_checked);
-    }
-
-    response.response
+pub struct TwoFolderTable<'a> {
+    pub compare: &'a TreeCompare,
+    pub likeness_bar: bool,
+    pub tolerance: &'a Tolerance,
+    pub table: &'a mut TreeTable,
+    pub linked: bool,
 }
 
-pub fn draw_ui_two_folder_tree_with_diff(
+pub enum TreeMode<'a> {
+    TwoFolder(TwoFolderTable<'a>),
+    /// Folder 1 alone, without the center column and Folder 2: the duplicates tab.
+    SingleSide {
+        pending_deletion: &'a HashSet<PathBuf>,
+    },
+}
+
+pub fn draw_ui_folder_tree(
     ui: &mut egui::Ui,
     file_system_1_view: &mut Option<FileSystemView>,
     file_system_2_view: &mut Option<FileSystemView>,
-    visible_rows: &mut Option<Vec<VisibleRowTwoFolderDiff>>,
+    visible_rows: Option<&[VisibleRowTwoFolderDiff]>,
     root_1: &mut Option<PathBuf>,
     root_2: &mut Option<PathBuf>,
     open_dir_window_1: &mut bool,
@@ -641,11 +524,7 @@ pub fn draw_ui_two_folder_tree_with_diff(
     keyboard_taken: bool,
     actions: &[FolderAction],
     diff_filter: DiffFilter,
-    compare: &TreeCompare,
-    likeness_bar: bool,
-    tolerance: &Tolerance,
-    table: &mut TreeTable,
-    linked: bool,
+    mode: TreeMode,
 ) -> egui::response::Response {
     if file_system_1_view.is_none() && file_system_2_view.is_none() {
         return ui
@@ -672,7 +551,7 @@ pub fn draw_ui_two_folder_tree_with_diff(
             .response;
     }
 
-    let visible_rows = visible_rows.as_ref().unwrap();
+    let visible_rows = visible_rows.expect("the app builds the rows of a shown view");
     let flat = diff_filter.is_flat(*sort);
     let tool_message_before = tool_message.clone();
 
@@ -815,6 +694,11 @@ pub fn draw_ui_two_folder_tree_with_diff(
     let mut toggle_row = None;
     let mut row_action = None;
 
+    let (mut two_folder, pending_deletion) = match mode {
+        TreeMode::TwoFolder(two_folder) => (Some(two_folder), None),
+        TreeMode::SingleSide { pending_deletion } => (None, Some(pending_deletion)),
+    };
+
     let frame_output = egui::Frame::default()
         .fill(egui::Color32::from_gray(20))
         .inner_margin(0.0)
@@ -828,8 +712,83 @@ pub fn draw_ui_two_folder_tree_with_diff(
             let header_height = row_height_header.max(interact_height)
                 + ui.spacing().item_spacing.y
                 + interact_height;
-            let center = CenterLayout::measure(ui, likeness_bar);
             let views = [file_system_1_view.as_ref(), file_system_2_view.as_ref()];
+            let row_cell = |i: usize| {
+                let entry = &visible_rows[drawn_rows[i]];
+                // Selected cells get their text color from egui_extras; an explicit color
+                // would override it.
+                let dimmed =
+                    selected_row != Some(i) && matches!(entry.diff_state, DiffState::Same(..));
+                let pending = pending_deletion.is_some_and(|pending| {
+                    side_node(views[0], entry.diff_state.first())
+                        .is_some_and(|node| pending.contains(node.as_path().as_ref()))
+                });
+                RowCell {
+                    views,
+                    entry,
+                    dimmed,
+                    pending,
+                    row_height,
+                    diff_tool_config,
+                }
+            };
+            let mut side_cell = |i: usize, side: usize, ui: &mut egui::Ui| {
+                let entry = &visible_rows[drawn_rows[i]];
+                let row = row_cell(i);
+                // A scrolled side's max rect is shifted; its clip is the cell.
+                if entry.is_dir {
+                    fill_cell(ui, ui.clip_rect().x_range(), FOLDER_ROW_TINT);
+                }
+                if let Some(guides) = &guides {
+                    paint_guides(ui, guides[side].row(i));
+                }
+                ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
+                let cell = render_side_cell(ui, &row, side, tool_message, layout);
+                if cell.clicked {
+                    clicked_row = Some(entry);
+                }
+                if cell.toggle {
+                    toggle_row = Some(entry);
+                }
+                if cell.action.is_some() {
+                    row_action = cell.action;
+                }
+            };
+
+            let Some(two_folder) = two_folder.as_mut() else {
+                let mut table = TableBuilder::new(ui)
+                    .id_salt("single_side_table")
+                    .striped(true)
+                    .resizable(false)
+                    .auto_shrink([false, false])
+                    .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+                    .column(Column::remainder().clip(true));
+                if let Some(row) = scroll_to_row {
+                    table = table.scroll_to_row(row, None);
+                }
+                let body = table
+                    .header(header_height, |mut header| {
+                        header.col(|ui| {
+                            folder_1_header(
+                                ui,
+                                sort,
+                                open_dir_window_1,
+                                [&mut *root_1, &mut *root_2],
+                                row_height_header,
+                            );
+                        });
+                    })
+                    .body(|body| {
+                        body.rows(row_height, row_count, |mut row| {
+                            let i = row.index();
+                            row.set_selected(selected_row == Some(i));
+                            row.col(|ui| side_cell(i, 0, ui));
+                        });
+                    });
+                side_rects[0] = body.inner_rect;
+                return;
+            };
+            let center = CenterLayout::measure(ui, two_folder.likeness_bar);
             let content_widths = side_content_widths(
                 ui,
                 views,
@@ -837,36 +796,31 @@ pub fn draw_ui_two_folder_tree_with_diff(
                 layout,
             );
 
-            let mut split_table = SplitTable::new("two_folder_diff_table", &mut table.split)
-                .center_width(center.width(ui.spacing().item_spacing.x))
-                .h_scroll(&mut table.offsets, linked, content_widths)
-                .striped(true)
-                .selected_row(selected_row);
+            let mut split_table =
+                SplitTable::new("two_folder_diff_table", &mut two_folder.table.split)
+                    .center_width(center.width(ui.spacing().item_spacing.x))
+                    .h_scroll(
+                        &mut two_folder.table.offsets,
+                        two_folder.linked,
+                        content_widths,
+                    )
+                    .striped(true)
+                    .selected_row(selected_row);
             if let Some(row) = scroll_to_row {
                 split_table = split_table.scroll_to_row(row, None);
             }
+            let (compare, tolerance) = (two_folder.compare, two_folder.tolerance);
             let output = split_table.show(
                 ui,
                 header_height,
                 |column, ui| match column {
-                    SplitColumn::Left => {
-                        ui.vertical(|ui| {
-                            ui.horizontal(|ui| {
-                                sort_header(ui, "Name", SortKey::Name, sort);
-                                let available = ui.available_width();
-                                if ui
-                                    .add_sized(
-                                        [available, row_height_header],
-                                        egui::Button::new("Open Folder 1"),
-                                    )
-                                    .clicked()
-                                {
-                                    *open_dir_window_1 = true;
-                                }
-                            });
-                            root_path_bar(ui, [&mut *root_1, &mut *root_2], Side::Folder1);
-                        });
-                    }
+                    SplitColumn::Left => folder_1_header(
+                        ui,
+                        sort,
+                        open_dir_window_1,
+                        [&mut *root_1, &mut *root_2],
+                        row_height_header,
+                    ),
                     SplitColumn::Center => center.show(ui, |slot, ui| match slot {
                         CenterSlot::State => {
                             ui.vertical(|ui| {
@@ -901,47 +855,15 @@ pub fn draw_ui_two_folder_tree_with_diff(
                     height: row_height,
                     count: row_count,
                 },
-                |i, column, ui| {
-                    let entry = &visible_rows[drawn_rows[i]];
-                    // Selected cells get their text color from egui_extras; an explicit color
-                    // would override it.
-                    let dimmed =
-                        selected_row != Some(i) && matches!(entry.diff_state, DiffState::Same(..));
-                    let row = RowCell {
-                        views,
-                        entry,
-                        dimmed,
-                        row_height,
-                        diff_tool_config,
-                    };
-                    let side = match column {
-                        SplitColumn::Left => 0,
-                        SplitColumn::Right => 1,
-                        SplitColumn::Center => {
-                            if entry.is_dir {
-                                fill_cell(ui, ui.max_rect().x_range(), FOLDER_ROW_TINT);
-                            }
-                            render_center_cell(ui, &row, &center, compare, tolerance);
-                            return;
+                |i, column, ui| match column {
+                    SplitColumn::Left => side_cell(i, 0, ui),
+                    SplitColumn::Right => side_cell(i, 1, ui),
+                    SplitColumn::Center => {
+                        let row = row_cell(i);
+                        if row.entry.is_dir {
+                            fill_cell(ui, ui.max_rect().x_range(), FOLDER_ROW_TINT);
                         }
-                    };
-                    // A scrolled side's max rect is shifted; its clip is the cell.
-                    if entry.is_dir {
-                        fill_cell(ui, ui.clip_rect().x_range(), FOLDER_ROW_TINT);
-                    }
-                    if let Some(guides) = &guides {
-                        paint_guides(ui, guides[side].row(i));
-                    }
-                    ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
-                    let cell = render_side_cell(ui, &row, side, tool_message, layout);
-                    if cell.clicked {
-                        clicked_row = Some(entry);
-                    }
-                    if cell.toggle {
-                        toggle_row = Some(entry);
-                    }
-                    if cell.action.is_some() {
-                        row_action = cell.action;
+                        render_center_cell(ui, &row, &center, compare, tolerance);
                     }
                 },
             );
@@ -973,6 +895,31 @@ pub fn draw_ui_two_folder_tree_with_diff(
     }
 
     frame_output.response
+}
+
+fn folder_1_header(
+    ui: &mut egui::Ui,
+    sort: &mut TreeSort,
+    open_dir_window: &mut bool,
+    roots: [&mut Option<PathBuf>; 2],
+    button_height: f32,
+) {
+    ui.vertical(|ui| {
+        ui.horizontal(|ui| {
+            sort_header(ui, "Name", SortKey::Name, sort);
+            let available = ui.available_width();
+            if ui
+                .add_sized(
+                    [available, button_height],
+                    egui::Button::new("Open Folder 1"),
+                )
+                .clicked()
+            {
+                *open_dir_window = true;
+            }
+        });
+        root_path_bar(ui, roots, Side::Folder1);
+    });
 }
 
 /// A clickable column header for `key`. The active one shows the direction.
@@ -1320,7 +1267,7 @@ fn render_diff_side(
     depth: FsNodeDepth,
     is_dir: bool,
     is_collapsed: bool,
-    dimmed: bool,
+    color: Option<egui::Color32>,
     row_height: f32,
     flat_rel_path: Option<&str>,
     list_rel_path: Option<&str>,
@@ -1331,10 +1278,9 @@ fn render_diff_side(
     let name_text = |text: String| {
         let text = RichText::new(text);
         let text = if is_dir { text.strong() } else { text };
-        if dimmed {
-            text.color(DIMMED_TEXT_COLOR)
-        } else {
-            text
+        match color {
+            Some(color) => text.color(color),
+            None => text,
         }
     };
     ui.horizontal(|ui| {
@@ -1571,6 +1517,7 @@ struct RowCell<'a> {
     views: [Option<&'a FileSystemView>; 2],
     entry: &'a VisibleRowTwoFolderDiff,
     dimmed: bool,
+    pending: bool,
     row_height: f32,
     diff_tool_config: &'a DiffToolConfig,
 }
@@ -1594,6 +1541,7 @@ fn render_side_cell(
         views,
         entry,
         dimmed,
+        pending,
         row_height,
         diff_tool_config,
     } = *row;
@@ -1622,7 +1570,11 @@ fn render_side_cell(
         depth,
         entry.is_dir,
         is_collapsed,
-        dimmed,
+        if pending {
+            Some(PENDING_DELETION_COLOR)
+        } else {
+            dimmed.then_some(DIMMED_TEXT_COLOR)
+        },
         row_height,
         flat_rel_path,
         list_rel_path,
@@ -1670,6 +1622,7 @@ fn render_center_cell(
         views,
         entry,
         dimmed,
+        pending: _,
         row_height,
         diff_tool_config,
     } = *row;
@@ -1819,187 +1772,13 @@ fn cursor_keys(input: &egui::InputState) -> Vec<egui::Key> {
         .collect()
 }
 
-fn render_row_folder_tree_with_checkbox(
-    hash_service: &mut HashService,
-    file_system_view: &mut FileSystemView,
-    pending_deletion: &HashSet<PathBuf>,
-    row: &mut egui_extras::TableRow,
-    entry: &VisibleRow,
-    row_height: f32,
-) {
-    let path_id = entry.path;
-    let is_dir = entry.is_dir;
-
-    let mut toggle_collapse = false;
-    let mut toggle_selection = false;
-
-    let node = file_system_view.file_system.get_node(path_id).unwrap();
-    let is_collapsed = file_system_view
-        .collapsed
-        .get(&path_id)
-        .copied()
-        .unwrap_or(false);
-    let is_selected = file_system_view
-        .selected
-        .get(&path_id)
-        .copied()
-        .unwrap_or(false);
-
-    row.col(|ui| {
-        ui.centered_and_justified(|ui| {
-            let state = if is_dir {
-                get_folder_selection_state(path_id, &file_system_view)
-            } else if is_selected {
-                CheckboxSelectState::Checked
-            } else {
-                CheckboxSelectState::Unchecked
-            };
-
-            if ui_custom_checkbox(ui, state.clone()).clicked() {
-                toggle_selection = true;
-            }
-        });
-    });
-
-    // Column 2: Name & collapse Icon
-    row.col(|ui| {
-        ui.horizontal(|ui| {
-            ui.add_space((entry.depth as f32) * 16.0);
-
-            if is_dir {
-                let openness = if is_collapsed { 1.0 } else { 0.0 };
-                let (_rect, response) =
-                    ui.allocate_exact_size(egui::vec2(12.0, row_height), egui::Sense::click());
-                egui::collapsing_header::paint_default_icon(ui, openness, &response);
-
-                if response.clicked() {
-                    toggle_collapse = true;
-                }
-
-                let label = format!("📁 {}", node.display_name());
-                if ui.label(label).interact(egui::Sense::click()).clicked() {
-                    toggle_collapse = true;
-                }
-            } else if pending_deletion.contains(node.as_path().as_ref()) {
-                ui.label(RichText::new(node.display_name()).color(PENDING_DELETION_COLOR));
-            } else {
-                ui.label(node.display_name());
-            }
-        });
-    });
-
-    // Column 3: Hash / Progress
-    row.col(|ui| {
-        let full_path = node.as_path();
-        if !is_dir {
-            match hash_service.get_hash(&full_path) {
-                Some(hash_str) => {
-                    let bg_color = hash_to_color(&hash_str);
-                    egui::Frame::canvas(ui.style())
-                        .fill(bg_color)
-                        .corner_radius(3.0)
-                        .inner_margin(egui::Margin::symmetric(4, 2))
-                        .show(ui, |ui| {
-                            ui.label(
-                                egui::RichText::new(hash_str)
-                                    .monospace()
-                                    .color(egui::Color32::BLACK),
-                            );
-                        });
-                }
-                None => {
-                    hash_service.request(full_path.as_ref().to_path_buf());
-                    ui.weak("pending...");
-                }
-            }
-        } else {
-            let snapshot = hash_service.snapshot();
-            let subtree_prefix = full_path.as_ref();
-
-            let mut total = 0;
-            let mut hashed = 0;
-
-            for (p, h) in &snapshot.hashes {
-                if p.starts_with(subtree_prefix) {
-                    total += 1;
-                    if h.is_some() {
-                        hashed += 1;
-                    }
-                }
-            }
-
-            if total > 0 {
-                let progress = hashed as f32 / total as f32;
-                ui.horizontal(|ui| {
-                    ui.add(
-                        egui::ProgressBar::new(progress)
-                            .show_percentage()
-                            .desired_width(100.0),
-                    );
-                    if progress < 1.0 {
-                        ui.weak(format!("{}/{}", hashed, total));
-                    }
-                });
-            }
-        }
-    });
-
-    if toggle_collapse {
-        file_system_view.toggle_collapse(path_id);
-    }
-    if toggle_selection {
-        file_system_view.recursive_selection(path_id, !is_selected);
-    }
-}
-
-fn get_folder_selection_state(
-    path: FsNodeId,
-    file_system_view: &FileSystemView,
-) -> CheckboxSelectState {
-    let mut has_selected = false;
-    let mut has_unselected = false;
-
-    if *file_system_view.selected.get(&path).unwrap_or(&false) {
-        has_selected = true;
-    } else {
-        has_unselected = true;
-    }
-
-    let node = file_system_view.file_system.get_node(path).unwrap();
-    if let Some(children) = node.children() {
-        for child_node_id in children {
-            let is_selected = *file_system_view
-                .selected
-                .get(child_node_id)
-                .unwrap_or(&false);
-
-            if is_selected {
-                has_selected = true;
-            } else {
-                has_unselected = true;
-            }
-
-            // Early exit if mixed
-            if has_selected && has_unselected {
-                return CheckboxSelectState::Partial;
-            }
-        }
-    }
-
-    if has_selected {
-        CheckboxSelectState::Checked
-    } else {
-        CheckboxSelectState::Unchecked
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use crate::ui_egui::fs_tree::apply_path_bar;
     use crate::ui_egui::fs_tree::{
         DiffState, EXPANDER_WIDTH, FileSystemView, RowLayout, TREE_INDENT, VisibleRowTwoFolderDiff,
         aggregate_folder_state, apply_blueprint_results, apply_cursor_request, cursor_keys,
-        side_width, tree_hidden, two_folder_cursor_rows,
+        side_width, single_side_rows, tree_hidden, two_folder_cursor_rows,
     };
     use crate::ui_egui::roots::{InvalidRoot, Side};
     use crate::ui_egui::status_line::ToolMessage;
@@ -2723,13 +2502,23 @@ mod tests {
         state_kind(&row.diff_state)
     }
 
+    fn single_rows(view: &FileSystemView, filter: &PathFilter) -> Vec<VisibleRowTwoFolderDiff> {
+        let rows = single_side_rows(view, filter, TreeSort::default()).unwrap();
+        for row in &rows {
+            assert!(
+                matches!(row.diff_state, DiffState::OnlyInFirst(_)),
+                "{}",
+                row.rel_path
+            );
+        }
+        rows
+    }
+
     /// Relative paths of the duplicate tree's rows, everything expanded.
     fn dup_tree_rows(root: &Path, filter: &PathFilter) -> Vec<String> {
-        let view = load_view(root);
-        let hidden = tree_hidden(&view, filter);
-        view.build_collapsed_rows(view.file_system.get_root_node_id(), 0, &hidden)
+        single_rows(&load_view(root), filter)
             .into_iter()
-            .map(|row| get_rel(&view.file_system, root, row.path))
+            .map(|row| row.rel_path)
             .collect()
     }
 
@@ -2762,7 +2551,6 @@ mod tests {
             dup_tree_rows(dir.path(), &blacklist("*.OBJ, gen/")),
             [
                 "",
-                "a.txt",
                 "empty",
                 "empty/nested",
                 "keep",
@@ -2772,6 +2560,7 @@ mod tests {
                 "src/deep/main.rs",
                 "x.rs",
                 "x.rs/readme.md",
+                "a.txt",
             ]
         );
     }
@@ -2783,8 +2572,36 @@ mod tests {
         // keep/ has no whitelisted file left once f.obj is blacklisted.
         assert_eq!(
             dup_tree_rows(dir.path(), &whitelist("*.rs, *.obj", "f.obj")),
-            ["", "b.obj", "src", "src/deep", "src/deep/main.rs"]
+            ["", "src", "src/deep", "src/deep/main.rs", "b.obj"]
         );
+    }
+
+    #[test]
+    fn the_duplicate_trees_files_are_the_files_tree_hidden_leaves_visible() {
+        let dir = dup_tree();
+        let view = load_view(dir.path());
+        let filters = [
+            PathFilter::default(),
+            blacklist("*.OBJ, gen/"),
+            whitelist("*.rs, *.obj", "f.obj"),
+        ];
+        for filter in filters {
+            let mut drawn: Vec<String> = single_rows(&view, &filter)
+                .into_iter()
+                .filter(|row| !row.is_dir)
+                .map(|row| row.rel_path)
+                .collect();
+            let hidden = tree_hidden(&view, &filter);
+            let mut visible: Vec<String> = view
+                .file_system
+                .iter_files()
+                .filter(|&id| !hidden[id])
+                .map(|id| get_rel(&view.file_system, dir.path(), id))
+                .collect();
+            drawn.sort();
+            visible.sort();
+            assert_eq!(drawn, visible, "{filter:?}");
+        }
     }
 
     #[test]
@@ -2953,6 +2770,72 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn single_side_flat_rows_are_ordered_by_depth_then_name_and_filtered() {
+        let (left_dir, _right_dir) = two_folder_trees();
+        write_files(left_dir.path(), &[("sub/deep/a.txt", "l")]);
+        let left = load_view(left_dir.path());
+        let flat = TreeSort {
+            flat: true,
+            ..TreeSort::default()
+        };
+
+        let rows = single_side_rows(&left, &blacklist("b.txt, c.txt"), flat).unwrap();
+
+        assert_eq!(
+            row_paths(&rows),
+            [
+                "",
+                "a.txt",
+                "left_only.txt",
+                "sub",
+                "sub/deep",
+                "sub/deep/a.txt",
+                "sub/deep/d.txt"
+            ]
+        );
+        for row in &rows {
+            assert_eq!(row.diff_state.second(), None);
+            let id = row.diff_state.first().unwrap();
+            assert_eq!(
+                get_rel(&left.file_system, left_dir.path(), id),
+                row.rel_path
+            );
+        }
+    }
+
+    #[test]
+    fn single_side_rows_follow_the_sort_and_keep_children_under_their_parent() {
+        let dir = tempdir().unwrap();
+        write_files(
+            dir.path(),
+            &[
+                ("a/b.txt", "b"),
+                ("a/z/deep.txt", "deep"),
+                ("a.txt", "a"),
+                ("c/d.txt", "d"),
+            ],
+        );
+        let view = load_view(dir.path());
+        let descending = TreeSort::default().clicked(SortKey::Name);
+
+        let rows = single_side_rows(&view, &PathFilter::default(), descending).unwrap();
+
+        assert_eq!(
+            row_paths(&rows),
+            [
+                "",
+                "c",
+                "c/d.txt",
+                "a",
+                "a/z",
+                "a/z/deep.txt",
+                "a/b.txt",
+                "a.txt"
+            ]
+        );
     }
 
     #[test]
@@ -3303,6 +3186,107 @@ mod tests {
         assert!(left.is_collapsed(left_sub) && right.is_collapsed(right_sub));
     }
 
+    #[test]
+    fn in_single_side_mode_a_collapsed_folder_hides_its_rows_and_the_root_from_the_cursor() {
+        let (left_dir, _right_dir) = two_folder_trees();
+        let mut left = load_view(left_dir.path());
+        let rows = single_rows(&left, &PathFilter::default());
+        let sub = rows.iter().find(|r| r.rel_path == "sub").unwrap();
+        left.toggle_collapse(sub.diff_state.first().unwrap());
+
+        let cursor_rows = two_folder_cursor_rows(Some(&left), None, &rows, false);
+
+        let hidden: Vec<&str> = cursor_rows
+            .iter()
+            .filter(|r| r.hidden)
+            .map(|r| r.rel_path)
+            .collect();
+        assert_eq!(hidden, ["", "sub/deep", "sub/deep/d.txt", "sub/c.txt"]);
+        let collapsed: Vec<&str> = cursor_rows
+            .iter()
+            .filter(|r| r.collapsed)
+            .map(|r| r.rel_path)
+            .collect();
+        assert_eq!(collapsed, ["sub"]);
+    }
+
+    #[test]
+    fn in_single_side_flat_mode_only_the_root_row_is_hidden_and_no_folder_is_collapsed() {
+        let (left_dir, _right_dir) = two_folder_trees();
+        let mut left = load_view(left_dir.path());
+        let rows = single_rows(&left, &PathFilter::default());
+        let sub = rows.iter().find(|r| r.rel_path == "sub").unwrap();
+        left.toggle_collapse(sub.diff_state.first().unwrap());
+
+        let cursor_rows = two_folder_cursor_rows(Some(&left), None, &rows, true);
+
+        let hidden: Vec<&str> = cursor_rows
+            .iter()
+            .filter(|r| r.hidden)
+            .map(|r| r.rel_path)
+            .collect();
+        assert_eq!(hidden, [""]);
+        assert!(cursor_rows.iter().all(|r| !r.collapsed));
+    }
+
+    #[test]
+    fn in_single_side_mode_the_cursor_walks_the_drawn_rows_and_folds_folder_1() {
+        let (left_dir, _right_dir) = two_folder_trees();
+        let mut left = load_view(left_dir.path());
+        let rows = single_rows(&left, &PathFilter::default());
+        let sub_id = rows
+            .iter()
+            .find(|r| r.rel_path == "sub")
+            .unwrap()
+            .diff_state
+            .first()
+            .unwrap();
+        let config = DiffToolConfig::default();
+        let cursor = TreeCursor::at("sub");
+
+        let (_, collapse) = cursor.left(&two_folder_cursor_rows(Some(&left), None, &rows, false));
+        apply_cursor_request(
+            Some(&mut left),
+            None,
+            &rows,
+            &collapse.unwrap(),
+            &config,
+            &mut None,
+        );
+        assert!(left.is_collapsed(sub_id));
+
+        let cursor_rows = two_folder_cursor_rows(Some(&left), None, &rows, false);
+        assert_eq!(cursor.down(&cursor_rows), TreeCursor::at("a.txt"));
+
+        let expand = cursor.right(&cursor_rows).unwrap();
+        apply_cursor_request(Some(&mut left), None, &rows, &expand, &config, &mut None);
+        assert!(!left.is_collapsed(sub_id));
+        let cursor_rows = two_folder_cursor_rows(Some(&left), None, &rows, false);
+        assert_eq!(cursor.down(&cursor_rows), TreeCursor::at("sub/deep"));
+    }
+
+    #[test]
+    fn opening_a_file_in_single_side_mode_launches_nothing() {
+        let (left_dir, _right_dir) = two_folder_trees();
+        let mut left = load_view(left_dir.path());
+        let rows = single_rows(&left, &PathFilter::default());
+        let mut message = Some(ToolMessage {
+            warning: Some("stale".to_string()),
+            error: None,
+        });
+
+        apply_cursor_request(
+            Some(&mut left),
+            None,
+            &rows,
+            &CursorRequest::Open("b.txt".to_string()),
+            &missing_tool_config(vec![FileKind::Text], true),
+            &mut message,
+        );
+
+        assert_eq!(message, None);
+    }
+
     fn missing_tool_config(kinds: Vec<FileKind>, mark_undiffable: bool) -> DiffToolConfig {
         DiffToolConfig {
             tools: vec![DiffTool {
@@ -3428,7 +3412,7 @@ mod tests {
                 name: "Simple collapsed directory",
                 structure: vec![("a", true), ("a/file.txt", false)],
                 collapsed: vec!["a"],
-                expected: vec![("", 0), ("a", 1)],
+                expected: vec![("a", 1)],
             },
             CollapsedTestCase {
                 name: "Fully expanded directory",
@@ -3438,7 +3422,7 @@ mod tests {
                     ("dir_b", true),
                 ],
                 collapsed: vec![],
-                expected: vec![("", 0), ("dir_a", 1), ("dir_a/file_1.txt", 2), ("dir_b", 1)],
+                expected: vec![("dir_a", 1), ("dir_a/file_1.txt", 2), ("dir_b", 1)],
             },
             CollapsedTestCase {
                 name: "Deep nesting with partial collapse",
@@ -3450,7 +3434,7 @@ mod tests {
                     ("level1/level2/level3/file.txt", false),
                 ],
                 collapsed: vec!["level1/level2"],
-                expected: vec![("", 0), ("level1", 1), ("level1/level2", 2)],
+                expected: vec![("level1", 1), ("level1/level2", 2)],
             },
         ];
 
@@ -3470,36 +3454,21 @@ mod tests {
                 }
             }
 
-            let model = FileSystemModel::new(root_path).expect("failed to create FileSystemModel");
-            let mut view = FileSystemView {
-                file_system: Arc::new(model),
-                collapsed: HashMap::new(),
-                selected: HashMap::new(),
-            };
+            let mut view = load_view(root_path);
 
             for path_str in &case.collapsed {
                 let id = find_id_by_rel_path(&view.file_system, root_path, path_str);
                 view.collapsed.insert(id, true);
             }
 
-            let root_id = view.file_system.get_root_node_id();
-            let no_filter = vec![false; view.file_system.total_files_and_folders()];
-            let result = view.build_collapsed_rows(root_id, 0, &no_filter);
+            let rows = single_rows(&view, &PathFilter::default());
+            let cursor_rows = two_folder_cursor_rows(Some(&view), None, &rows, false);
 
-            let actual: Vec<(String, FsNodeDepth)> = result
-                .into_iter()
-                .map(|row| {
-                    let node = view.file_system.get_node(row.path).unwrap();
-                    let rel = node
-                        .as_path()
-                        .as_ref()
-                        .strip_prefix(root_path)
-                        .unwrap()
-                        .to_string_lossy()
-                        .replace('\\', "/");
-
-                    (rel, row.depth)
-                })
+            let actual: Vec<(String, FsNodeDepth)> = rows
+                .iter()
+                .zip(&cursor_rows)
+                .filter(|(_, cursor_row)| !cursor_row.hidden)
+                .map(|(row, _)| (row.rel_path.clone(), row.depth))
                 .collect();
 
             let expected_mapped: Vec<(String, FsNodeDepth)> = case

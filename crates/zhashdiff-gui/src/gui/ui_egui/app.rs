@@ -433,7 +433,7 @@ fn shown_root(view: Option<&FileSystemView>) -> Option<PathBuf> {
     view.map(|view| view.file_system.get_root().as_path().as_ref().to_path_buf())
 }
 
-/// A rescan of the shown root keeps the checked and collapsed state of every path still present.
+/// A rescan of the shown root keeps the collapsed state of every path still present.
 fn install_scanned(old: Option<&FileSystemView>, model: FileSystemModel) -> FileSystemView {
     let mut view = FileSystemView::new(Arc::new(model));
     let Some(old) = old.filter(|old| shown_root(Some(old)) == shown_root(Some(&view))) else {
@@ -456,9 +456,6 @@ fn install_scanned(old: Option<&FileSystemView>, model: FileSystemModel) -> File
         let Some(old_id) = old_ids.get(&node_path(&view.file_system, id)) else {
             continue;
         };
-        if let Some(&selected) = old.selected.get(old_id) {
-            view.selected.insert(id, selected);
-        }
         if let Some(&collapsed) = old.collapsed.get(old_id) {
             view.collapsed.insert(id, collapsed);
         }

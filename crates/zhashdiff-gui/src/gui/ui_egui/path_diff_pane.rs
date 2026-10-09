@@ -17,7 +17,8 @@ use zhashdiff::{
 use crate::ui_egui::{
     folder_keymap::FolderAction,
     fs_tree::{
-        DiffState, FileSystemView, HScrollLink, TreeTable, draw_ui_two_folder_tree_with_diff,
+        DiffState, FileSystemView, HScrollLink, TreeMode, TreeTable, TwoFolderTable,
+        draw_ui_folder_tree,
     },
     panes::{PathDiffView, ZAppPane},
     roots::{Side, set_root},
@@ -225,11 +226,11 @@ impl PathDiffPane {
         ScrollArea::vertical()
             .id_salt(&"path_diff_table")
             .show(ui, |ui| {
-                draw_ui_two_folder_tree_with_diff(
+                draw_ui_folder_tree(
                     ui,
                     &mut ctx.path_diff_view.file_system_1_view,
                     &mut ctx.path_diff_view.file_system_2_view,
-                    &mut ctx.path_diff_view.visible_rows,
+                    ctx.path_diff_view.visible_rows.as_deref(),
                     ctx.path_diff_view.file_system_1_root_path,
                     ctx.path_diff_view.file_system_2_root_path,
                     &mut self.open_dir_window_1,
@@ -241,11 +242,13 @@ impl PathDiffPane {
                     ctx.keyboard_taken,
                     ctx.actions,
                     *ctx.diff_filter,
-                    ctx.tree_compare,
-                    *ctx.likeness_bar,
-                    ctx.tolerance,
-                    &mut self.table,
-                    ctx.h_scroll_link.0,
+                    TreeMode::TwoFolder(TwoFolderTable {
+                        compare: ctx.tree_compare,
+                        likeness_bar: *ctx.likeness_bar,
+                        tolerance: ctx.tolerance,
+                        table: &mut self.table,
+                        linked: ctx.h_scroll_link.0,
+                    }),
                 );
             });
 

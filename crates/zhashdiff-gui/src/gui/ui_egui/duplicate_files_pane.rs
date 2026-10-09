@@ -3,6 +3,8 @@ use std::collections::HashSet;
 use std::fmt::Display;
 use std::path::Path;
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::Weak;
 
 use eframe::egui;
 use serde::Deserialize;
@@ -16,41 +18,50 @@ use zhashdiff::conflict::execute_resolution;
 use zhashdiff::conflict::group_duplicates;
 use zhashdiff::conflict::plan_resolution;
 use zhashdiff::conflict::recycle;
+use zhashdiff::external_diff_tool::DiffToolConfig;
 use zhashdiff::filter::PathFilter;
+use zhashdiff::fs::FileSystemModel;
 
 use crate::ui_egui::fs_tree::FileSystemView;
 use crate::ui_egui::fs_tree::PENDING_DELETION_COLOR;
-use crate::ui_egui::fs_tree::draw_ui_folder_tree_with_checkbox;
+use crate::ui_egui::fs_tree::TreeMode;
+use crate::ui_egui::fs_tree::VisibleRowTwoFolderDiff;
+use crate::ui_egui::fs_tree::draw_ui_folder_tree;
+use crate::ui_egui::fs_tree::single_side_rows;
 use crate::ui_egui::fs_tree::tree_hidden;
 use crate::ui_egui::panes::PathDiffView;
 use crate::ui_egui::panes::ZAppPane;
 use crate::ui_egui::roots::Side;
 use crate::ui_egui::roots::set_root;
+use crate::ui_egui::status_line::ToolMessage;
+use crate::ui_egui::tree_cursor::TreeCursor;
+use crate::ui_egui::tree_filter::DiffFilter;
+use crate::ui_egui::tree_sort::TreeSort;
 use zcommon::ui_egui::common::CheckboxSelectState;
 use zcommon::ui_egui::common::hash_to_color;
 use zcommon::ui_egui::common::ui_custom_checkbox;
 
 const MAX_CONCURRENT_HASHES: usize = 16;
 
-struct CheckedFileHashes {
+struct VisibleFileHashes {
     hashed: Vec<(PathBuf, HashRepresentation)>,
     unhashed: usize,
 }
 
-/// Checked files of `view` paired with their hash; checked files without a hash yet
-/// are only counted. Files the filter hides are left out even when checked and hashed.
-fn checked_file_hashes(
+/// Visible files of `view` paired with their hash; visible files without a hash yet
+/// are only counted.
+fn visible_file_hashes(
     view: &FileSystemView,
     hidden: &[bool],
     hashes: &HashMap<PathBuf, Option<HashRepresentation>>,
-) -> CheckedFileHashes {
-    let mut checked = CheckedFileHashes {
+) -> VisibleFileHashes {
+    let mut visible = VisibleFileHashes {
         hashed: Vec::new(),
         unhashed: 0,
     };
 
     for node_id in view.file_system.iter_files() {
-        if hidden[node_id] || !view.selected.get(&node_id).copied().unwrap_or(false) {
+        if hidden[node_id] {
             continue;
         }
         let path = view
@@ -61,12 +72,12 @@ fn checked_file_hashes(
             .as_ref()
             .to_path_buf();
         match hashes.get(&path) {
-            Some(Some(hash)) => checked.hashed.push((path, hash.clone())),
-            _ => checked.unhashed += 1,
+            Some(Some(hash)) => visible.hashed.push((path, hash.clone())),
+            _ => visible.unhashed += 1,
         }
     }
 
-    checked
+    visible
 }
 
 /// The files "Request All Hash" queues: every file the filter leaves visible.
@@ -161,6 +172,21 @@ pub struct DuplicateFilesPane {
     /// Outcome of the last Resolve, shown until closed.
     #[serde(skip)]
     resolution_summary: Option<ResolutionSummary>,
+    #[serde(skip)]
+    cursor: TreeCursor,
+    /// Root of the view the cursor belongs to.
+    #[serde(skip)]
+    cursor_root: Option<PathBuf>,
+    #[serde(skip)]
+    tree_cache: Option<TreeRows>,
+}
+
+struct TreeRows {
+    // Weak, so a replaced model's address can't be reused by a new one while it is held here.
+    model: Weak<FileSystemModel>,
+    filter: PathFilter,
+    sort: TreeSort,
+    rows: Vec<VisibleRowTwoFolderDiff>,
 }
 
 impl ZAppPane for DuplicateFilesPane {
@@ -173,6 +199,10 @@ pub struct DuplicateFilesPaneCtx<'a, 'b> {
     pub hash_service: &'a mut HashService,
     pub path_diff_view: &'a mut PathDiffView<'b>,
     pub path_filter: &'a PathFilter,
+    pub tree_sort: &'a mut TreeSort,
+    pub diff_tool_config: &'a DiffToolConfig,
+    pub tool_message: &'a mut Option<ToolMessage>,
+    pub keyboard_taken: bool,
 
     // Diff Action State
     pub active_conflict_hash: &'a mut Option<String>,
@@ -191,31 +221,69 @@ impl DuplicateFilesPane {
             conflicts_root: None,
             conflicts_filter: PathFilter::default(),
             resolution_summary: None,
+            cursor: TreeCursor::default(),
+            cursor_root: None,
+            tree_cache: None,
         }
     }
 
-    /// Diff button: groups the checked, already hashed files by hash and opens the
-    /// conflicts window. Returns the notice logged about checked files that were left
+    /// Rebuilt when Folder 1 is rescanned or replaced, or the filter or sort changed.
+    fn tree_rows(
+        &mut self,
+        view: &FileSystemView,
+        filter: &PathFilter,
+        sort: TreeSort,
+    ) -> &[VisibleRowTwoFolderDiff] {
+        let model = Arc::downgrade(&view.file_system);
+        let current = self.tree_cache.as_ref().is_some_and(|cache| {
+            cache.model.ptr_eq(&model) && cache.filter == *filter && cache.sort == sort
+        });
+        if !current {
+            let rows = single_side_rows(view, filter, sort).unwrap_or_else(|e| {
+                log::error!("Duplicate tree rows not built: {e}");
+                Vec::new()
+            });
+            self.tree_cache = Some(TreeRows {
+                model,
+                filter: filter.clone(),
+                sort,
+                rows,
+            });
+        }
+        &self.tree_cache.as_ref().expect("built above").rows
+    }
+
+    /// Opening another folder clears the cursor. A rescan of the same root keeps it.
+    fn forget_cursor_of_other_root(&mut self, view: Option<&FileSystemView>) {
+        let root = view_root(view);
+        if root != self.cursor_root {
+            self.cursor = TreeCursor::default();
+            self.cursor_root = root;
+        }
+    }
+
+    /// Diff button: groups the visible, already hashed files by hash and opens the
+    /// conflicts window. Returns the notice logged about visible files that were left
     /// out because they are not hashed yet.
-    fn diff_checked_files(
+    fn diff_visible_files(
         &mut self,
         ctx: &mut DuplicateFilesPaneCtx,
         hashes: &HashMap<PathBuf, Option<HashRepresentation>>,
     ) -> Option<String> {
         let view = ctx.path_diff_view.file_system_1_view.as_ref()?;
-        let checked = checked_file_hashes(view, &tree_hidden(view, ctx.path_filter), hashes);
+        let visible = visible_file_hashes(view, &tree_hidden(view, ctx.path_filter), hashes);
 
-        let notice = (checked.unhashed > 0).then(|| {
+        let notice = (visible.unhashed > 0).then(|| {
             format!(
-                "Diff left out {} checked files that are not hashed yet",
-                checked.unhashed
+                "Diff left out {} files that are not hashed yet",
+                visible.unhashed
             )
         });
         if let Some(notice) = &notice {
             log::warn!("{notice}");
         }
 
-        let groups = group_duplicates(checked.hashed);
+        let groups = group_duplicates(visible.hashed);
         log::info!("Diff found {} duplicate groups", groups.len());
         *ctx.conflict_map = groups.into_iter().collect();
 
@@ -285,6 +353,7 @@ impl DuplicateFilesPane {
         ctx: &mut DuplicateFilesPaneCtx,
     ) -> egui_tiles::UiResponse {
         self.forget_stale_conflicts(ctx);
+        self.forget_cursor_of_other_root(ctx.path_diff_view.file_system_1_view.as_ref());
 
         ui.vertical(|ui| {
             self.ui_popups(ui, ctx);
@@ -335,43 +404,51 @@ impl DuplicateFilesPane {
                 if slider_response.changed() {
                     ctx.hash_service.resize_workers(slider_concurrent_hashes);
                 }
+
+                if ctx.path_diff_view.file_system_1_view.is_some() {
+                    // While the folder is rescanned the tree may still list files a resolve removed.
+                    let rescanning = ctx.path_diff_view.file_system_1_scan.is_scanning();
+                    if ui
+                        .add_enabled(!rescanning, egui::Button::new("Diff"))
+                        .clicked()
+                    {
+                        let snapshot = ctx.hash_service.snapshot();
+                        self.diff_visible_files(ctx, &snapshot.hashes);
+                    }
+                }
             });
         });
 
         ui.separator();
 
-        let pending_deletion = pending_deletions(ctx.conflict_map, ctx.conflict_map_resolved);
-        let mut show_diff_button = false;
-        egui::ScrollArea::vertical()
-            .max_height(500.0)
-            .show(ui, |ui| {
-                if let Some(file_system_view) = ctx.path_diff_view.file_system_1_view {
-                    let hidden = tree_hidden(file_system_view, ctx.path_filter);
-                    draw_ui_folder_tree_with_checkbox(
-                        ui,
-                        file_system_view,
-                        ctx.hash_service,
-                        &pending_deletion,
-                        &hidden,
-                    );
-                    show_diff_button = true;
-                } else {
-                    ui.label("No root dir set...");
-                    if ui.button("Open Folder").clicked() {
-                        self.open_dir_window = true;
-                    }
-                }
-            });
-
-        if show_diff_button {
-            // While the folder is rescanned the tree may still list files a resolve removed.
-            let rescanning = ctx.path_diff_view.file_system_1_scan.is_scanning();
-            if ui
-                .add_enabled(!rescanning, egui::Button::new("Diff"))
-                .clicked()
-            {
-                let snapshot = ctx.hash_service.snapshot();
-                self.diff_checked_files(ctx, &snapshot.hashes);
+        if let Some(view) = ctx.path_diff_view.file_system_1_view.as_ref() {
+            self.tree_rows(view, ctx.path_filter, *ctx.tree_sort);
+            let rows = self.tree_cache.as_ref().map(|cache| cache.rows.as_slice());
+            let pending_deletion = pending_deletions(ctx.conflict_map, ctx.conflict_map_resolved);
+            draw_ui_folder_tree(
+                ui,
+                ctx.path_diff_view.file_system_1_view,
+                &mut None,
+                rows,
+                ctx.path_diff_view.file_system_1_root_path,
+                &mut None,
+                &mut self.open_dir_window,
+                &mut false,
+                ctx.diff_tool_config,
+                ctx.tool_message,
+                &mut self.cursor,
+                ctx.tree_sort,
+                ctx.keyboard_taken,
+                &[],
+                DiffFilter::default(),
+                TreeMode::SingleSide {
+                    pending_deletion: &pending_deletion,
+                },
+            );
+        } else {
+            ui.label("No root dir set...");
+            if ui.button("Open Folder").clicked() {
+                self.open_dir_window = true;
             }
         }
 
@@ -663,15 +740,12 @@ impl DuplicateFilesPane {
 mod tests {
     use super::*;
     use crate::ui_egui::app::{SideScan, finish_side_scan};
-    use crate::ui_egui::fs_tree::VisibleRowTwoFolderDiff;
     use std::fs;
     use std::io;
     use std::path::Path;
-    use std::sync::Arc;
     use tempfile::{TempDir, tempdir};
     use zcommon::hash::hash_file_mmap;
     use zhashdiff::filter::PatternList;
-    use zhashdiff::fs::FileSystemModel;
 
     /// Owns everything a `DuplicateFilesPaneCtx` borrows.
     struct PaneState {
@@ -683,6 +757,9 @@ mod tests {
         view_2: Option<FileSystemView>,
         visible_rows: Option<Vec<VisibleRowTwoFolderDiff>>,
         path_filter: PathFilter,
+        tree_sort: TreeSort,
+        diff_tool_config: DiffToolConfig,
+        tool_message: Option<ToolMessage>,
         active_conflict_hash: Option<String>,
         conflict_map: HashMap<String, Vec<PathBuf>>,
         conflict_map_resolved: HashMap<String, PathBuf>,
@@ -700,6 +777,9 @@ mod tests {
                 view_2: None,
                 visible_rows: None,
                 path_filter: PathFilter::default(),
+                tree_sort: TreeSort::default(),
+                diff_tool_config: DiffToolConfig::default(),
+                tool_message: None,
                 active_conflict_hash: None,
                 conflict_map: HashMap::new(),
                 conflict_map_resolved: HashMap::new(),
@@ -712,7 +792,7 @@ mod tests {
             pane: &mut DuplicateFilesPane,
             hashes: &HashMap<PathBuf, Option<HashRepresentation>>,
         ) -> Option<String> {
-            self.with_ctx(|ctx| pane.diff_checked_files(ctx, hashes))
+            self.with_ctx(|ctx| pane.diff_visible_files(ctx, hashes))
         }
 
         fn finish_rescan(&mut self) {
@@ -738,6 +818,10 @@ mod tests {
                 hash_service: &mut self.hash_service,
                 path_diff_view: &mut path_diff_view,
                 path_filter: &self.path_filter,
+                tree_sort: &mut self.tree_sort,
+                diff_tool_config: &self.diff_tool_config,
+                tool_message: &mut self.tool_message,
+                keyboard_taken: false,
                 active_conflict_hash: &mut self.active_conflict_hash,
                 conflict_map: &mut self.conflict_map,
                 conflict_map_resolved: &mut self.conflict_map_resolved,
@@ -748,7 +832,6 @@ mod tests {
     }
 
     /// a.txt, b.txt, sub/c.txt and e.txt share content, d.txt is unique.
-    /// Everything is checked except e.txt.
     fn duplicate_tree() -> (TempDir, FileSystemView) {
         let dir = tempdir().unwrap();
         fs::create_dir(dir.path().join("sub")).unwrap();
@@ -758,14 +841,7 @@ mod tests {
         fs::write(dir.path().join("d.txt"), "other").unwrap();
 
         let model = FileSystemModel::new(dir.path()).unwrap();
-        let mut view = FileSystemView::new(Arc::new(model));
-        view.recursive_selection(view.file_system.get_root_node_id(), true);
-        let e_id = view
-            .file_system
-            .find_path(dir.path().join("e.txt"))
-            .unwrap();
-        view.selected.insert(e_id, false);
-        (dir, view)
+        (dir, FileSystemView::new(Arc::new(model)))
     }
 
     fn hashes_of(paths: &[&Path]) -> HashMap<PathBuf, Option<HashRepresentation>> {
@@ -780,7 +856,7 @@ mod tests {
     }
 
     #[test]
-    fn diff_opens_conflicts_window_with_groups_of_checked_hashed_files() {
+    fn diff_opens_conflicts_window_with_groups_of_all_visible_hashed_files() {
         let (dir, view) = duplicate_tree();
         let root = dir.path();
         let hashes = hashes_of(&[
@@ -804,6 +880,7 @@ mod tests {
                 vec![
                     root.join("a.txt"),
                     root.join("b.txt"),
+                    root.join("e.txt"),
                     root.join("sub").join("c.txt")
                 ],
             )])
@@ -811,10 +888,10 @@ mod tests {
     }
 
     #[test]
-    fn diff_reports_checked_files_that_are_not_hashed() {
+    fn diff_reports_visible_files_that_are_not_hashed() {
         let (dir, view) = duplicate_tree();
         let root = dir.path();
-        // sub/c.txt is queued but not hashed, d.txt was never requested, e.txt is unchecked.
+        // sub/c.txt is queued but not hashed, d.txt and e.txt were never requested.
         let mut hashes = hashes_of(&[&root.join("a.txt"), &root.join("b.txt")]);
         hashes.insert(root.join("sub").join("c.txt"), None);
         let mut state = PaneState::new(view);
@@ -822,10 +899,10 @@ mod tests {
 
         let notice = state
             .press_diff(&mut pane, &hashes)
-            .expect("unhashed checked files are reported");
+            .expect("unhashed visible files are reported");
 
         assert!(
-            notice.contains(" 2 "),
+            notice.contains(" 3 "),
             "notice doesn't name the count: {notice}"
         );
         assert!(pane.open_diff_popup);
@@ -1035,6 +1112,79 @@ mod tests {
         }
     }
 
+    fn tree_paths(
+        pane: &mut DuplicateFilesPane,
+        view: &FileSystemView,
+        filter: &PathFilter,
+        sort: TreeSort,
+    ) -> Vec<String> {
+        pane.tree_rows(view, filter, sort)
+            .iter()
+            .map(|row| row.rel_path.clone())
+            .collect()
+    }
+
+    #[test]
+    fn the_tree_rows_are_kept_until_a_rescan_or_a_filter_or_sort_change() {
+        let (dir, view) = duplicate_tree();
+        let root = dir.path();
+        let mut pane = DuplicateFilesPane::new(None);
+        let sort = TreeSort::default();
+        let all = ["", "sub", "sub/c.txt", "a.txt", "b.txt", "d.txt", "e.txt"];
+
+        assert_eq!(
+            tree_paths(&mut pane, &view, &PathFilter::default(), sort),
+            all
+        );
+        let built = pane.tree_rows(&view, &PathFilter::default(), sort).as_ptr();
+        assert_eq!(
+            pane.tree_rows(&view, &PathFilter::default(), sort).as_ptr(),
+            built
+        );
+
+        fs::write(root.join("f.txt"), "new").unwrap();
+        let rescanned = FileSystemView::new(Arc::new(FileSystemModel::new(root).unwrap()));
+        assert!(
+            tree_paths(&mut pane, &rescanned, &PathFilter::default(), sort)
+                .contains(&"f.txt".to_string())
+        );
+
+        assert_eq!(
+            tree_paths(&mut pane, &rescanned, &blacklist("*.txt"), sort),
+            ["", "sub"]
+        );
+
+        let flat = TreeSort { flat: true, ..sort };
+        assert_eq!(
+            tree_paths(&mut pane, &rescanned, &blacklist("a.txt, f.txt"), sort),
+            ["", "sub", "sub/c.txt", "b.txt", "d.txt", "e.txt"]
+        );
+        assert_eq!(
+            tree_paths(&mut pane, &rescanned, &blacklist("a.txt, f.txt"), flat),
+            ["", "b.txt", "d.txt", "e.txt", "sub", "sub/c.txt"]
+        );
+    }
+
+    #[test]
+    fn opening_another_folder_clears_the_cursor_and_a_rescan_keeps_it() {
+        let (dir, view) = duplicate_tree();
+        let (_other_dir, other_view) = duplicate_tree();
+        let mut pane = DuplicateFilesPane::new(None);
+        pane.forget_cursor_of_other_root(Some(&view));
+        pane.cursor = TreeCursor::at("a.txt");
+
+        let rescanned = FileSystemView::new(Arc::new(FileSystemModel::new(dir.path()).unwrap()));
+        pane.forget_cursor_of_other_root(Some(&rescanned));
+        assert_eq!(pane.cursor, TreeCursor::at("a.txt"));
+
+        pane.forget_cursor_of_other_root(Some(&other_view));
+        assert_eq!(pane.cursor, TreeCursor::default());
+
+        pane.cursor = TreeCursor::at("a.txt");
+        pane.forget_cursor_of_other_root(None);
+        assert_eq!(pane.cursor, TreeCursor::default());
+    }
+
     #[test]
     fn request_all_hash_queues_only_the_files_the_filter_leaves_visible() {
         let (dir, _) = duplicate_tree();
@@ -1061,13 +1211,12 @@ mod tests {
     }
 
     #[test]
-    fn a_hidden_file_is_left_out_of_the_groups_even_when_checked_and_hashed() {
+    fn a_hidden_file_is_left_out_of_the_groups_even_when_hashed() {
         let dir = tempdir().unwrap();
         let (kept, hidden) = (dir.path().join("a.txt"), dir.path().join("a.obj"));
         fs::write(&kept, "same").unwrap();
         fs::write(&hidden, "same").unwrap();
-        let mut view = FileSystemView::new(Arc::new(FileSystemModel::new(dir.path()).unwrap()));
-        view.recursive_selection(view.file_system.get_root_node_id(), true);
+        let view = FileSystemView::new(Arc::new(FileSystemModel::new(dir.path()).unwrap()));
         let hashes = hashes_of(&[&kept, &hidden]);
         let mut state = PaneState::new(view);
         let mut pane = DuplicateFilesPane::new(None);
@@ -1188,7 +1337,7 @@ mod tests {
     }
 
     #[test]
-    fn resolve_keeps_the_checked_and_collapsed_state_of_the_rescanned_tree() {
+    fn resolve_keeps_the_collapsed_state_of_the_rescanned_tree() {
         let (dir, view) = duplicate_tree();
         let root = dir.path();
         let a = root.join("a.txt");
@@ -1216,8 +1365,6 @@ mod tests {
         let id_of = |path: PathBuf| view.file_system.find_path(path).unwrap();
         assert_eq!(view.file_system.find_path(root.join("b.txt")), None);
         assert!(view.is_collapsed(id_of(root.join("sub"))));
-        assert_eq!(view.selected.get(&id_of(a.clone())), Some(&true));
-        assert_eq!(view.selected.get(&id_of(root.join("d.txt"))), Some(&true));
-        assert_eq!(view.selected.get(&id_of(root.join("e.txt"))), Some(&false));
+        assert!(!view.is_collapsed(id_of(root.to_path_buf())));
     }
 }

@@ -82,6 +82,10 @@ impl<'a, 'b> TreeBehavior<'a, 'b> {
             hash_service: self.hash_service,
             path_diff_view: self.path_diff_view,
             path_filter: self.path_filter,
+            tree_sort: self.tree_sort,
+            diff_tool_config: self.diff_tool_config,
+            tool_message: self.tool_message,
+            keyboard_taken: self.keyboard_taken,
 
             active_conflict_hash: self.active_conflict_hash,
             conflict_map: self.conflict_map,
