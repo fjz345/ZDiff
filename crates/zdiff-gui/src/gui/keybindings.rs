@@ -1,37 +1,7 @@
 use eframe::egui::{self, Key, Modifiers};
+use zcommon::ui_egui::keymap::Shortcut;
 
 use crate::p4::{P4Profile, ui_p4_profile_combo};
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct Shortcut {
-    pub key: Key,
-    pub modifiers: Modifiers,
-}
-
-impl Shortcut {
-    pub fn format(&self) -> String {
-        let mut s = String::new();
-        if self.modifiers.ctrl {
-            s.push_str("Ctrl+");
-        }
-        if self.modifiers.shift {
-            s.push_str("Shift+");
-        }
-        if self.modifiers.alt {
-            s.push_str("Alt+");
-        }
-        if self.modifiers.mac_cmd {
-            s.push_str("Cmd+");
-        }
-        s.push_str(&format!("{:?}", self.key));
-        s
-    }
-
-    pub fn matches(&self, r: &egui::InputState) -> bool {
-        r.key_pressed(self.key) && r.modifiers == self.modifiers
-    }
-}
 
 type RootAndPath = (String, String);
 

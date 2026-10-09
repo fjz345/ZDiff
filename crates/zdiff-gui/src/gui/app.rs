@@ -9,6 +9,7 @@ use zcommon::find::FindQuery;
 use zcommon::presets::UserPresets;
 use zcommon::ui_egui::common::show_custom_popup;
 use zcommon::ui_egui::find_popup::{FindPopupEvent, find_popup};
+use zcommon::ui_egui::keymap::Shortcut;
 use zdiff::{
     diff_builder::DiffBuilderOptions,
     lexer::{LEXER_MODE_DEFAULT, LEXER_MODE_GREEDY, LEXER_MODE_NEWLINE, LEXER_MODE_TOKENIZE},
@@ -24,7 +25,7 @@ use crate::{
     diff_ctx::{DiffProcessor, UpdateDiffRowsInput},
     diff_phases::diff_phases_menu,
     file::{FileProcessor, LoadedFile},
-    keybindings::{Keybindings, QuickDiffPaths, Shortcut, ui_keybindings},
+    keybindings::{Keybindings, QuickDiffPaths, ui_keybindings},
     p4::{
         P4Command, P4Profiles, P4Runner, local_path_of_depot_file, set_p4_slot_profile,
         ui_p4_profiles, update_p4_profiles,
