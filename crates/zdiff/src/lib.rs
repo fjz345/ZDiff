@@ -7,6 +7,7 @@ pub mod diff_ir;
 pub mod hex;
 pub mod ignore;
 pub mod lexer;
+pub mod merge;
 pub mod myers;
 pub mod pixel;
 pub mod row_text;
