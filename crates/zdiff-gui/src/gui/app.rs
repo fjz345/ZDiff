@@ -1773,11 +1773,13 @@ impl eframe::App for ZApp {
                     state.file_2.get_cached_file().clone(),
                 ];
                 // A mismatched pair's text side is diffed alone, so its rows are all one side's.
-                let [text_1, text_2] = match state.viewers {
+                // Pins pair lines of both sides, and the cursor may hold another viewer's stop.
+                let ([text_1, text_2], pins) = match state.viewers {
                     Some(viewers @ Viewers::Sides(_)) => {
-                        viewers.files_for(ViewerKind::Text, cached)
+                        state.diff_processor.conflict_cursor.set(0);
+                        (viewers.files_for(ViewerKind::Text, cached), Vec::new())
                     }
-                    _ => cached,
+                    _ => (cached, state.diff_processor.pins().to_vec()),
                 };
 
                 let update_input = UpdateDiffRowsInput {
@@ -1785,7 +1787,7 @@ impl eframe::App for ZApp {
                     file_2: text_2,
                     options: state.diff_options.clone(),
                     myers_diff_algorithm: state.myers_diff_algorithm.clone(),
-                    pins: state.diff_processor.pins().to_vec(),
+                    pins,
                     collect_trace: self.open_phase_trace_window || self.phase_overlay,
                 };
 
