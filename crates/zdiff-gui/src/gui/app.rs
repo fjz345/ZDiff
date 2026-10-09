@@ -9,7 +9,7 @@ use zcommon::find::FindQuery;
 use zcommon::presets::UserPresets;
 use zcommon::ui_egui::common::show_custom_popup;
 use zcommon::ui_egui::find_popup::{FindPopupEvent, find_popup};
-use zcommon::ui_egui::keymap::Shortcut;
+use zcommon::ui_egui::keymap::{Action, Shortcut};
 use zdiff::{
     diff_builder::DiffBuilderOptions,
     lexer::{LEXER_MODE_DEFAULT, LEXER_MODE_GREEDY, LEXER_MODE_NEWLINE, LEXER_MODE_TOKENIZE},
@@ -25,7 +25,7 @@ use crate::{
     diff_ctx::{DiffProcessor, UpdateDiffRowsInput},
     diff_phases::diff_phases_menu,
     file::{FileProcessor, LoadedFile},
-    keybindings::{Keybindings, QuickDiffPaths, ui_keybindings},
+    keybindings::{FileAction, Keybindings, QuickDiffPaths, ui_keybindings},
     p4::{
         P4Command, P4Profiles, P4Runner, local_path_of_depot_file, set_p4_slot_profile,
         ui_p4_profiles, update_p4_profiles,
@@ -446,10 +446,7 @@ impl<'a> ZApp {
                         if ui
                             .button(format!(
                                 "[{}]Open Source",
-                                keybindings
-                                    .open_file_source
-                                    .as_ref()
-                                    .map_or_else(|| "None".to_string(), Shortcut::format)
+                                keybindings.first_shortcut_text(FileAction::OpenFileSource)
                             ))
                             .clicked()
                         {
@@ -458,10 +455,7 @@ impl<'a> ZApp {
                         if ui
                             .button(format!(
                                 "[{}]Open Target",
-                                keybindings
-                                    .open_file_target
-                                    .as_ref()
-                                    .map_or_else(|| "None".to_string(), Shortcut::format)
+                                keybindings.first_shortcut_text(FileAction::OpenFileTarget)
                             ))
                             .clicked()
                         {
@@ -476,10 +470,7 @@ impl<'a> ZApp {
                         if ui
                             .button(format!(
                                 "[{}]Find",
-                                keybindings
-                                    .find
-                                    .as_ref()
-                                    .map_or_else(|| "None".to_string(), Shortcut::format)
+                                keybindings.first_shortcut_text(FileAction::Find)
                             ))
                             .clicked()
                         {
@@ -488,10 +479,7 @@ impl<'a> ZApp {
                         if ui
                             .button(format!(
                                 "[{}]Goto",
-                                keybindings
-                                    .goto
-                                    .as_ref()
-                                    .map_or_else(|| "None".to_string(), Shortcut::format)
+                                keybindings.first_shortcut_text(FileAction::Goto)
                             ))
                             .clicked()
                         {
@@ -558,10 +546,7 @@ impl<'a> ZApp {
                         if ui
                             .button(format!(
                                 "[{}]P4Config",
-                                keybindings
-                                    .open_universal_path
-                                    .as_ref()
-                                    .map_or_else(|| "None".to_string(), Shortcut::format)
+                                keybindings.first_shortcut_text(FileAction::OpenUniversalPath)
                             ))
                             .clicked()
                         {
@@ -570,10 +555,7 @@ impl<'a> ZApp {
                         if ui
                             .button(format!(
                                 "[{}]Keyboard Shortcuts",
-                                keybindings
-                                    .open_options_keybindings
-                                    .as_ref()
-                                    .map_or_else(|| "None".to_string(), Shortcut::format)
+                                keybindings.first_shortcut_text(FileAction::OpenKeybindings)
                             ))
                             .clicked()
                         {
@@ -593,10 +575,7 @@ impl<'a> ZApp {
                         if ui
                             .button(format!(
                                 "[{}]Clear Cached Files",
-                                keybindings
-                                    .refresh_diff
-                                    .as_ref()
-                                    .map_or_else(|| "None".to_string(), Shortcut::format)
+                                keybindings.first_shortcut_text(FileAction::RefreshDiff)
                             ))
                             .clicked()
                         {
@@ -606,10 +585,7 @@ impl<'a> ZApp {
                         if ui
                             .button(format!(
                                 "[{}]Clear Diff Rows",
-                                keybindings
-                                    .refresh_diff_rows_only
-                                    .as_ref()
-                                    .map_or_else(|| "None".to_string(), Shortcut::format)
+                                keybindings.first_shortcut_text(FileAction::RefreshDiffRowsOnly)
                             ))
                             .clicked()
                         {
@@ -1211,42 +1187,101 @@ impl<'a> ZApp {
                     log::info!("middle click @({},{})", mouse_pos.x, mouse_pos.y);
                 }
 
-                if (r.modifiers.ctrl && r.key_pressed(egui::Key::Num1))
-                    || (r.modifiers.alt && r.key_pressed(egui::Key::ArrowUp))
-                {
-                    app_state_ctx.diff_processor.conflict_cursor.dec();
-                    log::info!(
-                        "ConflictCursor-- @{}",
-                        app_state_ctx.diff_processor.conflict_cursor.get()
-                    );
-                }
-                if (r.modifiers.ctrl && r.key_pressed(egui::Key::Num2))
-                    || (r.modifiers.alt && r.key_pressed(egui::Key::ArrowDown))
-                {
-                    app_state_ctx.diff_processor.conflict_cursor.inc();
-                    log::info!(
-                        "ConflictCursor++ @{}",
-                        app_state_ctx.diff_processor.conflict_cursor.get()
-                    );
+                let actions = app_state_ctx
+                    .keybindings
+                    .keymap
+                    .dispatch(&r.events, text_focused);
+                for action in actions {
+                    log::info!("Action triggered: {}", action.label());
+                    match action {
+                        FileAction::OpenFileSource => {
+                            Self::open_file_picker(app_state_ctx.file_1.get_tx())
+                        }
+                        FileAction::OpenFileTarget => {
+                            Self::open_file_picker(app_state_ctx.file_2.get_tx())
+                        }
+                        FileAction::RefreshDiff => {
+                            app_state_ctx.diff_processor.reset_ctx();
+                            Self::refresh_file_contents(
+                                &mut app_state_ctx.file_1,
+                                &mut app_state_ctx.file_2,
+                            );
+                        }
+                        FileAction::RefreshDiffRowsOnly => {
+                            app_state_ctx.diff_processor.reset_ctx();
+                        }
+                        FileAction::OpenKeybindings => self.open_shortcuts_window = true,
+                        FileAction::OpenUniversalPath => self.open_universal_path_window = true,
+                        FileAction::Find => app_state_ctx.find_open = true,
+                        FileAction::Goto => app_state_ctx.goto_open = true,
+                        FileAction::NextConflict => {
+                            app_state_ctx.diff_processor.conflict_cursor.inc();
+                            log::info!(
+                                "ConflictCursor++ @{}",
+                                app_state_ctx.diff_processor.conflict_cursor.get()
+                            );
+                        }
+                        FileAction::PrevConflict => {
+                            app_state_ctx.diff_processor.conflict_cursor.dec();
+                            log::info!(
+                                "ConflictCursor-- @{}",
+                                app_state_ctx.diff_processor.conflict_cursor.get()
+                            );
+                        }
+                        // The popup takes Enter; stepping here would move the kept hits under an error.
+                        FileAction::NextFind if !app_state_ctx.find_open => {
+                            app_state_ctx.diff_processor.find_cursor.inc();
+                            log::info!(
+                                "FindCursor++ @{}",
+                                app_state_ctx.diff_processor.find_cursor.get()
+                            );
+                        }
+                        FileAction::PrevFind if !app_state_ctx.find_open => {
+                            app_state_ctx.diff_processor.find_cursor.dec();
+                            log::info!(
+                                "FindCursor-- @{}",
+                                app_state_ctx.diff_processor.find_cursor.get()
+                            );
+                        }
+                        FileAction::NextFind | FileAction::PrevFind => {}
+                        FileAction::RevisionGraph => match &app_state_ctx.file_1.get_full_path() {
+                            file @ UniversalPath::Depot(..) => {
+                                match P4Command::open_revision_graph(file) {
+                                    Ok(_) => {
+                                        log::info!("Revision graph returned Ok");
+                                    }
+                                    Err(e) => log::error!("Failed to open revision graph: {e}"),
+                                }
+                            }
+                            UniversalPath::Local(path_buf) => {
+                                log::info!(
+                                    "Can not open revision graph for local path {}",
+                                    path_buf.display()
+                                );
+                            }
+                        },
+                        FileAction::TimelapseView => match &app_state_ctx.file_1.get_full_path() {
+                            file @ UniversalPath::Depot(..) => {
+                                match P4Command::open_timelapse_view(file) {
+                                    Ok(_) => {
+                                        log::info!("Timelapse view returned Ok");
+                                    }
+                                    Err(e) => log::error!("Failed to open timelapse view: {e}"),
+                                }
+                            }
+                            UniversalPath::Local(path_buf) => {
+                                log::info!(
+                                    "Can not open timelapse view for local path {}",
+                                    path_buf.display()
+                                );
+                            }
+                        },
+                        FileAction::UndoRevert => history_step = Some(HistoryStep::Undo),
+                        FileAction::Redo => history_step = Some(HistoryStep::Redo),
+                        FileAction::DiffLocalFile => diff_local_file = true,
+                    }
                 }
 
-                // The popup takes Enter; stepping here would move the kept hits under an error.
-                let step_find = !app_state_ctx.find_open;
-                if step_find && r.modifiers.shift && r.key_pressed(egui::Key::Enter) {
-                    app_state_ctx.diff_processor.find_cursor.dec();
-                    log::info!(
-                        "FindCursor-- @{}",
-                        app_state_ctx.diff_processor.find_cursor.get()
-                    );
-                } else if step_find && r.key_pressed(egui::Key::Enter) {
-                    app_state_ctx.diff_processor.find_cursor.inc();
-                    log::info!(
-                        "FindCursor++ @{}",
-                        app_state_ctx.diff_processor.find_cursor.get()
-                    );
-                }
-
-                // ### KEYBINDINGS ###
                 let handle_kb = |opt: &Option<Shortcut>, func: &mut dyn FnMut(Shortcut)| {
                     if let Some(kb) = opt {
                         if kb.matches(r) {
@@ -1255,94 +1290,6 @@ impl<'a> ZApp {
                         }
                     }
                 };
-                handle_kb(&app_state_ctx.keybindings.open_file_source, &mut |_kb| {
-                    Self::open_file_picker(app_state_ctx.file_1.get_tx());
-                });
-                handle_kb(&app_state_ctx.keybindings.open_file_target, &mut |_kb| {
-                    Self::open_file_picker(app_state_ctx.file_2.get_tx());
-                });
-                handle_kb(&app_state_ctx.keybindings.refresh_diff, &mut |_kb| {
-                    app_state_ctx.diff_processor.reset_ctx();
-                    Self::refresh_file_contents(
-                        &mut app_state_ctx.file_1,
-                        &mut app_state_ctx.file_2,
-                    );
-                });
-                handle_kb(
-                    &app_state_ctx.keybindings.refresh_diff_rows_only,
-                    &mut |_kb| {
-                        app_state_ctx.diff_processor.reset_ctx();
-                    },
-                );
-                handle_kb(
-                    &app_state_ctx.keybindings.open_options_keybindings,
-                    &mut |_kb| self.open_shortcuts_window = true,
-                );
-                handle_kb(&app_state_ctx.keybindings.open_universal_path, &mut |_kb| {
-                    self.open_universal_path_window = true
-                });
-                handle_kb(&app_state_ctx.keybindings.find, &mut |_kb| {
-                    app_state_ctx.find_open = true
-                });
-                handle_kb(&app_state_ctx.keybindings.goto, &mut |_kb| {
-                    app_state_ctx.goto_open = true
-                });
-                handle_kb(
-                    &app_state_ctx.keybindings.revision_graph,
-                    &mut |_kb| match &app_state_ctx.file_1.get_full_path() {
-                        file @ UniversalPath::Depot(..) => {
-                            match P4Command::open_revision_graph(file) {
-                                Ok(_) => {
-                                    log::info!("Revision graph returned Ok");
-                                }
-                                Err(e) => log::error!("Failed to open revision graph: {e}"),
-                            }
-                        }
-                        UniversalPath::Local(path_buf) => {
-                            log::info!(
-                                "Can not open revision graph for local path {}",
-                                path_buf.display()
-                            );
-                            return;
-                        }
-                    },
-                );
-                handle_kb(
-                    &app_state_ctx.keybindings.timelapse_view,
-                    &mut |_kb| match &app_state_ctx.file_1.get_full_path() {
-                        file @ UniversalPath::Depot(..) => {
-                            match P4Command::open_timelapse_view(file) {
-                                Ok(_) => {
-                                    log::info!("Timelapse view returned Ok");
-                                }
-                                Err(e) => log::error!("Failed to open timelapse view: {e}"),
-                            }
-                        }
-                        UniversalPath::Local(path_buf) => {
-                            log::info!(
-                                "Can not open timelapse view for local path {}",
-                                path_buf.display()
-                            );
-                            return;
-                        }
-                    },
-                );
-                // A focused text field (path editors, Find, Goto, a binding being captured) has
-                // its own Ctrl+Z/Ctrl+Y; they must not also rewrite a file on disk.
-                if !text_focused {
-                    handle_kb(&app_state_ctx.keybindings.undo_revert, &mut |_kb| {
-                        history_step = Some(HistoryStep::Undo)
-                    });
-                    handle_kb(&app_state_ctx.keybindings.redo_revert, &mut |_kb| {
-                        history_step = Some(HistoryStep::Redo)
-                    });
-                    handle_kb(&app_state_ctx.keybindings.redo_revert_alt, &mut |_kb| {
-                        history_step = Some(HistoryStep::Redo)
-                    });
-                }
-                handle_kb(&app_state_ctx.keybindings.diff_local_file, &mut |_kb| {
-                    diff_local_file = true
-                });
 
                 for (i, (kb, path)) in app_state_ctx
                     .keybindings
@@ -1963,63 +1910,98 @@ mod tests {
         assert!(!restored.word_wrap);
     }
 
-    #[test]
-    fn a_save_without_the_undo_keys_loads_the_defaults() {
+    fn old_format_save(missing: &[&str]) -> serde_json::Value {
         let mut json = serde_json::to_value(AppStateCtx::default()).unwrap();
-        let keybindings = json["keybindings"].as_object_mut().unwrap();
-        for key in ["undo_revert", "redo_revert", "redo_revert_alt"] {
-            keybindings.remove(key).unwrap();
+        let quick_diffs = json["keybindings"]["user_quick_diffs"].take();
+        let mut old = serde_json::json!({ "user_quick_diffs": quick_diffs });
+        for field in [
+            "find",
+            "undo_revert",
+            "redo_revert",
+            "redo_revert_alt",
+            "diff_local_file",
+        ] {
+            if !missing.contains(&field) {
+                old[field] = serde_json::Value::Null;
+            }
         }
+        json["keybindings"] = old;
+        json
+    }
+
+    #[test]
+    fn an_old_save_without_the_undo_keys_loads_the_defaults() {
+        let json = old_format_save(&["undo_revert", "redo_revert", "redo_revert_alt"]);
         let restored: AppStateCtx = serde_json::from_value(json).unwrap();
-        let defaults = Keybindings::default();
-        assert!(defaults.undo_revert.is_some());
-        assert!(defaults.redo_revert.is_some());
-        assert!(defaults.redo_revert_alt.is_some());
-        assert_eq!(restored.keybindings.undo_revert, defaults.undo_revert);
-        assert_eq!(restored.keybindings.redo_revert, defaults.redo_revert);
+        let keymap = &restored.keybindings.keymap;
+        assert!(!FileAction::UndoRevert.defaults().is_empty());
         assert_eq!(
-            restored.keybindings.redo_revert_alt,
-            defaults.redo_revert_alt
+            keymap.shortcuts(FileAction::UndoRevert),
+            FileAction::UndoRevert.defaults()
         );
+        assert_eq!(keymap.shortcuts(FileAction::Redo).len(), 2);
+        assert_eq!(
+            keymap.shortcuts(FileAction::Redo),
+            FileAction::Redo.defaults()
+        );
+        assert_eq!(keymap.shortcuts(FileAction::DiffLocalFile), []);
     }
 
     #[test]
     fn undo_keys_survive_a_restart() {
         let mut ctx = AppStateCtx::default();
-        ctx.keybindings.undo_revert = None;
-        ctx.keybindings.redo_revert = ctx.keybindings.find;
+        let find = ctx.keybindings.keymap.shortcuts(FileAction::Find)[0];
+        let keymap = &mut ctx.keybindings.keymap;
+        keymap.shortcuts_mut(FileAction::UndoRevert).clear();
+        keymap.shortcuts_mut(FileAction::Redo).insert(0, find);
         let json = serde_json::to_string(&ctx).unwrap();
         let restored: AppStateCtx = serde_json::from_str(&json).unwrap();
-        assert_eq!(restored.keybindings.undo_revert, None);
-        assert_eq!(restored.keybindings.redo_revert, ctx.keybindings.find);
+        assert_eq!(restored.keybindings.keymap, ctx.keybindings.keymap);
     }
 
     #[test]
-    fn a_save_without_the_local_file_key_loads_the_default() {
-        let mut json = serde_json::to_value(AppStateCtx::default()).unwrap();
-        let keybindings = json["keybindings"].as_object_mut().unwrap();
-        keybindings.remove("diff_local_file").unwrap();
+    fn an_old_save_without_the_local_file_key_loads_the_default() {
+        let json = old_format_save(&["diff_local_file"]);
         let restored: AppStateCtx = serde_json::from_value(json).unwrap();
-        let defaults = Keybindings::default();
-        assert!(defaults.diff_local_file.is_some());
+        let keymap = &restored.keybindings.keymap;
+        assert!(!FileAction::DiffLocalFile.defaults().is_empty());
         assert_eq!(
-            restored.keybindings.diff_local_file,
-            defaults.diff_local_file
+            keymap.shortcuts(FileAction::DiffLocalFile),
+            FileAction::DiffLocalFile.defaults()
         );
+        assert_eq!(keymap.shortcuts(FileAction::UndoRevert), []);
     }
 
     #[test]
     fn the_local_file_key_survives_a_restart() {
         let mut ctx = AppStateCtx::default();
-        ctx.keybindings.diff_local_file = ctx.keybindings.find;
+        let find = ctx.keybindings.keymap.shortcuts(FileAction::Find)[0];
+        *ctx.keybindings
+            .keymap
+            .shortcuts_mut(FileAction::DiffLocalFile) = vec![find];
         let json = serde_json::to_string(&ctx).unwrap();
         let restored: AppStateCtx = serde_json::from_str(&json).unwrap();
-        assert_eq!(restored.keybindings.diff_local_file, ctx.keybindings.find);
+        assert_eq!(
+            restored
+                .keybindings
+                .keymap
+                .shortcuts(FileAction::DiffLocalFile),
+            [find]
+        );
 
-        ctx.keybindings.diff_local_file = None;
+        ctx.keybindings
+            .keymap
+            .shortcuts_mut(FileAction::DiffLocalFile)
+            .clear();
         let json = serde_json::to_string(&ctx).unwrap();
         let restored: AppStateCtx = serde_json::from_str(&json).unwrap();
-        assert_eq!(restored.keybindings.diff_local_file, None);
+        assert_eq!(
+            restored
+                .keybindings
+                .keymap
+                .shortcuts(FileAction::DiffLocalFile),
+            []
+        );
     }
 
     #[test]

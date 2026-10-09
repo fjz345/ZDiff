@@ -1,5 +1,5 @@
 use eframe::egui::{self, Key, Modifiers};
-use zcommon::ui_egui::keymap::Shortcut;
+use zcommon::ui_egui::keymap::{Action, Keymap, Shortcut, TypingPolicy};
 
 use crate::p4::{P4Profile, ui_p4_profile_combo};
 
@@ -15,36 +15,6 @@ pub struct QuickDiffPaths {
     pub p4_profile: Option<u64>,
 }
 
-#[derive(Debug, Clone)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct Keybindings {
-    pub open_file_source: Option<Shortcut>,
-    pub open_file_target: Option<Shortcut>,
-    pub refresh_diff_rows_only: Option<Shortcut>,
-    pub refresh_diff: Option<Shortcut>, // Implies refresh_diff_rows_only
-    pub open_options_keybindings: Option<Shortcut>,
-    pub open_universal_path: Option<Shortcut>,
-    pub find: Option<Shortcut>,
-    pub goto: Option<Shortcut>,
-    pub next_conflict: Option<Shortcut>,
-    pub prev_conflict: Option<Shortcut>,
-    pub next_find: Option<Shortcut>,
-    pub prev_find: Option<Shortcut>,
-    pub user_quick_diffs: Vec<(Option<Shortcut>, QuickDiffPaths)>,
-    pub revision_graph: Option<Shortcut>,
-    pub timelapse_view: Option<Shortcut>,
-    // Saves from before these bindings load the default keys.
-    #[cfg_attr(feature = "serde", serde(default = "default_undo_revert"))]
-    pub undo_revert: Option<Shortcut>,
-    #[cfg_attr(feature = "serde", serde(default = "default_redo_revert"))]
-    pub redo_revert: Option<Shortcut>,
-    #[cfg_attr(feature = "serde", serde(default = "default_redo_revert_alt"))]
-    pub redo_revert_alt: Option<Shortcut>,
-    /// Target becomes the local file of the source depot file.
-    #[cfg_attr(feature = "serde", serde(default = "default_diff_local_file"))]
-    pub diff_local_file: Option<Shortcut>,
-}
-
 const DEFAULT_COMMAND_ENABLE: bool = if cfg!(target_os = "macos")
 {true}
 else
@@ -54,228 +24,406 @@ const DEFAULT_CONTROL_ENABLE: bool = if cfg!(target_os = "macos")
 else
 {true};
 
-impl Default for Keybindings {
-    fn default() -> Self {
-        Self {
-            open_file_source: Some(Shortcut {
+const CTRL: Modifiers = Modifiers {
+    ctrl: DEFAULT_CONTROL_ENABLE,
+    command: DEFAULT_COMMAND_ENABLE,
+    ..Modifiers::NONE
+};
+const CTRL_SHIFT: Modifiers = Modifiers {
+    shift: true,
+    ..CTRL
+};
+const CTRL_ALT: Modifiers = Modifiers { alt: true, ..CTRL };
+
+const fn shortcut(key: Key, modifiers: Modifiers) -> Shortcut {
+    Shortcut { key, modifiers }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum FileAction {
+    OpenFileSource,
+    OpenFileTarget,
+    RefreshDiff,
+    RefreshDiffRowsOnly,
+    OpenKeybindings,
+    OpenUniversalPath,
+    Find,
+    Goto,
+    NextConflict,
+    PrevConflict,
+    NextFind,
+    PrevFind,
+    RevisionGraph,
+    TimelapseView,
+    UndoRevert,
+    Redo,
+    /// Target becomes the local file of the source depot file.
+    DiffLocalFile,
+}
+
+impl Action for FileAction {
+    fn all() -> &'static [Self] {
+        &[
+            Self::OpenFileSource,
+            Self::OpenFileTarget,
+            Self::RefreshDiff,
+            Self::RefreshDiffRowsOnly,
+            Self::OpenKeybindings,
+            Self::OpenUniversalPath,
+            Self::Find,
+            Self::Goto,
+            Self::NextConflict,
+            Self::PrevConflict,
+            Self::NextFind,
+            Self::PrevFind,
+            Self::RevisionGraph,
+            Self::TimelapseView,
+            Self::UndoRevert,
+            Self::Redo,
+            Self::DiffLocalFile,
+        ]
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::OpenFileSource => "open_file_source",
+            Self::OpenFileTarget => "open_file_target",
+            Self::RefreshDiff => "refresh_diff",
+            Self::RefreshDiffRowsOnly => "refresh_diff_rows_only",
+            Self::OpenKeybindings => "open_options_keybindings",
+            Self::OpenUniversalPath => "open_universal_path",
+            Self::Find => "find",
+            Self::Goto => "goto",
+            Self::NextConflict => "next_conflict",
+            Self::PrevConflict => "prev_conflict",
+            Self::NextFind => "next_find",
+            Self::PrevFind => "prev_find",
+            Self::RevisionGraph => "revision_graph",
+            Self::TimelapseView => "timelapse_view",
+            Self::UndoRevert => "undo_revert",
+            Self::Redo => "redo_revert",
+            Self::DiffLocalFile => "diff_local_file",
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::OpenFileSource => "Open Source File",
+            Self::OpenFileTarget => "Open Target File",
+            Self::RefreshDiff => "Refresh Diff",
+            Self::RefreshDiffRowsOnly => "Refresh Diff Rows Only",
+            Self::OpenKeybindings => "Open Keybindings Options",
+            Self::OpenUniversalPath => "Open P4Config",
+            Self::Find => "Find",
+            Self::Goto => "Goto",
+            Self::NextConflict => "Next Conflict",
+            Self::PrevConflict => "Previous Conflict",
+            Self::NextFind => "Next Find Result",
+            Self::PrevFind => "Previous Find Result",
+            Self::RevisionGraph => "Revision Graph",
+            Self::TimelapseView => "Timelapse View",
+            Self::UndoRevert => "Undo Revert",
+            Self::Redo => "Redo Revert",
+            Self::DiffLocalFile => "Diff Source Against Local File",
+        }
+    }
+
+    fn defaults(self) -> &'static [Shortcut] {
+        match self {
+            Self::OpenFileSource => &[Shortcut {
                 key: Key::F1,
-                modifiers: Modifiers {
-                    ctrl: DEFAULT_CONTROL_ENABLE,
-                    command: DEFAULT_COMMAND_ENABLE,
-                    ..Default::default()
-                },
-            }),
-            open_file_target: Some(Shortcut {
+                modifiers: CTRL,
+            }],
+            Self::OpenFileTarget => &[Shortcut {
                 key: Key::F2,
-                modifiers: Modifiers {
-                    ctrl: DEFAULT_CONTROL_ENABLE,
-                    command: DEFAULT_COMMAND_ENABLE,
-                    ..Default::default()
-                },
-            }),
-            refresh_diff: Some(Shortcut {
+                modifiers: CTRL,
+            }],
+            Self::RefreshDiff => &[Shortcut {
                 key: Key::R,
-                modifiers: Modifiers {
-                    ctrl: DEFAULT_CONTROL_ENABLE,
-                    command: DEFAULT_COMMAND_ENABLE,
-                    ..Default::default()
-                },
-            }),
-            refresh_diff_rows_only: Some(Shortcut {
+                modifiers: CTRL,
+            }],
+            Self::RefreshDiffRowsOnly => &[Shortcut {
                 key: Key::R,
-                modifiers: Modifiers {
-                    ctrl: DEFAULT_CONTROL_ENABLE,
-                    command: true,
-                    alt: true,
-                    ..Default::default()
-                },
-            }),
-            open_options_keybindings: Some(Shortcut {
+                modifiers: CTRL_ALT,
+            }],
+            Self::OpenKeybindings => &[Shortcut {
                 key: Key::O,
-                modifiers: Modifiers {
-                    ctrl: DEFAULT_CONTROL_ENABLE,
-                    command: DEFAULT_COMMAND_ENABLE,
-                    ..Default::default()
-                },
-            }),
-            open_universal_path: Some(Shortcut {
+                modifiers: CTRL,
+            }],
+            Self::OpenUniversalPath => &[Shortcut {
                 key: Key::U,
-                modifiers: Modifiers {
-                    ctrl: DEFAULT_CONTROL_ENABLE,
-                    command: DEFAULT_COMMAND_ENABLE,
-                    ..Default::default()
-                },
-            }),
-            find: Some(Shortcut {
+                modifiers: CTRL,
+            }],
+            Self::Find => &[Shortcut {
                 key: Key::F,
-                modifiers: Modifiers {
-                    ctrl: DEFAULT_CONTROL_ENABLE,
-                    command: DEFAULT_COMMAND_ENABLE,
-                    ..Default::default()
-                },
-            }),
-            goto: Some(Shortcut {
+                modifiers: CTRL,
+            }],
+            Self::Goto => &[Shortcut {
                 key: Key::G,
-                modifiers: Modifiers {
-                    ctrl: DEFAULT_CONTROL_ENABLE,
-                    command: DEFAULT_COMMAND_ENABLE,
-                    ..Default::default()
+                modifiers: CTRL,
+            }],
+            Self::NextConflict => &[
+                Shortcut {
+                    key: Key::Num2,
+                    modifiers: CTRL,
                 },
-            }),
-            next_conflict: Some(Shortcut {
-                key: Key::Num2,
-                modifiers: Modifiers {
-                    ctrl: DEFAULT_CONTROL_ENABLE,
-                    command: DEFAULT_COMMAND_ENABLE,
-                    ..Default::default()
+                Shortcut {
+                    key: Key::ArrowDown,
+                    modifiers: Modifiers::ALT,
                 },
-            }),
-            prev_conflict: Some(Shortcut {
-                key: Key::Num1,
-                modifiers: Modifiers {
-                    ctrl: DEFAULT_CONTROL_ENABLE,
-                    command: true,
-                    shift: true,
-                    ..Default::default()
-                },
-            }),
-            next_find: Some(Shortcut {
-                key: Key::Enter,
-                modifiers: Modifiers {
-                    ctrl: false,
-                    ..Default::default()
-                },
-            }),
-            prev_find: Some(Shortcut {
-                key: Key::Enter,
-                modifiers: Modifiers {
-                    shift: true,
-                    ..Default::default()
-                },
-            }),
-            user_quick_diffs: vec![
-                (
-                    Some(Shortcut {
-                        key: Key::F1,
-                        modifiers: Modifiers {
-                            ..Default::default()
-                        },
-                    }),
-                    QuickDiffPaths {
-                        target: Default::default(),
-                        source: None,
-                        ..Default::default()
-                    },
-                ),
-                (
-                    Some(Shortcut {
-                        key: Key::F2,
-                        modifiers: Modifiers {
-                            ..Default::default()
-                        },
-                    }),
-                    QuickDiffPaths {
-                        target: Default::default(),
-                        source: None,
-                        ..Default::default()
-                    },
-                ),
-                (
-                    Some(Shortcut {
-                        key: Key::F3,
-                        modifiers: Modifiers {
-                            ..Default::default()
-                        },
-                    }),
-                    QuickDiffPaths {
-                        target: Default::default(),
-                        source: None,
-                        ..Default::default()
-                    },
-                ),
-                (
-                    Some(Shortcut {
-                        key: Key::F4,
-                        modifiers: Modifiers {
-                            ..Default::default()
-                        },
-                    }),
-                    QuickDiffPaths {
-                        target: Default::default(),
-                        source: None,
-                        ..Default::default()
-                    },
-                ),
             ],
-            revision_graph: Some(Shortcut {
+            Self::PrevConflict => &[
+                Shortcut {
+                    key: Key::Num1,
+                    modifiers: CTRL,
+                },
+                Shortcut {
+                    key: Key::ArrowUp,
+                    modifiers: Modifiers::ALT,
+                },
+            ],
+            Self::NextFind => &[Shortcut {
+                key: Key::Enter,
+                modifiers: Modifiers::NONE,
+            }],
+            Self::PrevFind => &[Shortcut {
+                key: Key::Enter,
+                modifiers: Modifiers::SHIFT,
+            }],
+            Self::RevisionGraph => &[Shortcut {
                 key: Key::R,
-                modifiers: Modifiers {
-                    ctrl: DEFAULT_CONTROL_ENABLE,
-                    command: true,
-                    shift: true,
-                    ..Default::default()
-                },
-            }),
-            timelapse_view: Some(Shortcut {
+                modifiers: CTRL_SHIFT,
+            }],
+            Self::TimelapseView => &[Shortcut {
                 key: Key::T,
-                modifiers: Modifiers {
-                    ctrl: DEFAULT_CONTROL_ENABLE,
-                    command: true,
-                    shift: true,
-                    ..Default::default()
+                modifiers: CTRL_SHIFT,
+            }],
+            Self::UndoRevert => &[Shortcut {
+                key: Key::Z,
+                modifiers: CTRL,
+            }],
+            Self::Redo => &[
+                Shortcut {
+                    key: Key::Y,
+                    modifiers: CTRL,
                 },
-            }),
-            undo_revert: default_undo_revert(),
-            redo_revert: default_redo_revert(),
-            redo_revert_alt: default_redo_revert_alt(),
-            diff_local_file: default_diff_local_file(),
+                Shortcut {
+                    key: Key::Z,
+                    modifiers: CTRL_SHIFT,
+                },
+            ],
+            Self::DiffLocalFile => &[Shortcut {
+                key: Key::L,
+                modifiers: CTRL,
+            }],
+        }
+    }
+
+    // A focused text field has its own Ctrl+Z/Ctrl+Y; they must not also rewrite a file on disk.
+    fn typing_policy(self) -> TypingPolicy {
+        match self {
+            Self::UndoRevert | Self::Redo => TypingPolicy::Never,
+            _ => TypingPolicy::CtrlOrAlt,
         }
     }
 }
 
-fn default_diff_local_file() -> Option<Shortcut> {
-    Some(Shortcut {
-        key: Key::L,
-        modifiers: Modifiers {
-            ctrl: DEFAULT_CONTROL_ENABLE,
-            command: DEFAULT_COMMAND_ENABLE,
-            ..Default::default()
-        },
-    })
+pub type QuickDiffSlot = (Option<Shortcut>, QuickDiffPaths);
+
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+pub struct Keybindings {
+    pub keymap: Keymap<FileAction>,
+    pub user_quick_diffs: Vec<QuickDiffSlot>,
 }
 
-fn default_undo_revert() -> Option<Shortcut> {
-    Some(Shortcut {
-        key: Key::Z,
-        modifiers: Modifiers {
-            ctrl: DEFAULT_CONTROL_ENABLE,
-            command: DEFAULT_COMMAND_ENABLE,
-            ..Default::default()
-        },
-    })
+impl Default for Keybindings {
+    fn default() -> Self {
+        Self {
+            keymap: Keymap::default(),
+            user_quick_diffs: [Key::F1, Key::F2, Key::F3, Key::F4]
+                .into_iter()
+                .map(|key| {
+                    (
+                        Some(shortcut(key, Modifiers::NONE)),
+                        QuickDiffPaths::default(),
+                    )
+                })
+                .collect(),
+        }
+    }
 }
 
-fn default_redo_revert() -> Option<Shortcut> {
-    Some(Shortcut {
-        key: Key::Y,
-        modifiers: Modifiers {
-            ctrl: DEFAULT_CONTROL_ENABLE,
-            command: DEFAULT_COMMAND_ENABLE,
-            ..Default::default()
-        },
-    })
+impl Keybindings {
+    pub fn first_shortcut_text(&self, action: FileAction) -> String {
+        self.keymap
+            .shortcuts(action)
+            .first()
+            .map_or_else(|| "None".to_string(), Shortcut::format)
+    }
 }
 
-fn default_redo_revert_alt() -> Option<Shortcut> {
-    Some(Shortcut {
-        key: Key::Z,
-        modifiers: Modifiers {
-            ctrl: DEFAULT_CONTROL_ENABLE,
-            command: DEFAULT_COMMAND_ENABLE,
-            shift: true,
-            ..Default::default()
-        },
-    })
+#[cfg(feature = "serde")]
+impl<'de> serde::Deserialize<'de> for Keybindings {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(serde::Deserialize)]
+        struct Saved {
+            keymap: Keymap<FileAction>,
+            user_quick_diffs: Vec<QuickDiffSlot>,
+        }
+
+        use serde::de::Error;
+        let value = serde_json::Value::deserialize(deserializer)?;
+        if value.get("keymap").is_some() {
+            let saved: Saved = serde_json::from_value(value).map_err(D::Error::custom)?;
+            Ok(Self {
+                keymap: saved.keymap,
+                user_quick_diffs: saved.user_quick_diffs,
+            })
+        } else {
+            let legacy: LegacyKeybindings =
+                serde_json::from_value(value).map_err(D::Error::custom)?;
+            Ok(legacy.migrate())
+        }
+    }
+}
+
+/// The named-field format saved before the keymap.
+#[cfg(feature = "serde")]
+#[derive(serde::Deserialize)]
+struct LegacyKeybindings {
+    open_file_source: Option<Shortcut>,
+    open_file_target: Option<Shortcut>,
+    refresh_diff_rows_only: Option<Shortcut>,
+    refresh_diff: Option<Shortcut>,
+    open_options_keybindings: Option<Shortcut>,
+    open_universal_path: Option<Shortcut>,
+    find: Option<Shortcut>,
+    goto: Option<Shortcut>,
+    next_conflict: Option<Shortcut>,
+    prev_conflict: Option<Shortcut>,
+    next_find: Option<Shortcut>,
+    prev_find: Option<Shortcut>,
+    user_quick_diffs: Vec<QuickDiffSlot>,
+    revision_graph: Option<Shortcut>,
+    timelapse_view: Option<Shortcut>,
+    #[serde(default = "legacy_default_undo_revert")]
+    undo_revert: Option<Shortcut>,
+    #[serde(default = "legacy_default_redo_revert")]
+    redo_revert: Option<Shortcut>,
+    #[serde(default = "legacy_default_redo_revert_alt")]
+    redo_revert_alt: Option<Shortcut>,
+    #[serde(default = "legacy_default_diff_local_file")]
+    diff_local_file: Option<Shortcut>,
+}
+
+#[cfg(feature = "serde")]
+fn legacy_default_undo_revert() -> Option<Shortcut> {
+    Some(shortcut(Key::Z, CTRL))
+}
+
+#[cfg(feature = "serde")]
+fn legacy_default_redo_revert() -> Option<Shortcut> {
+    Some(shortcut(Key::Y, CTRL))
+}
+
+#[cfg(feature = "serde")]
+fn legacy_default_redo_revert_alt() -> Option<Shortcut> {
+    Some(shortcut(Key::Z, CTRL_SHIFT))
+}
+
+#[cfg(feature = "serde")]
+fn legacy_default_diff_local_file() -> Option<Shortcut> {
+    Some(shortcut(Key::L, CTRL))
+}
+
+#[cfg(feature = "serde")]
+impl LegacyKeybindings {
+    fn migrate(self) -> Keybindings {
+        let Self {
+            open_file_source,
+            open_file_target,
+            refresh_diff_rows_only,
+            refresh_diff,
+            open_options_keybindings,
+            open_universal_path,
+            find,
+            goto,
+            next_conflict,
+            prev_conflict,
+            next_find,
+            prev_find,
+            user_quick_diffs,
+            revision_graph,
+            timelapse_view,
+            undo_revert,
+            redo_revert,
+            redo_revert_alt,
+            diff_local_file,
+        } = self;
+
+        let old_prev_conflict_default = shortcut(Key::Num1, CTRL_SHIFT);
+        let prev_conflict = prev_conflict.map(|s| {
+            if s == old_prev_conflict_default {
+                shortcut(Key::Num1, CTRL)
+            } else {
+                s
+            }
+        });
+        // The Alt arrows used to be hardcoded next to these bindings.
+        let with_alt_arrow = |binding: Option<Shortcut>, arrow: Key| {
+            let mut shortcuts: Vec<_> = binding.into_iter().collect();
+            let alt_arrow = shortcut(arrow, Modifiers::ALT);
+            if !shortcuts.contains(&alt_arrow) {
+                shortcuts.push(alt_arrow);
+            }
+            shortcuts
+        };
+        let mut redo: Vec<_> = redo_revert.into_iter().chain(redo_revert_alt).collect();
+        redo.dedup();
+
+        let mut keymap = Keymap::default();
+        for (action, shortcuts) in [
+            (FileAction::OpenFileSource, Vec::from_iter(open_file_source)),
+            (FileAction::OpenFileTarget, Vec::from_iter(open_file_target)),
+            (FileAction::RefreshDiff, Vec::from_iter(refresh_diff)),
+            (
+                FileAction::RefreshDiffRowsOnly,
+                Vec::from_iter(refresh_diff_rows_only),
+            ),
+            (
+                FileAction::OpenKeybindings,
+                Vec::from_iter(open_options_keybindings),
+            ),
+            (
+                FileAction::OpenUniversalPath,
+                Vec::from_iter(open_universal_path),
+            ),
+            (FileAction::Find, Vec::from_iter(find)),
+            (FileAction::Goto, Vec::from_iter(goto)),
+            (
+                FileAction::NextConflict,
+                with_alt_arrow(next_conflict, Key::ArrowDown),
+            ),
+            (
+                FileAction::PrevConflict,
+                with_alt_arrow(prev_conflict, Key::ArrowUp),
+            ),
+            (FileAction::NextFind, Vec::from_iter(next_find)),
+            (FileAction::PrevFind, Vec::from_iter(prev_find)),
+            (FileAction::RevisionGraph, Vec::from_iter(revision_graph)),
+            (FileAction::TimelapseView, Vec::from_iter(timelapse_view)),
+            (FileAction::UndoRevert, Vec::from_iter(undo_revert)),
+            (FileAction::Redo, redo),
+            (FileAction::DiffLocalFile, Vec::from_iter(diff_local_file)),
+        ] {
+            *keymap.shortcuts_mut(action) = shortcuts;
+        }
+        Keybindings {
+            keymap,
+            user_quick_diffs,
+        }
+    }
 }
 
 pub fn ui_keybindings(ui: &mut egui::Ui, keybindings: &mut Keybindings, p4_profiles: &[P4Profile]) {
@@ -425,36 +573,249 @@ pub fn ui_keybindings(ui: &mut egui::Ui, keybindings: &mut Keybindings, p4_profi
                 ui.separator();
                 ui.end_row();
 
-                ui_shortcut_row(ui, "Open Source File", &mut keybindings.open_file_source);
-                ui_shortcut_row(ui, "Open Target File", &mut keybindings.open_file_target);
-                ui_shortcut_row(ui, "Refresh Diff", &mut keybindings.refresh_diff);
-                ui_shortcut_row(
-                    ui,
-                    "Refresh Diff Rows Only",
-                    &mut keybindings.refresh_diff_rows_only,
-                );
-                ui_shortcut_row(
-                    ui,
-                    "Open Keybindings Options",
-                    &mut keybindings.open_options_keybindings,
-                );
-                ui_shortcut_row(ui, "Open P4Config", &mut keybindings.open_universal_path);
-                ui_shortcut_row(ui, "Find", &mut keybindings.find);
-                ui_shortcut_row(ui, "Goto", &mut keybindings.goto);
-                ui_shortcut_row(ui, "Next Conflict", &mut keybindings.next_conflict);
-                ui_shortcut_row(ui, "Previous Conflict", &mut keybindings.prev_conflict);
-                ui_shortcut_row(ui, "Next Find Result", &mut keybindings.next_find);
-                ui_shortcut_row(ui, "Previous Find Result", &mut keybindings.prev_find);
-                ui_shortcut_row(ui, "Revision Graph", &mut keybindings.revision_graph);
-                ui_shortcut_row(ui, "Timelapse View", &mut keybindings.timelapse_view);
-                ui_shortcut_row(ui, "Undo Revert", &mut keybindings.undo_revert);
-                ui_shortcut_row(ui, "Redo Revert", &mut keybindings.redo_revert);
-                ui_shortcut_row(ui, "Redo Revert (Alt)", &mut keybindings.redo_revert_alt);
-                ui_shortcut_row(
-                    ui,
-                    "Diff Source Against Local File",
-                    &mut keybindings.diff_local_file,
-                );
+                // Stopgap: edits only the first shortcut of each action.
+                for &action in FileAction::all() {
+                    let shortcuts = keybindings.keymap.shortcuts_mut(action);
+                    let mut first = shortcuts.first().copied();
+                    ui_shortcut_row(ui, action.label(), &mut first);
+                    if first != shortcuts.first().copied() {
+                        match first {
+                            Some(s) if shortcuts.is_empty() => shortcuts.push(s),
+                            Some(s) => shortcuts[0] = s,
+                            None => {
+                                shortcuts.remove(0);
+                            }
+                        }
+                    }
+                }
             });
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashSet;
+
+    fn press(key: Key, modifiers: Modifiers) -> egui::Event {
+        egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers,
+        }
+    }
+
+    #[test]
+    fn file_action_names_are_unique() {
+        let names: HashSet<_> = FileAction::all().iter().map(|a| a.name()).collect();
+        assert_eq!(names.len(), FileAction::all().len());
+    }
+
+    #[test]
+    fn file_action_defaults_are_clash_free() {
+        assert_eq!(Keymap::<FileAction>::default().clashes(), []);
+    }
+
+    #[test]
+    fn undo_and_redo_never_fire_while_typing() {
+        let keymap = Keymap::<FileAction>::default();
+        let events = [
+            press(Key::Z, CTRL),
+            press(Key::Y, CTRL),
+            press(Key::Z, CTRL_SHIFT),
+        ];
+        assert_eq!(keymap.dispatch(&events, true), []);
+        assert_eq!(
+            keymap.dispatch(&events, false),
+            [FileAction::UndoRevert, FileAction::Redo, FileAction::Redo]
+        );
+    }
+
+    #[test]
+    fn conflict_and_find_steps_dispatch_from_the_default_keys() {
+        let keymap = Keymap::<FileAction>::default();
+        let events = [
+            press(Key::Num2, CTRL),
+            press(Key::ArrowDown, Modifiers::ALT),
+            press(Key::Num1, CTRL),
+            press(Key::ArrowUp, Modifiers::ALT),
+            press(Key::Enter, Modifiers::NONE),
+            press(Key::Enter, Modifiers::SHIFT),
+        ];
+        assert_eq!(
+            keymap.dispatch(&events, false),
+            [
+                FileAction::NextConflict,
+                FileAction::NextConflict,
+                FileAction::PrevConflict,
+                FileAction::PrevConflict,
+                FileAction::NextFind,
+                FileAction::PrevFind,
+            ]
+        );
+    }
+
+    #[cfg(feature = "serde")]
+    mod migration {
+        use super::*;
+        use serde_json::{Value, json};
+
+        const LEGACY_FIELDS: [&str; 18] = [
+            "open_file_source",
+            "open_file_target",
+            "refresh_diff_rows_only",
+            "refresh_diff",
+            "open_options_keybindings",
+            "open_universal_path",
+            "find",
+            "goto",
+            "next_conflict",
+            "prev_conflict",
+            "next_find",
+            "prev_find",
+            "revision_graph",
+            "timelapse_view",
+            "undo_revert",
+            "redo_revert",
+            "redo_revert_alt",
+            "diff_local_file",
+        ];
+
+        fn f_key(i: usize) -> Shortcut {
+            let key = Key::from_name(&format!("F{}", i + 1)).unwrap();
+            shortcut(key, Modifiers::SHIFT)
+        }
+
+        fn alt(key: Key) -> Shortcut {
+            shortcut(key, Modifiers::ALT)
+        }
+
+        fn legacy_save(fields: &[(&str, Option<Shortcut>)]) -> Value {
+            let mut save = json!({
+                "user_quick_diffs": Keybindings::default().user_quick_diffs,
+            });
+            for (field, binding) in fields {
+                save[*field] = serde_json::to_value(binding).unwrap();
+            }
+            save
+        }
+
+        fn load(save: Value) -> Keymap<FileAction> {
+            serde_json::from_value::<Keybindings>(save).unwrap().keymap
+        }
+
+        #[test]
+        fn an_old_save_converts_field_by_field() {
+            let fields: Vec<_> = LEGACY_FIELDS
+                .iter()
+                .enumerate()
+                .map(|(i, field)| (*field, Some(f_key(i))))
+                .collect();
+            let mut save = legacy_save(&fields);
+            save["goto"] = Value::Null;
+            let keymap = load(save);
+
+            let expected = [
+                (FileAction::OpenFileSource, vec![f_key(0)]),
+                (FileAction::OpenFileTarget, vec![f_key(1)]),
+                (FileAction::RefreshDiffRowsOnly, vec![f_key(2)]),
+                (FileAction::RefreshDiff, vec![f_key(3)]),
+                (FileAction::OpenKeybindings, vec![f_key(4)]),
+                (FileAction::OpenUniversalPath, vec![f_key(5)]),
+                (FileAction::Find, vec![f_key(6)]),
+                (FileAction::Goto, vec![]),
+                (
+                    FileAction::NextConflict,
+                    vec![f_key(8), alt(Key::ArrowDown)],
+                ),
+                (FileAction::PrevConflict, vec![f_key(9), alt(Key::ArrowUp)]),
+                (FileAction::NextFind, vec![f_key(10)]),
+                (FileAction::PrevFind, vec![f_key(11)]),
+                (FileAction::RevisionGraph, vec![f_key(12)]),
+                (FileAction::TimelapseView, vec![f_key(13)]),
+                (FileAction::UndoRevert, vec![f_key(14)]),
+                (FileAction::Redo, vec![f_key(15), f_key(16)]),
+                (FileAction::DiffLocalFile, vec![f_key(17)]),
+            ];
+            assert_eq!(expected.len(), FileAction::all().len());
+            for (action, shortcuts) in expected {
+                assert_eq!(keymap.shortcuts(action), shortcuts, "{action:?}");
+            }
+        }
+
+        #[test]
+        fn old_redo_fields_merge_into_redo() {
+            let redo = shortcut(Key::Y, CTRL);
+            let redo_alt = shortcut(Key::Z, CTRL_SHIFT);
+            let both = legacy_save(&[
+                ("redo_revert", Some(redo)),
+                ("redo_revert_alt", Some(redo_alt)),
+            ]);
+            assert_eq!(load(both).shortcuts(FileAction::Redo), [redo, redo_alt]);
+
+            let alt_only =
+                legacy_save(&[("redo_revert", None), ("redo_revert_alt", Some(redo_alt))]);
+            assert_eq!(load(alt_only).shortcuts(FileAction::Redo), [redo_alt]);
+
+            let same = legacy_save(&[("redo_revert", Some(redo)), ("redo_revert_alt", Some(redo))]);
+            assert_eq!(load(same).shortcuts(FileAction::Redo), [redo]);
+        }
+
+        #[test]
+        fn old_default_previous_conflict_becomes_ctrl_1() {
+            let old_default = Shortcut {
+                key: Key::Num1,
+                modifiers: Modifiers {
+                    ctrl: DEFAULT_CONTROL_ENABLE,
+                    command: true,
+                    shift: true,
+                    ..Default::default()
+                },
+            };
+            let keymap = load(legacy_save(&[("prev_conflict", Some(old_default))]));
+            assert_eq!(
+                keymap.shortcuts(FileAction::PrevConflict),
+                [shortcut(Key::Num1, CTRL), alt(Key::ArrowUp)]
+            );
+        }
+
+        #[test]
+        fn a_customized_previous_conflict_is_kept() {
+            let custom = shortcut(Key::Num1, Modifiers::ALT);
+            let keymap = load(legacy_save(&[("prev_conflict", Some(custom))]));
+            assert_eq!(
+                keymap.shortcuts(FileAction::PrevConflict),
+                [custom, alt(Key::ArrowUp)]
+            );
+        }
+
+        #[test]
+        fn alt_arrows_are_added_to_the_conflict_actions_once() {
+            let keymap = load(legacy_save(&[
+                ("next_conflict", Some(alt(Key::ArrowDown))),
+                ("prev_conflict", None),
+            ]));
+            assert_eq!(
+                keymap.shortcuts(FileAction::NextConflict),
+                [alt(Key::ArrowDown)]
+            );
+            assert_eq!(
+                keymap.shortcuts(FileAction::PrevConflict),
+                [alt(Key::ArrowUp)]
+            );
+        }
+
+        #[test]
+        fn an_old_save_keeps_its_quick_diffs() {
+            let mut slots = Keybindings::default().user_quick_diffs;
+            slots[2].0 = None;
+            slots[2].1.p4_profile = Some(7);
+            let mut save = legacy_save(&[]);
+            save["user_quick_diffs"] = serde_json::to_value(&slots).unwrap();
+            let restored: Keybindings = serde_json::from_value(save).unwrap();
+            assert_eq!(restored.user_quick_diffs, slots);
+        }
+    }
 }
