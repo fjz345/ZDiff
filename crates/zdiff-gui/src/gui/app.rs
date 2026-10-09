@@ -49,8 +49,9 @@ use crate::{
         panes::{Pane, TreeBehavior},
     },
     viewer::{
-        FfmpegSetting, LoadedSide, SharedKinds, ViewerKind, ViewerOverride, conflict_count,
-        ffmpeg_fallback,
+        FfmpegSetting, LoadedSide, SharedKinds, ViewerKind, ViewerOverride,
+        audio_meta::AudioMetaProcessor,
+        conflict_count, ffmpeg_fallback,
         hex::{HexDiffProcessor, parse_hex_offset},
         image::ImageDiffProcessor,
         image_decode_fallback, resolve_viewer, ui_extension_map, ui_ffmpeg_setting,
@@ -69,6 +70,8 @@ pub struct AppStateCtx {
     pub hex_processor: HexDiffProcessor,
     #[cfg_attr(feature = "serde", serde(skip), serde(default))]
     pub image_processor: ImageDiffProcessor,
+    #[cfg_attr(feature = "serde", serde(skip), serde(default))]
+    pub audio_meta: AudioMetaProcessor,
     /// Resolved each frame from the loaded files; `None` while neither side is loaded.
     #[cfg_attr(feature = "serde", serde(skip), serde(default))]
     pub viewer_kind: Option<ViewerKind>,
@@ -147,6 +150,7 @@ impl Default for AppStateCtx {
             diff_processor: Default::default(),
             hex_processor: Default::default(),
             image_processor: Default::default(),
+            audio_meta: Default::default(),
             viewer_kind: None,
             viewer_override: Default::default(),
             viewer_fallback: None,
@@ -852,6 +856,7 @@ impl<'a> ZApp {
                 diff_processor,
                 hex_processor,
                 image_processor,
+                audio_meta,
                 viewer_kind,
                 viewer_override,
                 viewer_fallback,
@@ -1030,6 +1035,7 @@ impl<'a> ZApp {
                     hex_view: is_hex.then(|| hex_processor.view_ctx()),
                     image_view: is_image.then_some(image_processor),
                     media_view,
+                    audio_meta: (media_view == Some(ViewerKind::Audio)).then_some(audio_meta),
                     viewer_override: &mut viewer_override.kind,
                     viewer_fallback: viewer_fallback.as_deref(),
                     phase_overlay: self.phase_overlay,
@@ -1625,6 +1631,15 @@ impl eframe::App for ZApp {
                     state.viewer_fallback = fallback;
                 }
                 state.viewer_kind = resolution.map(|r| r.kind);
+                let audio_pair = match (state.viewer_kind, &loaded_1, &loaded_2) {
+                    (Some(ViewerKind::Audio), Some(a), Some(b)) => state
+                        .ffmpeg
+                        .lookup()
+                        .ok()
+                        .map(|ffmpeg| ([a.clone(), b.clone()], ffmpeg)),
+                    _ => None,
+                };
+                state.audio_meta.request(audio_pair);
                 let is_hex = state.viewer_kind == Some(ViewerKind::Hex);
                 let is_text = matches!(state.viewer_kind, Some(ViewerKind::Text) | None);
                 if is_hex {

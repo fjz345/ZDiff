@@ -10,6 +10,7 @@ use zcommon::ffmpeg::{FfmpegNotFound, FfmpegPaths, find_ffmpeg};
 use zcommon::kinds::{FileKind, KindTable, normalize_extension};
 use zdiff::universal_path::UniversalPath;
 
+pub mod audio_meta;
 pub mod hex;
 pub mod image;
 
