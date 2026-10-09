@@ -555,6 +555,7 @@ mod tests {
         let mut compare = TreeCompare::default();
         let rows = build(&mut compare, &left, &right);
         compare.start(&rows, [Some(&left), Some(&right)], Instant::now());
+        let _sender = compare.pause(Instant::now());
 
         compare.cancel();
         assert_eq!(compare.progress(), None);
