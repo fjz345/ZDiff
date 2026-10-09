@@ -1,7 +1,62 @@
 //! Horizontal scrolling of the text diff's two sides: offsets in points, `[left, right]`.
 //! Pure; the pane measures the rows and draws the scrollbars.
 
+use eframe::egui::{self, Modifiers, Vec2};
+
 use super::active_side::ActiveSide;
+
+/// The modifier that turns the mouse wheel into horizontal scrolling over the text rows.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum WheelModifier {
+    #[default]
+    Shift,
+    Ctrl,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum WheelScroll {
+    Toolkit,
+    Horizontal(f32),
+    Vertical(f32),
+}
+
+pub fn wheel_scroll(delta: Vec2, modifiers: Modifiers, setting: WheelModifier) -> WheelScroll {
+    match setting {
+        WheelModifier::Shift => WheelScroll::Toolkit,
+        WheelModifier::Ctrl if modifiers.ctrl => WheelScroll::Horizontal(delta.x + delta.y),
+        WheelModifier::Ctrl if modifiers.shift => WheelScroll::Vertical(delta.x + delta.y),
+        WheelModifier::Ctrl => WheelScroll::Toolkit,
+    }
+}
+
+/// Rewrites `wheel_scroll`'s horizontal and vertical wheels over `text_rects` into plain wheels
+/// before egui reads them, so a Ctrl wheel scrolls (smoothed) instead of feeding the zoom delta.
+pub fn remap_wheel_events(
+    events: &mut [egui::Event],
+    mut pointer: Option<egui::Pos2>,
+    text_rects: [egui::Rect; 2],
+    setting: WheelModifier,
+) {
+    for event in events {
+        match event {
+            egui::Event::PointerMoved(pos) => pointer = Some(*pos),
+            egui::Event::PointerGone => pointer = None,
+            egui::Event::MouseWheel {
+                delta, modifiers, ..
+            } if pointer.is_some_and(|p| text_rects.iter().any(|r| r.contains(p))) => {
+                let remapped = match wheel_scroll(*delta, *modifiers, setting) {
+                    WheelScroll::Toolkit => continue,
+                    WheelScroll::Horizontal(x) => egui::vec2(x, 0.0),
+                    WheelScroll::Vertical(y) => egui::vec2(0.0, y),
+                };
+                *delta = remapped;
+                *modifiers = Modifiers::NONE;
+            }
+            _ => {}
+        }
+    }
+}
 
 /// Advance width of `text` laid out on one line, given each char's advance. egui gives tabs a
 /// fixed advance, and monospace fonts have no kerning, so the sum is the laid-out width.
@@ -49,9 +104,121 @@ pub fn side_index(side: ActiveSide) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use eframe::egui;
-
     use super::*;
+
+    #[test]
+    fn shift_mode_leaves_every_wheel_to_the_toolkit() {
+        let delta = egui::vec2(0.0, -1.0);
+        for modifiers in [
+            Modifiers::NONE,
+            Modifiers::SHIFT,
+            Modifiers::CTRL,
+            Modifiers::CTRL | Modifiers::SHIFT,
+        ] {
+            assert_eq!(
+                wheel_scroll(delta, modifiers, WheelModifier::Shift),
+                WheelScroll::Toolkit,
+                "{modifiers:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn ctrl_mode_turns_ctrl_wheel_horizontal_and_shift_wheel_vertical() {
+        let delta = egui::vec2(0.0, -1.0);
+        assert_eq!(
+            wheel_scroll(delta, Modifiers::CTRL, WheelModifier::Ctrl),
+            WheelScroll::Horizontal(-1.0)
+        );
+        assert_eq!(
+            wheel_scroll(delta, Modifiers::SHIFT, WheelModifier::Ctrl),
+            WheelScroll::Vertical(-1.0)
+        );
+        assert_eq!(
+            wheel_scroll(
+                delta,
+                Modifiers::CTRL | Modifiers::SHIFT,
+                WheelModifier::Ctrl
+            ),
+            WheelScroll::Horizontal(-1.0)
+        );
+        assert_eq!(
+            wheel_scroll(delta, Modifiers::NONE, WheelModifier::Ctrl),
+            WheelScroll::Toolkit
+        );
+        assert_eq!(
+            wheel_scroll(egui::vec2(2.0, 0.0), Modifiers::SHIFT, WheelModifier::Ctrl),
+            WheelScroll::Vertical(2.0)
+        );
+    }
+
+    fn wheel(modifiers: Modifiers) -> egui::Event {
+        egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Line,
+            delta: egui::vec2(0.0, -1.0),
+            modifiers,
+        }
+    }
+
+    fn line_wheel(delta: Vec2) -> egui::Event {
+        egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Line,
+            delta,
+            modifiers: Modifiers::NONE,
+        }
+    }
+
+    #[test]
+    fn only_wheels_over_the_text_rows_are_rewritten() {
+        let left = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(100.0, 100.0));
+        let right = egui::Rect::from_min_max(egui::pos2(110.0, 0.0), egui::pos2(200.0, 100.0));
+        let mut events = vec![
+            wheel(Modifiers::CTRL),
+            wheel(Modifiers::SHIFT),
+            egui::Event::PointerMoved(egui::pos2(300.0, 50.0)),
+            wheel(Modifiers::CTRL),
+            egui::Event::PointerMoved(egui::pos2(150.0, 50.0)),
+            wheel(Modifiers::CTRL),
+            egui::Event::PointerGone,
+            wheel(Modifiers::CTRL),
+        ];
+
+        remap_wheel_events(
+            &mut events,
+            Some(egui::pos2(50.0, 50.0)),
+            [left, right],
+            WheelModifier::Ctrl,
+        );
+
+        assert_eq!(
+            events,
+            [
+                line_wheel(egui::vec2(-1.0, 0.0)),
+                line_wheel(egui::vec2(0.0, -1.0)),
+                egui::Event::PointerMoved(egui::pos2(300.0, 50.0)),
+                wheel(Modifiers::CTRL),
+                egui::Event::PointerMoved(egui::pos2(150.0, 50.0)),
+                line_wheel(egui::vec2(-1.0, 0.0)),
+                egui::Event::PointerGone,
+                wheel(Modifiers::CTRL),
+            ]
+        );
+    }
+
+    #[test]
+    fn shift_mode_rewrites_no_wheel() {
+        let rect = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(100.0, 100.0));
+        let mut events = vec![wheel(Modifiers::CTRL), wheel(Modifiers::SHIFT)];
+
+        remap_wheel_events(
+            &mut events,
+            Some(egui::pos2(50.0, 50.0)),
+            [rect, rect],
+            WheelModifier::Shift,
+        );
+
+        assert_eq!(events, [wheel(Modifiers::CTRL), wheel(Modifiers::SHIFT)]);
+    }
 
     #[test]
     fn the_longest_lines_end_is_reachable_with_nothing_beyond_it() {

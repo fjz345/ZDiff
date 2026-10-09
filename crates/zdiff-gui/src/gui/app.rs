@@ -36,7 +36,8 @@ use crate::{
         RevertWrite, WriteRefusal,
     },
     ui_egui::{
-        diff_pane::{FileDiffPane, FileDiffPaneCtx},
+        diff_pane::{FileDiffPane, FileDiffPaneCtx, wheel_rects_id},
+        h_scroll::{self, WheelModifier},
         panes::{Pane, TreeBehavior},
     },
     viewer::{
@@ -96,6 +97,8 @@ pub struct AppStateCtx {
     #[cfg_attr(feature = "serde", serde(default = "default_h_scroll_linked"))]
     pub h_scroll_linked: bool,
     #[cfg_attr(feature = "serde", serde(default))]
+    pub h_scroll_modifier: WheelModifier,
+    #[cfg_attr(feature = "serde", serde(default))]
     pub word_wrap: bool,
 
     #[cfg_attr(feature = "serde", serde(skip))]
@@ -131,6 +134,7 @@ impl Default for AppStateCtx {
             scroll_left: Default::default(),
             scroll_right: Default::default(),
             h_scroll_linked: default_h_scroll_linked(),
+            h_scroll_modifier: WheelModifier::Shift,
             word_wrap: false,
             goto_open: Default::default(),
             find_open: Default::default(),
@@ -429,6 +433,7 @@ impl<'a> ZApp {
         diff_phases: &mut DiffPhases,
         code_language: &mut String,
         code_language_custom: &mut String,
+        h_scroll_modifier: &mut WheelModifier,
     ) {
         ui.horizontal(|ui| {
             egui::MenuBar::new()
@@ -546,6 +551,10 @@ impl<'a> ZApp {
                             });
                         });
                         *code_language = code_language.trim_matches('.').to_string();
+                        ui.menu_button("Horizontal Scroll Wheel", |ui| {
+                            ui.radio_value(h_scroll_modifier, WheelModifier::Shift, "Shift+Wheel");
+                            ui.radio_value(h_scroll_modifier, WheelModifier::Ctrl, "Ctrl+Wheel");
+                        });
                         if ui
                             .button(format!(
                                 "[{}]P4Config",
@@ -797,6 +806,7 @@ impl<'a> ZApp {
                 scroll_left,
                 scroll_right,
                 h_scroll_linked,
+                h_scroll_modifier,
                 word_wrap,
                 diff_options,
                 file_1,
@@ -841,6 +851,7 @@ impl<'a> ZApp {
                 &mut diff_options.phases,
                 code_language,
                 code_language_custom,
+                h_scroll_modifier,
             );
 
             ui.separator();
@@ -1416,6 +1427,26 @@ impl<'a> ZApp {
 }
 
 impl eframe::App for ZApp {
+    fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        let Some(text_rects) = ctx.data_mut(|data| {
+            let rects = data.get_temp::<[egui::Rect; 2]>(wheel_rects_id());
+            data.remove::<[egui::Rect; 2]>(wheel_rects_id());
+            rects
+        }) else {
+            return;
+        };
+        let Some(state) = self.state.as_mut() else {
+            return;
+        };
+        let pointer = ctx.input(|i| i.pointer.hover_pos());
+        h_scroll::remap_wheel_events(
+            &mut raw_input.events,
+            pointer,
+            text_rects,
+            state.ctx_mut().h_scroll_modifier,
+        );
+    }
+
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
         #[cfg(feature = "serde")]
         if let Ok(json) = serde_json::to_string(self) {
@@ -1786,6 +1817,31 @@ mod tests {
         let json = serde_json::to_string(&ctx).unwrap();
         let restored: AppStateCtx = serde_json::from_str(&json).unwrap();
         assert!(!restored.h_scroll_linked);
+    }
+
+    #[test]
+    fn horizontal_scroll_wheel_modifier_defaults_to_shift_and_survives_a_restart() {
+        assert_eq!(
+            AppStateCtx::default().h_scroll_modifier,
+            WheelModifier::Shift
+        );
+
+        let mut ctx = AppStateCtx::default();
+        ctx.h_scroll_modifier = WheelModifier::Ctrl;
+        let json = serde_json::to_string(&ctx).unwrap();
+        let restored: AppStateCtx = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.h_scroll_modifier, WheelModifier::Ctrl);
+    }
+
+    #[test]
+    fn a_save_without_the_horizontal_scroll_wheel_modifier_loads_shift() {
+        let mut json = serde_json::to_value(AppStateCtx::default()).unwrap();
+        json.as_object_mut()
+            .unwrap()
+            .remove("h_scroll_modifier")
+            .unwrap();
+        let restored: AppStateCtx = serde_json::from_value(json).unwrap();
+        assert_eq!(restored.h_scroll_modifier, WheelModifier::Shift);
     }
 
     #[test]

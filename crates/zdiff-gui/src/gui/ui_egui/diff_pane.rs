@@ -194,6 +194,12 @@ fn wrapped_heights<'c>(
     &cache.as_ref().expect("filled above").heights
 }
 
+/// The text rows' rects of the last drawn frame, taken by the app's raw input hook, which runs
+/// before the pane.
+pub fn wheel_rects_id() -> egui::Id {
+    egui::Id::new("diff_pane_wheel_rects")
+}
+
 impl ZAppPane for FileDiffPane {
     fn title(&self) -> String {
         self.title.clone().unwrap_or(format!("Pane"))
@@ -245,8 +251,8 @@ impl FileDiffPane {
         ui.ctx().add_plugin(CopyMarkerPlugin);
         self.occurrences.begin_frame(ui.ctx());
 
-        // egui turns Shift+wheel into horizontal delta. Only text rows over a side scroll; the
-        // footer bars handle the wheel themselves.
+        // egui turns Shift+wheel (Ctrl+wheel via h_scroll::remap_wheel_events) into horizontal
+        // delta. Only text rows over a side scroll; the footer bars handle the wheel themselves.
         let (wheel_delta, hover_pos) =
             ui.input(|i| (i.smooth_scroll_delta.x, i.pointer.hover_pos()));
         let wheel_side = hover_pos
@@ -1145,6 +1151,11 @@ impl FileDiffPane {
         }
         self.active_side.end_frame(left_rect, right_rect);
         self.occurrences.end_frame(ui.ctx());
+        if !other_viewer {
+            let rects = [left_rect, right_rect].map(|rect| rect.intersect(table_rect));
+            ui.ctx()
+                .data_mut(|data| data.insert_temp(wheel_rects_id(), rects));
+        }
 
         handle_drops(
             ui,
