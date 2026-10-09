@@ -49,10 +49,11 @@ use crate::{
         panes::{Pane, TreeBehavior},
     },
     viewer::{
-        LoadedSide, SharedKinds, ViewerKind, ViewerOverride, conflict_count,
+        FfmpegSetting, LoadedSide, SharedKinds, ViewerKind, ViewerOverride, conflict_count,
+        ffmpeg_fallback,
         hex::{HexDiffProcessor, parse_hex_offset},
         image::ImageDiffProcessor,
-        image_decode_fallback, resolve_viewer, ui_extension_map,
+        image_decode_fallback, resolve_viewer, ui_extension_map, ui_ffmpeg_setting,
     },
 };
 
@@ -89,6 +90,8 @@ pub struct AppStateCtx {
     pub legacy_extension_map: Option<BTreeMap<String, ViewerKind>>,
     #[cfg_attr(feature = "serde", serde(skip), serde(default))]
     pub kinds: SharedKinds,
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub ffmpeg: FfmpegSetting,
     /// Undo and redo of reverts; in memory only.
     #[cfg_attr(feature = "serde", serde(skip), serde(default))]
     pub revert_history: RevertHistory,
@@ -149,6 +152,7 @@ impl Default for AppStateCtx {
             viewer_fallback: None,
             legacy_extension_map: None,
             kinds: Default::default(),
+            ffmpeg: Default::default(),
             revert_history: Default::default(),
             scroll_left: Default::default(),
             scroll_right: Default::default(),
@@ -472,6 +476,7 @@ impl<'a> ZApp {
         keybindings: &mut Keybindings,
         p4_profiles: &mut P4Profiles,
         kinds: &mut SharedKinds,
+        ffmpeg: &mut FfmpegSetting,
         myers_diff_algorithm: &mut MyersDiffAlgorithm,
         diff_phases: &mut DiffPhases,
         code_language: &mut String,
@@ -765,6 +770,8 @@ impl<'a> ZApp {
                 "Option - File Viewers",
                 true,
                 |ui| {
+                    ui_ffmpeg_setting(ui, ffmpeg);
+                    ui.separator();
                     let edits = ui_extension_map(ui, &kinds.table);
                     kinds.apply(edits);
                 },
@@ -839,6 +846,7 @@ impl<'a> ZApp {
                 viewer_override,
                 viewer_fallback,
                 kinds,
+                ffmpeg,
                 legacy_extension_map: _,
                 revert_history,
                 code_language,
@@ -848,6 +856,8 @@ impl<'a> ZApp {
             } = app_ctx;
             let is_hex = *viewer_kind == Some(ViewerKind::Hex);
             let is_image = *viewer_kind == Some(ViewerKind::Image);
+            let media_view =
+                viewer_kind.filter(|k| matches!(k, ViewerKind::Audio | ViewerKind::Video));
             self.show_menu(
                 ui,
                 file_1,
@@ -861,6 +871,7 @@ impl<'a> ZApp {
                 keybindings,
                 p4_profiles,
                 kinds,
+                ffmpeg,
                 myers_diff_algorithm,
                 &mut diff_options.phases,
                 code_language,
@@ -923,7 +934,7 @@ impl<'a> ZApp {
             // The text diff's state is stale while another viewer shows the pair.
             let scroll_to_rows = &if is_hex {
                 hex_processor.scroll_to_row(diff_processor.conflict_cursor.get())
-            } else if is_image {
+            } else if is_image || media_view.is_some() {
                 None
             } else {
                 diff_processor.get_scroll_to_row()
@@ -948,7 +959,7 @@ impl<'a> ZApp {
             {
                 self.launch_error = None;
             }
-            let diff_ctx = if is_hex || is_image {
+            let diff_ctx = if is_hex || is_image || media_view.is_some() {
                 None
             } else {
                 diff_processor.get_minimal_diff_ctx()
@@ -1008,6 +1019,7 @@ impl<'a> ZApp {
                     block_toggle_request: &mut block_toggle_request,
                     hex_view: is_hex.then(|| hex_processor.view_ctx()),
                     image_view: is_image.then_some(image_processor),
+                    media_view,
                     viewer_override: &mut viewer_override.kind,
                     viewer_fallback: viewer_fallback.as_deref(),
                     phase_overlay: self.phase_overlay,
@@ -1204,6 +1216,8 @@ impl<'a> ZApp {
                         "hex".to_string()
                     } else if is_image {
                         "image".to_string()
+                    } else if let Some(kind) = media_view {
+                        kind.name().to_lowercase()
                     } else {
                         format!("+{}/-{}", total_adds, total_deletes)
                     };
@@ -1512,7 +1526,7 @@ impl eframe::App for ZApp {
                 .ctx_mut();
             let text_conflicts = if matches!(
                 app_ctx.viewer_kind,
-                Some(ViewerKind::Hex | ViewerKind::Image)
+                Some(ViewerKind::Hex | ViewerKind::Image | ViewerKind::Audio | ViewerKind::Video)
             ) {
                 0
             } else {
@@ -1585,6 +1599,13 @@ impl eframe::App for ZApp {
                     .poll(ctx.input(|i| i.max_texture_side));
                 let resolution =
                     resolution.map(|r| image_decode_fallback(r, &state.image_processor.failures()));
+                // Only a media pair looks ffmpeg up.
+                let resolution = resolution.map(|r| match r.kind {
+                    ViewerKind::Audio | ViewerKind::Video => {
+                        ffmpeg_fallback(r, state.ffmpeg.lookup())
+                    }
+                    _ => r,
+                });
                 // Resolved every frame, so only a changed reason is logged.
                 let fallback = resolution.as_ref().and_then(|r| r.fallback.clone());
                 if fallback != state.viewer_fallback {
@@ -1895,6 +1916,19 @@ mod tests {
         assert_eq!(restored.legacy_extension_map, None);
         // Paths aren't saved, so a restart opens a new pair and the override is gone.
         assert_eq!(restored.viewer_override.kind, None);
+    }
+
+    #[test]
+    fn the_ffmpeg_path_is_saved_and_older_saves_have_none() {
+        let mut ctx = AppStateCtx::default();
+        ctx.ffmpeg.path = r"C:\tools\ffmpeg\bin".to_string();
+        let mut json = serde_json::to_value(&ctx).unwrap();
+        let restored: AppStateCtx = serde_json::from_value(json.clone()).unwrap();
+        assert_eq!(restored.ffmpeg.path, r"C:\tools\ffmpeg\bin");
+
+        json.as_object_mut().unwrap().remove("ffmpeg");
+        let older: AppStateCtx = serde_json::from_value(json).unwrap();
+        assert_eq!(older.ffmpeg.path, "");
     }
 
     #[test]

@@ -55,8 +55,10 @@ impl FileKind {
                 "png", "tga", "jpg", "jpeg", "bmp", "dds", "exr", "hdr", "psd", "tif", "gif",
                 "webp",
             ],
-            FileKind::Video => &["mp4", "mov", "mkv", "avi", "webm", "wmv"],
-            FileKind::Audio => &["wav", "flac", "mp3", "ogg", "opus", "m4a"],
+            FileKind::Video => &["mp4", "mov", "mkv", "avi", "webm", "wmv", "m4v"],
+            FileKind::Audio => &[
+                "wav", "flac", "mp3", "ogg", "opus", "m4a", "aac", "wma", "aif", "aiff",
+            ],
             FileKind::Model => &["fbx", "obj", "gltf", "glb", "blend", "abc", "usd"],
             FileKind::Archive => &["zip", "7z", "rar", "pak", "utoc", "ucas"],
             FileKind::Executable => &["exe", "dll", "pdb", "lib", "so"],
@@ -210,11 +212,13 @@ mod tests {
         ),
         (
             FileKind::Video,
-            &["mp4", "mov", "mkv", "avi", "webm", "wmv"],
+            &["mp4", "mov", "mkv", "avi", "webm", "wmv", "m4v"],
         ),
         (
             FileKind::Audio,
-            &["wav", "flac", "mp3", "ogg", "opus", "m4a"],
+            &[
+                "wav", "flac", "mp3", "ogg", "opus", "m4a", "aac", "wma", "aif", "aiff",
+            ],
         ),
         (
             FileKind::Model,

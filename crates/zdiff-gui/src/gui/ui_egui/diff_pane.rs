@@ -21,6 +21,7 @@ use crate::{
         ViewerKind,
         hex::{self, HexViewCtx},
         image::{self, ImageDiffProcessor},
+        media_placeholder,
     },
 };
 use eframe::egui::{self, Layout, TextEdit, UiBuilder, Vec2, text_selection::LabelSelectionState};
@@ -104,6 +105,7 @@ pub struct FileDiffPaneCtx<'a> {
     pub hex_view: Option<HexViewCtx<'a>>,
     /// Set when the pair resolved to the Image viewer; the images replace the table rows.
     pub image_view: Option<&'a mut ImageDiffProcessor>,
+    pub media_view: Option<ViewerKind>,
     /// The toolbar's viewer switch for the current pair; `None` is Auto.
     pub viewer_override: &'a mut Option<ViewerKind>,
     /// Why the pair isn't in the viewer it asked for, if it isn't.
@@ -498,7 +500,8 @@ impl FileDiffPane {
         waiting_for_diff |= ctx.diff_loading;
         do_not_render_diff |= waiting_for_diff;
         // The hex and image viewers draw the loaded bytes and need no text diff.
-        let other_viewer = ctx.hex_view.is_some() || ctx.image_view.is_some();
+        let other_viewer =
+            ctx.hex_view.is_some() || ctx.image_view.is_some() || ctx.media_view.is_some();
         if other_viewer {
             waiting_for_diff = false;
             do_not_render_diff = false;
@@ -773,7 +776,9 @@ impl FileDiffPane {
                                     }
                                 }
                             };
-                            let header_only = ctx.image_view.is_some() || do_not_render_diff;
+                            let header_only = ctx.image_view.is_some()
+                                || ctx.media_view.is_some()
+                                || do_not_render_diff;
                             let mut offsets = [*ctx.scroll_left, *ctx.scroll_right];
                             // Wrapped text fits its column, so nothing scrolls sideways. Hex rows
                             // have a fixed width, images pan.
@@ -973,6 +978,14 @@ impl FileDiffPane {
                                 (ctx.image_view.as_deref_mut(), image_left_width)
                             {
                                 image::show(ui, image_view, left_width);
+                            }
+                            if let Some(kind) = ctx.media_view {
+                                media_placeholder(
+                                    ui,
+                                    kind,
+                                    &ctx.file_source_path,
+                                    &ctx.file_target_path,
+                                );
                             }
                         });
                 })

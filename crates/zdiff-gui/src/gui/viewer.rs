@@ -3,9 +3,10 @@
 //! Selection order: the per-diff override, then the shared kind table, then sniffing.
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use eframe::egui;
+use zcommon::ffmpeg::{FfmpegNotFound, FfmpegPaths, find_ffmpeg};
 use zcommon::kinds::{FileKind, KindTable, normalize_extension};
 use zdiff::universal_path::UniversalPath;
 
@@ -18,16 +19,26 @@ pub enum ViewerKind {
     Text,
     Hex,
     Image,
+    Audio,
+    Video,
 }
 
 impl ViewerKind {
-    pub const ALL: [ViewerKind; 3] = [ViewerKind::Text, ViewerKind::Hex, ViewerKind::Image];
+    pub const ALL: [ViewerKind; 5] = [
+        ViewerKind::Text,
+        ViewerKind::Hex,
+        ViewerKind::Image,
+        ViewerKind::Audio,
+        ViewerKind::Video,
+    ];
 
     pub fn name(self) -> &'static str {
         match self {
             ViewerKind::Text => "Text",
             ViewerKind::Hex => "Hex",
             ViewerKind::Image => "Image",
+            ViewerKind::Audio => "Audio",
+            ViewerKind::Video => "Video",
         }
     }
 }
@@ -57,9 +68,9 @@ pub fn viewer_for_kind(kind: FileKind) -> ViewerKind {
     match kind {
         FileKind::Text => ViewerKind::Text,
         FileKind::Image => ViewerKind::Image,
-        FileKind::Video
-        | FileKind::Audio
-        | FileKind::Model
+        FileKind::Audio => ViewerKind::Audio,
+        FileKind::Video => ViewerKind::Video,
+        FileKind::Model
         | FileKind::Archive
         | FileKind::Executable
         | FileKind::UnrealAsset
@@ -74,6 +85,8 @@ pub fn viewer_map_kind(viewer: ViewerKind) -> FileKind {
         ViewerKind::Text => FileKind::Text,
         ViewerKind::Image => FileKind::Image,
         ViewerKind::Hex => FileKind::Binary,
+        ViewerKind::Audio => FileKind::Audio,
+        ViewerKind::Video => FileKind::Video,
     }
 }
 
@@ -291,6 +304,81 @@ pub fn image_decode_fallback(
     }
 }
 
+pub fn ffmpeg_fallback(
+    resolution: ViewerResolution,
+    ffmpeg: Result<&FfmpegPaths, &FfmpegNotFound>,
+) -> ViewerResolution {
+    let Err(not_found) = ffmpeg else {
+        return resolution;
+    };
+    if !matches!(resolution.kind, ViewerKind::Audio | ViewerKind::Video) {
+        return resolution;
+    }
+    let mut reasons: Vec<String> = resolution.fallback.into_iter().collect();
+    reasons.push(format!(
+        "The {} viewer needs ffmpeg. {not_found}. Put ffmpeg and ffprobe on PATH or next to \
+         the app, or set their folder in Option - File Viewers",
+        resolution.kind.name()
+    ));
+    reasons.push("showing Hex".to_string());
+    ViewerResolution {
+        kind: ViewerKind::Hex,
+        fallback: Some(reasons.join("; ")),
+    }
+}
+
+/// The ffmpeg folder (or executable) set in Options; empty searches next to the app and PATH.
+#[derive(Debug, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct FfmpegSetting {
+    pub path: String,
+    // Looked up on first use and again after the path changes; it stats files and walks PATH.
+    #[cfg_attr(feature = "serde", serde(skip))]
+    found: Option<Result<FfmpegPaths, FfmpegNotFound>>,
+}
+
+impl FfmpegSetting {
+    pub fn lookup(&mut self) -> Result<&FfmpegPaths, &FfmpegNotFound> {
+        let configured = self.path.trim();
+        self.found
+            .get_or_insert_with(|| {
+                find_ffmpeg((!configured.is_empty()).then(|| Path::new(configured)))
+            })
+            .as_ref()
+    }
+}
+
+pub fn ui_ffmpeg_setting(ui: &mut egui::Ui, setting: &mut FfmpegSetting) {
+    ui.horizontal(|ui| {
+        ui.label("ffmpeg folder");
+        let edit = egui::TextEdit::singleline(&mut setting.path)
+            .desired_width(300.0)
+            .hint_text("next to the app, then PATH");
+        if ui.add(edit).changed() {
+            setting.found = None;
+        }
+    });
+    match setting.lookup() {
+        Ok(paths) => ui.label(format!("Using {}", paths.ffmpeg.display())),
+        Err(not_found) => ui.colored_label(ui.visuals().warn_fg_color, not_found.to_string()),
+    };
+}
+
+/// Stands in for the Audio and Video viewers until they exist.
+pub fn media_placeholder(
+    ui: &mut egui::Ui,
+    kind: ViewerKind,
+    left: &UniversalPath,
+    right: &UniversalPath,
+) {
+    ui.vertical_centered(|ui| {
+        ui.add_space(20.0);
+        ui.label(format!("{} viewer", kind.name()));
+        ui.label(left.to_string());
+        ui.label(right.to_string());
+    });
+}
+
 fn kind_label(kind: FileKind) -> String {
     format!("{kind:?} ({})", viewer_for_kind(kind).name())
 }
@@ -370,7 +458,7 @@ pub fn ui_extension_map(ui: &mut egui::Ui, table: &KindTable) -> Vec<KindEdit> {
 pub fn conflict_count(kind: Option<ViewerKind>, text: usize, hex: usize) -> usize {
     match kind {
         Some(ViewerKind::Hex) => hex,
-        Some(ViewerKind::Image) => 0,
+        Some(ViewerKind::Image | ViewerKind::Audio | ViewerKind::Video) => 0,
         Some(ViewerKind::Text) | None => text,
     }
 }
@@ -378,6 +466,7 @@ pub fn conflict_count(kind: Option<ViewerKind>, text: usize, hex: usize) -> usiz
 #[cfg(test)]
 mod tests {
     use super::*;
+    use zcommon::ffmpeg::resolve_ffmpeg;
 
     #[test]
     fn conflict_navigation_counts_the_shown_viewers_stops() {
@@ -408,8 +497,8 @@ mod tests {
         let expected = [
             (FileKind::Text, ViewerKind::Text),
             (FileKind::Image, ViewerKind::Image),
-            (FileKind::Video, ViewerKind::Hex),
-            (FileKind::Audio, ViewerKind::Hex),
+            (FileKind::Video, ViewerKind::Video),
+            (FileKind::Audio, ViewerKind::Audio),
             (FileKind::Model, ViewerKind::Hex),
             (FileKind::Archive, ViewerKind::Hex),
             (FileKind::Executable, ViewerKind::Hex),
@@ -428,6 +517,8 @@ mod tests {
         assert_eq!(viewer_map_kind(ViewerKind::Text), FileKind::Text);
         assert_eq!(viewer_map_kind(ViewerKind::Image), FileKind::Image);
         assert_eq!(viewer_map_kind(ViewerKind::Hex), FileKind::Binary);
+        assert_eq!(viewer_map_kind(ViewerKind::Audio), FileKind::Audio);
+        assert_eq!(viewer_map_kind(ViewerKind::Video), FileKind::Video);
     }
 
     #[test]
@@ -439,7 +530,7 @@ mod tests {
             kind(resolve_viewer(None, &kinds, side(&path, sniffed), None))
         };
         assert_eq!(resolve("a.exe", text), Some(hex));
-        assert_eq!(resolve("a.mp4", text), Some(hex));
+        assert_eq!(resolve("a.mp4", hex), Some(ViewerKind::Video));
         assert_eq!(resolve("a.uasset", text), Some(hex));
         assert_eq!(resolve("a.rs", text), Some(text));
         assert_eq!(resolve("a.webp", hex), Some(ViewerKind::Image));
@@ -722,6 +813,64 @@ mod tests {
             image_decode_fallback(hex.clone(), &["stale".to_string()]),
             hex
         );
+    }
+
+    fn resolve_pair(extension: &str) -> ViewerResolution {
+        let a = UniversalPath::from(format!("a.{extension}"));
+        let b = UniversalPath::from(format!("b.{extension}"));
+        resolve_viewer(
+            None,
+            &KindTable::default(),
+            side(&a, ViewerKind::Hex),
+            side(&b, ViewerKind::Hex),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn audio_and_video_without_ffmpeg_fall_back_to_hex_with_the_not_found_reason() {
+        let not_found = resolve_ffmpeg(
+            Some(Path::new(r"C:\tools\ffmpeg")),
+            Some(Path::new(r"C:\app")),
+            |_| false,
+            |_| None,
+        )
+        .unwrap_err();
+        for extension in ["wav", "mp4"] {
+            let resolution = ffmpeg_fallback(resolve_pair(extension), Err(&not_found));
+            assert_eq!(resolution.kind, ViewerKind::Hex, "{extension}");
+            let reason = resolution.fallback.unwrap();
+            assert!(reason.contains(&not_found.to_string()), "{reason}");
+            assert!(reason.contains("not found"), "{reason}");
+        }
+
+        let image = resolve_pair("png");
+        assert_eq!(image.kind, ViewerKind::Image);
+        assert_eq!(ffmpeg_fallback(image.clone(), Err(&not_found)), image);
+    }
+
+    #[test]
+    fn audio_and_video_extensions_open_their_viewers_when_ffmpeg_is_found() {
+        let found = resolve_ffmpeg(
+            Some(Path::new(r"C:\tools\ffmpeg")),
+            None,
+            |_| true,
+            |_| None,
+        )
+        .unwrap();
+        for (kind, viewer) in [
+            (FileKind::Audio, ViewerKind::Audio),
+            (FileKind::Video, ViewerKind::Video),
+        ] {
+            for extension in kind.default_extensions() {
+                let resolution = ffmpeg_fallback(resolve_pair(extension), Ok(&found));
+                let expected = ViewerResolution {
+                    kind: viewer,
+                    fallback: None,
+                };
+                assert_eq!(resolution, expected, "{extension}");
+            }
+        }
     }
 
     #[test]
