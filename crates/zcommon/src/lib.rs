@@ -8,3 +8,4 @@ pub mod presets;
 pub mod style;
 #[cfg(feature = "gui")]
 pub mod ui_egui;
+pub mod universal_path;
