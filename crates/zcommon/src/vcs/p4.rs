@@ -124,11 +124,19 @@ impl P4Profiles {
 /// p4 can be tested with a fake.
 pub trait P4Runner {
     fn run(&self, args: &[&str]) -> Result<String, String>;
+
+    fn run_bytes(&self, args: &[&str]) -> Result<Vec<u8>, String> {
+        self.run(args).map(String::into_bytes)
+    }
 }
 
 impl P4Runner for P4Command {
     fn run(&self, args: &[&str]) -> Result<String, String> {
         self.output(args)
+    }
+
+    fn run_bytes(&self, args: &[&str]) -> Result<Vec<u8>, String> {
+        self.output_bytes(args)
     }
 }
 
@@ -266,10 +274,188 @@ pub fn parse_dirs(ztag: &str) -> Vec<String> {
 pub fn parse_files_at_head(ztag: &str) -> Vec<String> {
     ztag_records(ztag)
         .iter()
-        .filter(|record| !matches!(ztag_field(record, "action"), Some("delete" | "move/delete")))
+        .filter(|record| !is_delete_action(ztag_field(record, "action")))
         .filter_map(|record| ztag_field(record, "depotFile"))
         .map(str::to_owned)
         .collect()
+}
+
+fn is_delete_action(action: Option<&str>) -> bool {
+    matches!(action, Some("delete" | "move/delete"))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct P4Stream {
+    pub stream: String,
+    pub name: String,
+    pub kind: String,
+    pub parent: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct P4FileDigest {
+    pub depot_file: String,
+    pub rev: u32,
+    pub size: Option<u64>,
+    pub digest: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct P4ShelvedFile {
+    pub depot_file: String,
+    pub action: String,
+    pub base_rev: Option<u32>,
+}
+
+fn ztag_fields(ztag: &str) -> impl Iterator<Item = (&str, &str)> {
+    ztag.lines()
+        .filter_map(|line| line.strip_prefix("... "))
+        .map(|field| field.split_once(' ').unwrap_or((field, "")))
+}
+
+fn parse_number<T: str::FromStr>(value: &str, key: &str, file: &str) -> Result<T, String> {
+    value
+        .parse()
+        .map_err(|_| format!("{file}: {key} {value:?} is not a number"))
+}
+
+pub fn parse_streams(ztag: &str) -> Result<Vec<P4Stream>, String> {
+    // Records are split at each Stream field, not at blank lines: a Description can contain them.
+    let mut records: Vec<Vec<(&str, &str)>> = Vec::new();
+    for (key, value) in ztag_fields(ztag) {
+        if key == "Stream" {
+            records.push(Vec::new());
+        }
+        let Some(record) = records.last_mut() else {
+            return Err(format!("{key} before any Stream"));
+        };
+        record.push((key, value));
+    }
+    records
+        .iter()
+        .map(|record| {
+            let stream = ztag_field(record, "Stream").unwrap_or_default();
+            let required = |key| {
+                ztag_field(record, key)
+                    .map(str::to_owned)
+                    .ok_or_else(|| format!("{stream}: no {key}"))
+            };
+            Ok(P4Stream {
+                stream: stream.to_owned(),
+                name: required("Name")?,
+                kind: required("Type")?,
+                parent: ztag_field(record, "Parent")
+                    .filter(|parent| *parent != "none")
+                    .map(str::to_owned),
+            })
+        })
+        .collect()
+}
+
+pub fn parse_fstat_digests(ztag: &str) -> Result<Vec<P4FileDigest>, String> {
+    ztag_records(ztag)
+        .iter()
+        // Without a headAction the file is only opened for add in the client.
+        .filter(|record| {
+            let head_action = ztag_field(record, "headAction");
+            head_action.is_some() && !is_delete_action(head_action)
+        })
+        .map(|record| {
+            let depot_file = ztag_field(record, "depotFile")
+                .ok_or_else(|| format!("a file without depotFile: {record:?}"))?;
+            let rev =
+                ztag_field(record, "headRev").ok_or_else(|| format!("{depot_file}: no headRev"))?;
+            Ok(P4FileDigest {
+                depot_file: depot_file.to_owned(),
+                rev: parse_number(rev, "headRev", depot_file)?,
+                size: ztag_field(record, "fileSize")
+                    .map(|size| parse_number(size, "fileSize", depot_file))
+                    .transpose()?,
+                digest: ztag_field(record, "digest").map(str::to_owned),
+            })
+        })
+        .collect()
+}
+
+/// `p4 describe` output is one record whose files are numbered fields (`depotFile0`, `rev0`, ...)
+/// after a `desc` that can contain blank lines, so fields are gathered by number, not by record.
+pub fn parse_shelf(ztag: &str) -> Result<Vec<P4ShelvedFile>, String> {
+    let mut files: std::collections::BTreeMap<u32, [Option<&str>; 3]> = Default::default();
+    for (key, value) in ztag_fields(ztag) {
+        let name = key.trim_end_matches(|c: char| c.is_ascii_digit());
+        let slot = match name {
+            "depotFile" => 0,
+            "action" => 1,
+            "rev" => 2,
+            _ => continue,
+        };
+        let Ok(index) = key[name.len()..].parse::<u32>() else {
+            continue;
+        };
+        files.entry(index).or_default()[slot] = Some(value);
+    }
+    files
+        .into_iter()
+        .map(|(index, [depot_file, action, rev])| {
+            let depot_file = depot_file.ok_or_else(|| format!("no depotFile{index}"))?;
+            let action = action.ok_or_else(|| format!("{depot_file}: no action{index}"))?;
+            let rev = rev.ok_or_else(|| format!("{depot_file}: no rev{index}"))?;
+            // A new file's rev is the one it will get, not one the depot path has.
+            let base_rev = match action {
+                "add" | "move/add" | "branch" | "import" => None,
+                _ => Some(parse_number(rev, "rev", depot_file)?),
+            };
+            Ok(P4ShelvedFile {
+                depot_file: depot_file.to_owned(),
+                action: action.to_owned(),
+                base_rev,
+            })
+        })
+        .collect()
+}
+
+fn command_error(args: &[&str], error: String) -> String {
+    format!("p4 {}: {error}", args.join(" "))
+}
+
+fn run_parsed<T>(
+    p4: &impl P4Runner,
+    args: &[&str],
+    parse: fn(&str) -> Result<T, String>,
+) -> Result<T, String> {
+    p4.run(args)
+        .and_then(|out| parse(&out))
+        .map_err(|e| command_error(args, e))
+}
+
+pub fn list_streams(p4: &impl P4Runner) -> Result<Vec<P4Stream>, String> {
+    run_parsed(
+        p4,
+        &["-ztag", "streams", "-T", "Stream,Name,Parent,Type"],
+        parse_streams,
+    )
+}
+
+/// Files under `depot_folder` at `revision` (`""` for head, or `@change`), deleted ones left out.
+pub fn list_files_with_digests(
+    p4: &impl P4Runner,
+    depot_folder: &str,
+    revision: &str,
+) -> Result<Vec<P4FileDigest>, String> {
+    let files = format!("{}/...{revision}", depot_folder.trim_end_matches('/'));
+    run_parsed(p4, &["-ztag", "fstat", "-Ol", &files], parse_fstat_digests)
+}
+
+pub fn list_shelf(p4: &impl P4Runner, change: u32) -> Result<Vec<P4ShelvedFile>, String> {
+    let change = change.to_string();
+    run_parsed(p4, &["-ztag", "describe", "-S", "-s", &change], parse_shelf)
+}
+
+/// `revision` is `""`, `#n`, `@change` or `@=shelf`.
+pub fn print_file(p4: &impl P4Runner, depot_path: &str, revision: &str) -> Result<Vec<u8>, String> {
+    let file = format!("{depot_path}{revision}");
+    let args = ["print", "-q", &file];
+    p4.run_bytes(&args).map_err(|e| command_error(&args, e))
 }
 
 /// What a failed command reports: stderr, else stdout, else the exit status.
@@ -841,6 +1027,335 @@ mod tests {
             "no blank line after the last record"
         );
         assert!(parse_files_at_head("").is_empty());
+    }
+
+    const STREAMS: &str = "... Stream //streams/main\n\
+                           ... Update 2024/01/02 10:00:00\n\
+                           ... Owner alice\n\
+                           ... Name main\n\
+                           ... Parent none\n\
+                           ... Type mainline\n\
+                           ... Description The mainline.\n\
+                           \n\
+                           A second paragraph.\n\
+                           ... Options allsubmit unlocked toparent fromparent mergedown\n\
+                           \n\
+                           ... Stream //streams/dev feature\n\
+                           ... Name dev feature\n\
+                           ... Parent //streams/main\n\
+                           ... Type development\n\
+                           \n\
+                           ... Stream //streams/rel-1.0\n\
+                           ... Name rel-1.0\n\
+                           ... Parent //streams/main\n\
+                           ... Type release\n\
+                           \n";
+
+    fn stream(stream: &str, name: &str, kind: &str, parent: Option<&str>) -> P4Stream {
+        P4Stream {
+            stream: stream.into(),
+            name: name.into(),
+            kind: kind.into(),
+            parent: parent.map(str::to_owned),
+        }
+    }
+
+    #[test]
+    fn streams_output_gives_each_stream_with_its_parent() {
+        let streams = vec![
+            stream("//streams/main", "main", "mainline", None),
+            stream(
+                "//streams/dev feature",
+                "dev feature",
+                "development",
+                Some("//streams/main"),
+            ),
+            stream(
+                "//streams/rel-1.0",
+                "rel-1.0",
+                "release",
+                Some("//streams/main"),
+            ),
+        ];
+        assert_eq!(parse_streams(STREAMS), Ok(streams.clone()));
+        assert_eq!(
+            parse_streams(&STREAMS.replace('\n', "\r\n")),
+            Ok(streams.clone())
+        );
+        assert_eq!(parse_streams(STREAMS.trim_end()), Ok(streams));
+        assert_eq!(parse_streams(""), Ok(vec![]));
+    }
+
+    #[test]
+    fn malformed_streams_output_is_an_error() {
+        let no_name = "... Stream //streams/main\n... Type mainline\n";
+        let err = parse_streams(no_name).unwrap_err();
+        assert!(err.contains("//streams/main"), "{err}");
+        assert!(parse_streams("... Name main\n... Stream //streams/main\n").is_err());
+    }
+
+    const FSTAT: &str = "... depotFile //depot/main/a b.txt\n\
+                         ... clientFile //ws/main/a b.txt\n\
+                         ... isMapped \n\
+                         ... headAction edit\n\
+                         ... headType text\n\
+                         ... headTime 1700000000\n\
+                         ... headRev 4\n\
+                         ... headChange 1234\n\
+                         ... headModTime 1699999999\n\
+                         ... fileSize 1234\n\
+                         ... digest 0CC175B9C0F1B6A831C399E269772661\n\
+                         ... ... otherOpen0 bob@bob_ws\n\
+                         ... ... otherAction0 edit\n\
+                         \n\
+                         ... depotFile //depot/main/gone.txt\n\
+                         ... headAction delete\n\
+                         ... headType text\n\
+                         ... headRev 3\n\
+                         ... headChange 1200\n\
+                         \n\
+                         ... depotFile //depot/main/moved_away.txt\n\
+                         ... headAction move/delete\n\
+                         ... headType text\n\
+                         ... headRev 2\n\
+                         ... headChange 1201\n\
+                         \n\
+                         ... depotFile //depot/main/opened_for_delete.txt\n\
+                         ... headAction add\n\
+                         ... headType binary\n\
+                         ... headRev 1\n\
+                         ... headChange 1100\n\
+                         ... fileSize 0\n\
+                         ... digest D41D8CD98F00B204E9800998ECF8427E\n\
+                         ... action delete\n\
+                         \n\
+                         ... depotFile //depot/main/only_opened_for_add.txt\n\
+                         ... action add\n\
+                         ... type text\n\
+                         \n\
+                         ... depotFile //depot/main/archived.bin\n\
+                         ... headAction archive\n\
+                         ... headType binary+S\n\
+                         ... headRev 9\n\
+                         ... headChange 1000\n\
+                         \n";
+
+    fn digest(depot_file: &str, rev: u32, size: Option<u64>, digest: Option<&str>) -> P4FileDigest {
+        P4FileDigest {
+            depot_file: depot_file.into(),
+            rev,
+            size,
+            digest: digest.map(str::to_owned),
+        }
+    }
+
+    #[test]
+    fn fstat_output_gives_sizes_and_digests_without_deleted_files() {
+        let files = vec![
+            digest(
+                "//depot/main/a b.txt",
+                4,
+                Some(1234),
+                Some("0CC175B9C0F1B6A831C399E269772661"),
+            ),
+            digest(
+                "//depot/main/opened_for_delete.txt",
+                1,
+                Some(0),
+                Some("D41D8CD98F00B204E9800998ECF8427E"),
+            ),
+            digest("//depot/main/archived.bin", 9, None, None),
+        ];
+        assert_eq!(parse_fstat_digests(FSTAT), Ok(files.clone()));
+        assert_eq!(
+            parse_fstat_digests(&FSTAT.replace('\n', "\r\n")),
+            Ok(files.clone())
+        );
+        assert_eq!(parse_fstat_digests(FSTAT.trim_end()), Ok(files));
+        assert_eq!(parse_fstat_digests(""), Ok(vec![]));
+    }
+
+    #[test]
+    fn malformed_fstat_output_is_an_error() {
+        let bad_rev = "... depotFile //depot/main/a.txt\n... headAction edit\n... headRev x\n";
+        let err = parse_fstat_digests(bad_rev).unwrap_err();
+        assert!(err.contains("//depot/main/a.txt"), "{err}");
+        let no_rev = "... depotFile //depot/main/a.txt\n... headAction edit\n";
+        assert!(parse_fstat_digests(no_rev).is_err());
+        let bad_size = "... depotFile //depot/main/a.txt\n\
+                        ... headAction edit\n\
+                        ... headRev 1\n\
+                        ... fileSize big\n";
+        assert!(parse_fstat_digests(bad_size).is_err());
+        assert!(parse_fstat_digests("... headAction edit\n... headRev 1\n").is_err());
+    }
+
+    const SHELF: &str = "... change 1234\n\
+                         ... user alice\n\
+                         ... client alice_ws\n\
+                         ... time 1700000000\n\
+                         ... desc Fix the thing.\n\
+                         \n\
+                         More detail after a blank line.\n\
+                         ... status pending\n\
+                         ... changeType public\n\
+                         ... path //depot/main/...\n\
+                         ... shelved \n\
+                         ... depotFile0 //depot/main/a b.txt\n\
+                         ... action0 edit\n\
+                         ... type0 text\n\
+                         ... rev0 4\n\
+                         ... fileSize0 120\n\
+                         ... digest0 0CC175B9C0F1B6A831C399E269772661\n\
+                         ... depotFile1 //depot/main/new.txt\n\
+                         ... action1 add\n\
+                         ... type1 text\n\
+                         ... rev1 1\n\
+                         ... depotFile2 //depot/main/old.txt\n\
+                         ... action2 delete\n\
+                         ... type2 text\n\
+                         ... rev2 7\n\
+                         ... depotFile3 //depot/main/moved_here.txt\n\
+                         ... action3 move/add\n\
+                         ... type3 text\n\
+                         ... rev3 1\n\
+                         ... depotFile4 //depot/main/moved_away.txt\n\
+                         ... action4 move/delete\n\
+                         ... type4 text\n\
+                         ... rev4 3\n\
+                         ... depotFile5 //depot/main/branched.txt\n\
+                         ... action5 branch\n\
+                         ... type5 text\n\
+                         ... rev5 1\n\
+                         ... depotFile6 //depot/main/merged.txt\n\
+                         ... action6 integrate\n\
+                         ... type6 text\n\
+                         ... rev6 2\n\
+                         ... depotFile7 //depot/main/imported.txt\n\
+                         ... action7 import\n\
+                         ... type7 text\n\
+                         ... rev7 1\n\
+                         ... depotFile8 //depot/main/b.txt\n\
+                         ... action8 edit\n\
+                         ... type8 text\n\
+                         ... rev8 12\n\
+                         ... depotFile9 //depot/main/c.txt\n\
+                         ... action9 edit\n\
+                         ... type9 text\n\
+                         ... rev9 5\n\
+                         ... depotFile10 //depot/main/d.txt\n\
+                         ... action10 edit\n\
+                         ... type10 text\n\
+                         ... rev10 6\n\
+                         \n";
+
+    fn shelved(depot_file: &str, action: &str, base_rev: Option<u32>) -> P4ShelvedFile {
+        P4ShelvedFile {
+            depot_file: depot_file.into(),
+            action: action.into(),
+            base_rev,
+        }
+    }
+
+    #[test]
+    fn shelf_output_gives_each_file_with_its_base_revision() {
+        let files = vec![
+            shelved("//depot/main/a b.txt", "edit", Some(4)),
+            shelved("//depot/main/new.txt", "add", None),
+            shelved("//depot/main/old.txt", "delete", Some(7)),
+            shelved("//depot/main/moved_here.txt", "move/add", None),
+            shelved("//depot/main/moved_away.txt", "move/delete", Some(3)),
+            shelved("//depot/main/branched.txt", "branch", None),
+            shelved("//depot/main/merged.txt", "integrate", Some(2)),
+            shelved("//depot/main/imported.txt", "import", None),
+            shelved("//depot/main/b.txt", "edit", Some(12)),
+            shelved("//depot/main/c.txt", "edit", Some(5)),
+            shelved("//depot/main/d.txt", "edit", Some(6)),
+        ];
+        assert_eq!(parse_shelf(SHELF), Ok(files.clone()));
+        assert_eq!(parse_shelf(&SHELF.replace('\n', "\r\n")), Ok(files));
+        assert_eq!(
+            parse_shelf("... change 1234\n... status pending\n"),
+            Ok(vec![])
+        );
+    }
+
+    #[test]
+    fn malformed_shelf_output_is_an_error() {
+        let no_rev = "... depotFile0 //depot/main/a.txt\n... action0 edit\n";
+        let err = parse_shelf(no_rev).unwrap_err();
+        assert!(err.contains("//depot/main/a.txt"), "{err}");
+        let bad_rev = "... depotFile0 //depot/main/a.txt\n... action0 edit\n... rev0 x\n";
+        assert!(parse_shelf(bad_rev).is_err());
+        let no_file = "... action0 edit\n... rev0 1\n";
+        assert!(parse_shelf(no_file).is_err());
+    }
+
+    #[test]
+    fn p4_operations_run_tagged_commands_and_parse_them() {
+        let p4 = FakeP4::new(|args: &[&str]| match args[1] {
+            "streams" => Ok(STREAMS.to_string()),
+            "fstat" => Ok(FSTAT.to_string()),
+            "describe" => Ok(SHELF.to_string()),
+            _ => panic!("unexpected {args:?}"),
+        });
+        assert_eq!(list_streams(&p4).unwrap().len(), 3);
+        assert_eq!(
+            list_files_with_digests(&p4, "//depot/main/", "@1234")
+                .unwrap()
+                .len(),
+            3
+        );
+        assert_eq!(
+            list_files_with_digests(&p4, "//depot/main", "")
+                .unwrap()
+                .len(),
+            3
+        );
+        assert_eq!(list_shelf(&p4, 1234).unwrap().len(), 11);
+        assert_eq!(
+            p4.calls(),
+            vec![
+                args(&["-ztag", "streams", "-T", "Stream,Name,Parent,Type"]),
+                args(&["-ztag", "fstat", "-Ol", "//depot/main/...@1234"]),
+                args(&["-ztag", "fstat", "-Ol", "//depot/main/..."]),
+                args(&["-ztag", "describe", "-S", "-s", "1234"]),
+            ]
+        );
+    }
+
+    #[test]
+    fn print_reads_the_bytes_at_a_revision_changelist_or_shelf() {
+        let p4 = FakeP4::new(|_: &[&str]| Ok("content".to_string()));
+        for revision in ["", "#3", "@1234", "@=1234"] {
+            assert_eq!(
+                print_file(&p4, "//depot/main/a b.txt", revision),
+                Ok(b"content".to_vec())
+            );
+        }
+        assert_eq!(
+            p4.calls(),
+            vec![
+                args(&["print", "-q", "//depot/main/a b.txt"]),
+                args(&["print", "-q", "//depot/main/a b.txt#3"]),
+                args(&["print", "-q", "//depot/main/a b.txt@1234"]),
+                args(&["print", "-q", "//depot/main/a b.txt@=1234"]),
+            ]
+        );
+    }
+
+    #[test]
+    fn operation_errors_name_the_command() {
+        let p4 = FakeP4::new(|_: &[&str]| Err("Perforce client error: connect failed".to_string()));
+        let err = list_shelf(&p4, 1234).unwrap_err();
+        assert!(err.contains("p4 -ztag describe -S -s 1234"), "{err}");
+        assert!(err.contains("connect failed"), "{err}");
+        let err = print_file(&p4, "//depot/main/a.txt", "@=1234").unwrap_err();
+        assert!(err.contains("print -q //depot/main/a.txt@=1234"), "{err}");
+
+        let p4 = FakeP4::new(|_: &[&str]| Ok("... Name main\n".to_string()));
+        let err = list_streams(&p4).unwrap_err();
+        assert!(err.contains("p4 -ztag streams"), "{err}");
     }
 
     #[test]
