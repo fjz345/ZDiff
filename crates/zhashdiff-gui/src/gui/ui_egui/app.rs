@@ -785,8 +785,6 @@ impl ZApp {
                     if ui.button("Keybindings").clicked() {
                         self.keybindings_window.open = true;
                     }
-                    ui.checkbox(&mut app_ctx.h_scroll_link.0, "Link horizontal scroll")
-                        .on_hover_text("Scroll both folder sides sideways together");
                     if ui.button("Setup colors").clicked() {
                         log::error!("NYI");
                     }
@@ -973,7 +971,7 @@ impl ZApp {
                     likeness_bar: &mut app_ctx.likeness_bar,
                     tolerance: &mut app_ctx.tolerance,
                     tree_compare: &app_ctx.tree_compare,
-                    h_scroll_link: app_ctx.h_scroll_link,
+                    h_scroll_link: &mut app_ctx.h_scroll_link,
                     path_diff_view: &mut path_diff_view,
                     keyboard_taken,
                     actions: &actions,

@@ -50,7 +50,7 @@ pub struct TreeBehavior<'a, 'b> {
     pub likeness_bar: &'a mut bool,
     pub tolerance: &'a mut Tolerance,
     pub tree_compare: &'a TreeCompare,
-    pub h_scroll_link: HScrollLink,
+    pub h_scroll_link: &'a mut HScrollLink,
     pub keyboard_taken: bool,
     pub actions: &'a [FolderAction],
 }

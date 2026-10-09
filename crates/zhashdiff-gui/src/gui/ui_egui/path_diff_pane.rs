@@ -42,7 +42,7 @@ pub struct PathDiffPaneCtx<'a, 'b> {
     pub likeness_bar: &'a mut bool,
     pub tolerance: &'a mut Tolerance,
     pub tree_compare: &'a TreeCompare,
-    pub h_scroll_link: HScrollLink,
+    pub h_scroll_link: &'a mut HScrollLink,
     /// A widget had keyboard focus when the frame started, so the tree's keys are not
     /// for the cursor.
     pub keyboard_taken: bool,
@@ -211,6 +211,12 @@ impl PathDiffPane {
             MenuButton::new("⏷")
                 .config(MenuConfig::new().close_behavior(PopupCloseBehavior::CloseOnClickOutside))
                 .ui(ui, |ui| draw_tolerance_settings(ui, ctx.tolerance));
+            toggle_button(
+                ui,
+                &mut ctx.h_scroll_link.0,
+                "🔗",
+                "Link horizontal scroll: scroll both folder sides sideways together",
+            );
         });
 
         ui.separator();
