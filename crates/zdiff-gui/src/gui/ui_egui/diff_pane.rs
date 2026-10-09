@@ -8,6 +8,7 @@ use crate::{
         pin_line_counts,
     },
     file::FileProcessor,
+    keybindings::{FileAction, with_shortcut},
     revert::{self, RevertRequest, RevertTarget},
     ui_egui::{
         active_side::{ActiveSide, ActiveSideState, outline_stroke},
@@ -33,6 +34,7 @@ use zcommon::{
     presets::{BuiltinPreset, UserPresets},
     ui_egui::{
         h_scroll,
+        keymap::{Action, Keymap},
         pathbar::{PathBarAction, path_bar},
         presets::presets_menu,
         toggle::{TOGGLE_BUTTON_SIZE, toggle_button},
@@ -109,6 +111,7 @@ pub struct FileDiffPaneCtx<'a> {
     /// Why the pair isn't in the viewer it asked for, if it isn't.
     pub viewer_fallback: Option<&'a str>,
     pub phase_overlay: bool,
+    pub keymap: &'a Keymap<FileAction>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -278,6 +281,9 @@ impl FileDiffPane {
         let pin_input = &mut self.pin_input;
         let mono_font = egui::TextStyle::Monospace.resolve(ui.style());
         let egui_ctx = ui.ctx().clone();
+        let keymap = ctx.keymap;
+        let hint = |action: FileAction, text: &str| with_shortcut(keymap, action, text);
+        let action_hint = |action: FileAction| hint(action, action.label());
 
         ui.horizontal(|ui| {
             ui.with_layout(Layout::left_to_right(egui::Align::Center), |ui| {
@@ -292,13 +298,13 @@ impl FileDiffPane {
                     ui,
                     &mut ctx.diff_options.ignore.whitespace,
                     egui::RichText::new("W").strong(),
-                    "Ignore Whitespace",
+                    &hint(FileAction::IgnoreWhitespace, "Ignore Whitespace"),
                 );
                 toggle_button(
                     ui,
                     &mut ctx.diff_options.ignore.comments,
                     egui::RichText::new("C").strong(),
-                    "Ignore Comments",
+                    &hint(FileAction::IgnoreComments, "Ignore Comments"),
                 );
                 ignore_patterns_btn(
                     ui,
@@ -306,36 +312,63 @@ impl FileDiffPane {
                     &mut ctx.diff_options.ignore.patterns,
                     ctx.diff_options.ignore.regex_enabled,
                     ctx.regex_ignore_presets,
+                    &hint(
+                        FileAction::IgnoreRegex,
+                        "Ignore Regex: text matching these patterns is ignored and dimmed",
+                    ),
                 );
                 toggle_button(
                     ui,
                     &mut ctx.diff_options.highlight_rows,
                     egui::RichText::new("H").strong(),
-                    "Highlight Rows",
+                    &hint(FileAction::HighlightRows, "Highlight Rows"),
                 );
-                toggle_button(ui, &mut ctx.diff_options.ghost_rows, "👻", "Ghost Rows");
-                toggle_button(ui, ctx.h_scroll_linked, "🔗", "Link Horizontal Scrolling");
-                toggle_button(ui, ctx.word_wrap, "↩", "Word Wrap");
+                toggle_button(
+                    ui,
+                    &mut ctx.diff_options.ghost_rows,
+                    "👻",
+                    &hint(FileAction::GhostRows, "Ghost Rows"),
+                );
+                toggle_button(
+                    ui,
+                    ctx.h_scroll_linked,
+                    "🔗",
+                    &hint(FileAction::LinkHScroll, "Link Horizontal Scrolling"),
+                );
+                toggle_button(
+                    ui,
+                    ctx.word_wrap,
+                    "↩",
+                    &hint(FileAction::WordWrap, "Word Wrap"),
+                );
 
                 let mut active = ctx.diff_options.diff_only_with_extra_rows.is_some();
                 if toggle_button(
                     ui,
                     &mut active,
                     egui::RichText::new("D").strong(),
-                    "Diff Only",
+                    &hint(FileAction::DiffOnly, "Diff Only"),
                 ) {
                     ctx.diff_options.diff_only_with_extra_rows = active.then_some(2);
                 }
                 match &mut ctx.diff_options.diff_only_with_extra_rows {
                     Some(diff_rows_num) => {
-                        if ui.button("<").clicked() {
+                        if ui
+                            .button("<")
+                            .on_hover_text(action_hint(FileAction::FewerContextRows))
+                            .clicked()
+                        {
                             *diff_rows_num = diff_rows_num.saturating_sub(1);
                         }
                         if ui
                             .button(format!("{}", diff_rows_num.to_string(),))
                             .clicked()
                         {}
-                        if ui.button(">").clicked() {
+                        if ui
+                            .button(">")
+                            .on_hover_text(action_hint(FileAction::MoreContextRows))
+                            .clicked()
+                        {
                             *diff_rows_num = (*diff_rows_num + 1).min(99);
                         }
                     }
@@ -346,7 +379,11 @@ impl FileDiffPane {
 
             ui.with_layout(Layout::left_to_right(egui::Align::Center), |ui| {
                 ui.spacing_mut().item_spacing.x = 4.0;
-                if ui.button("<").clicked() {
+                if ui
+                    .button("<")
+                    .on_hover_text(action_hint(FileAction::PrevConflict))
+                    .clicked()
+                {
                     ctx.conflict_cursor.dec();
                 }
                 if ui
@@ -357,13 +394,21 @@ impl FileDiffPane {
                     ))
                     .clicked()
                 {}
-                if ui.button(">").clicked() {
+                if ui
+                    .button(">")
+                    .on_hover_text(action_hint(FileAction::NextConflict))
+                    .clicked()
+                {
                     ctx.conflict_cursor.inc();
                 }
             });
             ui.with_layout(Layout::left_to_right(egui::Align::Center), |ui| {
                 ui.spacing_mut().item_spacing.x = 4.0;
-                if ui.button("<").clicked() {
+                if ui
+                    .button("<")
+                    .on_hover_text(action_hint(FileAction::PrevFind))
+                    .clicked()
+                {
                     ctx.find_cursor.dec();
                 }
                 let find_k = if ctx.find_count == 0 {
@@ -375,7 +420,11 @@ impl FileDiffPane {
                     .button(format!("{find_k} of {}", ctx.find_count))
                     .clicked()
                 {}
-                if ui.button(">").clicked() {
+                if ui
+                    .button(">")
+                    .on_hover_text(action_hint(FileAction::NextFind))
+                    .clicked()
+                {
                     ctx.find_cursor.inc();
                 }
             });
@@ -2031,12 +2080,11 @@ fn ignore_patterns_btn(
     patterns: &mut IgnorePatterns,
     enabled: bool,
     presets: &mut UserPresets,
+    tooltip: &str,
 ) {
     let btn = egui::Button::new(egui::RichText::new("R").strong())
         .selected(enabled && !patterns.is_empty());
-    let response = ui
-        .add_sized(button_size, btn)
-        .on_hover_text("Ignore Regex: text matching these patterns is ignored and dimmed");
+    let response = ui.add_sized(button_size, btn).on_hover_text(tooltip);
     let open_id = response.id.with("ignore_patterns_open");
     let mut open = ui.data(|d| d.get_temp::<bool>(open_id)).unwrap_or(false);
     if response.clicked() {

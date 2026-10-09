@@ -27,7 +27,7 @@ use crate::{
     diff_ctx::{DiffProcessor, UpdateDiffRowsInput},
     diff_phases::diff_phases_menu,
     file::{FileProcessor, LoadedFile},
-    keybindings::{FileAction, Keybindings, QuickDiffPaths, ui_keybindings},
+    keybindings::{FileAction, Keybindings, QuickDiffPaths, first_shortcut_text, ui_keybindings},
     p4::{
         P4Command, P4Profiles, P4Runner, local_path_of_depot_file, set_p4_slot_profile,
         ui_p4_profiles, update_p4_profiles,
@@ -447,43 +447,25 @@ impl<'a> ZApp {
                 .ui(ui, |ui| {
                     ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
                     ui.menu_button("File", |ui| {
-                        if ui
-                            .button(format!(
-                                "[{}]Open Source",
-                                keybindings.first_shortcut_text(FileAction::OpenFileSource)
-                            ))
+                        if menu_item(ui, "Open Source", keybindings, FileAction::OpenFileSource)
                             .clicked()
                         {
                             Self::open_file_picker(file_1.get_tx());
                         }
-                        if ui
-                            .button(format!(
-                                "[{}]Open Target",
-                                keybindings.first_shortcut_text(FileAction::OpenFileTarget)
-                            ))
+                        if menu_item(ui, "Open Target", keybindings, FileAction::OpenFileTarget)
                             .clicked()
                         {
                             Self::open_file_picker(file_2.get_tx());
                         }
-                        if ui.button("Swap Source/Target").clicked() {
+                        if menu_item(ui, "Swap Source/Target", keybindings, FileAction::SwapSides)
+                            .clicked()
+                        {
                             swap_sides(file_1, file_2, scroll_left, scroll_right, diff_processor);
                         }
-                        if ui
-                            .button(format!(
-                                "[{}]Find",
-                                keybindings.first_shortcut_text(FileAction::Find)
-                            ))
-                            .clicked()
-                        {
+                        if menu_item(ui, "Find", keybindings, FileAction::Find).clicked() {
                             *find_open = true;
                         }
-                        if ui
-                            .button(format!(
-                                "[{}]Goto",
-                                keybindings.first_shortcut_text(FileAction::Goto)
-                            ))
-                            .clicked()
-                        {
+                        if menu_item(ui, "Goto", keybindings, FileAction::Goto).clicked() {
                             *goto_open = true;
                         }
                     });
@@ -544,21 +526,18 @@ impl<'a> ZApp {
                             ui.radio_value(h_scroll_modifier, WheelModifier::Shift, "Shift+Wheel");
                             ui.radio_value(h_scroll_modifier, WheelModifier::Ctrl, "Ctrl+Wheel");
                         });
-                        if ui
-                            .button(format!(
-                                "[{}]P4Config",
-                                keybindings.first_shortcut_text(FileAction::OpenUniversalPath)
-                            ))
+                        if menu_item(ui, "P4Config", keybindings, FileAction::OpenUniversalPath)
                             .clicked()
                         {
                             self.open_universal_path_window = true;
                         }
-                        if ui
-                            .button(format!(
-                                "[{}]Keyboard Shortcuts",
-                                keybindings.first_shortcut_text(FileAction::OpenKeybindings)
-                            ))
-                            .clicked()
+                        if menu_item(
+                            ui,
+                            "Keyboard Shortcuts",
+                            keybindings,
+                            FileAction::OpenKeybindings,
+                        )
+                        .clicked()
                         {
                             self.open_shortcuts_window = true;
                         }
@@ -573,22 +552,24 @@ impl<'a> ZApp {
                             file_2.set_path(UniversalPath::default());
                             diff_processor.reset_ctx();
                         }
-                        if ui
-                            .button(format!(
-                                "[{}]Clear Cached Files",
-                                keybindings.first_shortcut_text(FileAction::RefreshDiff)
-                            ))
-                            .clicked()
+                        if menu_item(
+                            ui,
+                            "Clear Cached Files",
+                            keybindings,
+                            FileAction::RefreshDiff,
+                        )
+                        .clicked()
                         {
                             diff_processor.reset_ctx();
                             Self::refresh_file_contents(file_1, file_2);
                         }
-                        if ui
-                            .button(format!(
-                                "[{}]Clear Diff Rows",
-                                keybindings.first_shortcut_text(FileAction::RefreshDiffRowsOnly)
-                            ))
-                            .clicked()
+                        if menu_item(
+                            ui,
+                            "Clear Diff Rows",
+                            keybindings,
+                            FileAction::RefreshDiffRowsOnly,
+                        )
+                        .clicked()
                         {
                             diff_processor.reset_ctx();
                         }
@@ -982,6 +963,7 @@ impl<'a> ZApp {
                     viewer_override: &mut viewer_override.kind,
                     viewer_fallback: viewer_fallback.as_deref(),
                     phase_overlay: self.phase_overlay,
+                    keymap: &keybindings.keymap,
                 },
             };
 
@@ -1638,6 +1620,19 @@ fn swap_sides(
     std::mem::swap(scroll_left, scroll_right);
 
     diff_processor.reset_ctx();
+}
+
+fn menu_item(
+    ui: &mut egui::Ui,
+    label: &str,
+    keybindings: &Keybindings,
+    action: FileAction,
+) -> egui::Response {
+    let mut button = egui::Button::new(label);
+    if let Some(text) = first_shortcut_text(&keybindings.keymap, action) {
+        button = button.shortcut_text(text);
+    }
+    ui.add(button)
 }
 
 // Mirrors the toolbar buttons in diff_pane.

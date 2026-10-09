@@ -345,12 +345,14 @@ impl Default for Keybindings {
     }
 }
 
-impl Keybindings {
-    pub fn first_shortcut_text(&self, action: FileAction) -> String {
-        self.keymap
-            .shortcuts(action)
-            .first()
-            .map_or_else(|| "None".to_string(), Shortcut::format)
+pub fn first_shortcut_text(keymap: &Keymap<FileAction>, action: FileAction) -> Option<String> {
+    keymap.shortcuts(action).first().map(Shortcut::format)
+}
+
+pub fn with_shortcut(keymap: &Keymap<FileAction>, action: FileAction, text: &str) -> String {
+    match first_shortcut_text(keymap, action) {
+        Some(shortcut) => format!("{text} ({shortcut})"),
+        None => text.to_owned(),
     }
 }
 
@@ -684,6 +686,45 @@ mod tests {
     fn file_action_names_are_unique() {
         let names: HashSet<_> = FileAction::all().iter().map(|a| a.name()).collect();
         assert_eq!(names.len(), FileAction::all().len());
+    }
+
+    #[test]
+    fn first_shortcut_text_follows_the_keymap() {
+        let mut keymap = Keymap::<FileAction>::default();
+        assert_eq!(
+            first_shortcut_text(&keymap, FileAction::IgnoreWhitespace).as_deref(),
+            Some("Alt+W")
+        );
+        keymap.shortcuts_mut(FileAction::IgnoreWhitespace).insert(
+            0,
+            Shortcut {
+                key: Key::F5,
+                modifiers: Modifiers::CTRL,
+            },
+        );
+        assert_eq!(
+            first_shortcut_text(&keymap, FileAction::IgnoreWhitespace).as_deref(),
+            Some("Ctrl+F5")
+        );
+        keymap.shortcuts_mut(FileAction::IgnoreWhitespace).clear();
+        assert_eq!(
+            first_shortcut_text(&keymap, FileAction::IgnoreWhitespace),
+            None
+        );
+    }
+
+    #[test]
+    fn with_shortcut_appends_the_first_shortcut_only_when_bound() {
+        let mut keymap = Keymap::<FileAction>::default();
+        assert_eq!(
+            with_shortcut(&keymap, FileAction::WordWrap, "Word Wrap"),
+            "Word Wrap (Alt+Z)"
+        );
+        keymap.shortcuts_mut(FileAction::WordWrap).clear();
+        assert_eq!(
+            with_shortcut(&keymap, FileAction::WordWrap, "Word Wrap"),
+            "Word Wrap"
+        );
     }
 
     #[test]
