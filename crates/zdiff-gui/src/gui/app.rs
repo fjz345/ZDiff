@@ -5,6 +5,7 @@ use std::{
     path::{Path, PathBuf},
     sync::mpsc,
 };
+use zcommon::presets::UserPresets;
 use zcommon::ui_egui::common::show_custom_popup;
 use zdiff::{
     diff_builder::DiffBuilderOptions,
@@ -82,6 +83,8 @@ pub struct AppStateCtx {
 
     #[cfg_attr(feature = "serde", serde(default))]
     pub p4_profiles: P4Profiles,
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub regex_ignore_presets: UserPresets,
 
     // ### UI TEMP
     pub scroll_left: f32,
@@ -134,6 +137,7 @@ impl Default for AppStateCtx {
             diff_lexer_mode: LEXER_MODE_DEFAULT,
             keybindings: Default::default(),
             p4_profiles: Default::default(),
+            regex_ignore_presets: Default::default(),
             myers_diff_algorithm: Default::default(),
             code_language: "rs".to_string(),
             code_language_custom: "".into(),
@@ -813,6 +817,7 @@ impl<'a> ZApp {
                 code_language,
                 code_language_custom,
                 p4_profiles,
+                regex_ignore_presets,
             } = app_ctx;
             let is_hex = *viewer_kind == Some(ViewerKind::Hex);
             let is_image = *viewer_kind == Some(ViewerKind::Image);
@@ -940,6 +945,7 @@ impl<'a> ZApp {
                     h_scroll_linked,
                     word_wrap,
                     diff_options: diff_options,
+                    regex_ignore_presets,
                     scroll_to_row_span: &scroll_to_rows,
                     load_file_1_request: &mut None,
                     load_file_2_request: &mut None,
@@ -1787,6 +1793,37 @@ mod tests {
         let json = serde_json::to_string(&ctx).unwrap();
         let restored: AppStateCtx = serde_json::from_str(&json).unwrap();
         assert!(!restored.h_scroll_linked);
+    }
+
+    #[test]
+    fn regex_ignore_presets_survive_a_restart() {
+        use crate::ui_egui::diff_pane::REGEX_IGNORE_PRESETS;
+        let mut ctx = AppStateCtx::default();
+        ctx.regex_ignore_presets
+            .save(REGEX_IGNORE_PRESETS, "Mine", r"\d+\nfoo")
+            .unwrap();
+
+        let json = serde_json::to_string(&ctx).unwrap();
+        let restored: AppStateCtx = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.regex_ignore_presets, ctx.regex_ignore_presets);
+        let user: Vec<_> = restored
+            .regex_ignore_presets
+            .list(REGEX_IGNORE_PRESETS)
+            .filter(|e| !e.builtin)
+            .map(|e| (e.name, e.text))
+            .collect();
+        assert_eq!(user, [("Mine", r"\d+\nfoo")]);
+    }
+
+    #[test]
+    fn a_save_without_regex_ignore_presets_loads_none() {
+        let mut json = serde_json::to_value(AppStateCtx::default()).unwrap();
+        json.as_object_mut()
+            .unwrap()
+            .remove("regex_ignore_presets")
+            .unwrap();
+        let restored: AppStateCtx = serde_json::from_value(json).unwrap();
+        assert_eq!(restored.regex_ignore_presets, UserPresets::default());
     }
 
     #[test]

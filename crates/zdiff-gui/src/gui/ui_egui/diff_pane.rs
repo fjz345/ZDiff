@@ -27,10 +27,14 @@ use eframe::egui::{
     text_selection::LabelSelectionState,
 };
 use serde::{Deserialize, Serialize};
-use zcommon::path::{PathSegment, common_parent, split_path};
-use zcommon::ui_egui::{
-    pathbar::{PathBarAction, path_bar},
-    toggle::{TOGGLE_BUTTON_SIZE, toggle_button},
+use zcommon::{
+    path::{PathSegment, common_parent, split_path},
+    presets::{BuiltinPreset, UserPresets},
+    ui_egui::{
+        pathbar::{PathBarAction, path_bar},
+        presets::presets_menu,
+        toggle::{TOGGLE_BUTTON_SIZE, toggle_button},
+    },
 };
 use zdiff::{
     cached_file::CachedFile,
@@ -64,6 +68,7 @@ pub struct FileDiffPaneCtx<'a> {
 
     pub diff_ctx: Option<&'a MinimalDiffCtx>,
     pub diff_options: &'a mut DiffBuilderOptions,
+    pub regex_ignore_presets: &'a mut UserPresets,
     pub scroll_left: &'a mut f32,
     pub scroll_right: &'a mut f32,
     /// Both sides scroll horizontally together.
@@ -289,6 +294,7 @@ impl FileDiffPane {
                     ui,
                     TOGGLE_BUTTON_SIZE,
                     &mut ctx.diff_options.ignore.patterns,
+                    ctx.regex_ignore_presets,
                 );
                 toggle_button(
                     ui,
@@ -1906,17 +1912,89 @@ fn h_scroll_bar(
     (moved != offset).then_some(moved)
 }
 
+pub const REGEX_IGNORE_PRESETS: &[BuiltinPreset] = &[
+    BuiltinPreset {
+        name: "Time",
+        text: r"\b\d{1,2}:\d{2}:\d{2}([.,]\d+)?\b",
+    },
+    BuiltinPreset {
+        name: "Date",
+        text: r"\b\d{4}-\d{2}-\d{2}\b",
+    },
+    BuiltinPreset {
+        name: "ISO timestamp",
+        text: r"\b\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}([.,]\d+)?(Z|[+-]\d{2}:?\d{2})?",
+    },
+    BuiltinPreset {
+        name: "Bracketed time",
+        text: r"\[[^\]]*\d\d:\d\d:\d\d[^\]]*\]",
+    },
+    BuiltinPreset {
+        name: "UE log prefix",
+        text: r"^\[\d{4}\.\d\d\.\d\d-\d\d\.\d\d\.\d\d:\d{3}\]\[\s*\d+\]",
+    },
+    BuiltinPreset {
+        name: "GUID",
+        text: r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b",
+    },
+    BuiltinPreset {
+        name: "Hex address",
+        text: r"\b0x[0-9a-fA-F]+\b",
+    },
+];
+
 /// Toolbar button with a popup editing the ignore patterns. Patterns are recompiled only when the
 /// text changes; invalid ones are listed under the field and skipped by the diff.
-fn ignore_patterns_btn(ui: &mut egui::Ui, button_size: Vec2, patterns: &mut IgnorePatterns) {
+fn ignore_patterns_btn(
+    ui: &mut egui::Ui,
+    button_size: Vec2,
+    patterns: &mut IgnorePatterns,
+    presets: &mut UserPresets,
+) {
     let btn = egui::Button::new(egui::RichText::new("R").strong()).selected(!patterns.is_empty());
     let response = ui
         .add_sized(button_size, btn)
         .on_hover_text("Ignore Regex: text matching these patterns is ignored and dimmed");
-    egui::Popup::from_toggle_button_response(&response)
-        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+    let open_id = response.id.with("ignore_patterns_open");
+    let mut open = ui.data(|d| d.get_temp::<bool>(open_id)).unwrap_or(false);
+    if response.clicked() {
+        open = !open;
+    }
+    // The preset save dialog is a modal drawn from inside this popup: clicks in it land outside
+    // the popup, and a modal leaves Esc to open popups. Closing the popup would drop the dialog.
+    let dialog_open = ui.ctx().memory(|m| m.top_modal_layer()).is_some();
+    if dialog_open {
+        ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
+    }
+    let mut keep_open = false;
+    egui::Popup::from_response(&response)
+        .open_bool(&mut open)
+        .close_behavior(if dialog_open {
+            egui::PopupCloseBehavior::IgnoreClicks
+        } else {
+            egui::PopupCloseBehavior::CloseOnClickOutside
+        })
         .show(|ui| {
             ui.label("One regex per line, matched per line. Ignores tokens a match fully covers.");
+            let picked = presets_menu(
+                ui,
+                "ignore_regex_presets",
+                REGEX_IGNORE_PRESETS,
+                presets,
+                patterns.text(),
+            );
+            if let Some(text) = picked {
+                *patterns = IgnorePatterns::new(text);
+            }
+            // A click in the Presets submenu (a foreground layer) closes its parents too.
+            let ctx = ui.ctx();
+            let on_popup = ctx
+                .pointer_interact_pos()
+                .and_then(|pos| ctx.layer_id_at(pos))
+                .is_some_and(|layer| layer.order == egui::Order::Foreground);
+            keep_open = ui.will_parent_close()
+                && on_popup
+                && !ui.input(|i| i.key_pressed(egui::Key::Escape));
             let mut text = patterns.text().to_owned();
             let edit = TextEdit::multiline(&mut text)
                 .code_editor()
@@ -1931,6 +2009,7 @@ fn ignore_patterns_btn(ui: &mut egui::Ui, button_size: Vec2, patterns: &mut Igno
                 ui.colored_label(ui.visuals().error_fg_color, message);
             }
         });
+    ui.data_mut(|d| d.insert_temp(open_id, open || keep_open));
 }
 
 /// Auto / Text / Hex for the current pair. A warning sign carries the fallback reason when the
@@ -2520,6 +2599,72 @@ mod tests {
         old.as_object_mut().unwrap().remove("ignore_regex");
         let loaded: DiffBuilderOptions = serde_json::from_value(old).unwrap();
         assert_eq!(loaded, DiffBuilderOptions::default());
+    }
+
+    fn ignored_runs<'a>(patterns: &IgnorePatterns, text: &'a str) -> Vec<&'a str> {
+        use zdiff::lexer::{LexerDefault, RawToken};
+        let tokens = LexerDefault::<RawToken>::new(text).parse();
+        let flags = patterns.flags(&tokens, text);
+        let mut runs = Vec::new();
+        let mut run: Option<std::ops::Range<usize>> = None;
+        for (token, flag) in tokens.iter().zip(flags) {
+            match (&mut run, flag) {
+                (Some(r), true) => r.end = token.span.end,
+                (None, true) => run = Some(token.span.clone()),
+                (Some(_), false) => runs.push(&text[run.take().unwrap()]),
+                (None, false) => {}
+            }
+        }
+        runs.extend(run.map(|r| &text[r]));
+        runs
+    }
+
+    #[test]
+    fn regex_ignore_presets_compile_and_match_only_their_sample() {
+        let samples: &[(&str, &str, &[&str])] = &[
+            (
+                "Time",
+                "LogTemp: 12:34:56.789 started, took 3:04:05\n",
+                &["12:34:56.789", "3:04:05"],
+            ),
+            ("Date", "Build 2024-03-15 v1.2-3\n", &["2024-03-15"]),
+            (
+                "ISO timestamp",
+                "at 2024-03-15T10:20:30.123Z done\nat 2024-03-15 10:20:30+01:00 done\n",
+                &["2024-03-15T10:20:30.123Z", "2024-03-15 10:20:30+01:00"],
+            ),
+            (
+                "Bracketed time",
+                "[2024-03-15 10:20:30.5] [Info] Loaded\n",
+                &["[2024-03-15 10:20:30.5]"],
+            ),
+            (
+                "UE log prefix",
+                "[2024.03.15-10.20.30:123][  0]LogTemp: Display: [1]\n",
+                &["[2024.03.15-10.20.30:123][  0]"],
+            ),
+            (
+                "GUID",
+                "Guid=3F2504E0-4F89-11D3-9A0C-0305E82C3301 id-1234\n",
+                &["3F2504E0-4F89-11D3-9A0C-0305E82C3301"],
+            ),
+            (
+                "Hex address",
+                "at 0x7ff6a1b2c3d4 in main+42\n",
+                &["0x7ff6a1b2c3d4"],
+            ),
+        ];
+        assert_eq!(super::REGEX_IGNORE_PRESETS.len(), samples.len());
+        for preset in super::REGEX_IGNORE_PRESETS {
+            let (_, text, expected) = samples
+                .iter()
+                .find(|(name, ..)| *name == preset.name)
+                .unwrap_or_else(|| panic!("no sample for preset \"{}\"", preset.name));
+            let patterns = IgnorePatterns::new(preset.text);
+            assert_eq!(patterns.errors(), [], "{}", preset.name);
+            assert!(!patterns.is_empty(), "{}", preset.name);
+            assert_eq!(ignored_runs(&patterns, text), *expected, "{}", preset.name);
+        }
     }
 
     #[test]
