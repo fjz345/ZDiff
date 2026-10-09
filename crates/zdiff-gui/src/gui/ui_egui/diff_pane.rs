@@ -867,7 +867,7 @@ impl FileDiffPane {
                                                 }
 
                                                 SplitColumn::Center => {
-                                                    // Today's buttons spill over the sides of the column; 04 sizes it to fit them.
+                                                    // The buttons are wider than the column and spill over the sides; 04 sizes it.
                                                     ui.set_clip_rect(egui::Rect::from_x_y_ranges(
                                                         area.x_range(),
                                                         ui.clip_rect().y_range(),
@@ -1003,20 +1003,24 @@ impl FileDiffPane {
                                                 }
                                             }
                                         };
-                            let output = if header_only {
-                                // The table fills the space it is given; only its header shows here.
-                                let rect = egui::Rect::from_min_size(
-                                    ui.cursor().min,
-                                    egui::vec2(ui.available_width(), *header_height),
-                                );
-                                let mut header_ui = ui.new_child(UiBuilder::new().max_rect(rect));
-                                let output =
-                                    table.show(&mut header_ui, *header_height, header, rows, cell);
-                                ui.advance_cursor_after_rect(rect);
-                                output
+                            // The table fills what it is given, so header-only gets just the header.
+                            // One child id in both cases keeps the path bars' state across a switch.
+                            let rect = if header_only {
+                                egui::Rect::from_min_size(
+                                    area.min,
+                                    egui::vec2(area.width(), *header_height),
+                                )
                             } else {
-                                table.show(ui, *header_height, header, rows, cell)
+                                area
                             };
+                            let mut table_ui = ui.new_child(
+                                UiBuilder::new()
+                                    .max_rect(rect)
+                                    .id_salt("file_diff_table_ui"),
+                            );
+                            let output =
+                                table.show(&mut table_ui, *header_height, header, rows, cell);
+                            ui.advance_cursor_after_rect(rect);
                             [*ctx.scroll_left, *ctx.scroll_right] = offsets;
                             let measured = header_rects[0].height().max(header_rects[1].height());
                             if measured != *header_height {
