@@ -62,6 +62,17 @@ pub enum FileAction {
     Redo,
     /// Target becomes the local file of the source depot file.
     DiffLocalFile,
+    SwapSides,
+    IgnoreWhitespace,
+    IgnoreComments,
+    IgnoreRegex,
+    HighlightRows,
+    GhostRows,
+    LinkHScroll,
+    WordWrap,
+    DiffOnly,
+    FewerContextRows,
+    MoreContextRows,
 }
 
 impl Action for FileAction {
@@ -84,6 +95,17 @@ impl Action for FileAction {
             Self::UndoRevert,
             Self::Redo,
             Self::DiffLocalFile,
+            Self::SwapSides,
+            Self::IgnoreWhitespace,
+            Self::IgnoreComments,
+            Self::IgnoreRegex,
+            Self::HighlightRows,
+            Self::GhostRows,
+            Self::LinkHScroll,
+            Self::WordWrap,
+            Self::DiffOnly,
+            Self::FewerContextRows,
+            Self::MoreContextRows,
         ]
     }
 
@@ -106,6 +128,17 @@ impl Action for FileAction {
             Self::UndoRevert => "undo_revert",
             Self::Redo => "redo_revert",
             Self::DiffLocalFile => "diff_local_file",
+            Self::SwapSides => "swap_sides",
+            Self::IgnoreWhitespace => "ignore_whitespace",
+            Self::IgnoreComments => "ignore_comments",
+            Self::IgnoreRegex => "ignore_regex",
+            Self::HighlightRows => "highlight_rows",
+            Self::GhostRows => "ghost_rows",
+            Self::LinkHScroll => "link_h_scroll",
+            Self::WordWrap => "word_wrap",
+            Self::DiffOnly => "diff_only",
+            Self::FewerContextRows => "diff_only_fewer_context_rows",
+            Self::MoreContextRows => "diff_only_more_context_rows",
         }
     }
 
@@ -128,6 +161,17 @@ impl Action for FileAction {
             Self::UndoRevert => "Undo Revert",
             Self::Redo => "Redo Revert",
             Self::DiffLocalFile => "Diff Source Against Local File",
+            Self::SwapSides => "Swap Source/Target",
+            Self::IgnoreWhitespace => "Ignore Whitespace",
+            Self::IgnoreComments => "Ignore Comments",
+            Self::IgnoreRegex => "Ignore Regex On/Off",
+            Self::HighlightRows => "Highlight Rows",
+            Self::GhostRows => "Ghost Rows",
+            Self::LinkHScroll => "Link Horizontal Scrolling",
+            Self::WordWrap => "Word Wrap",
+            Self::DiffOnly => "Diff Only",
+            Self::FewerContextRows => "Diff Only: Fewer Context Rows",
+            Self::MoreContextRows => "Diff Only: More Context Rows",
         }
     }
 
@@ -218,6 +262,50 @@ impl Action for FileAction {
             Self::DiffLocalFile => &[Shortcut {
                 key: Key::L,
                 modifiers: CTRL,
+            }],
+            Self::SwapSides => &[Shortcut {
+                key: Key::S,
+                modifiers: CTRL_SHIFT,
+            }],
+            Self::IgnoreWhitespace => &[Shortcut {
+                key: Key::W,
+                modifiers: Modifiers::ALT,
+            }],
+            Self::IgnoreComments => &[Shortcut {
+                key: Key::C,
+                modifiers: Modifiers::ALT,
+            }],
+            Self::IgnoreRegex => &[Shortcut {
+                key: Key::X,
+                modifiers: Modifiers::ALT,
+            }],
+            Self::HighlightRows => &[Shortcut {
+                key: Key::H,
+                modifiers: Modifiers::ALT,
+            }],
+            Self::GhostRows => &[Shortcut {
+                key: Key::G,
+                modifiers: Modifiers::ALT,
+            }],
+            Self::LinkHScroll => &[Shortcut {
+                key: Key::L,
+                modifiers: Modifiers::ALT,
+            }],
+            Self::WordWrap => &[Shortcut {
+                key: Key::Z,
+                modifiers: Modifiers::ALT,
+            }],
+            Self::DiffOnly => &[Shortcut {
+                key: Key::D,
+                modifiers: Modifiers::ALT,
+            }],
+            Self::FewerContextRows => &[Shortcut {
+                key: Key::OpenBracket,
+                modifiers: Modifiers::ALT,
+            }],
+            Self::MoreContextRows => &[Shortcut {
+                key: Key::CloseBracket,
+                modifiers: Modifiers::ALT,
             }],
         }
     }
@@ -642,6 +730,37 @@ mod tests {
         );
     }
 
+    #[test]
+    fn swap_and_toolbar_toggles_dispatch_from_the_default_keys() {
+        let keymap = Keymap::<FileAction>::default();
+        let expected = [
+            (press(Key::S, CTRL_SHIFT), FileAction::SwapSides),
+            (press(Key::W, Modifiers::ALT), FileAction::IgnoreWhitespace),
+            (press(Key::C, Modifiers::ALT), FileAction::IgnoreComments),
+            (press(Key::X, Modifiers::ALT), FileAction::IgnoreRegex),
+            (press(Key::H, Modifiers::ALT), FileAction::HighlightRows),
+            (press(Key::G, Modifiers::ALT), FileAction::GhostRows),
+            (press(Key::L, Modifiers::ALT), FileAction::LinkHScroll),
+            (press(Key::Z, Modifiers::ALT), FileAction::WordWrap),
+            (press(Key::D, Modifiers::ALT), FileAction::DiffOnly),
+            (
+                press(Key::OpenBracket, Modifiers::ALT),
+                FileAction::FewerContextRows,
+            ),
+            (
+                press(Key::CloseBracket, Modifiers::ALT),
+                FileAction::MoreContextRows,
+            ),
+        ];
+        for (event, action) in expected {
+            assert_eq!(
+                keymap.dispatch(std::slice::from_ref(&event), false),
+                [action]
+            );
+            assert_eq!(keymap.dispatch(&[event], true), [action], "while typing");
+        }
+    }
+
     #[cfg(feature = "serde")]
     mod migration {
         use super::*;
@@ -724,6 +843,23 @@ mod tests {
                 (FileAction::Redo, vec![f_key(15), f_key(16)]),
                 (FileAction::DiffLocalFile, vec![f_key(17)]),
             ];
+            let new_actions = [
+                FileAction::SwapSides,
+                FileAction::IgnoreWhitespace,
+                FileAction::IgnoreComments,
+                FileAction::IgnoreRegex,
+                FileAction::HighlightRows,
+                FileAction::GhostRows,
+                FileAction::LinkHScroll,
+                FileAction::WordWrap,
+                FileAction::DiffOnly,
+                FileAction::FewerContextRows,
+                FileAction::MoreContextRows,
+            ];
+            let expected: Vec<_> = expected
+                .into_iter()
+                .chain(new_actions.map(|a| (a, a.defaults().to_vec())))
+                .collect();
             assert_eq!(expected.len(), FileAction::all().len());
             for (action, shortcuts) in expected {
                 assert_eq!(keymap.shortcuts(action), shortcuts, "{action:?}");

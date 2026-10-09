@@ -6,7 +6,7 @@ use crate::lexer::{RawTokenTrait, TokenKind};
 
 /// Diff options that decide line equality: an ignored token is dropped from the line key and
 /// hidden in the rows. Part of the diff stage's input, so changing one recomputes the diff.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 // Missing fields load as default, so persisted state survives new options.
 #[cfg_attr(feature = "serde", serde(default))]
@@ -18,6 +18,19 @@ pub struct IgnoreOptions {
     pub comments: bool,
     #[cfg_attr(feature = "serde", serde(rename = "ignore_regex"))]
     pub patterns: IgnorePatterns,
+    #[cfg_attr(feature = "serde", serde(rename = "ignore_regex_enabled"))]
+    pub regex_enabled: bool,
+}
+
+impl Default for IgnoreOptions {
+    fn default() -> Self {
+        Self {
+            whitespace: false,
+            comments: false,
+            patterns: IgnorePatterns::default(),
+            regex_enabled: true,
+        }
+    }
 }
 
 impl IgnoreOptions {
@@ -30,11 +43,18 @@ impl IgnoreOptions {
         target: &[T],
         target_text: &str,
     ) -> IgnoreMask {
-        if !self.whitespace && !self.comments && self.patterns.is_empty() {
+        let patterns_on = self.regex_enabled && !self.patterns.is_empty();
+        if !self.whitespace && !self.comments && !patterns_on {
             return IgnoreMask::default();
         }
-        let matched_source = self.patterns.flags(source, source_text);
-        let matched_target = self.patterns.flags(target, target_text);
+        let (matched_source, matched_target) = if patterns_on {
+            (
+                self.patterns.flags(source, source_text),
+                self.patterns.flags(target, target_text),
+            )
+        } else {
+            (Vec::new(), Vec::new())
+        };
         let flags = |tokens: &[T], matched: &[bool]| {
             let mut flags = if self.comments {
                 comment_flags(tokens)
@@ -329,6 +349,7 @@ mod tests {
             whitespace: true,
             comments: true,
             patterns: IgnorePatterns::new(r"\d+"),
+            ..Default::default()
         };
         let (all, matched_all) = ignored(&options, text);
         let kept: Vec<&str> = lex(text)
@@ -350,6 +371,31 @@ mod tests {
         let (some, _) = ignored(&no_comments, text);
         assert!(some.contains(&"12") && some.contains(&"\n"));
         assert!(!some.contains(&"// c 34"));
+    }
+
+    #[test]
+    fn disabled_patterns_are_kept_and_ignore_nothing() {
+        let text = "id = 1234;\n";
+        let mut options = with_patterns(r"\d+");
+        options.regex_enabled = false;
+        assert_eq!(ignored(&options, text), (vec![], vec![]));
+        assert_eq!(options.patterns.text(), r"\d+");
+        let tokens = lex(text);
+        assert!(options.mask(&tokens, text, &tokens, text).is_empty());
+
+        options.whitespace = true;
+        let (all, matched) = ignored(&options, text);
+        assert!(!all.contains(&"1234"));
+        assert_eq!(matched, Vec::<&str>::new());
+
+        options.whitespace = false;
+        options.regex_enabled = true;
+        assert_eq!(ignored(&options, text), (vec!["1234"], vec!["1234"]));
+    }
+
+    #[test]
+    fn regex_is_enabled_by_default() {
+        assert!(IgnoreOptions::default().regex_enabled);
     }
 
     #[test]

@@ -304,6 +304,7 @@ impl FileDiffPane {
                     ui,
                     TOGGLE_BUTTON_SIZE,
                     &mut ctx.diff_options.ignore.patterns,
+                    ctx.diff_options.ignore.regex_enabled,
                     ctx.regex_ignore_presets,
                 );
                 toggle_button(
@@ -2028,9 +2029,11 @@ fn ignore_patterns_btn(
     ui: &mut egui::Ui,
     button_size: Vec2,
     patterns: &mut IgnorePatterns,
+    enabled: bool,
     presets: &mut UserPresets,
 ) {
-    let btn = egui::Button::new(egui::RichText::new("R").strong()).selected(!patterns.is_empty());
+    let btn = egui::Button::new(egui::RichText::new("R").strong())
+        .selected(enabled && !patterns.is_empty());
     let response = ui
         .add_sized(button_size, btn)
         .on_hover_text("Ignore Regex: text matching these patterns is ignored and dimmed");

@@ -2889,6 +2889,7 @@ mod tests {
                     whitespace,
                     comments,
                     patterns: IgnorePatterns::new(if patterns { TIME } else { "" }),
+                    ..Default::default()
                 };
                 for algorithm in ALGORITHMS {
                     for (s, t) in [(source, target), (target, source)] {

@@ -611,6 +611,7 @@ mod tests {
                 whitespace: true,
                 comments: true,
                 patterns: IgnorePatterns::new(r"\d"),
+                ..Default::default()
             };
             for (ignore, ghost_rows) in [
                 (IgnoreOptions::default(), false),

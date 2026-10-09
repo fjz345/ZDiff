@@ -466,10 +466,7 @@ impl<'a> ZApp {
                             Self::open_file_picker(file_2.get_tx());
                         }
                         if ui.button("Swap Source/Target").clicked() {
-                            std::mem::swap(file_1, file_2);
-                            std::mem::swap(scroll_left, scroll_right);
-
-                            diff_processor.reset_ctx();
+                            swap_sides(file_1, file_2, scroll_left, scroll_right, diff_processor);
                         }
                         if ui
                             .button(format!(
@@ -1296,6 +1293,23 @@ impl<'a> ZApp {
                         FileAction::UndoRevert => history_step = Some(HistoryStep::Undo),
                         FileAction::Redo => history_step = Some(HistoryStep::Redo),
                         FileAction::DiffLocalFile => diff_local_file = true,
+                        FileAction::SwapSides => swap_sides(
+                            &mut app_state_ctx.file_1,
+                            &mut app_state_ctx.file_2,
+                            &mut app_state_ctx.scroll_left,
+                            &mut app_state_ctx.scroll_right,
+                            &mut app_state_ctx.diff_processor,
+                        ),
+                        FileAction::IgnoreWhitespace
+                        | FileAction::IgnoreComments
+                        | FileAction::IgnoreRegex
+                        | FileAction::HighlightRows
+                        | FileAction::GhostRows
+                        | FileAction::LinkHScroll
+                        | FileAction::WordWrap
+                        | FileAction::DiffOnly
+                        | FileAction::FewerContextRows
+                        | FileAction::MoreContextRows => toggle_option(app_state_ctx, action),
                     }
                 }
 
@@ -1613,6 +1627,51 @@ fn apply_launch(
     LaunchOutcome::Opened
 }
 
+fn swap_sides(
+    file_1: &mut FileProcessor,
+    file_2: &mut FileProcessor,
+    scroll_left: &mut f32,
+    scroll_right: &mut f32,
+    diff_processor: &mut DiffProcessor,
+) {
+    std::mem::swap(file_1, file_2);
+    std::mem::swap(scroll_left, scroll_right);
+
+    diff_processor.reset_ctx();
+}
+
+// Mirrors the toolbar buttons in diff_pane.
+fn toggle_option(ctx: &mut AppStateCtx, action: FileAction) {
+    let options = &mut ctx.diff_options;
+    let flip = |b: &mut bool| *b = !*b;
+    match action {
+        FileAction::IgnoreWhitespace => flip(&mut options.ignore.whitespace),
+        FileAction::IgnoreComments => flip(&mut options.ignore.comments),
+        FileAction::IgnoreRegex => flip(&mut options.ignore.regex_enabled),
+        FileAction::HighlightRows => flip(&mut options.highlight_rows),
+        FileAction::GhostRows => flip(&mut options.ghost_rows),
+        FileAction::LinkHScroll => flip(&mut ctx.h_scroll_linked),
+        FileAction::WordWrap => flip(&mut ctx.word_wrap),
+        FileAction::DiffOnly => {
+            options.diff_only_with_extra_rows = match options.diff_only_with_extra_rows {
+                Some(_) => None,
+                None => Some(2),
+            }
+        }
+        FileAction::FewerContextRows => {
+            if let Some(rows) = &mut options.diff_only_with_extra_rows {
+                *rows = rows.saturating_sub(1);
+            }
+        }
+        FileAction::MoreContextRows => {
+            if let Some(rows) = &mut options.diff_only_with_extra_rows {
+                *rows = (*rows + 1).min(99);
+            }
+        }
+        other => panic!("{other:?} is not an option toggle"),
+    }
+}
+
 /// Why a Quick Diff left both sides as they were.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum QuickDiffRefusal {
@@ -1718,6 +1777,7 @@ fn diff_against_local_file(
 #[cfg(all(test, feature = "serde"))]
 mod tests {
     use super::*;
+    use zdiff::ignore::IgnorePatterns;
 
     #[test]
     fn extension_map_edits_survive_a_restart() {
@@ -1906,6 +1966,121 @@ mod tests {
         let restored: AppStateCtx = serde_json::from_value(json).unwrap();
         assert_eq!(restored.diff_options.phases, DiffPhases::default());
         assert!(restored.diff_options.ignore.whitespace);
+    }
+
+    #[test]
+    fn swap_sides_swaps_the_files_and_their_scroll() {
+        let mut ctx = AppStateCtx::default();
+        let (a, b) = (UniversalPath::from("a.txt"), UniversalPath::from("b.txt"));
+        ctx.file_1.set_path(a.clone());
+        ctx.file_2.set_path(b.clone());
+        ctx.scroll_left = 1.0;
+        ctx.scroll_right = 2.0;
+        ctx.diff_processor.conflict_cursor.set(3);
+        swap_sides(
+            &mut ctx.file_1,
+            &mut ctx.file_2,
+            &mut ctx.scroll_left,
+            &mut ctx.scroll_right,
+            &mut ctx.diff_processor,
+        );
+        assert_eq!(ctx.file_1.get_full_path(), b);
+        assert_eq!(ctx.file_2.get_full_path(), a);
+        assert_eq!((ctx.scroll_left, ctx.scroll_right), (2.0, 1.0));
+        assert_eq!(ctx.diff_processor.conflict_cursor.get(), 0);
+    }
+
+    #[test]
+    fn each_toggle_action_flips_its_option_and_back() {
+        type Get = fn(&AppStateCtx) -> bool;
+        let toggles: [(FileAction, Get); 8] = [
+            (FileAction::IgnoreWhitespace, |c| {
+                c.diff_options.ignore.whitespace
+            }),
+            (FileAction::IgnoreComments, |c| {
+                c.diff_options.ignore.comments
+            }),
+            (FileAction::IgnoreRegex, |c| {
+                c.diff_options.ignore.regex_enabled
+            }),
+            (FileAction::HighlightRows, |c| c.diff_options.highlight_rows),
+            (FileAction::GhostRows, |c| c.diff_options.ghost_rows),
+            (FileAction::LinkHScroll, |c| c.h_scroll_linked),
+            (FileAction::WordWrap, |c| c.word_wrap),
+            (FileAction::DiffOnly, |c| {
+                c.diff_options.diff_only_with_extra_rows.is_some()
+            }),
+        ];
+        for (action, get) in toggles {
+            let mut ctx = AppStateCtx::default();
+            let before = AppStateCtx::default();
+            toggle_option(&mut ctx, action);
+            assert_eq!(get(&ctx), !get(&before), "{action:?}");
+            toggle_option(&mut ctx, action);
+            assert_eq!(get(&ctx), get(&before), "{action:?}");
+            assert_eq!(ctx.diff_options, before.diff_options, "{action:?}");
+        }
+    }
+
+    #[test]
+    fn regex_off_keeps_the_patterns() {
+        let mut ctx = AppStateCtx::default();
+        ctx.diff_options.ignore.patterns = IgnorePatterns::new(r"\d+");
+        toggle_option(&mut ctx, FileAction::IgnoreRegex);
+        assert!(!ctx.diff_options.ignore.regex_enabled);
+        assert_eq!(ctx.diff_options.ignore.patterns.text(), r"\d+");
+    }
+
+    #[test]
+    fn diff_only_turns_on_with_two_context_rows() {
+        let mut ctx = AppStateCtx::default();
+        toggle_option(&mut ctx, FileAction::DiffOnly);
+        assert_eq!(ctx.diff_options.diff_only_with_extra_rows, Some(2));
+        ctx.diff_options.diff_only_with_extra_rows = Some(5);
+        toggle_option(&mut ctx, FileAction::DiffOnly);
+        assert_eq!(ctx.diff_options.diff_only_with_extra_rows, None);
+    }
+
+    #[test]
+    fn context_rows_step_between_0_and_99_in_diff_only() {
+        let rows = |start: Option<usize>, action| {
+            let mut ctx = AppStateCtx::default();
+            ctx.diff_options.diff_only_with_extra_rows = start;
+            toggle_option(&mut ctx, action);
+            ctx.diff_options.diff_only_with_extra_rows
+        };
+        assert_eq!(rows(Some(2), FileAction::FewerContextRows), Some(1));
+        assert_eq!(rows(Some(0), FileAction::FewerContextRows), Some(0));
+        assert_eq!(rows(Some(2), FileAction::MoreContextRows), Some(3));
+        assert_eq!(rows(Some(99), FileAction::MoreContextRows), Some(99));
+        assert_eq!(rows(None, FileAction::FewerContextRows), None);
+        assert_eq!(rows(None, FileAction::MoreContextRows), None);
+    }
+
+    #[test]
+    fn regex_off_survives_a_restart_with_its_patterns() {
+        let mut ctx = AppStateCtx::default();
+        ctx.diff_options.ignore.patterns = IgnorePatterns::new(r"\d+");
+        ctx.diff_options.ignore.regex_enabled = false;
+        let json = serde_json::to_string(&ctx).unwrap();
+        let restored: AppStateCtx = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.diff_options.ignore, ctx.diff_options.ignore);
+    }
+
+    #[test]
+    fn a_save_without_the_regex_flag_loads_with_regex_enabled() {
+        let mut ctx = AppStateCtx::default();
+        ctx.diff_options.ignore.patterns = IgnorePatterns::new(r"\d+");
+        ctx.diff_options.ignore.regex_enabled = false;
+        let mut json = serde_json::to_value(&ctx).unwrap();
+        json["diff_options"]
+            .as_object_mut()
+            .unwrap()
+            .remove("ignore_regex_enabled")
+            .unwrap();
+        let restored: AppStateCtx = serde_json::from_value(json).unwrap();
+        assert!(restored.diff_options.ignore.regex_enabled);
+        assert_eq!(restored.diff_options.ignore.patterns.text(), r"\d+");
     }
 
     #[test]
