@@ -1358,7 +1358,9 @@ fn render_row_folder_tree_diff_column(
                 ui.multiply_opacity(0.5);
             }
             if let Some(kind) = kind {
-                ui.label(RichText::new(kind.tag()).monospace().color(tag_color(kind)));
+                // Not selectable: a selectable label takes the hover, hiding the cell's tooltip.
+                let text = RichText::new(kind.tag()).monospace().color(tag_color(kind));
+                ui.add(egui::Label::new(text).selectable(false));
             }
         });
         if let Some(reason) = &undiffable {
