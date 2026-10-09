@@ -4,7 +4,7 @@ use std::sync::Arc;
 use eframe::egui::{self, Color32, Id, Theme, ThemePreference};
 
 use super::common::show_custom_popup;
-use crate::style::{Mode, Palette, Rgba8, Role, SharedRole, Style, Tone, style_file_path};
+use crate::style::{Mode, Palette, Rgba8, Role, RowLook, SharedRole, Style, Tone, style_file_path};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NoRole {}
@@ -35,6 +35,10 @@ fn palette_id() -> Id {
     Id::new("zcommon_style_palette")
 }
 
+fn row_looks_id() -> Id {
+    Id::new("zcommon_style_row_looks")
+}
+
 pub fn tone(ctx: &egui::Context) -> Tone {
     match ctx.theme() {
         Theme::Dark => Tone::Dark,
@@ -52,6 +56,18 @@ pub fn role_color<R: Role>(ctx: &egui::Context, role: R) -> Color32 {
     Color32::from_rgba_unmultiplied(r, g, b, a)
 }
 
+fn row_looks(ctx: &egui::Context) -> (RowLook, RowLook) {
+    ctx.data(|d| d.get_temp(row_looks_id())).unwrap_or_default()
+}
+
+pub fn void_look(ctx: &egui::Context) -> RowLook {
+    row_looks(ctx).0
+}
+
+pub fn collapsed_look(ctx: &egui::Context) -> RowLook {
+    row_looks(ctx).1
+}
+
 fn theme_preference(mode: Mode) -> ThemePreference {
     match mode {
         Mode::Dark => ThemePreference::Dark,
@@ -62,7 +78,10 @@ fn theme_preference(mode: Mode) -> ThemePreference {
 
 fn publish(ctx: &egui::Context, style: &Style) {
     ctx.set_theme(theme_preference(style.mode));
-    ctx.data_mut(|d| d.insert_temp(palette_id(), Arc::new(style.palette.clone())));
+    ctx.data_mut(|d| {
+        d.insert_temp(palette_id(), Arc::new(style.palette.clone()));
+        d.insert_temp(row_looks_id(), (style.void_look, style.collapsed_look));
+    });
 }
 
 #[derive(Default)]
@@ -71,9 +90,17 @@ pub struct StyleWindow {
     style: Style,
     path: Option<PathBuf>,
     dirty: bool,
+    row_looks: bool,
 }
 
 impl StyleWindow {
+    pub fn with_row_looks() -> Self {
+        Self {
+            row_looks: true,
+            ..Self::default()
+        }
+    }
+
     pub fn load(&mut self, ctx: &egui::Context) {
         self.path = style_file_path();
         self.style = match &self.path {
@@ -103,6 +130,9 @@ impl StyleWindow {
             let mut changed = false;
             show_custom_popup(ctx, &mut self.open, "Style", true, |ui| {
                 changed = style_ui::<R>(ui, &mut self.style, app_group);
+                if self.row_looks {
+                    changed |= row_looks_ui(ui, &mut self.style);
+                }
             });
             if changed {
                 publish(ctx, &self.style);
@@ -188,4 +218,50 @@ fn role_group<R: Role>(ui: &mut egui::Ui, title: &str, palette: &mut Palette, to
             }
         });
     changed
+}
+
+fn row_looks_ui(ui: &mut egui::Ui, style: &mut Style) -> bool {
+    let mut changed = false;
+    ui.separator();
+    ui.strong("Rows");
+    egui::Grid::new("style_row_looks")
+        .num_columns(4)
+        .show(ui, |ui| {
+            for (label, look) in [
+                ("Void rows", &mut style.void_look),
+                ("Collapsed rows", &mut style.collapsed_look),
+            ] {
+                ui.label(label);
+                for (value, text) in [
+                    (RowLook::Solid, "Solid"),
+                    (RowLook::Stripes, "Stripes"),
+                    (RowLook::Empty, "Empty"),
+                ] {
+                    changed |= ui.radio_value(look, value, text).changed();
+                }
+                ui.end_row();
+            }
+        });
+    changed
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn row_looks_are_solid_until_a_style_is_published() {
+        let ctx = egui::Context::default();
+        assert_eq!(void_look(&ctx), RowLook::Solid);
+        assert_eq!(collapsed_look(&ctx), RowLook::Solid);
+
+        let style = Style {
+            void_look: RowLook::Stripes,
+            collapsed_look: RowLook::Empty,
+            ..Style::default()
+        };
+        publish(&ctx, &style);
+        assert_eq!(void_look(&ctx), RowLook::Stripes);
+        assert_eq!(collapsed_look(&ctx), RowLook::Empty);
+    }
 }

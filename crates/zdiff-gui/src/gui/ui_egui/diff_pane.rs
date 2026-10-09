@@ -33,13 +33,13 @@ use zcommon::{
     find::Matcher,
     path::{PathSegment, common_parent, split_path},
     presets::{BuiltinPreset, UserPresets},
-    style::SharedRole,
+    style::{RowLook, SharedRole, stripe_segments},
     ui_egui::{
         h_scroll,
         keymap::{Action, Keymap},
         pathbar::{PathBarAction, path_bar},
         presets::presets_menu,
-        style_window::role_color,
+        style_window::{collapsed_look, role_color, void_look},
         table::{Rows, Split, SplitColumn, SplitTable, shared_width},
         toggle::{TOGGLE_BUTTON_SIZE, toggle_button},
     },
@@ -1370,12 +1370,14 @@ impl FileDiffPane {
                 });
             }
             LineContent::Void => {
-                let fill = if is_highlighted {
-                    role_color(ui.ctx(), FileRole::GotoRow)
-                } else {
-                    role_color(ui.ctx(), FileRole::VoidRow)
-                };
-                ui.painter().rect_filled(extended_rect, 0.0, fill);
+                let highlight = is_highlighted.then(|| role_color(ui.ctx(), FileRole::GotoRow));
+                paint_row_look(
+                    ui,
+                    extended_rect,
+                    void_look(ui.ctx()),
+                    role_color(ui.ctx(), FileRole::VoidRow),
+                    highlight,
+                );
 
                 if selectable {
                     // Full-row hit area like Code rows, so a press here starts a selection too.
@@ -1400,12 +1402,16 @@ impl FileDiffPane {
                 }
             }
             LineContent::Collapsed => {
-                let fill = if is_highlighted {
-                    egui::Color32::from_rgba_unmultiplied(38, 79, 120, 100) // Clear blue highlight
-                } else {
-                    egui::Color32::from_rgb(37, 43, 54) // Subdued slate/steel background
-                };
-                ui.painter().rect_filled(extended_rect, 0.0, fill);
+                // Clear blue highlight
+                let highlight =
+                    is_highlighted.then(|| egui::Color32::from_rgba_unmultiplied(38, 79, 120, 100));
+                paint_row_look(
+                    ui,
+                    extended_rect,
+                    collapsed_look(ui.ctx()),
+                    role_color(ui.ctx(), FileRole::CollapsedRow),
+                    highlight,
+                );
 
                 ui.scope_builder(UiBuilder::new().max_rect(rect), |ui| {
                     ui.horizontal_centered(|ui| {
@@ -1449,6 +1455,69 @@ impl FileDiffPane {
             }
         }
     }
+}
+
+const STRIPE_SPACING: f32 = 8.0;
+const STRIPE_WIDTH: f32 = 1.5;
+
+// The scroll area's content top moves with the rows; the row's left moves with the h-scroll.
+fn stripe_origin(ui: &egui::Ui, row_rect: egui::Rect) -> egui::Pos2 {
+    let top = ui
+        .stack()
+        .iter()
+        .find(|s| s.kind() == Some(egui::UiKind::ScrollArea))
+        .map_or(0.0, |s| s.max_rect.top());
+    egui::pos2(row_rect.left(), top)
+}
+
+fn row_look_shapes(
+    look: RowLook,
+    rect: egui::Rect,
+    origin: egui::Pos2,
+    color: egui::Color32,
+    highlight: Option<egui::Color32>,
+) -> Vec<egui::Shape> {
+    let fill = match look {
+        RowLook::Solid => Some(highlight.unwrap_or(color)),
+        RowLook::Stripes | RowLook::Empty => highlight,
+    };
+    let mut shapes: Vec<egui::Shape> = fill
+        .map(|fill| egui::Shape::rect_filled(rect, 0.0, fill))
+        .into_iter()
+        .collect();
+    if look == RowLook::Stripes {
+        let stroke = egui::Stroke::new(STRIPE_WIDTH, color);
+        shapes.extend(
+            stripe_segments(
+                [rect.min.x, rect.min.y],
+                [rect.max.x, rect.max.y],
+                [origin.x, origin.y],
+                STRIPE_SPACING,
+            )
+            .map(|[a, b]| {
+                egui::Shape::line_segment([egui::pos2(a[0], a[1]), egui::pos2(b[0], b[1])], stroke)
+            }),
+        );
+    }
+    shapes
+}
+
+// Clipped first: the row rect reaches far right, and a wide stroke would bleed into neighbours.
+fn paint_row_look(
+    ui: &egui::Ui,
+    row_rect: egui::Rect,
+    look: RowLook,
+    color: egui::Color32,
+    highlight: Option<egui::Color32>,
+) {
+    let clip = row_rect.intersect(ui.clip_rect());
+    if !clip.is_positive() {
+        return;
+    }
+    let origin = stripe_origin(ui, row_rect);
+    ui.painter()
+        .with_clip_rect(clip)
+        .extend(row_look_shapes(look, clip, origin, color, highlight));
 }
 
 /// Line number column of a code row, and the gap between it and the row text.
@@ -2688,6 +2757,141 @@ mod tests {
                     [Some(UniversalPath::Depot(picked.into(), None)), None]
                 );
             }
+        }
+    }
+
+    mod row_looks {
+        use eframe::egui::{self, Color32, Shape};
+        use zcommon::{
+            style::{RowLook, stripe_segments},
+            ui_egui::table::{Rows, Split, SplitColumn, SplitTable},
+        };
+
+        use super::super::{STRIPE_SPACING, row_look_shapes, stripe_origin};
+
+        const ROW: usize = 40;
+        const ROW_HEIGHT: f32 = 15.0;
+
+        fn row_top_and_origin(scroll_to: usize) -> (f32, egui::Pos2) {
+            let ctx = egui::Context::default();
+            let mut found = None;
+            for frame in 0..3 {
+                let raw = egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(800.0, 400.0),
+                    )),
+                    time: Some(frame as f64),
+                    ..Default::default()
+                };
+                let _ = ctx.run(raw, |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        ui.spacing_mut().item_spacing.y = 0.0;
+                        SplitTable::new("stripes", &mut Split::default())
+                            .scroll_to_row(scroll_to, Some(egui::Align::Min))
+                            .show(
+                                ui,
+                                0.0,
+                                |_, _| {},
+                                Rows::Uniform {
+                                    height: ROW_HEIGHT,
+                                    count: 200,
+                                },
+                                |index, column, ui| {
+                                    if index == ROW && column == SplitColumn::Left {
+                                        let rect = ui.max_rect();
+                                        found = Some((rect.top(), stripe_origin(ui, rect)));
+                                    }
+                                },
+                            );
+                    });
+                });
+            }
+            found.expect("row not shown")
+        }
+
+        #[test]
+        fn the_stripe_origin_moves_with_the_scrolled_rows() {
+            let (top_a, origin_a) = row_top_and_origin(30);
+            let (top_b, origin_b) = row_top_and_origin(33);
+            assert_ne!(top_a, top_b);
+            let content_y = ROW as f32 * ROW_HEIGHT;
+            assert!(
+                (top_a - origin_a.y - content_y).abs() < 1.0,
+                "{top_a} {origin_a:?}"
+            );
+            assert!(
+                (top_b - origin_b.y - content_y).abs() < 1.0,
+                "{top_b} {origin_b:?}"
+            );
+        }
+
+        const COLOR: Color32 = Color32::from_rgb(10, 20, 30);
+        const HIGHLIGHT: Color32 = Color32::from_rgb(200, 200, 0);
+
+        fn rect() -> egui::Rect {
+            egui::Rect::from_min_max(egui::pos2(100.0, 40.0), egui::pos2(160.0, 55.0))
+        }
+
+        fn fills(shapes: &[Shape]) -> Vec<(egui::Rect, Color32)> {
+            shapes
+                .iter()
+                .filter_map(|s| match s {
+                    Shape::Rect(r) => Some((r.rect, r.fill)),
+                    _ => None,
+                })
+                .collect()
+        }
+
+        fn lines(shapes: &[Shape]) -> Vec<([egui::Pos2; 2], Color32)> {
+            shapes
+                .iter()
+                .filter_map(|s| match s {
+                    Shape::LineSegment { points, stroke } => Some((*points, stroke.color)),
+                    _ => None,
+                })
+                .collect()
+        }
+
+        #[test]
+        fn solid_fills_the_row_with_the_role_or_the_highlight() {
+            let origin = egui::pos2(100.0, 3.0);
+            let shapes = row_look_shapes(RowLook::Solid, rect(), origin, COLOR, None);
+            assert_eq!(fills(&shapes), [(rect(), COLOR)]);
+            assert!(lines(&shapes).is_empty());
+            let shapes = row_look_shapes(RowLook::Solid, rect(), origin, COLOR, Some(HIGHLIGHT));
+            assert_eq!(fills(&shapes), [(rect(), HIGHLIGHT)]);
+        }
+
+        #[test]
+        fn empty_draws_only_the_highlight() {
+            let origin = egui::pos2(100.0, 3.0);
+            assert!(row_look_shapes(RowLook::Empty, rect(), origin, COLOR, None).is_empty());
+            let shapes = row_look_shapes(RowLook::Empty, rect(), origin, COLOR, Some(HIGHLIGHT));
+            assert_eq!(fills(&shapes), [(rect(), HIGHLIGHT)]);
+            assert!(lines(&shapes).is_empty());
+        }
+
+        #[test]
+        fn stripes_are_role_colored_lines_anchored_to_the_origin() {
+            let origin = egui::pos2(100.0, 3.0);
+            let shapes = row_look_shapes(RowLook::Stripes, rect(), origin, COLOR, None);
+            assert!(fills(&shapes).is_empty());
+            let expected: Vec<_> = stripe_segments(
+                [rect().min.x, rect().min.y],
+                [rect().max.x, rect().max.y],
+                [origin.x, origin.y],
+                STRIPE_SPACING,
+            )
+            .map(|[a, b]| ([egui::pos2(a[0], a[1]), egui::pos2(b[0], b[1])], COLOR))
+            .collect();
+            assert!(!expected.is_empty());
+            assert_eq!(lines(&shapes), expected);
+
+            let shapes = row_look_shapes(RowLook::Stripes, rect(), origin, COLOR, Some(HIGHLIGHT));
+            assert_eq!(fills(&shapes), [(rect(), HIGHLIGHT)]);
+            assert!(matches!(shapes[0], Shape::Rect(_)));
+            assert_eq!(lines(&shapes), expected);
         }
     }
 
