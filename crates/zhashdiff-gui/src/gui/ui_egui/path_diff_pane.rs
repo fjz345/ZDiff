@@ -11,6 +11,7 @@ use zhashdiff::{
 use crate::ui_egui::{
     fs_tree::{DiffState, FileSystemView, draw_ui_two_folder_tree_with_diff},
     panes::{PathDiffView, ZAppPane},
+    roots::{Side, set_root},
     tree_cursor::TreeCursor,
     tree_filter::DiffFilter,
     tree_sort::TreeSort,
@@ -186,6 +187,8 @@ impl PathDiffPane {
                     &mut ctx.path_diff_view.file_system_1_view,
                     &mut ctx.path_diff_view.file_system_2_view,
                     &mut ctx.path_diff_view.visible_rows,
+                    ctx.path_diff_view.file_system_1_root_path,
+                    ctx.path_diff_view.file_system_2_root_path,
                     &mut self.open_dir_window_1,
                     &mut self.open_dir_window_2,
                     &ctx.diff_tool_config,
@@ -200,13 +203,21 @@ impl PathDiffPane {
         if self.open_dir_window_1 {
             self.open_dir_window_1 = false;
             if let Some(path) = rfd::FileDialog::new().pick_folder() {
-                *ctx.path_diff_view.file_system_1_root_path = Some(path);
+                let _ = set_root(
+                    ctx.path_diff_view.file_system_1_root_path,
+                    Side::Folder1,
+                    &path,
+                );
             }
         }
         if self.open_dir_window_2 {
             self.open_dir_window_2 = false;
             if let Some(path) = rfd::FileDialog::new().pick_folder() {
-                *ctx.path_diff_view.file_system_2_root_path = Some(path);
+                let _ = set_root(
+                    ctx.path_diff_view.file_system_2_root_path,
+                    Side::Folder2,
+                    &path,
+                );
             }
         }
 

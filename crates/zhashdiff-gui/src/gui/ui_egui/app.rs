@@ -19,6 +19,7 @@ use crate::ui_egui::{
     fs_tree::{FileCompareCache, FileSystemView, VisibleRowTwoFolderDiff},
     panes::{Pane, PathDiffView, TreeBehavior},
     path_diff_pane::PathDiffPane,
+    roots::{LaunchArgs, Side, apply_launch_args, clear_root, set_root},
     tools_window::ToolsWindow,
     tree_filter::{DiffFilter, arrange_two_folder_rows},
     tree_sort::TreeSort,
@@ -161,6 +162,17 @@ impl ZApp {
         });
     }
 
+    pub fn apply_launch_args(&mut self, args: &LaunchArgs) {
+        match self.state.as_mut().expect("state is set outside update()") {
+            AppState::Startup(ctx) | AppState::Idle(ctx) => apply_launch_args(
+                args,
+                &mut ctx.file_system_1_root_path,
+                &mut ctx.file_system_2_root_path,
+            ),
+            AppState::Exit() => log::warn!("Command-line folders ignored: the app is exiting"),
+        }
+    }
+
     pub fn new(log_buffer: LogBuffer) -> Self {
         Self {
             zoom: default_zoom(),
@@ -260,8 +272,8 @@ impl ZApp {
                 });
                 ui.menu_button("Debug", |ui| {
                     if ui.button("Clear Root Paths").clicked() {
-                        app_ctx.file_system_1_root_path = None;
-                        app_ctx.file_system_2_root_path = None;
+                        clear_root(&mut app_ctx.file_system_1_root_path);
+                        clear_root(&mut app_ctx.file_system_2_root_path);
                     }
                     if ui.button("Clear FileSystemModels").clicked() {
                         app_ctx.file_system_model_1_view = None;
@@ -291,8 +303,16 @@ impl ZApp {
                                 {
                                     log::warn!("{label}: missing fixture {}", missing.display());
                                 } else {
-                                    app_ctx.file_system_1_root_path = Some(p1);
-                                    app_ctx.file_system_2_root_path = Some(p2);
+                                    let _ = set_root(
+                                        &mut app_ctx.file_system_1_root_path,
+                                        Side::Folder1,
+                                        &p1,
+                                    );
+                                    let _ = set_root(
+                                        &mut app_ctx.file_system_2_root_path,
+                                        Side::Folder2,
+                                        &p2,
+                                    );
                                 }
                             }
                         }
@@ -501,13 +521,13 @@ impl eframe::App for ZApp {
                 if self.open_dir_window_1 {
                     self.open_dir_window_1 = false;
                     if let Some(path) = rfd::FileDialog::new().pick_folder() {
-                        state.file_system_1_root_path = Some(path);
+                        let _ = set_root(&mut state.file_system_1_root_path, Side::Folder1, &path);
                     }
                 }
                 if self.open_dir_window_2 {
                     self.open_dir_window_2 = false;
                     if let Some(path) = rfd::FileDialog::new().pick_folder() {
-                        state.file_system_2_root_path = Some(path);
+                        let _ = set_root(&mut state.file_system_2_root_path, Side::Folder2, &path);
                     }
                 }
                 // Invalidate state
@@ -524,7 +544,7 @@ impl eframe::App for ZApp {
                             }
                             Err(e) => {
                                 log::error!("{e}");
-                                state.file_system_1_root_path = None;
+                                clear_root(&mut state.file_system_1_root_path);
                             }
                         }
                     }
@@ -545,7 +565,7 @@ impl eframe::App for ZApp {
                             }
                             Err(e) => {
                                 log::error!("{e}");
-                                state.file_system_2_root_path = None;
+                                clear_root(&mut state.file_system_2_root_path);
                             }
                         }
                     }

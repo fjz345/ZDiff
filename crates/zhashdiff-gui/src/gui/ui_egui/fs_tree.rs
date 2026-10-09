@@ -25,6 +25,7 @@ use zcommon::ui_egui::common::{
     CheckboxSelectState, draw_persistent_hint_text_edit, hash_to_color, ui_custom_checkbox,
 };
 
+use crate::ui_egui::roots::{Side, set_root};
 use crate::ui_egui::tools_window::resolve_tool_exe;
 use crate::ui_egui::tree_cursor::{CursorRequest, CursorRow, TreeCursor};
 use crate::ui_egui::tree_filter::DiffFilter;
@@ -592,6 +593,8 @@ pub fn draw_ui_two_folder_tree_with_diff(
     file_system_1_view: &mut Option<FileSystemView>,
     file_system_2_view: &mut Option<FileSystemView>,
     visible_rows: &mut Option<Vec<VisibleRowTwoFolderDiff>>,
+    root_1: &mut Option<PathBuf>,
+    root_2: &mut Option<PathBuf>,
     open_dir_window_1: &mut bool,
     open_dir_window_2: &mut bool,
     diff_tool_config: &DiffToolConfig,
@@ -616,8 +619,8 @@ pub fn draw_ui_two_folder_tree_with_diff(
                 });
                 handle_drops(
                     ui,
-                    file_system_1_view,
-                    file_system_2_view,
+                    root_1,
+                    root_2,
                     egui::Rect::EVERYTHING,
                     egui::Rect::EVERYTHING,
                 )
@@ -910,13 +913,7 @@ pub fn draw_ui_two_folder_tree_with_diff(
     col2_rect.set_top(table_top);
     col2_rect.set_bottom(table_bottom);
 
-    handle_drops(
-        ui,
-        file_system_1_view,
-        file_system_2_view,
-        col0_rect,
-        col2_rect,
-    );
+    handle_drops(ui, root_1, root_2, col0_rect, col2_rect);
 
     frame_output.response
 }
@@ -944,8 +941,8 @@ fn sort_header(ui: &mut egui::Ui, text: &str, key: SortKey, sort: &mut TreeSort)
 
 fn handle_drops(
     ui: &egui::Ui,
-    fs1_view: &mut Option<FileSystemView>,
-    fs2_view: &mut Option<FileSystemView>,
+    root_1: &mut Option<PathBuf>,
+    root_2: &mut Option<PathBuf>,
     rect1: egui::Rect,
     rect2: egui::Rect,
 ) -> bool {
@@ -954,20 +951,10 @@ fn handle_drops(
             for dropped_file in &i.raw.dropped_files {
                 if let Some(path) = &dropped_file.path {
                     if rect1.contains(drop_pos) {
-                        match FileSystemModel::new(&path) {
-                            Ok(new_model) => {
-                                *fs1_view = Some(FileSystemView::new(Arc::new(new_model)))
-                            }
-                            Err(e) => log::error!("{e}"),
-                        }
+                        let _ = set_root(root_1, Side::Folder1, path);
                         return true;
                     } else if rect2.contains(drop_pos) {
-                        match FileSystemModel::new(&path) {
-                            Ok(new_model) => {
-                                *fs2_view = Some(FileSystemView::new(Arc::new(new_model)))
-                            }
-                            Err(e) => log::error!("{e}"),
-                        }
+                        let _ = set_root(root_2, Side::Folder2, path);
                         return true;
                     }
                     break;

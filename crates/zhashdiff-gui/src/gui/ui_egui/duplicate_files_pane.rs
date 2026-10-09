@@ -28,6 +28,8 @@ use crate::ui_egui::fs_tree::draw_ui_folder_tree_with_checkbox;
 use crate::ui_egui::fs_tree::tree_hidden;
 use crate::ui_egui::panes::PathDiffView;
 use crate::ui_egui::panes::ZAppPane;
+use crate::ui_egui::roots::Side;
+use crate::ui_egui::roots::set_root;
 use zcommon::ui_egui::common::CheckboxSelectState;
 use zcommon::ui_egui::common::hash_to_color;
 use zcommon::ui_egui::common::ui_custom_checkbox;
@@ -419,7 +421,11 @@ impl DuplicateFilesPane {
             if let Some(path) = rfd::FileDialog::new().pick_folder() {
                 // The app loads the view from the root path; a view set here directly
                 // would be replaced on the next frame.
-                *ctx.path_diff_view.file_system_1_root_path = Some(path);
+                let _ = set_root(
+                    ctx.path_diff_view.file_system_1_root_path,
+                    Side::Folder1,
+                    &path,
+                );
             }
         }
 

@@ -5,7 +5,7 @@
 use eframe::egui::{self};
 use zcommon::logger::init_logging;
 
-use crate::ui_egui::app::ZApp;
+use crate::ui_egui::{app::ZApp, roots::parse_launch_args};
 
 mod ui_egui;
 
@@ -16,6 +16,7 @@ fn main() -> eframe::Result {
     }
 
     let log_buffer = init_logging().expect("Failed to init logger");
+    let launch_args = parse_launch_args(std::env::args_os().skip(1));
 
     // Test build with zdiff
     {
@@ -50,6 +51,7 @@ fn main() -> eframe::Result {
                         if let Ok(mut app) = serde_json::from_str::<ZApp>(&json) {
                             log::info!("Found previous app storage");
                             app.request_init();
+                            app.apply_launch_args(&launch_args);
                             return Ok(Box::new(app));
                         }
                     }
@@ -58,6 +60,7 @@ fn main() -> eframe::Result {
 
             let mut app = ZApp::new(log_buffer.clone());
             app.request_init();
+            app.apply_launch_args(&launch_args);
             Ok(Box::<ZApp>::new(app))
         }),
     )
