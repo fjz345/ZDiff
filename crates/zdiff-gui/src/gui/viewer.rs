@@ -13,6 +13,7 @@ use zdiff::universal_path::UniversalPath;
 pub mod audio;
 pub mod audio_diff;
 pub mod audio_meta;
+pub mod audio_spectrum;
 pub mod hex;
 pub mod image;
 pub mod video_frames;

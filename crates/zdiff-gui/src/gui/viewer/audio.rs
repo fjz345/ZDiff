@@ -19,7 +19,12 @@ use zcommon::ffmpeg::{
 };
 use zcommon::{style::SharedRole, ui_egui::style_window::role_color};
 
-use super::{audio_diff::SampleDiffProcessor, hex::is_same_side, path_extension};
+use super::{
+    audio_diff::SampleDiffProcessor,
+    audio_spectrum::{self, SpectrumProcessor, SpectrumSettings},
+    hex::is_same_side,
+    path_extension,
+};
 use crate::{file::LoadedFile, ui_egui::file_role::FileRole};
 
 /// Frames per bin at the pyramid's finest level; each level above doubles it.
@@ -428,6 +433,7 @@ pub enum AudioMode {
     #[default]
     Lanes,
     Overlay,
+    Spectrogram,
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -435,6 +441,7 @@ pub enum AudioMode {
 #[cfg_attr(feature = "serde", serde(default))]
 pub struct AudioSettings {
     pub mode: AudioMode,
+    pub spectrum: SpectrumSettings,
 }
 
 type DecodeResult = (usize, u64, Result<DecodedAudio, Option<String>>);
@@ -453,6 +460,7 @@ pub struct AudioDiffProcessor {
     /// Fit once both sides are done decoding, so the second side arriving doesn't move the view.
     fit_pending: bool,
     difference: SampleDiffProcessor,
+    spectrum: SpectrumProcessor,
 }
 
 impl Default for AudioDiffProcessor {
@@ -467,6 +475,7 @@ impl Default for AudioDiffProcessor {
             view: TimeView::default(),
             fit_pending: false,
             difference: SampleDiffProcessor::default(),
+            spectrum: SpectrumProcessor::default(),
         }
     }
 }
@@ -535,6 +544,7 @@ impl AudioDiffProcessor {
     /// Replaces the side's decode with one of `files[index]`.
     fn start(&mut self, index: usize) {
         self.stop(index);
+        self.spectrum.reset(index);
         self.fit_pending = true;
         self.difference.clear();
         let Some(file) = self.files[index].clone() else {
@@ -673,6 +683,7 @@ fn lanes(processor: &AudioDiffProcessor, mode: AudioMode) -> Vec<Lane> {
                 sides: (0..2).filter(|&i| channel < channels(i)).collect(),
             })
             .collect(),
+        AudioMode::Spectrogram => Vec::new(),
     }
 }
 
@@ -749,6 +760,12 @@ pub fn show(ui: &mut egui::Ui, processor: &mut AudioDiffProcessor, settings: &mu
             .on_hover_text("One lane per side and channel");
         ui.selectable_value(&mut settings.mode, AudioMode::Overlay, "Overlay")
             .on_hover_text("Both sides over each other, one lane per channel");
+        ui.selectable_value(&mut settings.mode, AudioMode::Spectrogram, "Spectrogram")
+            .on_hover_text("Each side's channel mix over frequency, and their level difference");
+        if settings.mode == AudioMode::Spectrogram {
+            ui.separator();
+            audio_spectrum::show_controls(ui, &mut settings.spectrum);
+        }
         if processor.busy() {
             ui.separator();
             if ui.button("Cancel").clicked() {
@@ -808,6 +825,23 @@ pub fn show(ui: &mut egui::Ui, processor: &mut AudioDiffProcessor, settings: &mu
     let view = processor.view;
 
     draw_ruler(ui, ruler_rect, view);
+    if settings.mode == AudioMode::Spectrogram {
+        let audio = [0, 1].map(|index| processor.decoded(index).cloned());
+        let colors = [0, 1].map(|index| side_color(ui.ctx(), index));
+        let sides = [0, 1].map(|index| {
+            let status = side_text(&processor.sides[index], None);
+            (audio[index].as_ref(), status)
+        });
+        audio_spectrum::show_lanes(
+            ui,
+            lanes_rect,
+            &mut processor.spectrum,
+            sides,
+            view,
+            &settings.spectrum,
+            colors,
+        );
+    }
     let lanes = lanes(processor, settings.mode);
     let difference_lanes = processor.difference.lanes();
     let lane_height = lanes_rect.height() / (lanes.len() + difference_lanes) as f32;
