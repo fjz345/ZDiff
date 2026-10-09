@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use crate::{
+    browser::{BrowserAction, FolderBrowser, LocalFolder},
     clamped_cursor::ClampedCursor,
     diff_ctx::{
         BlockToggle, DiffRows, DiffStageTimes, FindHit, MinimalDiffCtx, ScrollSpan, insert_pin,
@@ -123,6 +124,8 @@ pub struct FileDiffPane {
     occurrences: OccurrenceState,
     #[serde(skip)]
     pin_input: PinInput,
+    #[serde(skip)]
+    browsers: [Option<FolderBrowser>; 2],
 }
 
 #[derive(Default)]
@@ -206,6 +209,7 @@ impl FileDiffPane {
             row_heights: None,
             occurrences: OccurrenceState::default(),
             pin_input: PinInput::default(),
+            browsers: [None, None],
         }
     }
 
@@ -268,6 +272,8 @@ impl FileDiffPane {
         let pin_input = &mut self.pin_input;
         let mono_font = egui::TextStyle::Monospace.resolve(ui.style());
         let egui_ctx = ui.ctx().clone();
+        // Read before any widget runs: an Esc that ends a path edit this frame must not also close.
+        let nothing_focused = ui.memory(|m| m.focused().is_none());
 
         ui.horizontal(|ui| {
             ui.with_layout(Layout::left_to_right(egui::Align::Center), |ui| {
@@ -453,6 +459,8 @@ impl FileDiffPane {
         let mut left_rect = egui::Rect::NOTHING;
         let mut right_rect = egui::Rect::NOTHING;
         let mut table_rect = egui::Rect::NOTHING;
+        let mut header_rects = [egui::Rect::NOTHING; 2];
+        let mut browse: [Option<String>; 2] = [None, None];
         ui.vertical(|ui| {
             ui.set_min_width(available_width);
 
@@ -590,7 +598,7 @@ impl FileDiffPane {
                                                  root: Option<&UniversalPath>,
                                                  is_valid: bool,
                                                  spinner_active: bool|
-                             -> Option<UniversalPath> {
+                             -> (Option<UniversalPath>, Option<String>) {
                                 let segments = file_path_segments(path, label);
                                 let full_path = path.to_string();
                                 let error = match (label, is_valid) {
@@ -624,14 +632,14 @@ impl FileDiffPane {
                                     );
                                     egui::Spinner::new().paint_at(ui, spinner_rect);
                                 }
-                                match bar.inner? {
-                                    PathBarAction::Segment(i) => {
-                                        log::debug!("Folder segment clicked: {}", segments[i].path);
-                                        None
+                                match bar.inner {
+                                    Some(PathBarAction::Segment(i)) => {
+                                        (None, Some(segments[i].path.clone()))
                                     }
-                                    PathBarAction::Commit(text) => {
-                                        file_path_request(&text, path, root)
+                                    Some(PathBarAction::Commit(text)) => {
+                                        (file_path_request(&text, path, root), None)
                                     }
+                                    None => (None, None),
                                 }
                             };
                             table_builder
@@ -647,7 +655,7 @@ impl FileDiffPane {
                                 .column(Column::exact(12.0)) // "≠"
                                 .column(Column::remainder().clip(false))
                                 .header(20.0, |mut header| {
-                                    header.col(|ui| {
+                                    header_rects[0] = header.col(|ui| {
                                         ui.vertical(|ui| {
                                             *ctx.set_file_1_root_request = editable_path_test(
                                                 ui,
@@ -658,7 +666,7 @@ impl FileDiffPane {
                                                 ctx.file_source_loading,
                                             );
                                             ui.separator();
-                                            *ctx.load_file_1_request = file_path_bar(
+                                            (*ctx.load_file_1_request, browse[0]) = file_path_bar(
                                                 ui,
                                                 "file_1_path_bar",
                                                 &ctx.file_source_path,
@@ -669,9 +677,10 @@ impl FileDiffPane {
                                             );
                                             ui.separator();
                                         });
-                                    });
+                                    })
+                                    .0;
                                     header.col(|_| {});
-                                    header.col(|ui| {
+                                    header_rects[1] = header.col(|ui| {
                                         ui.vertical(|ui| {
                                             *ctx.set_file_2_root_request = editable_path_test(
                                                 ui,
@@ -682,7 +691,7 @@ impl FileDiffPane {
                                                 ctx.file_target_loading,
                                             );
                                             ui.separator();
-                                            *ctx.load_file_2_request = file_path_bar(
+                                            (*ctx.load_file_2_request, browse[1]) = file_path_bar(
                                                 ui,
                                                 "file_2_path_bar",
                                                 &ctx.file_target_path,
@@ -693,7 +702,8 @@ impl FileDiffPane {
                                             );
                                             ui.separator();
                                         });
-                                    });
+                                    })
+                                    .0;
                                 })
                                 .body(|body| {
                                     if ctx.image_view.is_some() {
@@ -1054,6 +1064,76 @@ impl FileDiffPane {
                 [*ctx.scroll_left, *ctx.scroll_right] = offsets;
             }
         });
+
+        let close_browsers = nothing_focused
+            && self.browsers.iter().any(Option::is_some)
+            && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
+        for (i, side) in [ActiveSide::Left, ActiveSide::Right]
+            .into_iter()
+            .enumerate()
+        {
+            if let Some(folder) = browse[i].take() {
+                if UniversalPath::from(folder.as_str()).is_depot() {
+                    log::debug!("Depot folders can't be browsed yet: {folder}");
+                } else if let Some(browser) = &mut self.browsers[i] {
+                    browser.navigate(&egui_ctx, folder);
+                } else {
+                    self.browsers[i] = Some(FolderBrowser::open(
+                        &egui_ctx,
+                        folder,
+                        Arc::new(LocalFolder),
+                    ));
+                }
+            }
+            if close_browsers {
+                self.browsers[i] = None;
+            }
+            // The table and its path bars are skipped while no diff is shown.
+            let Some(browser) = self.browsers[i]
+                .as_mut()
+                .filter(|_| table_rect.is_positive())
+            else {
+                continue;
+            };
+            let rect = egui::Rect::from_x_y_ranges(
+                header_rects[i].x_range(),
+                header_rects[i].bottom()..=table_rect.bottom(),
+            );
+            // An area of its own, above the rows, so they and the table's scroll get no input.
+            let action = egui::Area::new(ui.id().with(("folder_browser", i)))
+                .fixed_pos(rect.min)
+                .constrain(false)
+                .show(&egui_ctx, |ui| {
+                    egui::Frame::new()
+                        .fill(ui.visuals().panel_fill)
+                        .stroke(ui.visuals().window_stroke())
+                        .inner_margin(4.0)
+                        .show(ui, |ui| {
+                            let size = (rect.size() - Vec2::splat(8.0)).max(Vec2::ZERO);
+                            ui.set_min_size(size);
+                            ui.set_max_size(size);
+                            browser.ui(ui)
+                        })
+                        .inner
+                })
+                .inner;
+            match action {
+                Some(BrowserAction::Close) => self.browsers[i] = None,
+                Some(BrowserAction::Pick(picked)) => {
+                    self.browsers[i] = None;
+                    let paths = [&ctx.file_source_path, &ctx.file_target_path];
+                    let roots = [ctx.file_source_root.as_ref(), ctx.file_target_root.as_ref()];
+                    let [left, right] = browser_pick(side, &picked, paths, roots);
+                    if left.is_some() {
+                        *ctx.load_file_1_request = left;
+                    }
+                    if right.is_some() {
+                        *ctx.load_file_2_request = right;
+                    }
+                }
+                None => {}
+            }
+        }
 
         // Rows are laid out inside the table's scroll area, so clip to it: a partially visible
         // edge row would otherwise push the outline past the table.
@@ -2330,14 +2410,27 @@ fn file_path_request(
     Some(relative.map_or(path, |relative| UniversalPath::from(relative.to_string())))
 }
 
+fn browser_pick(
+    side: ActiveSide,
+    picked: &str,
+    paths: [&UniversalPath; 2],
+    roots: [Option<&UniversalPath>; 2],
+) -> [Option<UniversalPath>; 2] {
+    let i = h_scroll::side_index(side);
+    let mut requests = [None, None];
+    requests[i] = file_path_request(picked, paths[i], roots[i]);
+    requests
+}
+
 #[cfg(test)]
 mod tests {
     mod path_bar {
         use zcommon::path::PathSegment;
         use zdiff::universal_path::UniversalPath;
 
-        use super::super::{file_path_dim, file_path_request, file_path_segments};
+        use super::super::{browser_pick, file_path_dim, file_path_request, file_path_segments};
         use crate::file::FileProcessor;
+        use crate::ui_egui::active_side::ActiveSide;
 
         fn committed(root: Option<&str>, current: &str, text: &str) -> UniversalPath {
             let mut file = FileProcessor::new();
@@ -2463,6 +2556,62 @@ mod tests {
                     "//depot/dev/src/a.rs"
                 ),
                 UniversalPath::from("//depot/dev/src/a.rs")
+            );
+        }
+
+        #[test]
+        fn a_picked_file_loads_into_that_side_only() {
+            let left = UniversalPath::from(r"C:\ws\src\a.rs");
+            let right = UniversalPath::from(r"C:\ws\src\b.rs");
+            assert_eq!(
+                browser_pick(
+                    ActiveSide::Left,
+                    r"C:\ws\c.rs",
+                    [&left, &right],
+                    [None, None]
+                ),
+                [Some(UniversalPath::from(r"C:\ws\c.rs")), None]
+            );
+            assert_eq!(
+                browser_pick(
+                    ActiveSide::Right,
+                    r"C:\ws\c.rs",
+                    [&left, &right],
+                    [None, None]
+                ),
+                [None, Some(UniversalPath::from(r"C:\ws\c.rs"))]
+            );
+        }
+
+        #[test]
+        fn picking_the_loaded_file_is_no_request() {
+            let left = UniversalPath::from(r"C:\ws\src\a.rs");
+            let right = UniversalPath::from(r"C:\ws\src\b.rs");
+            assert_eq!(
+                browser_pick(
+                    ActiveSide::Right,
+                    r"C:\ws\src\b.rs",
+                    [&left, &right],
+                    [None, None]
+                ),
+                [None, None]
+            );
+        }
+
+        #[test]
+        fn a_picked_file_is_the_same_request_as_typing_it() {
+            let root = UniversalPath::from("//depot/main");
+            let left = UniversalPath::from("//depot/main/src/a.rs");
+            let right = UniversalPath::from(r"C:\ws\b.rs");
+            let picked = "//depot/main/src/c.rs";
+            assert_eq!(
+                browser_pick(
+                    ActiveSide::Left,
+                    picked,
+                    [&left, &right],
+                    [Some(&root), None]
+                ),
+                [file_path_request(picked, &left, Some(&root)), None]
             );
         }
     }
