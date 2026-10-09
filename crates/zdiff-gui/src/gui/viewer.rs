@@ -11,6 +11,7 @@ use zcommon::kinds::{FileKind, KindTable, normalize_extension};
 use zdiff::universal_path::UniversalPath;
 
 pub mod audio;
+pub mod audio_diff;
 pub mod audio_meta;
 pub mod hex;
 pub mod image;

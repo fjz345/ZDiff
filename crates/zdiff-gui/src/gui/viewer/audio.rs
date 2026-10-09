@@ -14,12 +14,13 @@ use std::{
 
 use eframe::egui::{self, Align2, Color32, Rect, Sense, Stroke, pos2, vec2};
 use zcommon::ffmpeg::{
-    FfmpegError, FfmpegPaths, MediaInfo, StreamKind, pcm_decode_args, probe, run_ffmpeg,
+    FfmpegError, FfmpegPaths, MediaInfo, StreamKind, pcm_decode_args, probe, resampled_decode_args,
+    run_ffmpeg,
 };
 use zcommon::{style::SharedRole, ui_egui::style_window::role_color};
 
-use super::{hex::is_same_side, path_extension};
-use crate::file::LoadedFile;
+use super::{audio_diff::SampleDiffProcessor, hex::is_same_side, path_extension};
+use crate::{file::LoadedFile, ui_egui::file_role::FileRole};
 
 /// Frames per bin at the pyramid's finest level; each level above doubles it.
 const PEAK_BLOCK: usize = 64;
@@ -289,6 +290,18 @@ pub struct AudioLayout {
     pub expected_samples: u64,
 }
 
+impl AudioLayout {
+    pub fn resampled(self, sample_rate: u32, channels: usize) -> Self {
+        let frames = (self.expected_samples / self.channels as u64) as u128;
+        let frames = (frames * sample_rate as u128).div_ceil(self.sample_rate as u128);
+        Self {
+            sample_rate,
+            channels,
+            expected_samples: u64::try_from(frames * channels as u128).unwrap_or(u64::MAX),
+        }
+    }
+}
+
 /// The first audio stream, which `pcm_decode_args` decodes.
 pub fn audio_layout(info: &MediaInfo) -> Result<AudioLayout, String> {
     let stream = info
@@ -314,20 +327,29 @@ pub fn audio_layout(info: &MediaInfo) -> Result<AudioLayout, String> {
     })
 }
 
-/// `Err(None)` is a cancelled decode.
+/// `Err(None)` is a cancelled decode. `resample` is a target rate and channel count.
 fn decode_audio(
     ffmpeg: &FfmpegPaths,
     input: &Path,
+    resample: Option<(u32, usize)>,
     cancel: &AtomicBool,
     progress: &DecodeProgress,
 ) -> Result<DecodedAudio, Option<String>> {
     let cancelled = || cancel.load(Ordering::Relaxed);
     let info = probe(ffmpeg, input, cancel).map_err(|e| (!cancelled()).then_some(e))?;
+    let layout = audio_layout(&info).map_err(Some)?;
+    let (layout, args) = match resample {
+        Some((rate, channels)) => (
+            layout.resampled(rate, channels),
+            resampled_decode_args(input, rate, channels as u32),
+        ),
+        None => (layout, pcm_decode_args(input)),
+    };
     let AudioLayout {
         sample_rate,
         channels,
         expected_samples,
-    } = audio_layout(&info).map_err(Some)?;
+    } = layout;
     progress.expected.store(expected_samples, Ordering::Relaxed);
 
     // A second of slack, so a slightly short probed duration doesn't double the buffer.
@@ -342,7 +364,7 @@ fn decode_audio(
             ))
         })?;
     let mut carry = Vec::new();
-    run_ffmpeg(&ffmpeg.ffmpeg, &pcm_decode_args(input), cancel, |chunk| {
+    run_ffmpeg(&ffmpeg.ffmpeg, &args, cancel, |chunk| {
         append_f32le(&mut samples, &mut carry, chunk);
         progress
             .decoded
@@ -358,14 +380,15 @@ fn decode_audio(
 
 /// ffmpeg reads files, so a side without a local path (a depot revision) is written to a
 /// temporary one first.
-fn decode_file(
+pub(super) fn decode_file(
     ffmpeg: &FfmpegPaths,
     file: &LoadedFile,
+    resample: Option<(u32, usize)>,
     cancel: &AtomicBool,
     progress: &DecodeProgress,
 ) -> Result<DecodedAudio, Option<String>> {
     if let Some(path) = file.path().as_path() {
-        return decode_audio(ffmpeg, path, cancel, progress);
+        return decode_audio(ffmpeg, path, resample, cancel, progress);
     }
     let suffix = path_extension(file.path()).map_or(String::new(), |ext| format!(".{ext}"));
     let mut temp = tempfile::Builder::new()
@@ -376,7 +399,7 @@ fn decode_file(
     temp.write_all(file.bytes())
         .and_then(|()| temp.flush())
         .map_err(|e| Some(format!("writing {}: {e}", temp.path().display())))?;
-    decode_audio(ffmpeg, temp.path(), cancel, progress)
+    decode_audio(ffmpeg, temp.path(), resample, cancel, progress)
 }
 
 enum SideState {
@@ -429,6 +452,7 @@ pub struct AudioDiffProcessor {
     view: TimeView,
     /// Fit once both sides are done decoding, so the second side arriving doesn't move the view.
     fit_pending: bool,
+    difference: SampleDiffProcessor,
 }
 
 impl Default for AudioDiffProcessor {
@@ -442,6 +466,7 @@ impl Default for AudioDiffProcessor {
             channel: mpsc::channel(),
             view: TimeView::default(),
             fit_pending: false,
+            difference: SampleDiffProcessor::default(),
         }
     }
 }
@@ -489,6 +514,7 @@ impl AudioDiffProcessor {
                 self.sides[index] = SideState::Cancelled;
             }
         }
+        self.difference.cancel();
     }
 
     pub fn decode_again(&mut self) {
@@ -497,6 +523,7 @@ impl AudioDiffProcessor {
                 self.start(index);
             }
         }
+        self.difference.decode_again();
     }
 
     fn stop(&mut self, index: usize) {
@@ -509,6 +536,7 @@ impl AudioDiffProcessor {
     fn start(&mut self, index: usize) {
         self.stop(index);
         self.fit_pending = true;
+        self.difference.clear();
         let Some(file) = self.files[index].clone() else {
             self.sides[index] = SideState::Empty;
             return;
@@ -522,9 +550,10 @@ impl AudioDiffProcessor {
         let (cancel, tx) = (self.cancels[index].clone(), self.channel.0.clone());
         let (generation, worker_progress) = (self.generations[index], progress.clone());
         std::thread::spawn(move || {
-            let decoded = decode_file(&ffmpeg, &file, &cancel, &worker_progress).map_err(|e| {
-                e.map(|reason| format!("{} can't be decoded as audio: {reason}", file.path()))
-            });
+            let decoded =
+                decode_file(&ffmpeg, &file, None, &cancel, &worker_progress).map_err(|e| {
+                    e.map(|reason| format!("{} can't be decoded as audio: {reason}", file.path()))
+                });
             let _ = tx.send((index, generation, decoded));
         });
         self.sides[index] = SideState::Decoding(progress);
@@ -541,6 +570,14 @@ impl AudioDiffProcessor {
                 Err(None) => SideState::Cancelled,
             };
         }
+        let inputs = match (&self.ffmpeg, &self.files[1], &self.sides) {
+            (Some(ffmpeg), Some(file), [SideState::Decoded(left), SideState::Decoded(right)]) => {
+                Some((ffmpeg, file, left, right))
+            }
+            _ => None,
+        };
+        self.difference.update(inputs);
+        self.difference.poll();
     }
 
     /// One reason per side ffmpeg couldn't decode.
@@ -558,6 +595,10 @@ impl AudioDiffProcessor {
         self.sides
             .iter()
             .any(|side| matches!(side, SideState::Decoding(_)))
+    }
+
+    fn busy(&self) -> bool {
+        self.decoding() || self.difference.running()
     }
 
     fn decoded(&self, index: usize) -> Option<&Arc<DecodedAudio>> {
@@ -635,7 +676,7 @@ fn lanes(processor: &AudioDiffProcessor, mode: AudioMode) -> Vec<Lane> {
     }
 }
 
-fn draw_wave(
+pub(super) fn draw_wave(
     painter: &egui::Painter,
     rect: Rect,
     audio: &DecodedAudio,
@@ -708,7 +749,7 @@ pub fn show(ui: &mut egui::Ui, processor: &mut AudioDiffProcessor, settings: &mu
             .on_hover_text("One lane per side and channel");
         ui.selectable_value(&mut settings.mode, AudioMode::Overlay, "Overlay")
             .on_hover_text("Both sides over each other, one lane per channel");
-        if processor.decoding() {
+        if processor.busy() {
             ui.separator();
             if ui.button("Cancel").clicked() {
                 processor.cancel();
@@ -718,6 +759,7 @@ pub fn show(ui: &mut egui::Ui, processor: &mut AudioDiffProcessor, settings: &mu
             .sides
             .iter()
             .any(|side| matches!(side, SideState::Cancelled))
+            || processor.difference.cancelled()
         {
             ui.separator();
             if ui.button("Decode again").clicked() {
@@ -725,13 +767,15 @@ pub fn show(ui: &mut egui::Ui, processor: &mut AudioDiffProcessor, settings: &mu
             }
         }
     });
-    if processor.decoding() {
+    if processor.busy() {
         // Progress and the result arrive from workers; keep frames coming until they are polled.
         ui.ctx().request_repaint_after(Duration::from_millis(50));
     }
 
     let area = ui.available_rect_before_wrap();
-    let status_height = 2.0 * (ui.text_style_height(&egui::TextStyle::Body) + 2.0);
+    let difference_text = processor.difference.status_text();
+    let status_line = ui.text_style_height(&egui::TextStyle::Body) + 2.0;
+    let status_height = (2 + difference_text.is_some() as usize) as f32 * status_line;
     let view_rect = Rect::from_min_max(area.min, pos2(area.right(), area.bottom() - status_height));
     let ruler_rect = Rect::from_min_size(view_rect.min, vec2(view_rect.width(), RULER_HEIGHT));
     let lanes_rect = Rect::from_min_max(pos2(view_rect.left(), ruler_rect.bottom()), view_rect.max);
@@ -765,16 +809,20 @@ pub fn show(ui: &mut egui::Ui, processor: &mut AudioDiffProcessor, settings: &mu
 
     draw_ruler(ui, ruler_rect, view);
     let lanes = lanes(processor, settings.mode);
-    let lane_height = lanes_rect.height() / lanes.len() as f32;
+    let difference_lanes = processor.difference.lanes();
+    let lane_height = lanes_rect.height() / (lanes.len() + difference_lanes) as f32;
+    let lane_rect = |i: usize| {
+        Rect::from_min_size(
+            pos2(lanes_rect.left(), lanes_rect.top() + i as f32 * lane_height),
+            vec2(lanes_rect.width(), lane_height),
+        )
+    };
     let painter = ui.painter_at(lanes_rect);
     let visuals = ui.visuals();
     let line = Stroke::new(1.0, visuals.widgets.noninteractive.bg_stroke.color);
     let overlay = settings.mode == AudioMode::Overlay;
     for (i, lane) in lanes.iter().enumerate() {
-        let rect = Rect::from_min_size(
-            pos2(lanes_rect.left(), lanes_rect.top() + i as f32 * lane_height),
-            vec2(lanes_rect.width(), lane_height),
-        );
+        let rect = lane_rect(i);
         painter.hline(rect.x_range(), rect.center().y, line);
         painter.hline(rect.x_range(), rect.bottom(), line);
         for &side in &lane.sides {
@@ -808,6 +856,14 @@ pub fn show(ui: &mut egui::Ui, processor: &mut AudioDiffProcessor, settings: &mu
             );
         }
     }
+    for channel in 0..difference_lanes {
+        let rect = lane_rect(lanes.len() + channel);
+        painter.hline(rect.x_range(), rect.center().y, line);
+        painter.hline(rect.x_range(), rect.bottom(), line);
+        processor
+            .difference
+            .draw_lane(ui, &painter, rect, channel, view);
+    }
 
     let cursor = pointer.map(|pointer| view.time_at(pointer.x - view_rect.left()));
     if let Some(pointer) = pointer {
@@ -819,13 +875,25 @@ pub fn show(ui: &mut egui::Ui, processor: &mut AudioDiffProcessor, settings: &mu
     }
     let status_painter = ui.painter_at(area);
     for (index, (name, side)) in SIDE_NAMES.iter().zip(&processor.sides).enumerate() {
-        let y = view_rect.bottom() + 2.0 + index as f32 * status_height / 2.0;
+        let y = view_rect.bottom() + 2.0 + index as f32 * status_line;
         status_painter.text(
             pos2(area.left() + 4.0, y),
             Align2::LEFT_TOP,
             format!("{name}: {}", side_text(side, cursor)),
             egui::TextStyle::Body.resolve(ui.style()),
             side_color(ui.ctx(), index),
+        );
+    }
+    if let Some(text) = difference_text {
+        status_painter.text(
+            pos2(
+                area.left() + 4.0,
+                view_rect.bottom() + 2.0 + 2.0 * status_line,
+            ),
+            Align2::LEFT_TOP,
+            format!("Difference: {text}"),
+            egui::TextStyle::Body.resolve(ui.style()),
+            role_color(ui.ctx(), FileRole::Modified),
         );
     }
 }
@@ -879,6 +947,26 @@ mod tests {
                 "{unknown}"
             );
         }
+    }
+
+    #[test]
+    fn a_resampled_layout_expects_the_same_duration_at_the_target_rate_and_channels() {
+        let stereo = r#"{"codec_type": "audio", "sample_rate": "48000", "channels": 2}"#;
+        assert_eq!(
+            layout(stereo, "1.5").unwrap().resampled(44100, 1),
+            AudioLayout {
+                sample_rate: 44100,
+                channels: 1,
+                expected_samples: 66150,
+            }
+        );
+        assert_eq!(
+            layout(stereo, "N/A")
+                .unwrap()
+                .resampled(44100, 1)
+                .expected_samples,
+            0
+        );
     }
 
     #[test]
@@ -939,6 +1027,27 @@ mod tests {
         processor.decode_again();
         poll_until(&mut processor, |p| !p.decoding());
         assert_eq!(processor.failures().len(), 2, "{processor:?}");
+    }
+
+    #[test]
+    fn the_difference_follows_both_decoded_sides_and_a_new_request_drops_it() {
+        let mut processor = AudioDiffProcessor::default();
+        processor.request(&missing_ffmpeg(), None, None);
+        processor.files[1] = Some(audio_file("b.wav"));
+        let decoded = || SideState::Decoded(Arc::new(DecodedAudio::new(8, 1, vec![0.5; 8])));
+        processor.sides = [decoded(), decoded()];
+        processor.poll();
+        assert!(processor.difference.running(), "{processor:?}");
+        poll_until(&mut processor, |p| !p.difference.running());
+        assert_eq!(
+            processor.difference.status_text().as_deref(),
+            Some("identical")
+        );
+
+        processor.request(&missing_ffmpeg(), None, Some(audio_file("c.wav")));
+        assert_eq!(processor.difference.status_text(), None);
+        poll_until(&mut processor, |p| !p.decoding());
+        assert_eq!(processor.difference.status_text(), None);
     }
 
     fn assert_close(a: f64, b: f64) {
