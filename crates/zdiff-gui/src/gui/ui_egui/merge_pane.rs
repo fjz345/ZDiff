@@ -7,7 +7,7 @@ use std::{
 use eframe::egui::{self, Layout, UiBuilder};
 use zdiff::{
     cached_file::{CachedFile, FileMetadata},
-    diff_builder::{Color32, LineContent},
+    diff_builder::{Color32, LineContent, RowBg},
     diff_ir::{DiffIR, DiffOp, DiffResult},
     ignore::IgnoreMask,
     lexer::{LEXER_MODE_DEFAULT, LexerDefault, RawToken, TokenKind},
@@ -544,13 +544,13 @@ fn line_content(
                 token_target_idx: None,
                 hide_in_diff: false,
             };
-            (result, Color32::WHITE, false)
+            (result, false, false)
         })
         .collect();
     LineContent::Code {
         tokens,
         line_num: line as i32 + 1,
-        bg,
+        bg: RowBg::Custom(bg),
         changed_chars,
     }
 }

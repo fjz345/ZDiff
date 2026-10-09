@@ -12,9 +12,8 @@ use crate::{
     revert::{self, RevertRequest, RevertTarget},
     ui_egui::{
         active_side::{ActiveSide, ActiveSideState, outline_stroke},
-        occurrence::{
-            FIND_BG, FIND_CURRENT_BG, OCCURRENCE_BG, OccurrenceState, RowFind, find_ranges,
-        },
+        file_role::FileRole,
+        occurrence::{OccurrenceState, RowFind, find_ranges},
         panes::ZAppPane,
     },
     viewer::{
@@ -31,18 +30,20 @@ use zcommon::{
     find::Matcher,
     path::{PathSegment, common_parent, split_path},
     presets::{BuiltinPreset, UserPresets},
+    style::SharedRole,
     ui_egui::{
         h_scroll,
         keymap::{Action, Keymap},
         pathbar::{PathBarAction, path_bar},
         presets::presets_menu,
+        style_window::role_color,
         table::{Rows, Split, SplitColumn, SplitTable, shared_width},
         toggle::{TOGGLE_BUTTON_SIZE, toggle_button},
     },
 };
 use zdiff::{
     cached_file::CachedFile,
-    diff_builder::{DIMMED, DiffBuilderOptions, DiffRow, IsGhost, LineContent},
+    diff_builder::{DiffBuilderOptions, DiffRow, IsDimmed, IsGhost, LineContent, RowBg},
     diff_ir::{DiffOp, DiffResult},
     ignore::IgnorePatterns,
     lexer::RawTokenTrait,
@@ -443,6 +444,15 @@ impl FileDiffPane {
                 ui.with_layout(Layout::right_to_left(egui::Align::Center), |ui| {
                     let (label, tooltip) =
                         diff_status_text(diff_ctx.num_add_deletes, &diff_ctx.stage_times);
+                    let label = diff_status_job(
+                        &label,
+                        diff_ctx.num_add_deletes,
+                        &egui::TextStyle::Body.resolve(ui.style()),
+                        [
+                            role_color(ui.ctx(), SharedRole::InsertText),
+                            role_color(ui.ctx(), SharedRole::DeleteText),
+                        ],
+                    );
                     // Not selectable, so a drag-copy over the rows can't pick it up.
                     ui.add(egui::Label::new(label).selectable(false))
                         .on_hover_text(tooltip);
@@ -526,7 +536,7 @@ impl FileDiffPane {
             if table_height > 0.0 && (diff_rows_len > 0 || other_viewer) {
                 table_rect = ui.allocate_ui(egui::vec2(ui.available_width(), table_height), |ui| {
                     egui::Frame::default()
-                        .fill(egui::Color32::from_gray(15))
+                        .fill(role_color(ui.ctx(), FileRole::TableBackground))
                         .show(ui, |ui| {
                             let area = ui.available_rect_before_wrap();
                             let button_padding = ui.spacing().button_padding.x;
@@ -818,6 +828,11 @@ impl FileDiffPane {
                                     // Once per frame, not per row: a temp side gets no revert buttons.
                                     let temp_root = std::env::temp_dir();
                                     let shown_pins = ctx.diff_ctx.map_or(&[][..], shown_pins);
+                                    let symbol_colors = [
+                                        role_color(&egui_ctx, SharedRole::DeleteText),
+                                        role_color(&egui_ctx, SharedRole::InsertText),
+                                        role_color(&egui_ctx, FileRole::Modified),
+                                    ];
                                     let overlay = ctx
                                         .diff_ctx
                                         .filter(|_| ctx.phase_overlay)
@@ -935,7 +950,7 @@ impl FileDiffPane {
                                                         }
                                                     }
                                                     revert_button(ui, left_slot, RevertTarget::Left, "<", "Replace this hunk in the left file with the right side");
-                                                    if let Some((symbol, color)) = row_symbol(diff_row) {
+                                                    if let Some((symbol, color)) = row_symbol(diff_row, symbol_colors) {
                                                         ui.put(
                                                             symbol_slot,
                                                             egui::Label::new(egui::RichText::new(symbol).color(color))
@@ -1162,9 +1177,11 @@ impl FileDiffPane {
 
                         let line_num_text = egui::RichText::new(&line_num_str).size(10.0);
                         let line_num_text = if accent_line_num {
-                            line_num_text.color(GOTO_LINE_NUM).strong()
+                            line_num_text
+                                .color(role_color(ui.ctx(), FileRole::GotoLineNumber))
+                                .strong()
                         } else {
-                            line_num_text.color(egui::Color32::DARK_GRAY)
+                            line_num_text.color(role_color(ui.ctx(), FileRole::LineNumber))
                         };
                         ui.add_sized(
                             [GUTTER_WIDTH, row_h],
@@ -1191,28 +1208,30 @@ impl FileDiffPane {
                             &row_text.text,
                             code_language,
                         );
+                        let style_ctx = ui.ctx().clone();
+                        let color = |role| role_color(&style_ctx, role);
                         // Text matched by an ignore pattern is dimmed over the syntax colors.
-                        let dimmed: Vec<_> = row_text
-                            .color_overrides
-                            .iter()
-                            .filter(|(_, color)| *color == DIMMED)
-                            .map(|(range, _)| range.clone())
-                            .collect();
-                        let [r, g, b, a] = DIMMED.0;
-                        let dim = egui::Color32::from_rgba_unmultiplied(r, g, b, a);
-                        recolor_ranges(&mut layout_job, &dimmed, dim);
+                        recolor_ranges(
+                            &mut layout_job,
+                            &row_text.dimmed,
+                            color(FileRole::DimmedText),
+                        );
                         let changed_bg = match side {
-                            ActiveSide::Left => CHANGED_CHARS_DEL_BG,
-                            ActiveSide::Right => CHANGED_CHARS_INS_BG,
+                            ActiveSide::Left => color(FileRole::DeleteChangedChars),
+                            ActiveSide::Right => color(FileRole::InsertChangedChars),
                         };
                         highlight_ranges(&mut layout_job, &row_text.changed_chars, changed_bg);
                         let found = occurrences.ranges(side, row_index, &row_text.text);
-                        highlight_ranges(&mut layout_job, &found, OCCURRENCE_BG);
+                        highlight_ranges(&mut layout_job, &found, color(FileRole::Occurrence));
                         // After the occurrences, so a find match shows over one.
                         let (find_all, find_current) = find_ranges(&row_text.text, find);
-                        highlight_ranges(&mut layout_job, &find_all, FIND_BG);
+                        highlight_ranges(&mut layout_job, &find_all, color(FileRole::Find));
                         if let Some(current) = find_current {
-                            highlight_ranges(&mut layout_job, &[current], FIND_CURRENT_BG);
+                            highlight_ranges(
+                                &mut layout_job,
+                                &[current],
+                                color(FileRole::FindCurrent),
+                            );
                         }
 
                         let font_id = egui::TextStyle::Monospace.resolve(ui.style());
@@ -1221,8 +1240,16 @@ impl FileDiffPane {
                         } else {
                             f32::INFINITY
                         };
+                        let ghost_color = color(FileRole::GhostText);
                         let side_text = ui.fonts_mut(|fonts| {
-                            layout_side_text(fonts, layout_job, &row_text.ghosts, &font_id, wrap_at)
+                            layout_side_text(
+                                fonts,
+                                layout_job,
+                                &row_text.ghosts,
+                                ghost_color,
+                                &font_id,
+                                wrap_at,
+                            )
                         });
                         let galley = side_text.galley.clone();
                         // The hit area spans the rest of the row, not just the text, so a press
@@ -1286,19 +1313,18 @@ impl FileDiffPane {
                             ));
                         }
 
-                        ui.painter().rect_filled(
-                            extended_rect,
-                            0.0,
-                            egui::Color32::from_rgba_unmultiplied(
-                                bg.0[0], bg.0[1], bg.0[2], bg.0[3],
-                            ),
-                        );
+                        let bg = match bg {
+                            RowBg::None => egui::Color32::TRANSPARENT,
+                            RowBg::Delete => role_color(ui.ctx(), SharedRole::DeleteBackground),
+                            RowBg::Insert => role_color(ui.ctx(), SharedRole::InsertBackground),
+                            RowBg::Custom(zdiff::diff_builder::Color32([r, g, b, a])) => {
+                                egui::Color32::from_rgba_unmultiplied(*r, *g, *b, *a)
+                            }
+                        };
+                        ui.painter().rect_filled(extended_rect, 0.0, bg);
                         if is_highlighted {
-                            ui.painter().rect_filled(
-                                extended_rect,
-                                0.0,
-                                egui::Color32::from_rgba_unmultiplied(255, 255, 0, 40), // Faint yellow
-                            );
+                            ui.painter()
+                                .rect_filled(extended_rect, 0.0, color(FileRole::GotoRow));
                         }
                         if let Some(trace) = trace {
                             let outlines = token_hunk_outlines(
@@ -1327,9 +1353,9 @@ impl FileDiffPane {
             }
             LineContent::Void => {
                 let fill = if is_highlighted {
-                    egui::Color32::from_rgba_unmultiplied(255, 255, 0, 40)
+                    role_color(ui.ctx(), FileRole::GotoRow)
                 } else {
-                    egui::Color32::from_gray(30)
+                    role_color(ui.ctx(), FileRole::VoidRow)
                 };
                 ui.painter().rect_filled(extended_rect, 0.0, fill);
 
@@ -1412,11 +1438,6 @@ const GUTTER_WIDTH: f32 = 35.0;
 const GUTTER_GAP: f32 = 4.0;
 const CENTER_GAP: f32 = 2.0;
 
-// The hues of zdiff's DiffTheme; modified is the two added.
-const SYMBOL_DELETE: egui::Color32 = egui::Color32::from_rgb(255, 100, 100);
-const SYMBOL_INSERT: egui::Color32 = egui::Color32::from_rgb(100, 255, 100);
-const SYMBOL_MODIFIED: egui::Color32 = egui::Color32::from_rgb(255, 255, 100);
-
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct CenterLayout {
     button: f32,
@@ -1481,26 +1502,26 @@ fn center_layout(
     }
 }
 
-fn row_symbol(row: &DiffRow) -> Option<(&'static str, egui::Color32)> {
+fn row_symbol(
+    row: &DiffRow,
+    [delete, insert, modified]: [egui::Color32; 3],
+) -> Option<(&'static str, egui::Color32)> {
     let has_op = |content: &LineContent, op: DiffOp| match content {
         LineContent::Code { tokens, .. } => tokens
             .iter()
             .any(|(result, _, _)| !result.hide_in_diff && result.operation == op),
         LineContent::Void | LineContent::Collapsed => false,
     };
-    let delete = has_op(&row.left, DiffOp::Delete) || has_op(&row.right, DiffOp::Delete);
-    let insert = has_op(&row.left, DiffOp::Insert) || has_op(&row.right, DiffOp::Insert);
-    match (delete, insert) {
-        (true, true) => Some(("≠", SYMBOL_MODIFIED)),
-        (true, false) => Some(("-", SYMBOL_DELETE)),
-        (false, true) => Some(("+", SYMBOL_INSERT)),
+    let has_delete = has_op(&row.left, DiffOp::Delete) || has_op(&row.right, DiffOp::Delete);
+    let has_insert = has_op(&row.left, DiffOp::Insert) || has_op(&row.right, DiffOp::Insert);
+    match (has_delete, has_insert) {
+        (true, true) => Some(("≠", modified)),
+        (true, false) => Some(("-", delete)),
+        (false, true) => Some(("+", insert)),
         (false, false) => None,
     }
 }
 
-const GOTO_LINE_NUM: egui::Color32 = egui::Color32::from_rgb(255, 210, 0);
-const CHANGED_CHARS_DEL_BG: egui::Color32 = egui::Color32::from_rgba_premultiplied(80, 0, 0, 80);
-const CHANGED_CHARS_INS_BG: egui::Color32 = egui::Color32::from_rgba_premultiplied(0, 70, 0, 70);
 const PIN_MARKER: egui::Color32 = egui::Color32::from_rgb(90, 160, 255);
 
 fn shown_pins(diff_ctx: &MinimalDiffCtx) -> &[Pin] {
@@ -1603,7 +1624,7 @@ fn paint_trace_gutter(ui: &egui::Ui, trace: &PhaseTrace, side: ActiveSide, conte
 
 fn token_hunk_outlines<T: RawTokenTrait>(
     trace: &PhaseTrace,
-    tokens: &[(DiffResult, zdiff::diff_builder::Color32, IsGhost)],
+    tokens: &[(DiffResult, IsDimmed, IsGhost)],
     row_text: &RowText,
     file_source: Option<&CachedFile<T>>,
     file_target: Option<&CachedFile<T>>,
@@ -1881,7 +1902,15 @@ pub(super) fn measure_wrapped_rows<T: RawTokenTrait>(
             row_text.text.clone(),
             egui::TextFormat::simple(font_id.clone(), egui::Color32::PLACEHOLDER),
         );
-        layout_side_text(fonts, job, &row_text.ghosts, font_id, width).height()
+        layout_side_text(
+            fonts,
+            job,
+            &row_text.ghosts,
+            egui::Color32::PLACEHOLDER,
+            font_id,
+            width,
+        )
+        .height()
     };
     wrapped_row_heights(rows, file_source, file_target, line_height, side_height)
 }
@@ -1910,13 +1939,10 @@ fn layout_side_text(
     fonts: &mut egui::epaint::FontsView<'_>,
     mut job: egui::text::LayoutJob,
     ghosts: &[GhostInsertion],
+    ghost_color: egui::Color32,
     font_id: &egui::FontId,
     wrap_width: f32,
 ) -> SideText {
-    let color = |ghost: &GhostInsertion| {
-        let [r, g, b, a] = ghost.color.0;
-        egui::Color32::from_rgba_unmultiplied(r, g, b, a)
-    };
     let text_len = job.text.len();
     let (inline, trailing): (Vec<_>, Vec<_>) = ghosts
         .iter()
@@ -1924,7 +1950,7 @@ fn layout_side_text(
 
     let inline_galleys: Vec<Arc<egui::Galley>> = inline
         .iter()
-        .map(|ghost| fonts.layout_no_wrap(ghost.text.clone(), font_id.clone(), color(ghost)))
+        .map(|ghost| fonts.layout_no_wrap(ghost.text.clone(), font_id.clone(), ghost_color))
         .collect();
     let gaps: Vec<(usize, f32)> = inline
         .iter()
@@ -1950,7 +1976,7 @@ fn layout_side_text(
             tail.append(
                 &ghost.text,
                 leading_space,
-                egui::TextFormat::simple(font_id.clone(), color(ghost)),
+                egui::TextFormat::simple(font_id.clone(), ghost_color),
             );
         }
         tail.first_row_min_height = last_row.height();
@@ -2125,6 +2151,31 @@ fn diff_status_text(
             times.line_diff, times.token_diff, times.diff_ir, times.diff_rows
         ),
     )
+}
+
+// `label` is diff_status_text's, which leads with the counts.
+fn diff_status_job(
+    label: &str,
+    (adds, deletes): MyersNumAddDelete,
+    font_id: &egui::FontId,
+    [insert, delete]: [egui::Color32; 2],
+) -> egui::text::LayoutJob {
+    let (adds, deletes) = (format!("+{adds}"), format!("-{deletes}"));
+    let counts = format!("{adds}/{deletes}");
+    assert!(
+        label.starts_with(&counts),
+        "{label:?} doesn't lead with {counts:?}"
+    );
+    let mut job = egui::text::LayoutJob::default();
+    for (text, color) in [
+        (adds.as_str(), insert),
+        ("/", egui::Color32::PLACEHOLDER),
+        (deletes.as_str(), delete),
+        (&label[counts.len()..], egui::Color32::PLACEHOLDER),
+    ] {
+        job.append(text, 0.0, egui::TextFormat::simple(font_id.clone(), color));
+    }
+    job
 }
 
 /// Rows that are not file text get a one-character selectable label holding one of these
@@ -2627,7 +2678,7 @@ mod tests {
     use eframe::egui;
     use zcommon::ui_egui::table::{Split, SplitColumn, SplitTable};
     use zdiff::{
-        diff_builder::{DiffBuilderOptions, DiffRow, LineContent},
+        diff_builder::{DiffBuilderOptions, DiffRow, LineContent, RowBg},
         diff_ir::{DiffOp, DiffResult},
         ignore::{IgnoreOptions, IgnorePatterns},
     };
@@ -2639,9 +2690,8 @@ mod tests {
 
     use super::{
         CENTER_GAP, COPY_MARKER_BLANK_LINE, COPY_MARKER_NO_LINE, CenterLayout, GUTTER_GAP,
-        GUTTER_WIDTH, GhostInsertion, SYMBOL_DELETE, SYMBOL_INSERT, SYMBOL_MODIFIED,
-        diff_status_text, highlight_ranges, insert_ghost_gaps, layout_side_text, recolor_ranges,
-        row_find, strip_copy_markers,
+        GUTTER_WIDTH, GhostInsertion, diff_status_job, diff_status_text, highlight_ranges,
+        insert_ghost_gaps, layout_side_text, recolor_ranges, row_find, strip_copy_markers,
     };
 
     #[test]
@@ -2745,35 +2795,38 @@ mod tests {
                             token_target_idx: None,
                             hide_in_diff: *hide_in_diff,
                         },
-                        zdiff::diff_builder::Color32::TRANSPARENT,
+                        false,
                         false,
                     )
                 })
                 .collect(),
             line_num: 1,
-            bg: zdiff::diff_builder::Color32::TRANSPARENT,
+            bg: RowBg::None,
             changed_chars: Vec::new(),
         }
     }
 
     #[test]
     fn only_changed_rows_get_a_colored_symbol() {
-        let symbol = |left, right| super::row_symbol(&DiffRow { left, right });
+        use eframe::egui::Color32;
+        let (delete, insert, modified) = (Color32::RED, Color32::GREEN, Color32::YELLOW);
+        let symbol =
+            |left, right| super::row_symbol(&DiffRow { left, right }, [delete, insert, modified]);
         const EQUAL: (DiffOp, bool) = (DiffOp::Equal(true), false);
         const DELETE: (DiffOp, bool) = (DiffOp::Delete, false);
         const INSERT: (DiffOp, bool) = (DiffOp::Insert, false);
 
         assert_eq!(
             symbol(code(&[EQUAL, DELETE]), LineContent::Void),
-            Some(("-", SYMBOL_DELETE))
+            Some(("-", delete))
         );
         assert_eq!(
             symbol(LineContent::Void, code(&[INSERT])),
-            Some(("+", SYMBOL_INSERT))
+            Some(("+", insert))
         );
         assert_eq!(
             symbol(code(&[EQUAL, DELETE]), code(&[EQUAL, INSERT])),
-            Some(("≠", SYMBOL_MODIFIED))
+            Some(("≠", modified))
         );
         assert_eq!(symbol(code(&[EQUAL]), code(&[EQUAL])), None);
         assert_eq!(
@@ -2806,7 +2859,7 @@ mod tests {
         let code = |line_num| LineContent::Code {
             tokens: Vec::new(),
             line_num,
-            bg: zdiff::diff_builder::Color32::TRANSPARENT,
+            bg: RowBg::None,
             changed_chars: Vec::new(),
         };
         let pins = [Pin {
@@ -2827,7 +2880,7 @@ mod tests {
         let code = |line_num| LineContent::Code {
             tokens: Vec::new(),
             line_num,
-            bg: zdiff::diff_builder::Color32::TRANSPARENT,
+            bg: RowBg::None,
             changed_chars: Vec::new(),
         };
         let hit = FindHit {
@@ -3112,6 +3165,30 @@ mod tests {
         assert_eq!(
             tooltip,
             "Line diff: 12.3ms\nToken diff: 1.0ms\nIR: 500.0µs\nRows: 2.0ms"
+        );
+    }
+
+    #[test]
+    fn diff_status_counts_use_the_insert_and_delete_colors() {
+        use eframe::egui::{Color32, FontId};
+        let (insert, delete, rest) = (Color32::GREEN, Color32::RED, Color32::PLACEHOLDER);
+
+        let job = diff_status_job(
+            "+17/-3  15.8ms",
+            (17, 3),
+            &FontId::default(),
+            [insert, delete],
+        );
+
+        assert_eq!(job.text, "+17/-3  15.8ms");
+        let sections: Vec<_> = job
+            .sections
+            .iter()
+            .map(|s| (s.byte_range.clone(), s.format.color))
+            .collect();
+        assert_eq!(
+            sections,
+            [(0..3, insert), (3..4, rest), (4..6, delete), (6..14, rest)]
         );
     }
 
@@ -3647,10 +3724,15 @@ mod tests {
             let ghosts = [GhostInsertion {
                 byte_offset: offset,
                 text: ghost.to_owned(),
-                color: zdiff::diff_builder::Color32([255; 4]),
             }];
-            let side_text =
-                layout_side_text(fonts, job, &ghosts, font_id, width_chars * char_width);
+            let side_text = layout_side_text(
+                fonts,
+                job,
+                &ghosts,
+                eframe::egui::Color32::WHITE,
+                font_id,
+                width_chars * char_width,
+            );
             let [(pos, _)] = side_text.ghosts[..] else {
                 panic!("expected one ghost");
             };

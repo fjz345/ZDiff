@@ -3,7 +3,7 @@ use std::ops::Range;
 use crate::{
     cached_file::CachedFile,
     char_diff::ranges_in_span,
-    diff_builder::{Color32, IsGhost},
+    diff_builder::{IsDimmed, IsGhost},
     diff_ir::{DiffOp, DiffResult},
     lexer::{RawTokenTrait, TokenKind},
 };
@@ -14,7 +14,6 @@ pub struct GhostInsertion {
     /// Byte offset into `RowText::text` where the ghost is displayed. Always `<= text.len()`.
     pub byte_offset: usize,
     pub text: String,
-    pub color: Color32,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -22,15 +21,15 @@ pub struct RowText {
     /// The file's text for this row, without the line terminator. Trailing whitespace is kept.
     pub text: String,
     pub ghosts: Vec<GhostInsertion>,
-    /// Diff color of each real token, as byte ranges into `text`.
-    pub color_overrides: Vec<(Range<usize>, Color32)>,
+    /// Real tokens an ignore pattern matched, as byte ranges into `text`.
+    pub dimmed: Vec<Range<usize>>,
     /// Changed characters inside real edited tokens, as byte ranges into `text`.
     pub changed_chars: Vec<Range<usize>>,
 }
 
 /// `changed_chars` is the row's `LineContent::Code::changed_chars`.
 pub fn build_row_text<T: RawTokenTrait>(
-    tokens: &[(DiffResult, Color32, IsGhost)],
+    tokens: &[(DiffResult, IsDimmed, IsGhost)],
     changed_chars: &[Range<usize>],
     file_source: Option<&CachedFile<T>>,
     file_target: Option<&CachedFile<T>>,
@@ -38,11 +37,11 @@ pub fn build_row_text<T: RawTokenTrait>(
     let mut row = RowText {
         text: String::new(),
         ghosts: Vec::new(),
-        color_overrides: Vec::new(),
+        dimmed: Vec::new(),
         changed_chars: Vec::new(),
     };
 
-    for (diff_result, color, is_ghost) in tokens {
+    for (diff_result, is_dimmed, is_ghost) in tokens {
         let Some((file, token_idx)) = resolve_token(diff_result, file_source, file_target) else {
             continue;
         };
@@ -57,12 +56,13 @@ pub fn build_row_text<T: RawTokenTrait>(
             row.ghosts.push(GhostInsertion {
                 byte_offset: row.text.len(),
                 text: str.to_string(),
-                color: *color,
             });
         } else {
             let start = row.text.len();
             row.text.push_str(str);
-            row.color_overrides.push((start..row.text.len(), *color));
+            if *is_dimmed {
+                row.dimmed.push(start..row.text.len());
+            }
             // Equal tokens may resolve to the other side's file, where these offsets mean nothing.
             if !matches!(diff_result.operation, DiffOp::Equal(_)) {
                 let changed = ranges_in_span(changed_chars, &token.span);
@@ -111,9 +111,6 @@ mod tests {
         universal_path::UniversalPath,
     };
 
-    const TINT: Color32 = Color32([1, 2, 3, 255]);
-    const GHOST_TINT: Color32 = Color32([9, 9, 9, 80]);
-
     fn cached_file(contents: &str) -> CachedFile<RawToken> {
         CachedFile {
             path: UniversalPath::from("test"),
@@ -144,13 +141,13 @@ mod tests {
     }
 
     /// Every token of `file` as a real (non-ghost) Equal token.
-    fn all_real(file: &CachedFile<RawToken>) -> Vec<(DiffResult, Color32, IsGhost)> {
+    fn all_real(file: &CachedFile<RawToken>) -> Vec<(DiffResult, IsDimmed, IsGhost)> {
         (0..file.tokens.len() as u32)
-            .map(|i| (equal(i), TINT, false))
+            .map(|i| (equal(i), false, false))
             .collect()
     }
 
-    fn build(file: &CachedFile<RawToken>, tokens: &[(DiffResult, Color32, IsGhost)]) -> RowText {
+    fn build(file: &CachedFile<RawToken>, tokens: &[(DiffResult, IsDimmed, IsGhost)]) -> RowText {
         build_row_text(tokens, &[], Some(file), Some(file))
     }
 
@@ -159,10 +156,10 @@ mod tests {
         // Tokens: "zz"(0) "\n"(1) "ab"(2) " "(3) "cd"(4)
         let file = cached_file("zz\nab cd");
         let tokens = vec![
-            (equal(2), TINT, false),
-            (equal(3), TINT, false),
-            (ghost_delete(4), GHOST_TINT, true),
-            (ghost_delete(4), TINT, false),
+            (equal(2), false, false),
+            (equal(3), false, false),
+            (ghost_delete(4), false, true),
+            (ghost_delete(4), false, false),
         ];
         let changed = [0..1, 3..4, 7..8];
         let row = build_row_text(&tokens, &changed, Some(&file), Some(&file));
@@ -206,7 +203,7 @@ mod tests {
             let row = build(&file, &all_real(&file));
             assert_eq!(row.text, "", "contents: {contents:?}");
             assert!(row.ghosts.is_empty());
-            assert!(row.color_overrides.is_empty());
+            assert!(row.dimmed.is_empty());
         }
     }
 
@@ -221,15 +218,14 @@ mod tests {
     fn row_of_only_ghosts_has_empty_real_text() {
         let file = cached_file("foo bar\n");
         let tokens: Vec<_> = (0..file.tokens.len() as u32)
-            .map(|i| (ghost_delete(i), GHOST_TINT, true))
+            .map(|i| (ghost_delete(i), false, true))
             .collect();
         let row = build(&file, &tokens);
         assert_eq!(row.text, "");
-        assert!(row.color_overrides.is_empty());
+        assert!(row.dimmed.is_empty());
         let ghost_text: Vec<_> = row.ghosts.iter().map(|g| g.text.as_str()).collect();
         assert_eq!(ghost_text, ["foo", " ", "bar"]);
         assert!(row.ghosts.iter().all(|g| g.byte_offset == 0));
-        assert!(row.ghosts.iter().all(|g| g.color == GHOST_TINT));
     }
 
     #[test]
@@ -238,10 +234,10 @@ mod tests {
         let file = cached_file("ab cd");
         let other = cached_file("XY");
         let tokens = vec![
-            (equal(0), TINT, false),
-            (equal(1), TINT, false),
-            (ghost_delete(0), GHOST_TINT, true),
-            (equal(2), TINT, false),
+            (equal(0), false, false),
+            (equal(1), false, false),
+            (ghost_delete(0), false, true),
+            (equal(2), false, false),
         ];
         let row = build_row_text(&tokens, &[], Some(&file), Some(&other));
         assert_eq!(row.text, "ab cd");
@@ -250,7 +246,6 @@ mod tests {
             [GhostInsertion {
                 byte_offset: 3,
                 text: "ab".to_string(),
-                color: GHOST_TINT,
             }]
         );
     }
@@ -260,13 +255,13 @@ mod tests {
         let file = cached_file("a b c");
         let ghosts = cached_file("xx yy");
         let tokens = vec![
-            (ghost_delete(0), GHOST_TINT, true),
-            (equal(0), TINT, false),
-            (equal(1), TINT, false),
-            (ghost_delete(2), GHOST_TINT, true),
-            (equal(2), TINT, false),
-            (ghost_delete(1), GHOST_TINT, true),
-            (ghost_delete(2), GHOST_TINT, true),
+            (ghost_delete(0), false, true),
+            (equal(0), false, false),
+            (equal(1), false, false),
+            (ghost_delete(2), false, true),
+            (equal(2), false, false),
+            (ghost_delete(1), false, true),
+            (ghost_delete(2), false, true),
         ];
         let row = build_row_text(&tokens, &[], Some(&file), Some(&ghosts));
         assert_eq!(row.text, "a b");
@@ -282,35 +277,28 @@ mod tests {
         // Real text ends in whitespace and ghosts follow it: offsets must not exceed text.len().
         let file = cached_file("foo  ");
         let mut tokens = all_real(&file);
-        tokens.push((ghost_delete(0), GHOST_TINT, true));
-        tokens.push((ghost_delete(0), GHOST_TINT, true));
+        tokens.push((ghost_delete(0), false, true));
+        tokens.push((ghost_delete(0), false, true));
         let row = build(&file, &tokens);
         assert_eq!(row.text, "foo  ");
         assert!(row.ghosts.iter().all(|g| g.byte_offset == row.text.len()));
     }
 
     #[test]
-    fn color_overrides_map_to_real_text_byte_offsets() {
+    fn dimmed_ranges_map_to_real_text_byte_offsets() {
         let file = cached_file("ab cd");
         let other = cached_file("ZZZZ");
-        let red = Color32([255, 0, 0, 255]);
-        let green = Color32([0, 255, 0, 255]);
-        // A ghost before "cd" must shift neither the text nor the override ranges.
+        // A ghost before "cd" must shift neither the text nor the dimmed ranges.
         let tokens = vec![
-            (equal(0), red, false),
-            (equal(1), TINT, false),
-            (ghost_delete(0), GHOST_TINT, true),
-            (equal(2), green, false),
+            (equal(0), true, false),
+            (equal(1), false, false),
+            (ghost_delete(0), true, true),
+            (equal(2), true, false),
         ];
         let row = build_row_text(&tokens, &[], Some(&file), Some(&other));
         assert_eq!(row.text, "ab cd");
-        let ranges: Vec<_> = row
-            .color_overrides
-            .iter()
-            .map(|(r, c)| (r.clone(), c.0))
-            .collect();
-        assert_eq!(ranges, [(0..2, red.0), (2..3, TINT.0), (3..5, green.0)]);
-        for (range, _) in &row.color_overrides {
+        assert_eq!(row.dimmed, [0..2, 3..5]);
+        for range in &row.dimmed {
             assert!(row.text.is_char_boundary(range.start) && row.text.is_char_boundary(range.end));
         }
     }
@@ -320,10 +308,10 @@ mod tests {
         let file = cached_file("é ü");
         let other = cached_file("g");
         let tokens = vec![
-            (equal(0), TINT, false),
-            (ghost_delete(0), GHOST_TINT, true),
-            (equal(1), TINT, false),
-            (equal(2), TINT, false),
+            (equal(0), false, false),
+            (ghost_delete(0), false, true),
+            (equal(1), false, false),
+            (equal(2), false, false),
         ];
         let row = build_row_text(&tokens, &[], Some(&file), Some(&other));
         assert_eq!(row.text, "é ü");

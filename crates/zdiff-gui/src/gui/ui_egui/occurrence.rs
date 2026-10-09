@@ -17,13 +17,6 @@ pub use zcommon::find::find_occurrences;
 
 use crate::ui_egui::active_side::ActiveSide;
 
-/// Background of a highlighted occurrence. Purple, to stay apart from the amber of find matches,
-/// the red and green of changes, and egui's blue selection.
-pub const OCCURRENCE_BG: egui::Color32 = egui::Color32::from_rgba_premultiplied(66, 40, 96, 110);
-
-pub const FIND_BG: egui::Color32 = egui::Color32::from_rgba_premultiplied(90, 66, 0, 140);
-pub const FIND_CURRENT_BG: egui::Color32 = egui::Color32::from_rgb(176, 104, 0);
-
 #[derive(Clone, Copy, Debug, Default)]
 pub struct RowFind<'a> {
     pub matcher: Option<&'a Matcher>,

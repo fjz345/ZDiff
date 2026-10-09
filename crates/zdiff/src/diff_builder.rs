@@ -33,12 +33,23 @@ pub struct DiffRow {
 }
 
 pub type IsGhost = bool;
+pub type IsDimmed = bool;
+
+// Colors are resolved when painting, so a style change needs no rebuild.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum RowBg {
+    None,
+    Delete,
+    Insert,
+    Custom(Color32),
+}
+
 #[derive(Debug, Clone)]
 pub enum LineContent {
     Code {
-        tokens: Vec<(DiffResult, Color32, IsGhost)>,
+        tokens: Vec<(DiffResult, IsDimmed, IsGhost)>,
         line_num: i32,
-        bg: Color32,
+        bg: RowBg,
         /// Changed characters of the side's Delete/Insert tokens, as byte ranges into its file.
         changed_chars: Vec<Range<usize>>,
     },
@@ -77,34 +88,8 @@ impl DiffBuilderOptions {
     }
 }
 
-/// Color of tokens an ignore pattern matched. Public so the GUI can find them among the row colors
-/// and paint them over its syntax highlighting.
-pub const DIMMED: Color32 = Color32([128, 128, 128, 110]);
-
-struct DiffTheme {
-    ghost: Color32,
-    del: Color32,
-    ins: Color32,
-    del_bg: Color32,
-    ins_bg: Color32,
-    dimmed: Color32,
-}
-
-impl Default for DiffTheme {
-    fn default() -> Self {
-        Self {
-            ghost: [150, 150, 150, 80].into(),
-            del: [255, 100, 100, 255].into(),
-            ins: [100, 255, 100, 255].into(),
-            del_bg: [255, 0, 0, 20].into(),
-            ins_bg: [0, 255, 0, 20].into(),
-            dimmed: DIMMED,
-        }
-    }
-}
-
 struct SideState {
-    buf: Vec<(DiffResult, Color32, IsGhost)>,
+    buf: Vec<(DiffResult, IsDimmed, IsGhost)>,
     changed_chars: Vec<Range<usize>>,
     line_num: i32,
     active_diff: bool,
@@ -120,15 +105,15 @@ impl SideState {
         }
     }
 
-    fn push(&mut self, val: DiffResult, color: Color32, is_ghost: IsGhost) {
-        self.buf.push((val, color, is_ghost));
+    fn push(&mut self, val: DiffResult, is_dimmed: IsDimmed, is_ghost: IsGhost) {
+        self.buf.push((val, is_dimmed, is_ghost));
     }
 
     fn has_real_tokens(&self) -> bool {
         self.buf.iter().any(|(_, _, is_ghost)| !is_ghost)
     }
 
-    fn flush(&mut self, line_num: i32, bg_color: Color32) -> LineContent {
+    fn flush(&mut self, line_num: i32, bg: RowBg) -> LineContent {
         if self.buf.is_empty() {
             LineContent::Void
         } else {
@@ -136,7 +121,7 @@ impl SideState {
             LineContent::Code {
                 tokens,
                 line_num,
-                bg: bg_color,
+                bg,
                 changed_chars: std::mem::take(&mut self.changed_chars),
             }
         }
@@ -147,7 +132,6 @@ pub struct DiffBuilder<'a, 'b, T: RawTokenTrait> {
     tokens_source: Option<&'a [T]>,
     tokens_target: Option<&'a [T]>,
     options: &'b DiffBuilderOptions,
-    theme: DiffTheme,
     rows: Vec<DiffRow>,
     /// Per token of (source, target), true when an ignore pattern matched it. Empty: none.
     dimmed: (&'a [bool], &'a [bool]),
@@ -167,7 +151,6 @@ impl<'a, 'b, T: RawTokenTrait> DiffBuilder<'a, 'b, T> {
             tokens_source,
             tokens_target,
             options,
-            theme: DiffTheme::default(),
             rows: Vec::with_capacity(capacity),
             dimmed: (&[], &[]),
             char_ranges: (&[], &[]),
@@ -187,12 +170,8 @@ impl<'a, 'b, T: RawTokenTrait> DiffBuilder<'a, 'b, T> {
         Self::with_capacity(tokens_source, tokens_target, options, capacity)
     }
 
-    /// `color`, or the dimmed color when an ignore pattern matched the token.
-    fn dim(&self, dimmed: &[bool], token_idx: Option<u32>, color: Color32) -> Color32 {
-        match token_idx {
-            Some(i) if dimmed.get(i as usize).copied().unwrap_or(false) => self.theme.dimmed,
-            _ => color,
-        }
+    fn is_dimmed(dimmed: &[bool], token_idx: Option<u32>) -> IsDimmed {
+        token_idx.is_some_and(|i| dimmed.get(i as usize).copied().unwrap_or(false))
     }
 
     pub fn handle_match(&mut self, diff_result: DiffResult) {
@@ -203,14 +182,13 @@ impl<'a, 'b, T: RawTokenTrait> DiffBuilder<'a, 'b, T> {
             .expect("Equal op must have source index");
         let token = &self.tokens_source.expect("Source was None")[token_idx as usize];
 
-        let color = Color32::GRAY;
         let is_newline = token.as_ref().kind == TokenKind::Newline;
         // A pattern match depends on the line around the token, so each side has its own flag.
-        let left_color = self.dim(self.dimmed.0, diff_result.token_source_idx, color);
-        let right_color = self.dim(self.dimmed.1, diff_result.token_target_idx, color);
+        let left_dimmed = Self::is_dimmed(self.dimmed.0, diff_result.token_source_idx);
+        let right_dimmed = Self::is_dimmed(self.dimmed.1, diff_result.token_target_idx);
 
-        self.left.push(diff_result.clone(), left_color, false);
-        self.right.push(diff_result, right_color, false);
+        self.left.push(diff_result.clone(), left_dimmed, false);
+        self.right.push(diff_result, right_dimmed, false);
 
         if is_newline {
             self.emit_row(true, true, true, true);
@@ -237,10 +215,10 @@ impl<'a, 'b, T: RawTokenTrait> DiffBuilder<'a, 'b, T> {
 
         let is_newline = token.as_ref().kind == TokenKind::Newline;
 
-        let color = if is_deletion {
-            self.dim(self.dimmed.0, diff_result.token_source_idx, self.theme.del)
+        let is_dimmed = if is_deletion {
+            Self::is_dimmed(self.dimmed.0, diff_result.token_source_idx)
         } else {
-            self.dim(self.dimmed.1, diff_result.token_target_idx, self.theme.ins)
+            Self::is_dimmed(self.dimmed.1, diff_result.token_target_idx)
         };
 
         let (side, char_ranges) = if is_deletion {
@@ -252,7 +230,7 @@ impl<'a, 'b, T: RawTokenTrait> DiffBuilder<'a, 'b, T> {
             side.active_diff = true;
         }
 
-        side.push(diff_result.clone(), color, false);
+        side.push(diff_result.clone(), is_dimmed, false);
         let changed = ranges_in_span(char_ranges, &token.as_ref().span);
         side.changed_chars.extend_from_slice(changed);
 
@@ -293,12 +271,8 @@ impl<'a, 'b, T: RawTokenTrait> DiffBuilder<'a, 'b, T> {
 
         let left = if flush_left {
             let active = self.left.active_diff && self.options.highlight_rows;
-            let color = if active {
-                self.theme.del_bg
-            } else {
-                Color32::TRANSPARENT
-            };
-            let content = self.left.flush(left_num, color);
+            let bg = if active { RowBg::Delete } else { RowBg::None };
+            let content = self.left.flush(left_num, bg);
             self.left.active_diff = false;
             content
         } else {
@@ -307,12 +281,8 @@ impl<'a, 'b, T: RawTokenTrait> DiffBuilder<'a, 'b, T> {
 
         let right = if flush_right {
             let active = self.right.active_diff && self.options.highlight_rows;
-            let color = if active {
-                self.theme.ins_bg
-            } else {
-                Color32::TRANSPARENT
-            };
-            let content = self.right.flush(right_num, color);
+            let bg = if active { RowBg::Insert } else { RowBg::None };
+            let content = self.right.flush(right_num, bg);
             self.right.active_diff = false;
             content
         } else {
@@ -345,11 +315,10 @@ impl<'a, 'b, T: RawTokenTrait> DiffBuilder<'a, 'b, T> {
     }
 
     fn apply_ghosts(&mut self, last_was_deletion: bool, result: DiffResult) {
-        let ghost_color = self.theme.ghost;
         if last_was_deletion {
-            self.right.push(result, ghost_color, true);
+            self.right.push(result, false, true);
         } else {
-            self.left.push(result, ghost_color, true);
+            self.left.push(result, false, true);
         }
     }
 }
@@ -723,6 +692,37 @@ mod tests {
         }
 
         #[test]
+        fn changed_lines_get_their_sides_background_only_with_row_highlighting() {
+            let s1 = "same\nold\nsame\n";
+            let s2 = "same\nnew\nsame\n";
+            let bg = |content: &LineContent| match content {
+                LineContent::Code { bg, .. } => *bg,
+                _ => panic!("not code"),
+            };
+            for algorithm in ALGORITHMS {
+                for highlight_rows in [true, false] {
+                    let options = DiffBuilderOptions {
+                        highlight_rows,
+                        ghost_rows: false,
+                        ..Default::default()
+                    };
+                    let h = harness_with(algorithm, s1, s2, options);
+                    let rows: Vec<_> = h
+                        .rows()
+                        .iter()
+                        .map(|r| (bg(&r.left), bg(&r.right)))
+                        .collect();
+                    let changed = match highlight_rows {
+                        true => (RowBg::Delete, RowBg::Insert),
+                        false => (RowBg::None, RowBg::None),
+                    };
+                    let none = (RowBg::None, RowBg::None);
+                    assert_eq!(rows, [none, changed, none], "{algorithm:?}");
+                }
+            }
+        }
+
+        #[test]
         fn line_inserted_mid_hunk_gets_its_own_row() {
             let s1 = "let a = 1;\nlet b = 2;\nlet c = 3;\nlet d = 4;\n";
             let s2 = "let a = 10;\nlet b = 20;\nnew();\nlet c = 30;\nlet d = 40;\n";
@@ -855,7 +855,6 @@ mod tests {
                     && token.span.start >= line_start + 1
                     && token.span.end <= line_start + 9
             };
-            let dimmed = DiffTheme::default().dimmed;
             for algorithm in ALGORITHMS {
                 for ghost_rows in [false, true] {
                     let options = DiffBuilderOptions {
@@ -887,7 +886,7 @@ mod tests {
                             else {
                                 panic!("row {idx} is not code");
                             };
-                            for (res, color, _) in row_tokens.iter().filter(|(_, _, g)| !g) {
+                            for (res, is_dimmed, _) in row_tokens.iter().filter(|(_, _, g)| !g) {
                                 let token_idx = if is_left {
                                     res.token_source_idx
                                 } else {
@@ -895,7 +894,7 @@ mod tests {
                                 };
                                 let token = &tokens[token_idx.unwrap() as usize];
                                 assert_eq!(
-                                    *color == dimmed,
+                                    *is_dimmed,
                                     in_timestamp(text, token),
                                     "{algorithm:?}, ghosts {ghost_rows}: row {idx} {:?}",
                                     &text[token.span.clone()]

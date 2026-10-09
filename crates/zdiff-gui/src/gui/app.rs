@@ -17,7 +17,7 @@ use zcommon::ui_egui::find_popup::{FindPopupEvent, find_popup};
 use zcommon::ui_egui::h_scroll::{self, WheelModifier};
 use zcommon::ui_egui::keymap::{Action, Shortcut};
 use zcommon::ui_egui::keymap_editor::KeymapEditor;
-use zcommon::ui_egui::style_window::{NoRole, StyleWindow};
+use zcommon::ui_egui::style_window::StyleWindow;
 use zdiff::{
     diff_builder::DiffBuilderOptions,
     lexer::{LEXER_MODE_DEFAULT, LEXER_MODE_GREEDY, LEXER_MODE_NEWLINE, LEXER_MODE_TOKENIZE},
@@ -45,6 +45,7 @@ use crate::{
     },
     ui_egui::{
         diff_pane::{FileDiffPane, FileDiffPaneCtx, wheel_rects_id},
+        file_role::FileRole,
         merge_pane::{self, Closing, MergeNames, MergeRequest, MergeView, OpenMergeForm},
         panes::{Pane, TreeBehavior},
     },
@@ -791,7 +792,7 @@ impl<'a> ZApp {
                 },
             );
         }
-        self.style_window.show::<NoRole>(ui.ctx(), "");
+        self.style_window.show::<FileRole>(ui.ctx(), "File diff");
         if self.open_help_window {
             show_custom_popup(
                 ui.ctx(),
