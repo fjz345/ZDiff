@@ -14,18 +14,21 @@ use zcommon::hash::HashRepresentation;
 use zcommon::hash::HashService;
 use zcommon::ui_egui::common::show_custom_popup;
 use zcommon::ui_egui::common::show_custom_popup_with_color;
+use zhashdiff::conflict::DuplicateGroup;
 use zhashdiff::conflict::ResolutionSummary;
 use zhashdiff::conflict::SizedFile;
 use zhashdiff::conflict::execute_resolution;
-use zhashdiff::conflict::group_duplicates;
+use zhashdiff::conflict::group_by_size_and_hash;
 use zhashdiff::conflict::plan_resolution;
 use zhashdiff::conflict::recycle;
 use zhashdiff::conflict::size_collisions;
 use zhashdiff::external_diff_tool::DiffToolConfig;
 use zhashdiff::filter::PathFilter;
 use zhashdiff::fs::FileSystemModel;
+use zhashdiff::fs::FsNodeId;
 
 use crate::ui_egui::fs_tree::FileSystemView;
+use crate::ui_egui::fs_tree::NodeColumn;
 use crate::ui_egui::fs_tree::PENDING_DELETION_COLOR;
 use crate::ui_egui::fs_tree::TreeMode;
 use crate::ui_egui::fs_tree::VisibleRowTwoFolderDiff;
@@ -46,31 +49,191 @@ use zcommon::ui_egui::common::ui_custom_checkbox;
 
 const MAX_CONCURRENT_HASHES: usize = 16;
 
-struct VisibleFileHashes {
-    hashed: Vec<(PathBuf, HashRepresentation)>,
-    unhashed: usize,
-}
+const GROUP_COLUMN_WIDTH: f32 = 80.0;
+const KEEPER_COLOR: egui::Color32 = egui::Color32::LIGHT_GREEN;
+const DUPLICATE_COUNT_COLOR: egui::Color32 = egui::Color32::from_gray(150);
+const TOOLTIP_MAX_MEMBERS: usize = 30;
 
-/// Visible files that can have a duplicate paired with their hash; those without a hash
-/// yet are only counted.
-fn visible_file_hashes(
+fn unhashed_files_to_hash(
     view: &FileSystemView,
     hidden: &[bool],
     hashes: &HashMap<PathBuf, Option<HashRepresentation>>,
-) -> VisibleFileHashes {
-    let mut visible = VisibleFileHashes {
-        hashed: Vec::new(),
-        unhashed: 0,
-    };
+) -> usize {
+    files_to_hash(view, hidden)
+        .iter()
+        .filter(|path| !matches!(hashes.get(*path), Some(Some(_))))
+        .count()
+}
 
-    for path in files_to_hash(view, hidden) {
-        match hashes.get(&path) {
-            Some(Some(hash)) => visible.hashed.push((path, hash.clone())),
-            _ => visible.unhashed += 1,
+struct DuplicateGroups {
+    model: Weak<FileSystemModel>,
+    filter: PathFilter,
+    groups: Vec<DuplicateGroup>,
+    /// Group index and index into its paths.
+    member_of: HashMap<FsNodeId, (usize, usize)>,
+    duplicates_below: HashMap<FsNodeId, usize>,
+}
+
+fn duplicate_groups(
+    view: &FileSystemView,
+    filter: &PathFilter,
+    hashes: &HashMap<PathBuf, Option<HashRepresentation>>,
+) -> DuplicateGroups {
+    let model = &view.file_system;
+    let hidden = tree_hidden(view, filter);
+    let mut node_of = HashMap::new();
+    let files: Vec<_> = model
+        .iter_tree()
+        .filter(|(node_id, node, _)| node.is_file() && !hidden[*node_id])
+        .filter_map(|(node_id, node, _)| {
+            let path = node.as_path().as_ref().to_path_buf();
+            let Some(Some(hash)) = hashes.get(&path) else {
+                return None;
+            };
+            node_of.insert(path.clone(), node_id);
+            Some((path, node.size, hash.clone()))
+        })
+        .collect();
+    let groups = group_by_size_and_hash(files);
+
+    let mut member_of = HashMap::new();
+    let mut duplicates_below = HashMap::new();
+    for (group_index, group) in groups.iter().enumerate() {
+        for (member_index, path) in group.paths.iter().enumerate() {
+            let node_id = node_of[path];
+            member_of.insert(node_id, (group_index, member_index));
+            let mut folder = model.get_parent_id(node_id);
+            while let Some(folder_id) = folder {
+                *duplicates_below.entry(folder_id).or_default() += 1;
+                folder = model.get_parent_id(folder_id);
+            }
         }
     }
 
-    visible
+    DuplicateGroups {
+        model: Arc::downgrade(model),
+        filter: filter.clone(),
+        groups,
+        member_of,
+        duplicates_below,
+    }
+}
+
+#[derive(Debug, PartialEq)]
+enum GroupCell<'a> {
+    File {
+        /// 1-based, in tree order.
+        id: usize,
+        group: &'a DuplicateGroup,
+        path: &'a Path,
+        keeper: bool,
+        pending: bool,
+    },
+    Folder {
+        duplicates: usize,
+    },
+}
+
+impl DuplicateGroups {
+    fn is_for(&self, view: &FileSystemView, filter: &PathFilter) -> bool {
+        self.model.ptr_eq(&Arc::downgrade(&view.file_system)) && self.filter == *filter
+    }
+
+    fn cell(
+        &self,
+        node_id: FsNodeId,
+        keepers: &HashMap<String, PathBuf>,
+        pending: &HashSet<PathBuf>,
+    ) -> Option<GroupCell<'_>> {
+        if let Some(&(group_index, member_index)) = self.member_of.get(&node_id) {
+            let group = &self.groups[group_index];
+            let path = group.paths[member_index].as_path();
+            return Some(GroupCell::File {
+                id: group_index + 1,
+                group,
+                path,
+                keeper: keepers
+                    .get(&group.hash)
+                    .is_some_and(|keeper| keeper == path),
+                pending: pending.contains(path),
+            });
+        }
+        let duplicates = *self.duplicates_below.get(&node_id)?;
+        Some(GroupCell::Folder { duplicates })
+    }
+}
+
+fn member_tooltip(
+    group: &DuplicateGroup,
+    path: &Path,
+    keepers: &HashMap<String, PathBuf>,
+    root: &Path,
+) -> String {
+    let others: Vec<&PathBuf> = group.paths.iter().filter(|p| *p != path).collect();
+    let mut text = format!(
+        "{} other {}:",
+        others.len(),
+        if others.len() == 1 { "copy" } else { "copies" }
+    );
+    for other in others.iter().take(TOOLTIP_MAX_MEMBERS) {
+        let shown = other.strip_prefix(root).unwrap_or(other);
+        text.push_str(&format!("\n{}", shown.display()));
+        if keepers.get(&group.hash) == Some(*other) {
+            text.push_str(" (keep)");
+        }
+    }
+    if others.len() > TOOLTIP_MAX_MEMBERS {
+        text.push_str(&format!("\n… {} more", others.len() - TOOLTIP_MAX_MEMBERS));
+    }
+    text
+}
+
+fn ui_group_cell(
+    ui: &mut egui::Ui,
+    cell: Option<GroupCell>,
+    keepers: &HashMap<String, PathBuf>,
+    root: &Path,
+) {
+    match cell {
+        None => {}
+        Some(GroupCell::Folder { duplicates }) => {
+            ui.label(egui::RichText::new(format!("{duplicates} dup")).color(DUPLICATE_COUNT_COLOR))
+                .on_hover_text(format!(
+                    "{duplicates} files with a duplicate in this folder"
+                ));
+        }
+        Some(GroupCell::File {
+            id,
+            group,
+            path,
+            keeper,
+            pending,
+        }) => {
+            let chip = egui::Frame::new()
+                .fill(hash_to_color(&group.hash))
+                .corner_radius(4.0)
+                .inner_margin(egui::Margin::symmetric(4, 0))
+                .show(ui, |ui| {
+                    ui.label(
+                        egui::RichText::new(id.to_string())
+                            .color(egui::Color32::BLACK)
+                            .strong(),
+                    );
+                })
+                .response;
+            let mark = if keeper {
+                Some(ui.label(egui::RichText::new("✔ keep").color(KEEPER_COLOR)))
+            } else if pending {
+                Some(ui.label(egui::RichText::new("✖").color(PENDING_DELETION_COLOR)))
+            } else {
+                None
+            };
+            let response = mark.map_or(chip.clone(), |mark| chip | mark);
+            response.on_hover_ui(|ui| {
+                ui.label(member_tooltip(group, path, keepers, root));
+            });
+        }
+    }
 }
 
 fn files_to_hash(view: &FileSystemView, hidden: &[bool]) -> Vec<PathBuf> {
@@ -165,12 +328,10 @@ pub struct DuplicateFilesPane {
     open_diff_popup: bool,
     #[serde(skip)]
     pub open_dir_window: bool,
-    /// Root of the folder the conflict state was computed for.
     #[serde(skip)]
-    conflicts_root: Option<PathBuf>,
-    /// Filter the conflict state was computed with.
+    groups: Option<DuplicateGroups>,
     #[serde(skip)]
-    conflicts_filter: PathFilter,
+    was_hashing: bool,
     /// Outcome of the last Resolve, shown until closed.
     #[serde(skip)]
     resolution_summary: Option<ResolutionSummary>,
@@ -225,8 +386,8 @@ impl DuplicateFilesPane {
             title,
             open_diff_popup: false,
             open_dir_window: false,
-            conflicts_root: None,
-            conflicts_filter: PathFilter::default(),
+            groups: None,
+            was_hashing: false,
             resolution_summary: None,
             cursor: TreeCursor::default(),
             cursor_root: None,
@@ -279,6 +440,7 @@ impl DuplicateFilesPane {
         self.cancel_hashing(ctx);
         ctx.hash_service.clear();
         self.hashed_for = None;
+        self.groups = None;
     }
 
     /// Rebuilt when Folder 1 is rescanned or replaced, or the filter or sort changed.
@@ -316,44 +478,83 @@ impl DuplicateFilesPane {
         }
     }
 
-    /// Diff button: groups the visible, already hashed files by hash and opens the
-    /// conflicts window. Returns the notice logged about visible files that were left
-    /// out because they are not hashed yet.
+    /// Diff button: opens the conflicts window on fresh groups. Returns the notice logged
+    /// about size collisions left out because they are not hashed yet.
     fn diff_visible_files(
         &mut self,
         ctx: &mut DuplicateFilesPaneCtx,
         hashes: &HashMap<PathBuf, Option<HashRepresentation>>,
     ) -> Option<String> {
         let view = ctx.path_diff_view.file_system_1_view.as_ref()?;
-        let visible = visible_file_hashes(view, &tree_hidden(view, ctx.path_filter), hashes);
+        let unhashed = unhashed_files_to_hash(view, &tree_hidden(view, ctx.path_filter), hashes);
 
-        let notice = (visible.unhashed > 0).then(|| {
-            format!(
-                "Diff left out {} files that are not hashed yet",
-                visible.unhashed
-            )
-        });
+        let notice = (unhashed > 0)
+            .then(|| format!("Diff left out {unhashed} files that are not hashed yet"));
         if let Some(notice) = &notice {
             log::warn!("{notice}");
         }
 
-        let groups = group_duplicates(visible.hashed);
-        log::info!("Diff found {} duplicate groups", groups.len());
-        *ctx.conflict_map = groups.into_iter().collect();
+        self.regroup(ctx, hashes);
+        log::info!("Diff found {} duplicate groups", ctx.conflict_map.len());
+        *ctx.active_conflict_hash = None;
+        self.open_diff_popup = true;
 
-        // Keepers from an earlier Diff survive only if they still belong to their group.
+        notice
+    }
+
+    /// Groups again when Folder 1 or the filter changed, and every frame while hashing
+    /// plus one after it, which sees the last hashes.
+    fn update_groups(&mut self, ctx: &mut DuplicateFilesPaneCtx) {
+        let hashing = self.hash_progress(ctx.hash_service).is_some();
+        let was_hashing = std::mem::replace(&mut self.was_hashing, hashing);
+        let current = match (ctx.path_diff_view.file_system_1_view.as_ref(), &self.groups) {
+            (Some(view), Some(groups)) => groups.is_for(view, ctx.path_filter),
+            (None, None) => true,
+            _ => false,
+        };
+        if current && !hashing && !was_hashing {
+            return;
+        }
+        let snapshot = ctx.hash_service.snapshot();
+        self.regroup(ctx, &snapshot.hashes);
+    }
+
+    /// Keepers survive only as members of their group, so a resolve can't recycle a file
+    /// the user no longer sees.
+    fn regroup(
+        &mut self,
+        ctx: &mut DuplicateFilesPaneCtx,
+        hashes: &HashMap<PathBuf, Option<HashRepresentation>>,
+    ) {
+        let groups = ctx
+            .path_diff_view
+            .file_system_1_view
+            .as_ref()
+            .map(|view| duplicate_groups(view, ctx.path_filter, hashes));
+        *ctx.conflict_map = groups
+            .iter()
+            .flat_map(|groups| &groups.groups)
+            .map(|group| {
+                let mut paths = group.paths.clone();
+                paths.sort();
+                (group.hash.clone(), paths)
+            })
+            .collect();
+
         let conflict_map = &*ctx.conflict_map;
         ctx.conflict_map_resolved.retain(|hash, keeper| {
             conflict_map
                 .get(hash)
                 .is_some_and(|paths| paths.contains(keeper))
         });
-        *ctx.active_conflict_hash = None;
-        self.conflicts_root = view_root(Some(view));
-        self.conflicts_filter = ctx.path_filter.clone();
-        self.open_diff_popup = true;
-
-        notice
+        if ctx
+            .active_conflict_hash
+            .as_ref()
+            .is_some_and(|hash| !conflict_map.contains_key(hash))
+        {
+            *ctx.active_conflict_hash = None;
+        }
+        self.groups = groups;
     }
 
     /// Resolve All Selected: removes every non-keeper of the groups with a keeper through
@@ -387,28 +588,14 @@ impl DuplicateFilesPane {
         *ctx.active_conflict_hash = Some(hash);
     }
 
-    /// Conflicts, keepers and the pending marks derived from them refer to the folder
-    /// and filter they were computed for; drop them once a different folder (or none) is
-    /// open, or the filter changed, so a resolve can't recycle a file the user no longer sees.
-    fn forget_stale_conflicts(&mut self, ctx: &mut DuplicateFilesPaneCtx) {
-        let root = view_root(ctx.path_diff_view.file_system_1_view.as_ref());
-        if root != self.conflicts_root || *ctx.path_filter != self.conflicts_filter {
-            ctx.conflict_map.clear();
-            ctx.conflict_map_resolved.clear();
-            *ctx.active_conflict_hash = None;
-            self.conflicts_root = root;
-            self.conflicts_filter = ctx.path_filter.clone();
-        }
-    }
-
     pub fn ui(
         &mut self,
         ui: &mut egui::Ui,
         ctx: &mut DuplicateFilesPaneCtx,
     ) -> egui_tiles::UiResponse {
-        self.forget_stale_conflicts(ctx);
         self.forget_cursor_of_other_root(ctx.path_diff_view.file_system_1_view.as_ref());
         self.hash_size_collisions(ctx);
+        self.update_groups(ctx);
 
         ui.vertical(|ui| {
             self.ui_popups(ui, ctx);
@@ -490,6 +677,14 @@ impl DuplicateFilesPane {
             self.tree_rows(view, ctx.path_filter, *ctx.tree_sort);
             let rows = self.tree_cache.as_ref().map(|cache| cache.rows.as_slice());
             let pending_deletion = pending_deletions(ctx.conflict_map, ctx.conflict_map_resolved);
+            let root = view_root(Some(view)).expect("a view has a root");
+            let groups = self.groups.as_ref();
+            let keepers = &*ctx.conflict_map_resolved;
+            let mut group_cell = |ui: &mut egui::Ui, node_id: FsNodeId| {
+                let cell =
+                    groups.and_then(|groups| groups.cell(node_id, keepers, &pending_deletion));
+                ui_group_cell(ui, cell, keepers, &root);
+            };
             draw_ui_folder_tree(
                 ui,
                 ctx.path_diff_view.file_system_1_view,
@@ -508,6 +703,11 @@ impl DuplicateFilesPane {
                 DiffFilter::default(),
                 TreeMode::SingleSide {
                     pending_deletion: &pending_deletion,
+                    column: NodeColumn {
+                        header: "Group",
+                        width: GROUP_COLUMN_WIDTH,
+                        cell: &mut group_cell,
+                    },
                 },
             );
         } else {
@@ -861,6 +1061,29 @@ mod tests {
             self.with_ctx(|ctx| pane.diff_visible_files(ctx, hashes))
         }
 
+        fn frame(&mut self, pane: &mut DuplicateFilesPane) {
+            self.with_ctx(|ctx| {
+                pane.hash_size_collisions(ctx);
+                pane.update_groups(ctx);
+            });
+        }
+
+        fn hash_frames(&mut self, pane: &mut DuplicateFilesPane) {
+            self.frame(pane);
+            self.hash_service.resize_workers(1);
+            let deadline = Instant::now() + Duration::from_secs(10);
+            loop {
+                assert!(Instant::now() < deadline, "hashing did not finish");
+                let idle = pane.hash_progress(&self.hash_service).is_none();
+                self.frame(pane);
+                if idle {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            self.hash_service.resize_workers(0);
+        }
+
         fn finish_rescan(&mut self) {
             finish_side_scan(
                 Side::Folder1,
@@ -1142,33 +1365,47 @@ mod tests {
     fn opening_a_different_folder_clears_conflicts_keepers_and_marks() {
         let (dir, view) = duplicate_tree();
         let root = dir.path();
-        let hashes = hashes_of(&[&root.join("a.txt"), &root.join("b.txt")]);
         let mut state = PaneState::new(view);
         let mut pane = DuplicateFilesPane::new(None);
-        state.press_diff(&mut pane, &hashes);
+        state.hash_frames(&mut pane);
         let hash = same_hash(root);
         state
             .conflict_map_resolved
             .insert(hash.clone(), root.join("a.txt"));
         state.active_conflict_hash = Some(hash.clone());
 
-        // A frame with the same folder keeps everything.
-        state.with_ctx(|ctx| pane.forget_stale_conflicts(ctx));
+        state.frame(&mut pane);
         assert_eq!(
             state.conflict_map_resolved,
             HashMap::from([(hash.clone(), root.join("a.txt"))])
         );
-        assert_eq!(state.active_conflict_hash, Some(hash));
+        assert_eq!(state.active_conflict_hash, Some(hash.clone()));
         assert!(!pending_deletions(&state.conflict_map, &state.conflict_map_resolved).is_empty());
 
-        let (_other_dir, other_view) = duplicate_tree();
+        let (other_dir, other_view) = duplicate_tree();
         state.view_1 = Some(other_view);
-        state.with_ctx(|ctx| pane.forget_stale_conflicts(ctx));
+        state.frame(&mut pane);
 
         assert!(state.conflict_map.is_empty());
         assert!(state.conflict_map_resolved.is_empty());
         assert_eq!(state.active_conflict_hash, None);
         assert!(pending_deletions(&state.conflict_map, &state.conflict_map_resolved).is_empty());
+
+        state.hash_frames(&mut pane);
+        assert_eq!(
+            state.conflict_map[&hash],
+            [
+                other_dir.path().join("a.txt"),
+                other_dir.path().join("b.txt"),
+                other_dir.path().join("e.txt"),
+                other_dir.path().join("sub").join("c.txt"),
+            ]
+        );
+        assert!(state.conflict_map_resolved.is_empty());
+
+        state.view_1 = None;
+        state.frame(&mut pane);
+        assert!(state.conflict_map.is_empty());
     }
 
     fn blacklist(text: &str) -> PathFilter {
@@ -1403,33 +1640,245 @@ mod tests {
     }
 
     #[test]
-    fn changing_the_filter_clears_conflicts_keepers_and_marks() {
+    fn changing_the_filter_drops_the_keepers_and_marks_that_no_longer_apply() {
         let (dir, view) = duplicate_tree();
         let root = dir.path();
-        let hashes = hashes_of(&[&root.join("a.txt"), &root.join("b.txt")]);
+        let (a, b, c, e) = (
+            root.join("a.txt"),
+            root.join("b.txt"),
+            root.join("sub").join("c.txt"),
+            root.join("e.txt"),
+        );
         let mut state = PaneState::new(view);
         let mut pane = DuplicateFilesPane::new(None);
         state.path_filter = blacklist("*.obj");
-        state.press_diff(&mut pane, &hashes);
+        state.hash_frames(&mut pane);
         let hash = same_hash(root);
-        state
-            .conflict_map_resolved
-            .insert(hash.clone(), root.join("a.txt"));
+        set_keeper(
+            &state.conflict_map,
+            &mut state.conflict_map_resolved,
+            &hash,
+            Some(&a),
+        );
         state.active_conflict_hash = Some(hash.clone());
+        let pending = |state: &PaneState| {
+            pending_deletions(&state.conflict_map, &state.conflict_map_resolved)
+        };
 
-        // A frame with the same filter keeps everything.
-        state.with_ctx(|ctx| pane.forget_stale_conflicts(ctx));
-        assert!(!pending_deletions(&state.conflict_map, &state.conflict_map_resolved).is_empty());
-        assert_eq!(state.active_conflict_hash, Some(hash));
+        state.frame(&mut pane);
+        assert_eq!(
+            pending(&state),
+            HashSet::from([b.clone(), c.clone(), e.clone()])
+        );
 
         // b.txt, which a resolve would recycle, is hidden now.
         state.path_filter = blacklist("*.obj, b.txt");
-        state.with_ctx(|ctx| pane.forget_stale_conflicts(ctx));
+        state.frame(&mut pane);
+        assert_eq!(
+            state.conflict_map_resolved,
+            HashMap::from([(hash.clone(), a.clone())])
+        );
+        assert_eq!(pending(&state), HashSet::from([c.clone(), e.clone()]));
+        assert_eq!(state.active_conflict_hash, Some(hash.clone()));
 
-        assert!(state.conflict_map.is_empty());
+        state.path_filter = blacklist("*.obj, a.txt, b.txt");
+        state.frame(&mut pane);
+        assert_eq!(
+            state.conflict_map,
+            HashMap::from([(hash.clone(), vec![e, c])])
+        );
         assert!(state.conflict_map_resolved.is_empty());
+        assert!(pending(&state).is_empty());
+        assert_eq!(state.active_conflict_hash, Some(hash));
+
+        state.path_filter = blacklist("*.txt");
+        state.frame(&mut pane);
+        assert!(state.conflict_map.is_empty());
         assert_eq!(state.active_conflict_hash, None);
-        assert!(pending_deletions(&state.conflict_map, &state.conflict_map_resolved).is_empty());
+    }
+
+    #[test]
+    fn groups_appear_once_the_collisions_are_hashed_without_pressing_diff() {
+        let (dir, view) = duplicate_tree();
+        let root = dir.path();
+        let mut state = PaneState::new(view);
+        let mut pane = DuplicateFilesPane::new(None);
+
+        state.frame(&mut pane);
+        assert!(state.conflict_map.is_empty());
+        state.hash_frames(&mut pane);
+
+        assert_eq!(
+            state.conflict_map,
+            HashMap::from([(
+                same_hash(root),
+                vec![
+                    root.join("a.txt"),
+                    root.join("b.txt"),
+                    root.join("e.txt"),
+                    root.join("sub").join("c.txt")
+                ],
+            )])
+        );
+        assert!(!pane.open_diff_popup);
+    }
+
+    #[test]
+    fn the_detail_window_stays_open_while_its_group_is_rebuilt() {
+        let (dir, view) = duplicate_tree();
+        let root = dir.path();
+        let mut state = PaneState::new(view);
+        let mut pane = DuplicateFilesPane::new(None);
+        state.press_diff(
+            &mut pane,
+            &hashes_of(&[&root.join("a.txt"), &root.join("b.txt")]),
+        );
+        let hash = same_hash(root);
+        state.active_conflict_hash = Some(hash.clone());
+
+        let more = hashes_of(&[
+            &root.join("a.txt"),
+            &root.join("b.txt"),
+            &root.join("e.txt"),
+        ]);
+        state.with_ctx(|ctx| pane.regroup(ctx, &more));
+
+        assert_eq!(state.active_conflict_hash, Some(hash.clone()));
+        assert_eq!(state.conflict_map[&hash].len(), 3);
+    }
+
+    fn node(view: &FileSystemView, path: PathBuf) -> FsNodeId {
+        view.file_system.find_path(path).unwrap()
+    }
+
+    #[test]
+    fn group_cells_show_the_group_keeper_and_marks_and_folders_count_their_duplicates() {
+        let (dir, _) = duplicate_tree();
+        let root = dir.path();
+        fs::write(root.join("sub").join("x.txt"), "xx").unwrap();
+        fs::write(root.join("y.txt"), "xx").unwrap();
+        fs::write(root.join("z.txt"), "zzzz").unwrap();
+        let view = FileSystemView::new(Arc::new(FileSystemModel::new(root).unwrap()));
+        let all: Vec<PathBuf> = view
+            .file_system
+            .iter_files()
+            .map(|id| {
+                view.file_system
+                    .get_node(id)
+                    .unwrap()
+                    .as_path()
+                    .as_ref()
+                    .to_path_buf()
+            })
+            .collect();
+        let hashes = hashes_of(&all.iter().map(PathBuf::as_path).collect::<Vec<_>>());
+        let groups = duplicate_groups(&view, &PathFilter::default(), &hashes);
+        let same = same_hash(root);
+        let keepers = HashMap::from([(same.clone(), root.join("a.txt"))]);
+        let pending = HashSet::from([
+            root.join("b.txt"),
+            root.join("e.txt"),
+            root.join("sub").join("c.txt"),
+        ]);
+        let cell = |path: PathBuf| groups.cell(node(&view, path), &keepers, &pending);
+        let file = |path: PathBuf| match cell(path) {
+            Some(GroupCell::File {
+                id,
+                group,
+                path,
+                keeper,
+                pending,
+            }) => (id, group.hash.clone(), path.to_path_buf(), keeper, pending),
+            other => panic!("not a file cell: {other:?}"),
+        };
+
+        let (same_id, hash, path, keeper, pending_a) = file(root.join("a.txt"));
+        assert_eq!(
+            (hash, path, keeper, pending_a),
+            (same.clone(), root.join("a.txt"), true, false)
+        );
+        let (id, _, _, keeper, pending_b) = file(root.join("b.txt"));
+        assert_eq!((id, keeper, pending_b), (same_id, false, true));
+        let (xx_id, hash, _, keeper, pending_x) = file(root.join("sub").join("x.txt"));
+        assert_ne!(hash, same);
+        assert_eq!((keeper, pending_x), (false, false));
+        assert_eq!(file(root.join("y.txt")).0, xx_id);
+
+        let first_in_tree = view
+            .file_system
+            .iter_tree()
+            .map(|(_, node, _)| node.as_path().as_ref().to_path_buf())
+            .find(|path| {
+                path.ends_with("a.txt") || path.ends_with("x.txt") || path.ends_with("y.txt")
+            })
+            .unwrap();
+        let expected = if first_in_tree.ends_with("a.txt") {
+            (1, 2)
+        } else {
+            (2, 1)
+        };
+        assert_eq!((same_id, xx_id), expected);
+
+        assert_eq!(cell(root.join("d.txt")), None);
+        assert_eq!(cell(root.join("z.txt")), None);
+        assert_eq!(
+            cell(root.join("sub")),
+            Some(GroupCell::Folder { duplicates: 2 })
+        );
+        assert_eq!(
+            cell(root.to_path_buf()),
+            Some(GroupCell::Folder { duplicates: 6 })
+        );
+
+        let hidden_a = duplicate_groups(&view, &blacklist("a.txt"), &hashes);
+        assert_eq!(
+            hidden_a.cell(node(&view, root.join("a.txt")), &keepers, &pending),
+            None
+        );
+        assert_eq!(
+            hidden_a.cell(node(&view, root.to_path_buf()), &keepers, &pending),
+            Some(GroupCell::Folder { duplicates: 5 })
+        );
+    }
+
+    #[test]
+    fn the_member_tooltip_lists_the_other_members_and_marks_the_keeper() {
+        let root = Path::new("root");
+        let group = DuplicateGroup {
+            size: 4,
+            hash: "h".to_string(),
+            paths: vec![
+                root.join("a.txt"),
+                root.join("b.txt"),
+                root.join("sub").join("c.txt"),
+            ],
+        };
+        let keepers = HashMap::from([("h".to_string(), root.join("a.txt"))]);
+
+        assert_eq!(
+            member_tooltip(&group, &root.join("b.txt"), &keepers, root),
+            format!(
+                "2 other copies:\na.txt (keep)\n{}",
+                Path::new("sub").join("c.txt").display()
+            )
+        );
+        assert_eq!(
+            member_tooltip(
+                &group,
+                &root.join("a.txt"),
+                &HashMap::new(),
+                &root.join("sub")
+            ),
+            format!("2 other copies:\n{}\nc.txt", root.join("b.txt").display())
+        );
+
+        let many = DuplicateGroup {
+            paths: (0..35).map(|i| root.join(format!("{i}.txt"))).collect(),
+            ..group
+        };
+        let text = member_tooltip(&many, &root.join("0.txt"), &HashMap::new(), root);
+        assert!(text.starts_with("34 other copies:\n1.txt\n"), "{text}");
+        assert!(text.ends_with("\n30.txt\n… 4 more"), "{text}");
     }
 
     /// Removes files for real, except `failing`, whose removal fails and leaves it in place.
