@@ -11,6 +11,7 @@ use zcommon::ui_egui::common::show_custom_popup;
 use zcommon::ui_egui::find_popup::{FindPopupEvent, find_popup};
 use zcommon::ui_egui::h_scroll::{self, WheelModifier};
 use zcommon::ui_egui::keymap::{Action, Shortcut};
+use zcommon::ui_egui::keymap_editor::KeymapEditor;
 use zdiff::{
     diff_builder::DiffBuilderOptions,
     lexer::{LEXER_MODE_DEFAULT, LEXER_MODE_GREEDY, LEXER_MODE_NEWLINE, LEXER_MODE_TOKENIZE},
@@ -201,6 +202,8 @@ pub struct ZApp {
     #[serde(skip)]
     open_shortcuts_window: bool,
     #[serde(skip)]
+    keymap_editor: KeymapEditor<FileAction>,
+    #[serde(skip)]
     open_universal_path_window: bool,
     #[serde(skip)]
     open_viewers_window: bool,
@@ -276,6 +279,7 @@ impl<'a> ZApp {
             state: Some(AppState::default()),
             tree: Self::create_tree(),
             open_shortcuts_window: false,
+            keymap_editor: KeymapEditor::default(),
             open_universal_path_window: false,
             open_viewers_window: false,
             open_phase_trace_window: false,
@@ -719,9 +723,17 @@ impl<'a> ZApp {
                 "Option - Shortcuts",
                 true,
                 |ui| {
-                    ui_keybindings(ui, keybindings, &p4_profiles.profiles);
+                    ui_keybindings(
+                        ui,
+                        keybindings,
+                        &mut self.keymap_editor,
+                        &p4_profiles.profiles,
+                    );
                 },
             );
+        }
+        if !self.open_shortcuts_window {
+            self.keymap_editor.cancel_capture();
         }
         if self.open_viewers_window {
             show_custom_popup(
@@ -1160,6 +1172,8 @@ impl<'a> ZApp {
     }
 
     fn process_ctx_inputs(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // The editor takes the captured key press only later in this frame, when it is drawn.
+        let capturing = self.keymap_editor.is_capturing();
         let app_state_ctx = self
             .state
             .as_mut()
@@ -1174,6 +1188,9 @@ impl<'a> ZApp {
         let mut esc_pressed = false;
         {
             let _input_ctx = ctx.input(|r| {
+                if capturing {
+                    return;
+                }
                 tab_pressed = r.key_pressed(egui::Key::Tab);
                 esc_pressed = r.key_pressed(egui::Key::Escape);
 
