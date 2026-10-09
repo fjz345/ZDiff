@@ -2,7 +2,7 @@ use std::{
     collections::{BTreeMap, HashMap, HashSet},
     io,
     path::{Path, PathBuf},
-    sync::{Arc, Weak},
+    sync::Arc,
 };
 
 use eframe::egui::{self, RichText};
@@ -13,7 +13,7 @@ use zcommon::{
     kinds::{FileKind, KindTable},
 };
 use zhashdiff::{
-    comparison::{FileMeta, PathComparisonResult},
+    comparison::{FileMeta, PairState},
     external_diff_tool::{
         CantDiff, DiffPair, DiffToolConfig, cant_diff, folder_labels, open_diff_tool,
     },
@@ -49,48 +49,6 @@ pub struct VisibleRowTwoFolderDiff {
     pub diff_state: DiffState,
     pub file_kinds: [Option<FileKind>; 2],
     pub blueprints: [bool; 2],
-}
-
-/// File comparison results of the two loaded trees, so rebuilding the two-folder rows
-/// doesn't read the files again.
-#[derive(Debug, Default)]
-pub struct FileCompareCache {
-    // Node ids only mean something in the model they came from. Every reload or rescan
-    // makes a new model, whichever code path does it, so the cache follows the models
-    // rather than relying on each reload site to clear it. Weak, so a replaced model is
-    // freed but its address can't be reused by a new one while it is held here.
-    trees: (Weak<FileSystemModel>, Weak<FileSystemModel>),
-    states: HashMap<(FsNodeId, FsNodeId), DiffState>,
-}
-
-impl FileCompareCache {
-    fn retain_for(
-        &mut self,
-        file_system_1: Option<&FileSystemView>,
-        file_system_2: Option<&FileSystemView>,
-    ) {
-        let tree = |view: Option<&FileSystemView>| {
-            view.map_or_else(Weak::new, |v| Arc::downgrade(&v.file_system))
-        };
-        let trees = (tree(file_system_1), tree(file_system_2));
-        if !Weak::ptr_eq(&trees.0, &self.trees.0) || !Weak::ptr_eq(&trees.1, &self.trees.1) {
-            self.states.clear();
-            self.trees = trees;
-        }
-    }
-
-    fn file_diff_state(
-        &mut self,
-        left: (FsNodeId, &FsNode),
-        right: (FsNodeId, &FsNode),
-        compare: &mut impl FnMut(&Path, &Path) -> io::Result<PathComparisonResult>,
-        partial_threshold: f32,
-    ) -> DiffState {
-        self.states
-            .entry((left.0, right.0))
-            .or_insert_with(|| file_diff_state(left, right, compare, partial_threshold))
-            .clone()
-    }
 }
 
 #[derive(Debug)]
@@ -194,12 +152,9 @@ impl FileSystemView {
         file_system_2: Option<&FileSystemView>,
         filter: &PathFilter,
         kinds: &KindTable,
-        compare_cache: &mut FileCompareCache,
-        mut compare: impl FnMut(&Path, &Path) -> io::Result<PathComparisonResult>,
+        mut pair_state: impl FnMut(&str, [&FsNode; 2]) -> Option<PairState>,
         mut blueprint: impl FnMut(&Path, FileMeta) -> Option<bool>,
     ) -> io::Result<Vec<VisibleRowTwoFolderDiff>> {
-        compare_cache.retain_for(file_system_1, file_system_2);
-
         let mut entries_map: BTreeMap<
             String,
             (
@@ -296,6 +251,19 @@ impl FileSystemView {
         let initial_capacity = num_files_and_folders_1.max(num_files_and_folders_2);
         let mut out_rows = Vec::with_capacity(initial_capacity);
 
+        let file_states: HashMap<&str, DiffState> = entries_map
+            .iter()
+            .filter_map(|(rel_path, (left, right))| {
+                let ((l_id, l_node, _), (r_id, r_node, _)) = (left.as_ref()?, right.as_ref()?);
+                if l_node.is_dir() {
+                    return None;
+                }
+                let state =
+                    file_diff_state(rel_path, (*l_id, l_node), (*r_id, r_node), &mut pair_state);
+                Some((rel_path.as_str(), state))
+            })
+            .collect();
+
         for (rel_path, (left, right)) in &entries_map {
             let depth = left.map(|l| l.2).or(right.map(|r| r.2)).unwrap_or(0);
 
@@ -305,23 +273,11 @@ impl FileSystemView {
                 .unwrap_or(false);
 
             let diff_state = match (left, right) {
-                (Some((l_id, l_node, _)), Some((r_id, r_node, _))) => {
-                    let partial_threshold = 1.0f32;
+                (Some((_, l_node, _)), Some(_)) => {
                     if l_node.is_dir() {
-                        folder_diff_state(
-                            rel_path,
-                            &entries_map,
-                            compare_cache,
-                            &mut compare,
-                            partial_threshold,
-                        )
+                        folder_diff_state(rel_path, &entries_map, &file_states)
                     } else {
-                        compare_cache.file_diff_state(
-                            (*l_id, l_node),
-                            (*r_id, r_node),
-                            &mut compare,
-                            partial_threshold,
-                        )
+                        file_states[rel_path.as_str()].clone()
                     }
                 }
                 (Some((l_id, _, _)), None) => DiffState::OnlyInFirst(*l_id),
@@ -1102,27 +1058,18 @@ pub fn ui_custom_diff_state(ui: &mut egui::Ui, state: &DiffState) -> egui::respo
 }
 
 fn file_diff_state(
+    rel_path: &str,
     left: (FsNodeId, &FsNode),
     right: (FsNodeId, &FsNode),
-    compare: &mut impl FnMut(&Path, &Path) -> io::Result<PathComparisonResult>,
-    partial_threshold: f32,
+    pair_state: &mut impl FnMut(&str, [&FsNode; 2]) -> Option<PairState>,
 ) -> DiffState {
-    let path1 = left.1.as_path();
-    let path2 = right.1.as_path();
-
-    let result = match compare(path1.as_ref(), path2.as_ref()) {
-        Ok(r) => r,
-        Err(_) => return DiffState::Different(left.0, right.0),
-    };
-
-    let likeness = result.likeness();
-
-    if likeness == 1.0 {
-        DiffState::Same(left.0, right.0)
-    } else if likeness >= partial_threshold {
-        DiffState::Partial(left.0, right.0)
-    } else {
-        DiffState::Different(left.0, right.0)
+    if right.1.is_dir() {
+        return DiffState::Different(left.0, right.0);
+    }
+    match pair_state(rel_path, [left.1, right.1]) {
+        Some(PairState::Same) => DiffState::Same(left.0, right.0),
+        Some(PairState::Different) => DiffState::Different(left.0, right.0),
+        None => DiffState::Pending(left.0, right.0),
     }
 }
 
@@ -1151,9 +1098,7 @@ fn folder_diff_state(
             Option<(FsNodeId, &FsNode, FsNodeDepth)>,
         ),
     >,
-    compare_cache: &mut FileCompareCache,
-    compare: &mut impl FnMut(&Path, &Path) -> io::Result<PathComparisonResult>,
-    threshold: f32,
+    file_states: &HashMap<&str, DiffState>,
 ) -> DiffState {
     let (current_left, current_right) = entries_map
         .get(parent_path)
@@ -1173,12 +1118,10 @@ fn folder_diff_state(
         .range(prefix.clone()..)
         .take_while(|(path, _)| path.starts_with(&prefix))
         .filter(|(path, _)| path.as_str() != parent_path)
-        .filter_map(|(_, (left, right))| match (left, right) {
+        .filter_map(|(path, (left, right))| match (left, right) {
             (Some((li, _, _)), None) => Some(DiffState::OnlyInFirst(*li)),
             (None, Some((ri, _, _))) => Some(DiffState::OnlyInSecond(*ri)),
-            (Some((li, ln, _)), Some((ri, rn, _))) if !ln.is_dir() => {
-                Some(compare_cache.file_diff_state((*li, ln), (*ri, rn), compare, threshold))
-            }
+            (Some((_, ln, _)), Some(_)) if !ln.is_dir() => Some(file_states[path.as_str()].clone()),
             _ => None,
         });
     aggregate_folder_state(l_id, r_id, descendants)
@@ -1874,11 +1817,12 @@ fn get_folder_selection_state(
 mod tests {
     use crate::ui_egui::fs_tree::apply_path_bar;
     use crate::ui_egui::fs_tree::{
-        DiffJump, DiffState, FileCompareCache, FileSystemView, VisibleRowTwoFolderDiff,
-        aggregate_folder_state, apply_blueprint_results, apply_cursor_request, cursor_keys,
-        diff_jump_keys, tree_hidden, two_folder_cursor_rows,
+        DiffJump, DiffState, FileSystemView, VisibleRowTwoFolderDiff, aggregate_folder_state,
+        apply_blueprint_results, apply_cursor_request, cursor_keys, diff_jump_keys, tree_hidden,
+        two_folder_cursor_rows,
     };
     use crate::ui_egui::roots::{InvalidRoot, Side};
+    use crate::ui_egui::tree_compare::pending_pairs;
     use crate::ui_egui::tree_cursor::{CursorRequest, TreeCursor};
     use crate::ui_egui::tree_filter::{DiffFilter, arrange_two_folder_rows};
     use crate::ui_egui::tree_sort::{SortKey, TreeSort, sort_two_folder_rows};
@@ -1893,7 +1837,7 @@ mod tests {
     use std::sync::Arc;
     use tempfile::{TempDir, tempdir};
     use zcommon::kinds::{FileKind, KindTable};
-    use zhashdiff::comparison::compare_crc;
+    use zhashdiff::comparison::PairState;
     use zhashdiff::filter::{PathFilter, PatternList};
     use zhashdiff::fs::{FileSystemModel, FsIsDir, FsNodeDepth, FsNodeId};
 
@@ -2065,12 +2009,7 @@ mod tests {
         let left = load_view(left_dir.path());
         let right = load_view(right_dir.path());
 
-        let rows = build_counting(
-            &left,
-            &right,
-            &mut FileCompareCache::default(),
-            &Cell::new(0),
-        );
+        let rows = build_counting(&left, &right, &mut PairStates::default(), &Cell::new(0));
 
         let actual: Vec<(String, &str, FsNodeDepth, bool)> = rows
             .iter()
@@ -2103,17 +2042,18 @@ mod tests {
     fn build_counting(
         left: &FileSystemView,
         right: &FileSystemView,
-        cache: &mut FileCompareCache,
+        states: &mut PairStates,
         comparisons: &Cell<usize>,
     ) -> Vec<VisibleRowTwoFolderDiff> {
-        build_filtered(left, right, cache, comparisons, &PathFilter::default())
+        build_filtered(left, right, states, comparisons, &PathFilter::default())
     }
 
-    fn build_filtered(
+    type PairStates = HashMap<String, PairState>;
+
+    fn build_from_states(
         left: &FileSystemView,
         right: &FileSystemView,
-        cache: &mut FileCompareCache,
-        comparisons: &Cell<usize>,
+        states: &PairStates,
         filter: &PathFilter,
     ) -> Vec<VisibleRowTwoFolderDiff> {
         FileSystemView::build_two_folder_diff_rows(
@@ -2121,14 +2061,72 @@ mod tests {
             Some(right),
             filter,
             &KindTable::default(),
-            cache,
-            |a, b| {
-                comparisons.set(comparisons.get() + 1);
-                compare_crc(a, b)
-            },
+            |rel_path, _| states.get(rel_path).copied(),
             |_, _| None,
         )
         .unwrap()
+    }
+
+    fn build_filtered(
+        left: &FileSystemView,
+        right: &FileSystemView,
+        states: &mut PairStates,
+        comparisons: &Cell<usize>,
+        filter: &PathFilter,
+    ) -> Vec<VisibleRowTwoFolderDiff> {
+        let rows = build_from_states(left, right, states, filter);
+        let pending = pending_pairs(&rows, [Some(left), Some(right)]);
+        if pending.is_empty() {
+            return rows;
+        }
+        for pair in pending {
+            comparisons.set(comparisons.get() + 1);
+            states.insert(pair.rel_path.clone(), pair.compare().state);
+        }
+        build_from_states(left, right, states, filter)
+    }
+
+    #[test]
+    fn rows_built_before_any_result_are_pending_and_folders_aggregate_them() {
+        let (left_dir, right_dir) = two_folder_trees();
+        let left = load_view(left_dir.path());
+        let right = load_view(right_dir.path());
+
+        let rows = build_from_states(&left, &right, &PairStates::new(), &PathFilter::default());
+
+        assert_eq!(
+            rows_with_kinds(&rows),
+            [
+                ("", "Different"),
+                ("a.txt", "Pending"),
+                ("b.txt", "Pending"),
+                ("left_only.txt", "OnlyInFirst"),
+                ("right_only.txt", "OnlyInSecond"),
+                ("sub", "Pending"),
+                ("sub/c.txt", "Pending"),
+                ("sub/deep", "Pending"),
+                ("sub/deep/d.txt", "Pending"),
+            ]
+        );
+        let pending: Vec<String> = pending_pairs(&rows, [Some(&left), Some(&right)])
+            .into_iter()
+            .map(|pair| pair.rel_path)
+            .collect();
+        assert_eq!(pending, ["a.txt", "b.txt", "sub/c.txt", "sub/deep/d.txt"]);
+    }
+
+    #[test]
+    fn a_file_facing_a_folder_is_different_without_a_compare() {
+        let (left_dir, right_dir) = (tempdir().unwrap(), tempdir().unwrap());
+        write_files(left_dir.path(), &[("x", "")]);
+        write_files(right_dir.path(), &[("x/inner.txt", "")]);
+        let left = load_view(left_dir.path());
+        let right = load_view(right_dir.path());
+
+        let rows = build_from_states(&left, &right, &PairStates::new(), &PathFilter::default());
+
+        assert_eq!(kind_at(&rows, "x"), "Different");
+        assert!(pending_pairs(&rows, [Some(&left), Some(&right)]).is_empty());
     }
 
     fn blacklist(text: &str) -> PathFilter {
@@ -2153,7 +2151,7 @@ mod tests {
         let rows = build_filtered(
             &left,
             &right,
-            &mut FileCompareCache::default(),
+            &mut PairStates::default(),
             &Cell::new(0),
             &blacklist("B.TXT, *_only.txt"),
         );
@@ -2185,7 +2183,7 @@ mod tests {
         let rows = build_filtered(
             &left,
             &right,
-            &mut FileCompareCache::default(),
+            &mut PairStates::default(),
             &Cell::new(0),
             &blacklist("deep/"),
         );
@@ -2214,17 +2212,17 @@ mod tests {
         write_files(left_dir.path(), &[("sub/deep/left.obj", "only left")]);
         let left = load_view(left_dir.path());
         let right = load_view(right_dir.path());
-        let mut cache = FileCompareCache::default();
+        let mut states = PairStates::default();
         let comparisons = Cell::new(0);
 
-        let rows = build_counting(&left, &right, &mut cache, &comparisons);
+        let rows = build_counting(&left, &right, &mut states, &comparisons);
         assert_eq!(kind_at(&rows, "sub"), "Different");
         assert_eq!(kind_at(&rows, "sub/deep"), "Different");
 
         let rows = build_filtered(
             &left,
             &right,
-            &mut cache,
+            &mut states,
             &comparisons,
             &blacklist("*.log\n*.obj"),
         );
@@ -2243,7 +2241,7 @@ mod tests {
         let rows = build_filtered(
             &left,
             &right,
-            &mut FileCompareCache::default(),
+            &mut PairStates::default(),
             &Cell::new(0),
             &blacklist("*, *.tmp*/"),
         );
@@ -2257,14 +2255,14 @@ mod tests {
         let left = load_view(left_dir.path());
         let right = load_view(right_dir.path());
         let comparisons = Cell::new(0);
-        let mut cache = FileCompareCache::default();
+        let mut states = PairStates::default();
 
-        let unfiltered = build_counting(&left, &right, &mut cache, &comparisons);
+        let unfiltered = build_counting(&left, &right, &mut states, &comparisons);
         assert_eq!(comparisons.get(), 4);
 
-        let filtered = build_filtered(&left, &right, &mut cache, &comparisons, &blacklist("sub"));
+        let filtered = build_filtered(&left, &right, &mut states, &comparisons, &blacklist("sub"));
         assert!(filtered.iter().all(|r| !r.rel_path.starts_with("sub")));
-        let cleared = build_counting(&left, &right, &mut cache, &comparisons);
+        let cleared = build_counting(&left, &right, &mut states, &comparisons);
         assert_eq!(comparisons.get(), 4);
         assert_eq!(cleared, unfiltered);
     }
@@ -2288,7 +2286,7 @@ mod tests {
         let rows = build_filtered(
             &left,
             &right,
-            &mut FileCompareCache::default(),
+            &mut PairStates::default(),
             &Cell::new(0),
             &whitelist("*.rs", ""),
         );
@@ -2330,7 +2328,7 @@ mod tests {
         let rows = build_filtered(
             &left,
             &right,
-            &mut FileCompareCache::default(),
+            &mut PairStates::default(),
             &Cell::new(0),
             &whitelist("*.rs", "gen/"),
         );
@@ -2362,16 +2360,16 @@ mod tests {
         write_files(right_dir.path(), &[("lib/deep/y.rs", "right")]);
         let left = load_view(left_dir.path());
         let right = load_view(right_dir.path());
-        let mut cache = FileCompareCache::default();
+        let mut states = PairStates::default();
         let comparisons = Cell::new(0);
 
-        let rows = build_counting(&left, &right, &mut cache, &comparisons);
+        let rows = build_counting(&left, &right, &mut states, &comparisons);
         assert_eq!(kind_at(&rows, "src"), "Different");
 
         let rows = build_filtered(
             &left,
             &right,
-            &mut cache,
+            &mut states,
             &comparisons,
             &whitelist("*.rs", ""),
         );
@@ -2481,12 +2479,7 @@ mod tests {
             );
         }
         let (left, right) = (load_view(left_dir.path()), load_view(right_dir.path()));
-        let rows = build_counting(
-            &left,
-            &right,
-            &mut FileCompareCache::default(),
-            &Cell::new(0),
-        );
+        let rows = build_counting(&left, &right, &mut PairStates::default(), &Cell::new(0));
 
         let rows = sort_two_folder_rows(rows, TreeSort::default());
 
@@ -2510,12 +2503,7 @@ mod tests {
         let (left_dir, right_dir) = two_folder_trees();
         let left = load_view(left_dir.path());
         let right = load_view(right_dir.path());
-        let rows = build_counting(
-            &left,
-            &right,
-            &mut FileCompareCache::default(),
-            &Cell::new(0),
-        );
+        let rows = build_counting(&left, &right, &mut PairStates::default(), &Cell::new(0));
         let by_state = TreeSort::default().clicked(SortKey::State);
 
         let rows = sort_two_folder_rows(rows, by_state);
@@ -2558,7 +2546,7 @@ mod tests {
         let rows = build_filtered(
             &left,
             &right,
-            &mut FileCompareCache::default(),
+            &mut PairStates::default(),
             &Cell::new(0),
             &blacklist("b.txt, deep/"),
         );
@@ -2588,7 +2576,7 @@ mod tests {
         let rows = build_filtered(
             &left,
             &right,
-            &mut FileCompareCache::default(),
+            &mut PairStates::default(),
             &Cell::new(0),
             &blacklist("b.txt, c.txt"),
         );
@@ -2634,12 +2622,7 @@ mod tests {
         let left = load_view(left_dir.path());
         let right = load_view(right_dir.path());
 
-        let rows = build_counting(
-            &left,
-            &right,
-            &mut FileCompareCache::default(),
-            &Cell::new(0),
-        );
+        let rows = build_counting(&left, &right, &mut PairStates::default(), &Cell::new(0));
 
         let paths: Vec<&str> = rows.iter().map(|r| r.rel_path.as_str()).collect();
         assert_eq!(
@@ -2688,8 +2671,7 @@ mod tests {
             Some(&right),
             &PathFilter::default(),
             &kinds,
-            &mut FileCompareCache::default(),
-            |a, b| compare_crc(a, b),
+            |_, _| None,
             |_, _| None,
         )
         .unwrap();
@@ -2756,8 +2738,7 @@ mod tests {
             Some(&right),
             &PathFilter::default(),
             &KindTable::default(),
-            &mut FileCompareCache::default(),
-            |a, b| compare_crc(a, b),
+            |_, _| None,
             |path, meta| {
                 checked.push((path.to_path_buf(), meta.size));
                 (path == known_blueprint).then_some(true)
@@ -2798,8 +2779,7 @@ mod tests {
             Some(&right),
             &PathFilter::default(),
             &KindTable::default(),
-            &mut FileCompareCache::default(),
-            |a, b| compare_crc(a, b),
+            |_, _| None,
             |_, _| None,
         )
         .unwrap();
@@ -2847,46 +2827,15 @@ mod tests {
         let left = load_view(left_dir.path());
         let right = load_view(right_dir.path());
         let comparisons = Cell::new(0);
-        let mut cache = FileCompareCache::default();
+        let mut states = PairStates::default();
 
-        let first = build_counting(&left, &right, &mut cache, &comparisons);
+        let first = build_counting(&left, &right, &mut states, &comparisons);
         // a.txt, b.txt, sub/c.txt and sub/deep/d.txt are on both sides.
         assert_eq!(comparisons.get(), 4);
 
-        let second = build_counting(&left, &right, &mut cache, &comparisons);
+        let second = build_counting(&left, &right, &mut states, &comparisons);
         assert_eq!(comparisons.get(), 4);
         assert_eq!(second, first);
-    }
-
-    #[test]
-    fn reloading_either_root_recompares_its_files() {
-        let (left_dir, right_dir) = two_folder_trees();
-        let mut left = load_view(left_dir.path());
-        let mut right = load_view(right_dir.path());
-        let comparisons = Cell::new(0);
-        let mut cache = FileCompareCache::default();
-        let rows = build_counting(&left, &right, &mut cache, &comparisons);
-        assert_eq!(kind_at(&rows, "b.txt"), "Different");
-
-        fs::write(right_dir.path().join("b.txt"), "left b").unwrap();
-        let rows = build_counting(&left, &right, &mut cache, &comparisons);
-        assert_eq!(
-            comparisons.get(),
-            4,
-            "the same trees are not compared again"
-        );
-        assert_eq!(kind_at(&rows, "b.txt"), "Different");
-
-        right = load_view(right_dir.path());
-        let rows = build_counting(&left, &right, &mut cache, &comparisons);
-        assert_eq!(comparisons.get(), 8);
-        assert_eq!(kind_at(&rows, "b.txt"), "Same");
-
-        fs::write(left_dir.path().join("b.txt"), "changed b").unwrap();
-        left = load_view(left_dir.path());
-        let rows = build_counting(&left, &right, &mut cache, &comparisons);
-        assert_eq!(comparisons.get(), 12);
-        assert_eq!(kind_at(&rows, "b.txt"), "Different");
     }
 
     #[test]
@@ -2895,12 +2844,7 @@ mod tests {
         write_files(left_dir.path(), &[("sub/left_only_in_sub.txt", "l")]);
         let mut left = load_view(left_dir.path());
         let mut right = load_view(right_dir.path());
-        let rows = build_counting(
-            &left,
-            &right,
-            &mut FileCompareCache::default(),
-            &Cell::new(0),
-        );
+        let rows = build_counting(&left, &right, &mut PairStates::default(), &Cell::new(0));
 
         // As a click on the row does: both sides.
         let sub = rows.iter().find(|r| r.rel_path == "sub").unwrap();
@@ -2930,12 +2874,7 @@ mod tests {
         let (left_dir, right_dir) = two_folder_trees();
         let mut left = load_view(left_dir.path());
         let mut right = load_view(right_dir.path());
-        let rows = build_counting(
-            &left,
-            &right,
-            &mut FileCompareCache::default(),
-            &Cell::new(0),
-        );
+        let rows = build_counting(&left, &right, &mut PairStates::default(), &Cell::new(0));
         let sub = rows.iter().find(|r| r.rel_path == "sub").unwrap();
         left.toggle_collapse(sub.diff_state.first().unwrap());
         right.toggle_collapse(sub.diff_state.second().unwrap());
@@ -2956,12 +2895,7 @@ mod tests {
         let (left_dir, right_dir) = two_folder_trees();
         let mut left = load_view(left_dir.path());
         let mut right = load_view(right_dir.path());
-        let rows = build_counting(
-            &left,
-            &right,
-            &mut FileCompareCache::default(),
-            &Cell::new(0),
-        );
+        let rows = build_counting(&left, &right, &mut PairStates::default(), &Cell::new(0));
         let sub = rows.iter().find(|r| r.rel_path == "sub").unwrap();
         let (left_sub, right_sub) = (
             sub.diff_state.first().unwrap(),
@@ -2997,12 +2931,7 @@ mod tests {
         let (left_dir, right_dir) = two_folder_trees();
         let left = load_view(left_dir.path());
         let right = load_view(right_dir.path());
-        let rows = build_counting(
-            &left,
-            &right,
-            &mut FileCompareCache::default(),
-            &Cell::new(0),
-        );
+        let rows = build_counting(&left, &right, &mut PairStates::default(), &Cell::new(0));
 
         let differing: Vec<&str> = two_folder_cursor_rows(Some(&left), Some(&right), &rows, false)
             .iter()
@@ -3343,7 +3272,7 @@ mod tests {
                             build_counting(
                                 &left,
                                 &right,
-                                &mut FileCompareCache::default(),
+                                &mut PairStates::default(),
                                 &Cell::new(0),
                             ),
                             filter,

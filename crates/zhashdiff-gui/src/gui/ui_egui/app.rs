@@ -13,7 +13,6 @@ use std::{
 };
 use zcommon::{hash::HashService, kinds::KindTable, logger::LogBuffer};
 use zhashdiff::{
-    comparison::{PathComparissonMethod, compare_paths},
     external_diff_tool::DiffToolConfig,
     filter::PathFilter,
     fs::{FileSystemModel, FsNodeId},
@@ -23,11 +22,12 @@ use zhashdiff::{
 
 use crate::ui_egui::{
     duplicate_files_pane::DuplicateFilesPane,
-    fs_tree::{FileCompareCache, FileSystemView, VisibleRowTwoFolderDiff, apply_blueprint_results},
+    fs_tree::{FileSystemView, VisibleRowTwoFolderDiff, apply_blueprint_results},
     panes::{Pane, PathDiffView, TreeBehavior},
     path_diff_pane::{FilterPresets, PathDiffPane},
     roots::{LaunchArgs, Side, apply_launch_args, clear_root, set_root},
     tools_window::ToolsWindow,
+    tree_compare::{CompareUpdate, TreeCompare, patch_row_states},
     tree_filter::{DiffFilter, arrange_two_folder_rows},
     tree_sort::TreeSort,
 };
@@ -51,7 +51,7 @@ pub struct AppStateCtx {
     #[serde(skip)]
     two_folder_diff_visible_rows: Option<Vec<VisibleRowTwoFolderDiff>>,
     #[serde(skip)]
-    two_folder_diff_compare_cache: FileCompareCache,
+    tree_compare: TreeCompare,
     #[serde(skip)]
     blueprint_detector: BlueprintDetector,
     /// The filter `two_folder_diff_visible_rows` were built with.
@@ -88,6 +88,10 @@ impl AppStateCtx {
     /// Rebuilds the two-folder rows when they were dropped or the filter or sort changed since
     /// they were built. Here rather than at the edit, so the rows are never missing mid-frame.
     fn build_two_folder_diff_rows_if_stale(&mut self) {
+        self.tree_compare.retain_for([
+            self.file_system_model_1_view.as_ref(),
+            self.file_system_model_2_view.as_ref(),
+        ]);
         if self.two_folder_diff_rows_filter != self.path_filter
             || self.two_folder_diff_rows_sort != self.tree_sort
             || self.two_folder_diff_rows_diff_filter != self.diff_filter
@@ -97,17 +101,19 @@ impl AppStateCtx {
         if self.two_folder_diff_visible_rows.is_none()
             && (self.file_system_model_1_view.is_some() || self.file_system_model_2_view.is_some())
         {
-            self.two_folder_diff_visible_rows = FileSystemView::build_two_folder_diff_rows(
-                self.file_system_model_1_view.as_ref(),
-                self.file_system_model_2_view.as_ref(),
-                &self.path_filter,
-                &KindTable::default(),
-                &mut self.two_folder_diff_compare_cache,
-                |path_1, path_2| compare_paths(path_1, path_2, &PathComparissonMethod::CrC),
-                |path, meta| self.blueprint_detector.check(path, meta),
-            )
-            .ok()
-            .map(|rows| arrange_two_folder_rows(rows, self.diff_filter, self.tree_sort));
+            self.two_folder_diff_visible_rows = self
+                .build_rows(true)
+                .map(|rows| arrange_two_folder_rows(rows, self.diff_filter, self.tree_sort));
+            if let Some(rows) = &self.two_folder_diff_visible_rows {
+                self.tree_compare.start(
+                    rows,
+                    [
+                        self.file_system_model_1_view.as_ref(),
+                        self.file_system_model_2_view.as_ref(),
+                    ],
+                    Instant::now(),
+                );
+            }
             self.two_folder_diff_rows_filter = self.path_filter.clone();
             self.two_folder_diff_rows_sort = self.tree_sort;
             self.two_folder_diff_rows_diff_filter = self.diff_filter;
@@ -117,6 +123,46 @@ impl AppStateCtx {
                     .as_ref()
                     .map_or(0, Vec::len)
             );
+        }
+    }
+
+    /// Reads no file: pairs without a known state are Pending.
+    fn build_rows(&mut self, check_blueprints: bool) -> Option<Vec<VisibleRowTwoFolderDiff>> {
+        let compare = &self.tree_compare;
+        let detector = &mut self.blueprint_detector;
+        FileSystemView::build_two_folder_diff_rows(
+            self.file_system_model_1_view.as_ref(),
+            self.file_system_model_2_view.as_ref(),
+            &self.path_filter,
+            &KindTable::default(),
+            |rel_path, nodes| compare.state_of(rel_path, nodes),
+            |path, meta| {
+                check_blueprints
+                    .then(|| detector.check(path, meta))
+                    .flatten()
+            },
+        )
+        .ok()
+    }
+
+    /// While a compare runs the rows keep their order and only take the new states, so a state
+    /// sort doesn't move them; the finished compare rebuilds them sorted.
+    fn update_compare(&mut self, now: Instant) {
+        self.tree_compare.retain_for([
+            self.file_system_model_1_view.as_ref(),
+            self.file_system_model_2_view.as_ref(),
+        ]);
+        match self.tree_compare.poll(now) {
+            CompareUpdate::Idle => {}
+            CompareUpdate::Patch => {
+                if self.two_folder_diff_visible_rows.is_some()
+                    && let Some(fresh) = self.build_rows(false)
+                    && let Some(rows) = self.two_folder_diff_visible_rows.as_mut()
+                {
+                    patch_row_states(rows, fresh);
+                }
+            }
+            CompareUpdate::Finished => self.two_folder_diff_visible_rows = None,
         }
     }
 
@@ -410,6 +456,23 @@ fn ui_scan_progress(
     }
 }
 
+fn ui_compare_progress(ui: &mut egui::Ui, compare: &mut TreeCompare) {
+    let Some((compared, total)) = compare.progress() else {
+        return;
+    };
+    let cancelled = ui
+        .horizontal(|ui| {
+            ui.spinner();
+            ui.label(format!("Comparing: {compared} of {total} file pairs"));
+            ui.button("Cancel").clicked()
+        })
+        .inner;
+    if cancelled {
+        compare.cancel();
+        ui.ctx().request_repaint();
+    }
+}
+
 #[cfg(test)]
 pub(crate) fn finish_side_scan(
     side: Side,
@@ -656,7 +719,10 @@ impl ZApp {
         // Read before any widget runs: a single-line TextEdit gives up focus on Enter without
         // consuming the key, so a later check would hand that Enter to the tree cursor.
         let keyboard_taken = ctx.wants_keyboard_input();
-        if app_ctx.file_system_1_scan.is_scanning() || app_ctx.file_system_2_scan.is_scanning() {
+        if app_ctx.file_system_1_scan.is_scanning()
+            || app_ctx.file_system_2_scan.is_scanning()
+            || app_ctx.tree_compare.is_comparing()
+        {
             egui::TopBottomPanel::bottom("scan_progress").show(ctx, |ui| {
                 ui_scan_progress(
                     ui,
@@ -672,6 +738,7 @@ impl ZApp {
                     app_ctx.file_system_model_2_view.as_ref(),
                     &mut app_ctx.file_system_2_scan,
                 );
+                ui_compare_progress(ui, &mut app_ctx.tree_compare);
             });
         }
         egui::CentralPanel::default().show(ctx, |ui| {
@@ -878,11 +945,14 @@ impl eframe::App for ZApp {
                     }
                 }
                 state.update_scans(ctx);
-                if state.file_system_1_scan.is_scanning() || state.file_system_2_scan.is_scanning()
+                state.update_compare(Instant::now());
+                state.build_two_folder_diff_rows_if_stale();
+                if state.file_system_1_scan.is_scanning()
+                    || state.file_system_2_scan.is_scanning()
+                    || state.tree_compare.is_comparing()
                 {
                     ctx.request_repaint_after(SCAN_PROGRESS_INTERVAL);
                 }
-                state.build_two_folder_diff_rows_if_stale();
                 if state.poll_blueprint_detector() {
                     ctx.request_repaint_after(Duration::from_millis(100));
                 }
@@ -918,7 +988,7 @@ mod tests {
         AppState, AppStateCtx, ScanAction, ZApp, cancel_scan, finish_side_scan, scan_action,
         update_side_scan,
     };
-    use crate::ui_egui::fs_tree::FileSystemView;
+    use crate::ui_egui::fs_tree::{DiffState, FileSystemView};
     use crate::ui_egui::path_diff_pane::{BLACKLIST_PRESETS, FilterField, FilterPresets};
     use crate::ui_egui::roots::{Side, clear_root, set_root};
     use crate::ui_egui::tree_filter::DiffFilter;
@@ -928,13 +998,64 @@ mod tests {
         fs,
         path::{Path, PathBuf},
         sync::Arc,
+        time::{Duration, Instant},
     };
     use tempfile::tempdir;
     use zcommon::logger::LogBuffer;
     use zhashdiff::{
+        comparison::{PairCompare, PairState},
         filter::{PathFilter, PatternList},
         fs::FileSystemModel,
     };
+
+    fn finish_compare(state: &mut AppStateCtx) {
+        state.build_two_folder_diff_rows_if_stale();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while state.tree_compare.is_comparing() {
+            assert!(Instant::now() < deadline, "the compare did not finish");
+            std::thread::sleep(Duration::from_millis(1));
+            state.update_compare(Instant::now());
+            state.build_two_folder_diff_rows_if_stale();
+        }
+    }
+
+    #[test]
+    fn rows_under_a_state_sort_keep_their_order_until_the_compare_finishes() {
+        let (left, right) = (tempdir().unwrap(), tempdir().unwrap());
+        for root in [left.path(), right.path()] {
+            fs::write(root.join("a.txt"), "a").unwrap();
+        }
+        fs::write(left.path().join("b.txt"), "left b").unwrap();
+        fs::write(right.path().join("b.txt"), "right b").unwrap();
+        let mut state = AppStateCtx {
+            tree_sort: TreeSort::default().clicked(SortKey::State),
+            file_system_model_1_view: load_view(left.path()),
+            file_system_model_2_view: load_view(right.path()),
+            ..Default::default()
+        };
+        state.build_two_folder_diff_rows_if_stale();
+        assert_eq!(row_paths(&state), ["", "a.txt", "b.txt"]);
+        let start = Instant::now();
+        let (sender, paths) = state.tree_compare.pause(start);
+        let send = |rel_path: &str, state: PairState| {
+            let i = paths.iter().position(|path| path == rel_path).unwrap();
+            let result = PairCompare { state, error: None };
+            sender.send((i, result)).unwrap();
+        };
+
+        send("b.txt", PairState::Different);
+        state.update_compare(start + Duration::from_secs(1));
+        state.build_two_folder_diff_rows_if_stale();
+        assert_eq!(row_paths(&state), ["", "a.txt", "b.txt"]);
+        let rows = state.two_folder_diff_visible_rows.as_ref().unwrap();
+        assert!(matches!(rows[1].diff_state, DiffState::Pending(..)));
+        assert!(matches!(rows[2].diff_state, DiffState::Different(..)));
+
+        send("a.txt", PairState::Same);
+        state.update_compare(start + Duration::from_secs(1));
+        state.build_two_folder_diff_rows_if_stale();
+        assert_eq!(row_paths(&state), ["", "b.txt", "a.txt"]);
+    }
 
     fn blacklist(text: &str) -> PathFilter {
         PathFilter {
@@ -1171,7 +1292,7 @@ mod tests {
         state.file_system_model_1_view = load_view(left.path());
         state.file_system_model_2_view = load_view(right.path());
 
-        state.build_two_folder_diff_rows_if_stale();
+        finish_compare(&mut state);
         assert_eq!(row_paths(&state), ["", "z", "z/b.txt", "a.txt"]);
 
         state.diff_filter.diff_only = true;
@@ -1201,7 +1322,7 @@ mod tests {
         state.file_system_model_1_view = load_view(left.path());
         state.file_system_model_2_view = load_view(right.path());
 
-        state.build_two_folder_diff_rows_if_stale();
+        finish_compare(&mut state);
         assert_eq!(row_paths(&state), ["", "z", "z/c.txt", "a.txt", "b.txt"]);
 
         state.tree_sort = state.tree_sort.clicked(SortKey::Name);
