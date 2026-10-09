@@ -1015,6 +1015,7 @@ fn root_path_bar(ui: &mut egui::Ui, roots: [&mut Option<PathBuf>; 2], side: Side
         dim,
         |i| i + 1 < segments.len(),
         error.as_ref().map(|e| e.reason.as_str()),
+        false,
     );
     if let Some(action) = action {
         let root = roots[index].clone();

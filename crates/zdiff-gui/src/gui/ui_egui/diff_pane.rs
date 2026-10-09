@@ -6,6 +6,7 @@ use crate::{
         BlockToggle, DiffRows, DiffStageTimes, FindHit, MinimalDiffCtx, ScrollSpan, insert_pin,
         pin_line_counts,
     },
+    file::FileProcessor,
     revert::{self, RevertRequest, RevertTarget},
     ui_egui::{
         active_side::{ActiveSide, ActiveSideState, outline_stroke},
@@ -26,7 +27,11 @@ use eframe::egui::{
     text_selection::LabelSelectionState,
 };
 use serde::{Deserialize, Serialize};
-use zcommon::ui_egui::toggle::{TOGGLE_BUTTON_SIZE, toggle_button};
+use zcommon::path::{PathSegment, common_parent, split_path};
+use zcommon::ui_egui::{
+    pathbar::{PathBarAction, path_bar},
+    toggle::{TOGGLE_BUTTON_SIZE, toggle_button},
+};
 use zdiff::{
     cached_file::CachedFile,
     diff_builder::{DIMMED, DiffBuilderOptions, DiffRow, IsGhost, LineContent},
@@ -568,6 +573,61 @@ impl FileDiffPane {
 
                                     None
                                 };
+                            let dim = file_path_dim(
+                                [&ctx.file_source_path, &ctx.file_target_path],
+                                ctx.file_source_label.is_some() || ctx.file_target_label.is_some(),
+                            );
+                            let file_path_bar = |ui: &mut egui::Ui,
+                                                 id_salt: &str,
+                                                 path: &UniversalPath,
+                                                 label: Option<&str>,
+                                                 root: Option<&UniversalPath>,
+                                                 is_valid: bool,
+                                                 spinner_active: bool|
+                             -> Option<UniversalPath> {
+                                let segments = file_path_segments(path, label);
+                                let full_path = path.to_string();
+                                let error = match (label, is_valid) {
+                                    (_, true) => None,
+                                    (Some(_), false) => Some(format!("{full_path}\nInvalid path")),
+                                    (None, false) => Some("Invalid path".to_owned()),
+                                };
+                                let bar = ui.scope(|ui| {
+                                    path_bar(
+                                        ui,
+                                        id_salt,
+                                        &segments,
+                                        dim,
+                                        |i| i + 1 < segments.len(),
+                                        error.as_deref(),
+                                        true,
+                                    )
+                                });
+                                let rect = bar.response.rect;
+                                if label.is_some() && is_valid && ui.rect_contains_pointer(rect) {
+                                    bar.response.show_tooltip_text(&full_path);
+                                }
+                                if spinner_active {
+                                    let spinner_size = rect.height() * 0.5;
+                                    let spinner_rect = egui::Rect::from_center_size(
+                                        egui::pos2(
+                                            rect.right() - spinner_size,
+                                            rect.top() + spinner_size,
+                                        ),
+                                        Vec2::splat(spinner_size),
+                                    );
+                                    egui::Spinner::new().paint_at(ui, spinner_rect);
+                                }
+                                match bar.inner? {
+                                    PathBarAction::Segment(i) => {
+                                        log::debug!("Folder segment clicked: {}", segments[i].path);
+                                        None
+                                    }
+                                    PathBarAction::Commit(text) => {
+                                        file_path_request(&text, path, root)
+                                    }
+                                }
+                            };
                             table_builder
                                 .id_salt("file_diff_table")
                                 .striped(false)
@@ -592,11 +652,12 @@ impl FileDiffPane {
                                                 ctx.file_source_loading,
                                             );
                                             ui.separator();
-                                            *ctx.load_file_1_request = editable_path_test(
+                                            *ctx.load_file_1_request = file_path_bar(
                                                 ui,
-                                                "file_1_path_editor".into(),
+                                                "file_1_path_bar",
                                                 &ctx.file_source_path,
                                                 ctx.file_source_label.as_deref(),
+                                                ctx.file_source_root.as_ref(),
                                                 ctx.file_source_path_valid,
                                                 ctx.file_source_loading,
                                             );
@@ -615,11 +676,12 @@ impl FileDiffPane {
                                                 ctx.file_target_loading,
                                             );
                                             ui.separator();
-                                            *ctx.load_file_2_request = editable_path_test(
+                                            *ctx.load_file_2_request = file_path_bar(
                                                 ui,
-                                                "file_2_path_editor".into(),
+                                                "file_2_path_bar",
                                                 &ctx.file_target_path,
                                                 ctx.file_target_label.as_deref(),
+                                                ctx.file_target_root.as_ref(),
                                                 ctx.file_target_path_valid,
                                                 ctx.file_target_loading,
                                             );
@@ -2155,8 +2217,177 @@ fn handle_drops(
     return did_drop;
 }
 
+fn file_path_segments(path: &UniversalPath, label: Option<&str>) -> Vec<PathSegment> {
+    match label {
+        Some(label) => vec![PathSegment {
+            name: label.to_owned(),
+            path: path.to_string(),
+        }],
+        None => split_path(&path.to_string()),
+    }
+}
+
+fn file_path_dim([a, b]: [&UniversalPath; 2], labelled: bool) -> usize {
+    if labelled {
+        return 0;
+    }
+    common_parent(&a.to_string(), true, &b.to_string(), true)
+}
+
+fn file_path_request(
+    text: &str,
+    current: &UniversalPath,
+    root: Option<&UniversalPath>,
+) -> Option<UniversalPath> {
+    let text = text.trim().trim_matches('"');
+    if text == current.to_string() {
+        return None;
+    }
+    let path = UniversalPath::from(text);
+    // set_path appends a depot path to a depot root, so send it root-relative like the old field.
+    let relative = root
+        .filter(|root| root.is_depot() && path.is_depot())
+        .and_then(|root| FileProcessor::strip_root_prefix(root, &path));
+    Some(relative.map_or(path, |relative| UniversalPath::from(relative.to_string())))
+}
+
 #[cfg(test)]
 mod tests {
+    mod path_bar {
+        use zcommon::path::PathSegment;
+        use zdiff::universal_path::UniversalPath;
+
+        use super::super::{file_path_dim, file_path_request, file_path_segments};
+        use crate::file::FileProcessor;
+
+        fn committed(root: Option<&str>, current: &str, text: &str) -> UniversalPath {
+            let mut file = FileProcessor::new();
+            let root = root.map(UniversalPath::from);
+            if let Some(root) = &root {
+                file.set_root(root.clone());
+            }
+            file.set_path(UniversalPath::from(current));
+            let current = file.get_full_path();
+            let request = file_path_request(text, &current, root.as_ref()).unwrap();
+            file.set_path(request);
+            file.get_full_path()
+        }
+
+        #[test]
+        fn segments_cover_the_full_path() {
+            let names: Vec<String> =
+                file_path_segments(&UniversalPath::from(r"C:\ws\src\main.rs"), None)
+                    .into_iter()
+                    .map(|s| s.name)
+                    .collect();
+            assert_eq!(names, [r"C:\", "ws", "src", "main.rs"]);
+        }
+
+        #[test]
+        fn a_label_is_one_segment_standing_for_the_full_path() {
+            let path = UniversalPath::from(r"C:\Temp\p4v\main.rs#3");
+            assert_eq!(
+                file_path_segments(&path, Some("main.rs#3 (depot)")),
+                [PathSegment {
+                    name: "main.rs#3 (depot)".to_owned(),
+                    path: path.to_string(),
+                }]
+            );
+        }
+
+        #[test]
+        fn dim_follows_either_sides_path() {
+            let a = UniversalPath::from(r"C:\ws\src\main.rs");
+            let b = UniversalPath::from(r"C:\ws\src\lib.rs");
+            let c = UniversalPath::from(r"C:\ws\docs\readme.md");
+            let d = UniversalPath::from(r"D:\ws\src\main.rs");
+            assert_eq!(file_path_dim([&a, &b], false), 3);
+            assert_eq!(file_path_dim([&a, &c], false), 2);
+            assert_eq!(file_path_dim([&c, &b], false), 2);
+            assert_eq!(file_path_dim([&d, &b], false), 0);
+            assert_eq!(
+                file_path_dim(
+                    [
+                        &UniversalPath::from("//depot/main/a.rs#3"),
+                        &UniversalPath::from("//depot/main/b.rs")
+                    ],
+                    false
+                ),
+                2
+            );
+        }
+
+        #[test]
+        fn nothing_is_dimmed_with_a_label() {
+            let a = UniversalPath::from(r"C:\ws\src\main.rs");
+            assert_eq!(file_path_dim([&a, &a], true), 0);
+        }
+
+        #[test]
+        fn unchanged_text_is_not_a_request() {
+            let path = UniversalPath::from(r"C:\ws\src\main.rs");
+            assert_eq!(file_path_request(r"C:\ws\src\main.rs", &path, None), None);
+            let depot = UniversalPath::from("//depot/main/a.rs#3");
+            assert_eq!(
+                file_path_request(" //depot/main/a.rs#3 ", &depot, None),
+                None
+            );
+        }
+
+        #[test]
+        fn committed_full_path_without_a_root_loads_it() {
+            assert_eq!(
+                committed(None, r"C:\ws\a.rs", r#""C:\other dir\b.rs" "#),
+                UniversalPath::from(r"C:\other dir\b.rs")
+            );
+            assert_eq!(
+                committed(None, r"C:\ws\a.rs", "//depot/main/b.rs#2"),
+                UniversalPath::from("//depot/main/b.rs#2")
+            );
+        }
+
+        #[test]
+        fn committed_full_path_under_a_local_root_loads_it() {
+            assert_eq!(
+                committed(Some(r"C:\ws"), r"C:\ws\src\a.rs", r"C:\ws\src\b.rs"),
+                UniversalPath::from(r"C:\ws\src\b.rs")
+            );
+            assert_eq!(
+                committed(Some(r"C:\ws"), r"C:\ws\src\a.rs", r"C:\other\b.rs"),
+                UniversalPath::from(r"C:\other\b.rs")
+            );
+        }
+
+        #[test]
+        fn committed_full_path_under_a_depot_root_loads_it() {
+            assert_eq!(
+                committed(
+                    Some("//depot/main"),
+                    "//depot/main/src/a.rs",
+                    "//depot/main/src/b.rs"
+                ),
+                UniversalPath::from("//depot/main/src/b.rs")
+            );
+            assert_eq!(
+                committed(
+                    Some("//depot/main"),
+                    "//depot/main/src/a.rs",
+                    "//depot/main/src/b.rs#4"
+                )
+                .to_string(),
+                "//depot/main/src/b.rs#4"
+            );
+            assert_eq!(
+                committed(
+                    Some("//depot/main"),
+                    "//depot/main/src/a.rs",
+                    "//depot/dev/src/a.rs"
+                ),
+                UniversalPath::from("//depot/dev/src/a.rs")
+            );
+        }
+    }
+
     use std::time::Duration;
 
     use zdiff::{

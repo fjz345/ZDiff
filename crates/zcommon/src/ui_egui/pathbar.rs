@@ -47,12 +47,13 @@ pub fn path_bar(
     dim: usize,
     clickable: impl Fn(usize) -> bool,
     error: Option<&str>,
+    commit_on_focus_loss: bool,
 ) -> Option<PathBarAction> {
     let id = ui.make_persistent_id(id_salt);
     let size = egui::vec2(ui.available_width(), ui.spacing().interact_size.y);
     let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
     match ui.data(|d| d.get_temp::<EditState>(id)) {
-        Some(state) => edit(ui, id, rect, state),
+        Some(state) => edit(ui, id, rect, state, commit_on_focus_loss),
         None => display(ui, id, rect, segments, dim, clickable, error),
     }
 }
@@ -62,6 +63,7 @@ fn edit(
     id: egui::Id,
     rect: egui::Rect,
     mut state: EditState,
+    commit_on_focus_loss: bool,
 ) -> Option<PathBarAction> {
     let text_id = id.with("text");
     if state.request_focus {
@@ -89,8 +91,8 @@ fn edit(
                 i.consume_key(egui::Modifiers::NONE, egui::Key::Escape),
             )
         });
-        return (response.lost_focus() && enter && !escape)
-            .then_some(PathBarAction::Commit(state.text));
+        let commit = (response.lost_focus() && enter) || commit_on_focus_loss;
+        return (commit && !escape).then_some(PathBarAction::Commit(state.text));
     }
     ui.data_mut(|d| d.insert_temp(id, state));
     None
@@ -219,7 +221,108 @@ const ELLIPSIS: &str = "…";
 
 #[cfg(test)]
 mod tests {
-    use super::elide;
+    use super::{PathBarAction, elide, path_bar};
+    use crate::path::split_path;
+    use eframe::egui::{self, Event, Modifiers, PointerButton, Pos2, Rect};
+
+    const PATH: &str = r"C:\proj\src\main.rs";
+
+    struct Bar {
+        ctx: egui::Context,
+        commit_on_focus_loss: bool,
+        time: f64,
+    }
+
+    impl Bar {
+        fn editing(commit_on_focus_loss: bool) -> Bar {
+            let mut bar = Bar {
+                ctx: egui::Context::default(),
+                commit_on_focus_loss,
+                time: 0.0,
+            };
+            bar.frame(vec![]);
+            bar.click(egui::pos2(200.0, 18.0));
+            bar.frame(vec![]);
+            bar.frame(vec![]);
+            bar
+        }
+
+        fn frame(&mut self, events: Vec<Event>) -> Option<PathBarAction> {
+            self.time += 0.1;
+            let raw = egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, egui::vec2(400.0, 200.0))),
+                time: Some(self.time),
+                events,
+                ..Default::default()
+            };
+            let mut action = None;
+            let segments = split_path(PATH);
+            let _ = self.ctx.run(raw, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    action = path_bar(
+                        ui,
+                        "bar",
+                        &segments,
+                        0,
+                        |_| true,
+                        None,
+                        self.commit_on_focus_loss,
+                    );
+                });
+            });
+            action
+        }
+
+        fn click(&mut self, pos: Pos2) -> Option<PathBarAction> {
+            let button = |pressed| Event::PointerButton {
+                pos,
+                button: PointerButton::Primary,
+                pressed,
+                modifiers: Modifiers::NONE,
+            };
+            let pressed = self.frame(vec![Event::PointerMoved(pos), button(true)]);
+            pressed.or(self.frame(vec![button(false)]))
+        }
+
+        fn key(&mut self, key: egui::Key) -> Option<PathBarAction> {
+            self.frame(vec![Event::Key {
+                key,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: Modifiers::NONE,
+            }])
+        }
+    }
+
+    #[test]
+    fn click_elsewhere_commits_when_asked() {
+        let mut bar = Bar::editing(true);
+        assert_eq!(
+            bar.click(egui::pos2(200.0, 150.0)),
+            Some(PathBarAction::Commit(PATH.to_owned()))
+        );
+    }
+
+    #[test]
+    fn click_elsewhere_cancels_by_default() {
+        let mut bar = Bar::editing(false);
+        assert_eq!(bar.click(egui::pos2(200.0, 150.0)), None);
+    }
+
+    #[test]
+    fn enter_commits_and_escape_cancels_either_way() {
+        for commit_on_focus_loss in [false, true] {
+            let mut bar = Bar::editing(commit_on_focus_loss);
+            assert_eq!(
+                bar.key(egui::Key::Enter),
+                Some(PathBarAction::Commit(PATH.to_owned()))
+            );
+            let mut bar = Bar::editing(commit_on_focus_loss);
+            assert_eq!(bar.key(egui::Key::Escape), None);
+            assert_eq!(bar.click(egui::pos2(200.0, 150.0)), None);
+        }
+    }
 
     #[test]
     fn fitting_segments_are_not_elided() {
