@@ -48,9 +48,11 @@ use crate::{
         file_role::FileRole,
         merge_pane::{self, Closing, MergeNames, MergeRequest, MergeView, OpenMergeForm},
         panes::{Pane, TreeBehavior},
+        side_viewers::SideViewers,
     },
     viewer::{
-        FfmpegSetting, LoadedSide, SharedKinds, ViewerKind, ViewerOverride,
+        FfmpegSetting, LoadedSide, SharedKinds, ViewerKind, ViewerOverride, ViewerResolution,
+        Viewers,
         audio::{AudioDiffProcessor, AudioSettings},
         audio_meta::AudioMetaProcessor,
         conflict_count, decode_fallback, ffmpeg_fallback,
@@ -86,7 +88,7 @@ pub struct AppStateCtx {
     pub video_meta: VideoMetaProcessor,
     /// Resolved each frame from the loaded files; `None` while neither side is loaded.
     #[cfg_attr(feature = "serde", serde(skip), serde(default))]
-    pub viewer_kind: Option<ViewerKind>,
+    pub viewers: Option<Viewers>,
     /// Not persisted: paths aren't either, so a restart always opens a new pair.
     #[cfg_attr(feature = "serde", serde(skip), serde(default))]
     pub viewer_override: ViewerOverride,
@@ -167,7 +169,7 @@ impl Default for AppStateCtx {
             audio_meta: Default::default(),
             video_frames: Default::default(),
             video_meta: Default::default(),
-            viewer_kind: None,
+            viewers: None,
             viewer_override: Default::default(),
             viewer_fallback: None,
             legacy_extension_map: None,
@@ -877,7 +879,7 @@ impl<'a> ZApp {
                 audio_meta,
                 video_frames,
                 video_meta,
-                viewer_kind,
+                viewers,
                 viewer_override,
                 viewer_fallback,
                 kinds,
@@ -889,10 +891,17 @@ impl<'a> ZApp {
                 p4_profiles,
                 regex_ignore_presets,
             } = app_ctx;
-            let is_hex = *viewer_kind == Some(ViewerKind::Hex);
-            let is_image = *viewer_kind == Some(ViewerKind::Image);
+            let pair_kind = viewers.and_then(Viewers::pair);
+            let sides = match *viewers {
+                Some(Viewers::Sides(sides)) => Some(sides),
+                _ => None,
+            };
+            let side_shows = |kind| sides.is_some_and(|s| s.contains(&kind));
+            let is_hex = pair_kind == Some(ViewerKind::Hex);
+            let goto_hex = is_hex || (side_shows(ViewerKind::Hex) && !side_shows(ViewerKind::Text));
+            let is_image = pair_kind == Some(ViewerKind::Image);
             let media_view =
-                viewer_kind.filter(|k| matches!(k, ViewerKind::Audio | ViewerKind::Video));
+                pair_kind.filter(|k| matches!(k, ViewerKind::Audio | ViewerKind::Video));
             let video_audio =
                 media_view == Some(ViewerKind::Video) && video_meta.tab == VideoTab::Audio;
             self.show_menu(
@@ -921,7 +930,7 @@ impl<'a> ZApp {
             let mut goto_window_open = *goto_open;
             show_custom_popup(ctx, &mut goto_window_open, "Goto", true, |ui| {
                 // Hex gotos a byte offset, in decimal or 0x hex.
-                if is_hex {
+                if goto_hex {
                     goto_input.retain(|c| c.is_ascii_hexdigit() || c == 'x' || c == 'X');
                 } else {
                     goto_input.retain(|c| c.is_ascii_digit());
@@ -929,11 +938,11 @@ impl<'a> ZApp {
                 let response = ui.add(
                     egui::TextEdit::singleline(goto_input)
                         .desired_width(40.0)
-                        .hint_text(if is_hex { "offset" } else { "#" }),
+                        .hint_text(if goto_hex { "offset" } else { "#" }),
                 );
                 response.request_focus();
                 if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                    if is_hex {
+                    if goto_hex {
                         match parse_hex_offset(goto_input, hex_processor.max_len()) {
                             Ok(offset) => {
                                 hex_processor.goto(offset);
@@ -969,7 +978,15 @@ impl<'a> ZApp {
             }
 
             // The text diff's state is stale while another viewer shows the pair.
-            let scroll_to_rows = &if is_hex {
+            let text_scroll = side_shows(ViewerKind::Text)
+                .then(|| diff_processor.get_scroll_to_row())
+                .flatten();
+            let hex_scroll = side_shows(ViewerKind::Hex)
+                .then(|| hex_processor.scroll_to_row(0))
+                .flatten();
+            let scroll_to_rows = &if sides.is_some() {
+                None
+            } else if is_hex {
                 hex_processor.scroll_to_row(diff_processor.conflict_cursor.get())
             } else if is_image || media_view.is_some() {
                 None
@@ -1000,6 +1017,10 @@ impl<'a> ZApp {
                 None
             } else {
                 diff_processor.get_minimal_diff_ctx()
+            };
+            let (diff_ctx, side_text) = match sides {
+                Some(_) => (None, diff_ctx.filter(|_| side_shows(ViewerKind::Text))),
+                None => (diff_ctx, None),
             };
             let mut block_toggle_request = None;
             let mut behavior = TreeBehavior {
@@ -1057,19 +1078,38 @@ impl<'a> ZApp {
                     revert_request: &mut None,
                     block_toggle_request: &mut block_toggle_request,
                     hex_view: is_hex.then(|| hex_processor.view_ctx()),
-                    image_view: is_image.then_some(image_processor),
-                    audio_view: (media_view == Some(ViewerKind::Audio) || video_audio)
-                        .then_some((audio_processor, audio_settings)),
+                    image_view: (is_image || side_shows(ViewerKind::Image))
+                        .then_some(image_processor),
+                    audio_view: (media_view == Some(ViewerKind::Audio)
+                        || video_audio
+                        || side_shows(ViewerKind::Audio))
+                    .then_some((audio_processor, audio_settings)),
                     media_view,
                     audio_meta: (media_view == Some(ViewerKind::Audio)).then_some(audio_meta),
-                    video_frames: (media_view == Some(ViewerKind::Video)).then_some(video_frames),
+                    video_frames: (media_view == Some(ViewerKind::Video)
+                        || side_shows(ViewerKind::Video))
+                    .then_some(video_frames),
                     video_meta: (media_view == Some(ViewerKind::Video)).then_some(video_meta),
+                    side_viewers: None,
                     viewer_override: &mut viewer_override.kind,
                     viewer_fallback: viewer_fallback.as_deref(),
                     phase_overlay: self.phase_overlay,
                     keymap: &keybindings.keymap,
                 },
             };
+            if let Some(kinds) = sides {
+                let file_diff = &mut behavior.ctx_file_diff;
+                file_diff.side_viewers = Some(SideViewers {
+                    kinds,
+                    text: side_text.as_ref(),
+                    text_scroll,
+                    hex: side_shows(ViewerKind::Hex).then(|| hex_processor.view_ctx()),
+                    hex_scroll,
+                    image: file_diff.image_view.take(),
+                    audio: file_diff.audio_view.take(),
+                    video: file_diff.video_frames.take(),
+                });
+            }
 
             if let Some(request) = self.open_merge_form.ui(ctx) {
                 self.merge = Some(MergeView::new(request, *myers_diff_algorithm));
@@ -1256,7 +1296,9 @@ impl<'a> ZApp {
                         .and_then(|f| Some(f.num_add_deletes))
                         .unwrap_or_default()
                         .1;
-                    let counts = if is_hex {
+                    let counts = if sides.is_some() {
+                        "types differ".to_string()
+                    } else if is_hex {
                         "hex".to_string()
                     } else if is_image {
                         "image".to_string()
@@ -1575,10 +1617,10 @@ impl eframe::App for ZApp {
                 .as_mut()
                 .expect("State was not valid while processing inputs")
                 .ctx_mut();
-            let text_conflicts = if matches!(
-                app_ctx.viewer_kind,
-                Some(ViewerKind::Hex | ViewerKind::Image | ViewerKind::Audio | ViewerKind::Video)
-            ) {
+            let text_conflicts = if app_ctx
+                .viewers
+                .is_some_and(|v| v != Viewers::Pair(ViewerKind::Text))
+            {
                 0
             } else {
                 app_ctx
@@ -1589,7 +1631,7 @@ impl eframe::App for ZApp {
                     .unwrap_or_default()
             };
             let conflict_max = conflict_count(
-                app_ctx.viewer_kind,
+                app_ctx.viewers,
                 text_conflicts,
                 app_ctx.hex_processor.nav_count(),
             );
@@ -1635,47 +1677,51 @@ impl eframe::App for ZApp {
                     loaded_1.as_ref().map(side),
                     loaded_2.as_ref().map(side),
                 );
+                let files_for = |resolution: &Option<ViewerResolution>, kind| {
+                    resolution.as_ref().map_or([None, None], |r| {
+                        r.viewers
+                            .files_for(kind, [loaded_1.clone(), loaded_2.clone()])
+                    })
+                };
                 // Decoding follows the first resolution, so a failed decode stays cached (and
-                // the pair stays in Hex) instead of being retried every frame.
-                if resolution.as_ref().map(|r| r.kind) == Some(ViewerKind::Image) {
-                    state
-                        .image_processor
-                        .request(loaded_1.clone(), loaded_2.clone());
-                } else {
-                    // Drops the old pair's pixels and textures.
-                    state.image_processor.request(None, None);
-                }
+                // the pair stays in Hex) instead of being retried every frame. No files drops
+                // the old pair's pixels and textures.
+                let [image_1, image_2] = files_for(&resolution, ViewerKind::Image);
+                state.image_processor.request(image_1, image_2);
                 state
                     .image_processor
                     .poll(ctx.input(|i| i.max_texture_side));
                 let resolution =
                     resolution.map(|r| image_decode_fallback(r, &state.image_processor.failures()));
                 // Like the image decode above: probing follows the first resolution.
-                let video = resolution.as_ref().map(|r| r.kind) == Some(ViewerKind::Video);
+                let video_files = files_for(&resolution, ViewerKind::Video);
+                let video = video_files.iter().any(Option::is_some);
                 let ffmpeg = video.then(|| state.ffmpeg.lookup().ok()).flatten();
-                state
-                    .video_frames
-                    .request([loaded_1.clone(), loaded_2.clone()], ffmpeg);
+                state.video_frames.request(video_files, ffmpeg);
                 state.video_frames.poll(ctx.input(|i| i.max_texture_side));
                 let resolution = resolution
                     .map(|r| decode_fallback(r, ViewerKind::Video, &state.video_frames.failures()));
                 // Only a media pair looks ffmpeg up.
-                let resolution = resolution.map(|r| match r.kind {
-                    ViewerKind::Audio | ViewerKind::Video => {
+                let resolution = resolution.map(|r| {
+                    if r.viewers.shows(ViewerKind::Audio) || r.viewers.shows(ViewerKind::Video) {
                         ffmpeg_fallback(r, state.ffmpeg.lookup())
+                    } else {
+                        r
                     }
-                    _ => r,
                 });
                 // A video pair decodes its audio only while the Audio tab is open.
-                let kind = resolution.as_ref().map(|r| r.kind);
-                let video_audio =
-                    kind == Some(ViewerKind::Video) && state.video_meta.tab == VideoTab::Audio;
-                if (kind == Some(ViewerKind::Audio) || video_audio)
+                let viewers = resolution.as_ref().map(|r| r.viewers);
+                let video_audio = viewers == Some(Viewers::Pair(ViewerKind::Video))
+                    && state.video_meta.tab == VideoTab::Audio;
+                let [audio_1, audio_2] = if video_audio {
+                    [loaded_1.clone(), loaded_2.clone()]
+                } else {
+                    files_for(&resolution, ViewerKind::Audio)
+                };
+                if (audio_1.is_some() || audio_2.is_some())
                     && let Ok(ffmpeg) = state.ffmpeg.lookup()
                 {
-                    state
-                        .audio_processor
-                        .request(ffmpeg, loaded_1.clone(), loaded_2.clone());
+                    state.audio_processor.request(ffmpeg, audio_1, audio_2);
                 } else {
                     // Kills running decodes and drops the old pair's samples.
                     state.audio_processor.clear();
@@ -1692,9 +1738,10 @@ impl eframe::App for ZApp {
                     }
                     state.viewer_fallback = fallback;
                 }
-                state.viewer_kind = resolution.map(|r| r.kind);
-                let audio_pair = match (state.viewer_kind, &loaded_1, &loaded_2) {
-                    (Some(ViewerKind::Audio), Some(a), Some(b)) => state
+                state.viewers = resolution.as_ref().map(|r| r.viewers);
+                // Metadata compares two files, so a mismatched pair has none.
+                let audio_pair = match (state.viewers, &loaded_1, &loaded_2) {
+                    (Some(Viewers::Pair(ViewerKind::Audio)), Some(a), Some(b)) => state
                         .ffmpeg
                         .lookup()
                         .ok()
@@ -1702,8 +1749,8 @@ impl eframe::App for ZApp {
                     _ => None,
                 };
                 state.audio_meta.request(audio_pair);
-                let video_pair = match (state.viewer_kind, &loaded_1, &loaded_2) {
-                    (Some(ViewerKind::Video), Some(a), Some(b)) => state
+                let video_pair = match (state.viewers, &loaded_1, &loaded_2) {
+                    (Some(Viewers::Pair(ViewerKind::Video)), Some(a), Some(b)) => state
                         .ffmpeg
                         .lookup()
                         .ok()
@@ -1711,22 +1758,31 @@ impl eframe::App for ZApp {
                     _ => None,
                 };
                 state.video_meta.request(video_pair);
-                let is_hex = state.viewer_kind == Some(ViewerKind::Hex);
-                let is_text = matches!(state.viewer_kind, Some(ViewerKind::Text) | None);
-                if is_hex {
-                    // The cursor may hold the text diff's or the previous pair's stop.
-                    if state.hex_processor.request(loaded_1, loaded_2) {
-                        state.diff_processor.conflict_cursor.set(0);
-                    }
-                } else {
-                    // Cancels a running compare and drops the old pair's bytes.
-                    state.hex_processor.request(None, None);
+                let [hex_1, hex_2] = files_for(&resolution, ViewerKind::Hex);
+                // The cursor may hold the text diff's or the previous pair's stop.
+                if state.hex_processor.request(hex_1, hex_2)
+                    && state.viewers == Some(Viewers::Pair(ViewerKind::Hex))
+                {
+                    state.diff_processor.conflict_cursor.set(0);
                 }
                 state.hex_processor.poll();
 
+                let is_text = state.viewers.is_none_or(|v| v.shows(ViewerKind::Text));
+                let cached = [
+                    state.file_1.get_cached_file().clone(),
+                    state.file_2.get_cached_file().clone(),
+                ];
+                // A mismatched pair's text side is diffed alone, so its rows are all one side's.
+                let [text_1, text_2] = match state.viewers {
+                    Some(viewers @ Viewers::Sides(_)) => {
+                        viewers.files_for(ViewerKind::Text, cached)
+                    }
+                    _ => cached,
+                };
+
                 let update_input = UpdateDiffRowsInput {
-                    file_1: state.file_1.get_cached_file().clone(),
-                    file_2: state.file_2.get_cached_file().clone(),
+                    file_1: text_1,
+                    file_2: text_2,
                     options: state.diff_options.clone(),
                     myers_diff_algorithm: state.myers_diff_algorithm.clone(),
                     pins: state.diff_processor.pins().to_vec(),

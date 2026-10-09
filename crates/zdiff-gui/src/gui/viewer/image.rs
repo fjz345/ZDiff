@@ -573,11 +573,13 @@ pub fn show(ui: &mut egui::Ui, processor: &mut ImageDiffProcessor, left_width: f
     };
     let image_rects =
         columns.map(|c| Rect::from_min_max(pos2(c.left(), c.top() + info_height), c.max));
-    // Fit for the narrower side, so the canvas fits in both.
-    let viewport = vec2(
-        image_rects[0].width().min(image_rects[1].width()),
-        image_rects[0].height(),
-    );
+    // Fit for the narrower side, so the canvas fits in both. An empty side may have no column.
+    let viewport_width = (0..2)
+        .filter(|&i| !matches!(processor.sides[i], SideState::Empty))
+        .map(|i| image_rects[i].width())
+        .reduce(f32::min)
+        .unwrap_or(image_rects[0].width());
+    let viewport = vec2(viewport_width, image_rects[0].height());
 
     let response = ui.allocate_rect(area, Sense::click_and_drag());
     let decoding = processor
@@ -784,7 +786,7 @@ mod tests {
 
     use super::*;
     use crate::file::BinaryFile;
-    use crate::viewer::{ViewerKind, ViewerResolution, image_decode_fallback};
+    use crate::viewer::{ViewerKind, ViewerResolution, Viewers, image_decode_fallback};
 
     fn pixel_under(view: ImageView, point: Vec2) -> Vec2 {
         (point - view.pan) / view.zoom
@@ -888,11 +890,11 @@ mod tests {
         assert!(!error.is_empty());
 
         let image = ViewerResolution {
-            kind: ViewerKind::Image,
+            viewers: Viewers::Pair(ViewerKind::Image),
             fallback: None,
         };
         let resolution = image_decode_fallback(image, &[error]);
-        assert_eq!(resolution.kind, ViewerKind::Hex);
+        assert_eq!(resolution.viewers, Viewers::Pair(ViewerKind::Hex));
         assert!(resolution.fallback.is_some());
     }
 

@@ -225,9 +225,59 @@ pub struct LoadedSide<'a> {
     pub sniffed: ViewerKind,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Viewers {
+    Pair(ViewerKind),
+    /// The sides resolve to different viewers: each side is shown on its own, not diffed.
+    Sides([ViewerKind; 2]),
+}
+
+impl Viewers {
+    fn from_sides([first, second]: [ViewerKind; 2]) -> Self {
+        if first == second {
+            Viewers::Pair(first)
+        } else {
+            Viewers::Sides([first, second])
+        }
+    }
+
+    pub fn pair(self) -> Option<ViewerKind> {
+        match self {
+            Viewers::Pair(kind) => Some(kind),
+            Viewers::Sides(_) => None,
+        }
+    }
+
+    pub fn shows(self, kind: ViewerKind) -> bool {
+        match self {
+            Viewers::Pair(shown) => shown == kind,
+            Viewers::Sides(sides) => sides.contains(&kind),
+        }
+    }
+
+    fn map(self, f: impl Fn(ViewerKind) -> ViewerKind) -> Self {
+        match self {
+            Viewers::Pair(kind) => Viewers::Pair(f(kind)),
+            Viewers::Sides(sides) => Viewers::from_sides(sides.map(f)),
+        }
+    }
+
+    /// What a viewer's processor is given: the pair, or a mismatched pair's side of that kind in
+    /// the first slot.
+    pub fn files_for<T>(self, kind: ViewerKind, files: [Option<T>; 2]) -> [Option<T>; 2] {
+        let [first, second] = files;
+        match self {
+            Viewers::Pair(shown) if shown == kind => [first, second],
+            Viewers::Sides([shown, _]) if shown == kind => [first, None],
+            Viewers::Sides([_, shown]) if shown == kind => [second, None],
+            _ => [None, None],
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ViewerResolution {
-    pub kind: ViewerKind,
+    pub viewers: Viewers,
     /// Why the pair isn't shown in the viewer it asked for; logged once per change.
     pub fallback: Option<String>,
 }
@@ -250,45 +300,32 @@ pub fn resolve_viewer(
         // A binary load has no text to show.
         if wanted == ViewerKind::Text && side.sniffed == ViewerKind::Hex {
             let reason = format!("{} is binary and can't be shown as Text", side.path);
-            ViewerResolution {
-                kind: ViewerKind::Hex,
-                fallback: Some(reason),
-            }
+            (wanted, ViewerKind::Hex, Some(reason))
         } else {
-            ViewerResolution {
-                kind: wanted,
-                fallback: None,
-            }
+            (wanted, wanted, None)
         }
     };
 
     match (side_1.map(resolve_side), side_2.map(resolve_side)) {
         (None, None) => None,
-        (Some(only), None) | (None, Some(only)) => Some(only),
-        (Some(first), Some(second)) if first.kind == second.kind => {
-            let fallback = match (first.fallback, second.fallback) {
-                (Some(a), Some(b)) => Some(format!("{}; {}", a, b)),
-                (a, b) => a.or(b),
-            };
+        (Some((_, kind, fallback)), None) | (None, Some((_, kind, fallback))) => {
             Some(ViewerResolution {
-                kind: first.kind,
+                viewers: Viewers::Pair(kind),
                 fallback,
             })
         }
-        (Some(first), Some(second)) => {
-            let mismatch = format!(
-                "The sides resolve to different viewers ({}, {}); showing Hex",
-                first.kind.name(),
-                second.kind.name()
-            );
-            let fallback = match first.fallback.or(second.fallback) {
-                Some(reason) => format!("{}; {}", reason, mismatch),
-                None => mismatch,
+        (Some((wanted_1, first, fallback_1)), Some((wanted_2, second, fallback_2))) => {
+            let fallback = match (fallback_1, fallback_2) {
+                (Some(a), Some(b)) => Some(format!("{}; {}", a, b)),
+                (a, b) => a.or(b),
             };
-            Some(ViewerResolution {
-                kind: ViewerKind::Hex,
-                fallback: Some(fallback),
-            })
+            // Sides that asked for the same viewer stay one diff even when one is binary.
+            let viewers = if wanted_1 == wanted_2 && first != second {
+                Viewers::Pair(ViewerKind::Hex)
+            } else {
+                Viewers::from_sides([first, second])
+            };
+            Some(ViewerResolution { viewers, fallback })
         }
     }
 }
@@ -302,22 +339,17 @@ pub fn image_decode_fallback(
     decode_fallback(resolution, ViewerKind::Image, failures)
 }
 
-/// `failures` are from the decoder of viewer `decoded`; they apply to a pair resolved to it.
+/// `failures` are from the decoder of viewer `decoded`; they apply to the pair or the side
+/// resolved to it.
 pub fn decode_fallback(
     resolution: ViewerResolution,
     decoded: ViewerKind,
     failures: &[String],
 ) -> ViewerResolution {
-    if resolution.kind != decoded || failures.is_empty() {
+    if !resolution.viewers.shows(decoded) || failures.is_empty() {
         return resolution;
     }
-    let mut reasons: Vec<String> = resolution.fallback.into_iter().collect();
-    reasons.extend(failures.iter().cloned());
-    reasons.push("showing Hex".to_string());
-    ViewerResolution {
-        kind: ViewerKind::Hex,
-        fallback: Some(reasons.join("; ")),
-    }
+    hex_fallback(resolution, |kind| kind == decoded, failures.to_vec())
 }
 
 pub fn ffmpeg_fallback(
@@ -327,19 +359,49 @@ pub fn ffmpeg_fallback(
     let Err(not_found) = ffmpeg else {
         return resolution;
     };
-    if !matches!(resolution.kind, ViewerKind::Audio | ViewerKind::Video) {
+    let media: Vec<&str> = [ViewerKind::Audio, ViewerKind::Video]
+        .into_iter()
+        .filter(|&kind| resolution.viewers.shows(kind))
+        .map(ViewerKind::name)
+        .collect();
+    if media.is_empty() {
         return resolution;
     }
-    let mut reasons: Vec<String> = resolution.fallback.into_iter().collect();
-    reasons.push(format!(
-        "The {} viewer needs ffmpeg. {not_found}. Put ffmpeg and ffprobe on PATH or next to \
+    let needs = if media.len() == 1 {
+        "viewer needs"
+    } else {
+        "viewers need"
+    };
+    let reason = format!(
+        "The {} {needs} ffmpeg. {not_found}. Put ffmpeg and ffprobe on PATH or next to \
          the app, or set their folder in Option - File Viewers",
-        resolution.kind.name()
-    ));
-    reasons.push("showing Hex".to_string());
+        media.join(" and ")
+    );
+    hex_fallback(
+        resolution,
+        |kind| matches!(kind, ViewerKind::Audio | ViewerKind::Video),
+        vec![reason],
+    )
+}
+
+// Sides left the same by the fallback become one hex diff.
+fn hex_fallback(
+    resolution: ViewerResolution,
+    falls_back: impl Fn(ViewerKind) -> bool,
+    reasons: Vec<String>,
+) -> ViewerResolution {
+    let mut all: Vec<String> = resolution.fallback.into_iter().collect();
+    all.extend(reasons);
+    all.push("showing Hex".to_string());
     ViewerResolution {
-        kind: ViewerKind::Hex,
-        fallback: Some(reasons.join("; ")),
+        viewers: resolution.viewers.map(|kind| {
+            if falls_back(kind) {
+                ViewerKind::Hex
+            } else {
+                kind
+            }
+        }),
+        fallback: Some(all.join("; ")),
     }
 }
 
@@ -471,11 +533,14 @@ pub fn ui_extension_map(ui: &mut egui::Ui, table: &KindTable) -> Vec<KindEdit> {
 }
 
 /// Stops for the shared conflict cursor: the shown viewer's. The other viewer's state is stale.
-pub fn conflict_count(kind: Option<ViewerKind>, text: usize, hex: usize) -> usize {
-    match kind {
-        Some(ViewerKind::Hex) => hex,
-        Some(ViewerKind::Image | ViewerKind::Audio | ViewerKind::Video) => 0,
-        Some(ViewerKind::Text) | None => text,
+pub fn conflict_count(viewers: Option<Viewers>, text: usize, hex: usize) -> usize {
+    match viewers {
+        Some(Viewers::Pair(ViewerKind::Hex)) => hex,
+        Some(
+            Viewers::Pair(ViewerKind::Image | ViewerKind::Audio | ViewerKind::Video)
+            | Viewers::Sides(_),
+        ) => 0,
+        Some(Viewers::Pair(ViewerKind::Text)) | None => text,
     }
 }
 
@@ -489,10 +554,22 @@ mod tests {
     fn conflict_navigation_counts_the_shown_viewers_stops() {
         // The conflict shortcuts drive one shared cursor; its max must come from the viewer on
         // screen, because the other viewer's state is stale.
-        assert_eq!(conflict_count(Some(ViewerKind::Text), 7, 3), 7);
-        assert_eq!(conflict_count(Some(ViewerKind::Hex), 7, 3), 3);
+        let pair = |kind| Some(Viewers::Pair(kind));
+        assert_eq!(conflict_count(pair(ViewerKind::Text), 7, 3), 7);
+        assert_eq!(conflict_count(pair(ViewerKind::Hex), 7, 3), 3);
         assert_eq!(conflict_count(None, 7, 3), 7);
-        assert_eq!(conflict_count(Some(ViewerKind::Image), 7, 3), 0);
+        assert_eq!(conflict_count(pair(ViewerKind::Image), 7, 3), 0);
+    }
+
+    #[test]
+    fn a_mismatched_pair_has_no_conflict_stops() {
+        for sides in [
+            [ViewerKind::Text, ViewerKind::Hex],
+            [ViewerKind::Hex, ViewerKind::Image],
+            [ViewerKind::Image, ViewerKind::Text],
+        ] {
+            assert_eq!(conflict_count(Some(Viewers::Sides(sides)), 7, 3), 0);
+        }
     }
 
     fn side(path: &UniversalPath, sniffed: ViewerKind) -> Option<LoadedSide<'_>> {
@@ -500,7 +577,205 @@ mod tests {
     }
 
     fn kind(resolution: Option<ViewerResolution>) -> Option<ViewerKind> {
-        resolution.map(|r| r.kind)
+        resolution.and_then(|r| r.viewers.pair())
+    }
+
+    fn viewers(resolution: Option<ViewerResolution>) -> Viewers {
+        resolution.unwrap().viewers
+    }
+
+    #[test]
+    fn same_kinds_give_one_viewer_for_the_pair() {
+        let kinds = KindTable::default();
+        let resolve = |a: &str, sniffed_a, b: &str, sniffed_b| {
+            let (a, b) = (UniversalPath::from(a), UniversalPath::from(b));
+            viewers(resolve_viewer(
+                None,
+                &kinds,
+                side(&a, sniffed_a),
+                side(&b, sniffed_b),
+            ))
+        };
+        let (text, hex) = (ViewerKind::Text, ViewerKind::Hex);
+        assert_eq!(
+            resolve("a.png", hex, "b.jpg", hex),
+            Viewers::Pair(ViewerKind::Image)
+        );
+        assert_eq!(resolve("a.txt", text, "b.rs", text), Viewers::Pair(text));
+        assert_eq!(resolve("a.exe", hex, "b.zip", hex), Viewers::Pair(hex));
+    }
+
+    #[test]
+    fn image_against_text_gives_one_viewer_per_side() {
+        let png = UniversalPath::from("a.png");
+        let txt = UniversalPath::from("b.txt");
+        let kinds = KindTable::default();
+        let resolution = resolve_viewer(
+            None,
+            &kinds,
+            side(&png, ViewerKind::Hex),
+            side(&txt, ViewerKind::Text),
+        )
+        .unwrap();
+        assert_eq!(
+            resolution,
+            ViewerResolution {
+                viewers: Viewers::Sides([ViewerKind::Image, ViewerKind::Text]),
+                fallback: None,
+            }
+        );
+        assert_eq!(
+            viewers(resolve_viewer(
+                None,
+                &kinds,
+                side(&txt, ViewerKind::Text),
+                side(&png, ViewerKind::Hex),
+            )),
+            Viewers::Sides([ViewerKind::Text, ViewerKind::Image])
+        );
+    }
+
+    #[test]
+    fn image_against_an_unknown_binary_gives_image_and_single_side_hex() {
+        let png = UniversalPath::from("a.png");
+        let kinds = KindTable::default();
+        for binary in ["b.unlisted", "b.exe", "b.uasset"] {
+            let binary = UniversalPath::from(binary);
+            assert_eq!(
+                viewers(resolve_viewer(
+                    None,
+                    &kinds,
+                    side(&png, ViewerKind::Hex),
+                    side(&binary, ViewerKind::Hex),
+                )),
+                Viewers::Sides([ViewerKind::Image, ViewerKind::Hex]),
+                "{binary}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_hex_override_gives_a_hex_diff_of_a_mismatched_pair() {
+        let png = UniversalPath::from("a.png");
+        let txt = UniversalPath::from("b.txt");
+        assert_eq!(
+            resolve_viewer(
+                Some(ViewerKind::Hex),
+                &KindTable::default(),
+                side(&png, ViewerKind::Hex),
+                side(&txt, ViewerKind::Text),
+            ),
+            Some(ViewerResolution {
+                viewers: Viewers::Pair(ViewerKind::Hex),
+                fallback: None,
+            })
+        );
+    }
+
+    #[test]
+    fn a_binary_side_that_wanted_text_is_single_side_hex_against_another_kind() {
+        let txt = UniversalPath::from("a.txt");
+        let png = UniversalPath::from("b.png");
+        let bin = UniversalPath::from("b.unlisted");
+        let kinds = KindTable::default();
+        let resolution = resolve_viewer(
+            None,
+            &kinds,
+            side(&txt, ViewerKind::Hex),
+            side(&png, ViewerKind::Hex),
+        )
+        .unwrap();
+        assert_eq!(
+            resolution.viewers,
+            Viewers::Sides([ViewerKind::Hex, ViewerKind::Image])
+        );
+        assert!(resolution.fallback.is_some());
+
+        let resolution = resolve_viewer(
+            None,
+            &kinds,
+            side(&txt, ViewerKind::Hex),
+            side(&bin, ViewerKind::Hex),
+        )
+        .unwrap();
+        assert_eq!(resolution.viewers, Viewers::Pair(ViewerKind::Hex));
+        assert!(resolution.fallback.is_some());
+    }
+
+    #[test]
+    fn each_viewer_gets_the_pair_or_its_own_side_first() {
+        let pair = Viewers::Pair(ViewerKind::Image);
+        assert_eq!(
+            pair.files_for(ViewerKind::Image, [Some(1), Some(2)]),
+            [Some(1), Some(2)]
+        );
+        assert_eq!(
+            pair.files_for(ViewerKind::Hex, [Some(1), Some(2)]),
+            [None, None]
+        );
+
+        let sides = Viewers::Sides([ViewerKind::Text, ViewerKind::Image]);
+        assert_eq!(
+            sides.files_for(ViewerKind::Text, [Some(1), Some(2)]),
+            [Some(1), None]
+        );
+        assert_eq!(
+            sides.files_for(ViewerKind::Image, [Some(1), Some(2)]),
+            [Some(2), None]
+        );
+        assert_eq!(
+            sides.files_for(ViewerKind::Hex, [Some(1), Some(2)]),
+            [None, None]
+        );
+    }
+
+    #[test]
+    fn a_failed_decode_on_one_side_of_a_mismatched_pair_turns_that_side_to_hex() {
+        let resolution = |sides| ViewerResolution {
+            viewers: Viewers::Sides(sides),
+            fallback: None,
+        };
+        let failure = ["a.png can't be decoded: bad".to_string()];
+
+        let shown =
+            image_decode_fallback(resolution([ViewerKind::Image, ViewerKind::Text]), &failure);
+        assert_eq!(
+            shown.viewers,
+            Viewers::Sides([ViewerKind::Hex, ViewerKind::Text])
+        );
+        assert!(shown.fallback.unwrap().contains(&failure[0]));
+
+        let shown =
+            image_decode_fallback(resolution([ViewerKind::Hex, ViewerKind::Image]), &failure);
+        assert_eq!(shown.viewers, Viewers::Pair(ViewerKind::Hex));
+
+        let text_and_hex = resolution([ViewerKind::Text, ViewerKind::Hex]);
+        assert_eq!(
+            image_decode_fallback(text_and_hex.clone(), &failure),
+            text_and_hex
+        );
+    }
+
+    #[test]
+    fn a_media_side_of_a_mismatched_pair_without_ffmpeg_turns_to_hex() {
+        let not_found = resolve_ffmpeg(None, None, |_| false, |_| None).unwrap_err();
+        let shown = ffmpeg_fallback(
+            ViewerResolution {
+                viewers: Viewers::Sides([ViewerKind::Text, ViewerKind::Audio]),
+                fallback: None,
+            },
+            Err(&not_found),
+        );
+        assert_eq!(
+            shown.viewers,
+            Viewers::Sides([ViewerKind::Text, ViewerKind::Hex])
+        );
+        assert!(
+            shown
+                .fallback
+                .unwrap()
+                .contains("The Audio viewer needs ffmpeg")
+        );
     }
 
     fn zbin_hex_map() -> KindTable {
@@ -703,7 +978,7 @@ mod tests {
     }
 
     #[test]
-    fn sides_resolving_to_different_viewers_fall_back_to_hex_with_a_reason() {
+    fn sides_resolving_to_different_viewers_are_shown_per_side_without_a_fallback() {
         let a = UniversalPath::from("a.zbin");
         let b = UniversalPath::from("b.txt");
         let resolution = resolve_viewer(
@@ -713,10 +988,12 @@ mod tests {
             side(&b, ViewerKind::Text),
         )
         .unwrap();
-        assert_eq!(resolution.kind, ViewerKind::Hex);
-        assert!(resolution.fallback.is_some());
+        assert_eq!(
+            resolution.viewers,
+            Viewers::Sides([ViewerKind::Hex, ViewerKind::Text])
+        );
+        assert_eq!(resolution.fallback, None);
 
-        // Sniffed text against sniffed binary is a mismatch too.
         let resolution = resolve_viewer(
             None,
             &KindTable::default(),
@@ -724,8 +1001,11 @@ mod tests {
             side(&a, ViewerKind::Hex),
         )
         .unwrap();
-        assert_eq!(resolution.kind, ViewerKind::Hex);
-        assert!(resolution.fallback.is_some());
+        assert_eq!(
+            resolution.viewers,
+            Viewers::Sides([ViewerKind::Text, ViewerKind::Hex])
+        );
+        assert_eq!(resolution.fallback, None);
     }
 
     #[test]
@@ -745,19 +1025,19 @@ mod tests {
             side(&b, hex),
         )
         .unwrap();
-        assert_eq!(resolution.kind, hex);
+        assert_eq!(resolution.viewers, Viewers::Pair(hex));
         assert!(resolution.fallback.is_some());
 
         // By the map, with only one side binary.
         let mut map = KindTable::default();
         map.set_override("dat", FileKind::Text);
         let resolution = resolve_viewer(None, &map, side(&a, text), side(&b, hex)).unwrap();
-        assert_eq!(resolution.kind, hex);
+        assert_eq!(resolution.viewers, Viewers::Pair(hex));
         assert!(resolution.fallback.is_some());
 
         // A one-sided diff falls back too.
         let resolution = resolve_viewer(Some(text), &map, None, side(&b, hex)).unwrap();
-        assert_eq!(resolution.kind, hex);
+        assert_eq!(resolution.viewers, Viewers::Pair(hex));
         assert!(resolution.fallback.is_some());
     }
 
@@ -807,13 +1087,13 @@ mod tests {
     #[test]
     fn a_failed_image_decode_falls_back_to_hex_with_a_reason() {
         let image = ViewerResolution {
-            kind: ViewerKind::Image,
+            viewers: Viewers::Pair(ViewerKind::Image),
             fallback: None,
         };
         assert_eq!(image_decode_fallback(image.clone(), &[]), image);
 
         let resolution = image_decode_fallback(image, &["a.png can't be decoded: bad".to_string()]);
-        assert_eq!(resolution.kind, ViewerKind::Hex);
+        assert_eq!(resolution.viewers, Viewers::Pair(ViewerKind::Hex));
         assert!(
             resolution
                 .fallback
@@ -823,7 +1103,7 @@ mod tests {
 
         // Only an Image resolution looks at decode results.
         let hex = ViewerResolution {
-            kind: ViewerKind::Hex,
+            viewers: Viewers::Pair(ViewerKind::Hex),
             fallback: None,
         };
         assert_eq!(
@@ -835,12 +1115,12 @@ mod tests {
     #[test]
     fn a_failed_audio_decode_falls_back_to_hex_with_a_reason() {
         let audio = ViewerResolution {
-            kind: ViewerKind::Audio,
+            viewers: Viewers::Pair(ViewerKind::Audio),
             fallback: None,
         };
         let failure = ["a.wav can't be decoded as audio: bad".to_string()];
         let resolution = decode_fallback(audio.clone(), ViewerKind::Audio, &failure);
-        assert_eq!(resolution.kind, ViewerKind::Hex);
+        assert_eq!(resolution.viewers, Viewers::Pair(ViewerKind::Hex));
         assert!(resolution.fallback.unwrap().contains(&failure[0]));
 
         assert_eq!(
@@ -872,14 +1152,18 @@ mod tests {
         .unwrap_err();
         for extension in ["wav", "mp4"] {
             let resolution = ffmpeg_fallback(resolve_pair(extension), Err(&not_found));
-            assert_eq!(resolution.kind, ViewerKind::Hex, "{extension}");
+            assert_eq!(
+                resolution.viewers,
+                Viewers::Pair(ViewerKind::Hex),
+                "{extension}"
+            );
             let reason = resolution.fallback.unwrap();
             assert!(reason.contains(&not_found.to_string()), "{reason}");
             assert!(reason.contains("not found"), "{reason}");
         }
 
         let image = resolve_pair("png");
-        assert_eq!(image.kind, ViewerKind::Image);
+        assert_eq!(image.viewers, Viewers::Pair(ViewerKind::Image));
         assert_eq!(ffmpeg_fallback(image.clone(), Err(&not_found)), image);
     }
 
@@ -887,7 +1171,7 @@ mod tests {
     fn a_video_that_cant_be_probed_falls_back_to_hex_with_the_reason() {
         let failures = ["b.mp4: no video stream".to_string()];
         let resolution = decode_fallback(resolve_pair("mp4"), ViewerKind::Video, &failures);
-        assert_eq!(resolution.kind, ViewerKind::Hex);
+        assert_eq!(resolution.viewers, Viewers::Pair(ViewerKind::Hex));
         let reason = resolution.fallback.unwrap();
         assert!(reason.contains("b.mp4: no video stream"), "{reason}");
 
@@ -919,7 +1203,7 @@ mod tests {
             for extension in kind.default_extensions() {
                 let resolution = ffmpeg_fallback(resolve_pair(extension), Ok(&found));
                 let expected = ViewerResolution {
-                    kind: viewer,
+                    viewers: Viewers::Pair(viewer),
                     fallback: None,
                 };
                 assert_eq!(resolution, expected, "{extension}");

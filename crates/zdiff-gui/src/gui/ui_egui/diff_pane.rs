@@ -15,6 +15,7 @@ use crate::{
         file_role::FileRole,
         occurrence::{OccurrenceState, RowFind, find_ranges},
         panes::ZAppPane,
+        side_viewers::{self, SideViewers},
         syntax,
     },
     viewer::{
@@ -118,6 +119,7 @@ pub struct FileDiffPaneCtx<'a> {
     pub audio_meta: Option<&'a mut AudioMetaProcessor>,
     pub video_frames: Option<&'a mut VideoFrameProcessor>,
     pub video_meta: Option<&'a mut VideoMetaProcessor>,
+    pub side_viewers: Option<SideViewers<'a>>,
     /// The toolbar's viewer switch for the current pair; `None` is Auto.
     pub viewer_override: &'a mut Option<ViewerKind>,
     /// Why the pair isn't in the viewer it asked for, if it isn't.
@@ -275,6 +277,7 @@ impl FileDiffPane {
         // No-op once registered.
         ui.ctx().add_plugin(CopyMarkerPlugin);
         self.occurrences.begin_frame(ui.ctx());
+        let mut side_viewers = ctx.side_viewers.take();
 
         let content_widths = match ctx.diff_ctx {
             Some(diff_ctx) => self.content_widths(ui, diff_ctx),
@@ -466,6 +469,12 @@ impl FileDiffPane {
                     ui.add(egui::Label::new(label).selectable(false))
                         .on_hover_text(tooltip);
                 });
+            } else if let Some(sides) = &side_viewers {
+                ui.with_layout(Layout::right_to_left(egui::Align::Center), |ui| {
+                    let text = side_viewers::status_text(sides.kinds);
+                    let text = egui::RichText::new(text).color(ui.visuals().warn_fg_color);
+                    ui.add(egui::Label::new(text).selectable(false));
+                });
             } else if let Some(hex_view) = &ctx.hex_view {
                 ui.with_layout(Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.add(egui::Label::new(hex_view.status_text()).selectable(false));
@@ -501,9 +510,13 @@ impl FileDiffPane {
         if ctx.toggle_active_side {
             self.active_side.toggle();
         }
-        let active_side =
-            self.active_side
-                .begin_frame(press_pos, source_path.is_some(), target_path.is_some());
+        // A mismatched pair's text side is diffed alone, as the left file.
+        let side_text = side_viewers.as_ref().is_some_and(|s| s.text.is_some());
+        let active_side = self.active_side.begin_frame(
+            press_pos,
+            source_path.is_some() || side_text,
+            target_path.is_some(),
+        );
         *ctx.active_side = active_side;
 
         let mut waiting_for_diff = false;
@@ -521,8 +534,10 @@ impl FileDiffPane {
         waiting_for_diff |= ctx.diff_loading;
         do_not_render_diff |= waiting_for_diff;
         // The hex and image viewers draw the loaded bytes and need no text diff.
-        let other_viewer =
-            ctx.hex_view.is_some() || ctx.image_view.is_some() || ctx.media_view.is_some();
+        let other_viewer = ctx.hex_view.is_some()
+            || ctx.image_view.is_some()
+            || ctx.media_view.is_some()
+            || side_viewers.is_some();
         if other_viewer {
             waiting_for_diff = false;
             do_not_render_diff = false;
@@ -803,6 +818,7 @@ impl FileDiffPane {
                             };
                             let header_only = ctx.image_view.is_some()
                                 || ctx.media_view.is_some()
+                                || side_viewers.is_some()
                                 || do_not_render_diff;
                             let mut offsets = [*ctx.scroll_left, *ctx.scroll_right];
                             // Wrapped text fits its column, so nothing scrolls sideways. Hex rows
@@ -1031,6 +1047,45 @@ impl FileDiffPane {
                             }
                             if let Some(processor) = ctx.audio_meta.as_deref_mut() {
                                 audio_meta::show(ui, processor);
+                            }
+                            if let Some(sides) = side_viewers.as_mut() {
+                                let text = sides.text;
+                                let (find_matcher, find_hit) = (ctx.find_matcher, ctx.find_hit);
+                                let (highlights, code_language) =
+                                    (ctx.active_highlights, ctx.code_language);
+                                side_viewers::show(ui, sides, output.side_rects, |ui, row| {
+                                    let Some(text) = text else {
+                                        return;
+                                    };
+                                    let content =
+                                        side_viewers::plain_content(&text.diff_rows[row].left);
+                                    let lit = highlights.contains(&row);
+                                    let find = row_find(
+                                        find_matcher,
+                                        find_hit,
+                                        ActiveSide::Left,
+                                        row,
+                                        &content,
+                                    );
+                                    let width = ui.available_width();
+                                    Self::render_side_row(
+                                        ui,
+                                        ActiveSide::Left,
+                                        row,
+                                        occurrences,
+                                        text.input.file_1.clone(),
+                                        None,
+                                        &content,
+                                        width,
+                                        false,
+                                        lit,
+                                        lit,
+                                        find,
+                                        true,
+                                        code_language,
+                                        None,
+                                    );
+                                });
                             }
                         });
                 })
