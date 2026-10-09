@@ -1796,11 +1796,11 @@ mod tests {
         }
         let mut state = loaded(left.path(), right.path());
         let view_1 = state.file_system_model_1_view.as_mut().unwrap();
-        let sub = view_1
+        let old_sub = view_1
             .file_system
             .find_path(left.path().join("sub"))
             .unwrap();
-        view_1.collapsed.insert(sub, true);
+        view_1.collapsed.insert(old_sub, true);
         let models = [
             &state.file_system_model_1_view,
             &state.file_system_model_2_view,
@@ -1827,6 +1827,7 @@ mod tests {
         let sub = |view: &FileSystemView, root: &Path| {
             view.file_system.find_path(root.join("sub")).unwrap()
         };
+        assert_ne!(sub(views[0], left.path()), old_sub);
         assert!(views[0].is_collapsed(sub(views[0], left.path())));
         assert!(!views[1].is_collapsed(sub(views[1], right.path())));
     }
