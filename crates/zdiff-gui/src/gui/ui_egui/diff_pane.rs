@@ -1962,7 +1962,7 @@ fn ignore_patterns_btn(
     }
     // The preset save dialog is a modal drawn from inside this popup: clicks in it land outside
     // the popup, and a modal leaves Esc to open popups. Closing the popup would drop the dialog.
-    let dialog_open = ui.ctx().memory(|m| m.top_modal_layer()).is_some();
+    let dialog_open = open && ui.ctx().memory(|m| m.top_modal_layer()).is_some();
     if dialog_open {
         ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
     }
