@@ -26,6 +26,7 @@ use zcommon::ui_egui::common::{
 use crate::ui_egui::tools_window::resolve_tool_exe;
 use crate::ui_egui::tree_cursor::{CursorRequest, CursorRow, TreeCursor};
 use crate::ui_egui::tree_filter::DiffFilter;
+use crate::ui_egui::tree_guides::{Guide, tree_guides};
 use crate::ui_egui::tree_sort::{SortKey, TreeSort};
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -470,6 +471,9 @@ pub const PENDING_DELETION_COLOR: egui::Color32 = egui::Color32::LIGHT_RED;
 const FOLDER_ROW_TINT: egui::Color32 =
     egui::Color32::from_rgba_unmultiplied_const(120, 150, 255, 14);
 const DIMMED_TEXT_COLOR: egui::Color32 = egui::Color32::from_gray(105);
+const GUIDE_LINE_COLOR: egui::Color32 = egui::Color32::from_gray(75);
+const TREE_INDENT: f32 = 16.0;
+const EXPANDER_WIDTH: f32 = 12.0;
 
 fn tag_color(kind: FileKind) -> egui::Color32 {
     match kind {
@@ -722,6 +726,21 @@ pub fn draw_ui_two_folder_tree_with_diff(
     } else {
         RowLayout::Tree
     };
+    let guides = (layout == RowLayout::Tree).then(|| {
+        let side = |id: fn(&DiffState) -> Option<FsNodeId>| {
+            let rows: Vec<(FsNodeDepth, bool)> = drawn_rows
+                .iter()
+                .map(|&i| {
+                    (
+                        visible_rows[i].depth,
+                        id(&visible_rows[i].diff_state).is_some(),
+                    )
+                })
+                .collect();
+            tree_guides(&rows)
+        };
+        [side(DiffState::first), side(DiffState::second)]
+    });
     let available_height = ui.available_height();
     let available_width = ui.available_width();
     let mut col0_rect = egui::Rect::NOTHING;
@@ -860,6 +879,9 @@ pub fn draw_ui_two_folder_tree_with_diff(
                 .body(|body| {
                     body.rows(row_height, row_count, |mut row| {
                         let entry = &visible_rows[drawn_rows[row.index()]];
+                        let row_guides = guides.as_ref().map_or([&[][..]; 2], |[left, right]| {
+                            [left.row(row.index()), right.row(row.index())]
+                        });
                         let is_cursor = cursor.is_at(&entry.rel_path);
                         row.set_selected(is_cursor);
                         let clicked = render_row_folder_tree_diff_column(
@@ -871,6 +893,7 @@ pub fn draw_ui_two_folder_tree_with_diff(
                             row_height,
                             diff_tool_config,
                             layout,
+                            row_guides,
                         );
                         if clicked {
                             *cursor = TreeCursor::at(&entry.rel_path);
@@ -1210,15 +1233,17 @@ fn render_diff_side(
             return;
         }
 
-        ui.add_space((depth as f32) * 16.0);
+        ui.add_space((depth as f32) * TREE_INDENT);
 
         if let (Some(v), Some(id)) = (view, node_id) {
             if let Some(node) = v.file_system.get_node(id) {
                 if is_dir {
                     // Openness: 0.0 is closed, 1.0 is open
                     let openness = if is_collapsed { 0.0 } else { 1.0 };
-                    let (_rect, response) =
-                        ui.allocate_exact_size(egui::vec2(12.0, row_height), egui::Sense::click());
+                    let (_rect, response) = ui.allocate_exact_size(
+                        egui::vec2(EXPANDER_WIDTH, row_height),
+                        egui::Sense::click(),
+                    );
                     egui::collapsing_header::paint_default_icon(ui, openness, &response);
 
                     if response.clicked() {
@@ -1275,6 +1300,7 @@ fn render_row_folder_tree_diff_column(
     row_height: f32,
     diff_tool_config: &DiffToolConfig,
     layout: RowLayout,
+    guides: [&[Guide]; 2],
 ) -> bool {
     let rel_path = |shown: RowLayout| (layout == shown).then_some(entry.rel_path.as_str());
     let flat_rel_path = rel_path(RowLayout::RelPaths);
@@ -1316,6 +1342,7 @@ fn render_row_folder_tree_diff_column(
     // --- Left Column (Folder 1) ---
     row.col(|ui| {
         tint(ui);
+        paint_guides(ui, guides[0]);
         render_diff_side(
             ui,
             file_system_1_view.as_deref(),
@@ -1354,6 +1381,7 @@ fn render_row_folder_tree_diff_column(
     // --- Right Column (Folder 2) ---
     row.col(|ui| {
         tint(ui);
+        paint_guides(ui, guides[1]);
         render_diff_side(
             ui,
             file_system_2_view.as_deref(),
@@ -1393,6 +1421,25 @@ fn render_row_folder_tree_diff_column(
 
     // Labels take their own clicks; this catches clicks elsewhere on the row.
     should_select_row || row.response().clicked()
+}
+
+/// Each line sits under its folder's expander, in the children's indentation.
+fn paint_guides(ui: &egui::Ui, guides: &[Guide]) {
+    let cell = ui.max_rect();
+    // Spans the item spacing between rows, like the folder tint, so the lines have no gaps.
+    let half_spacing = 0.5 * ui.spacing().item_spacing.y;
+    let stroke = egui::Stroke::new(1.0, GUIDE_LINE_COLOR);
+    for (k, guide) in guides.iter().enumerate() {
+        let bottom = match guide {
+            Guide::Blank => continue,
+            Guide::Through => cell.bottom() + half_spacing,
+            Guide::End => cell.center().y,
+        };
+        let x = cell.left() + (k + 1) as f32 * TREE_INDENT + 0.5 * EXPANDER_WIDTH;
+        let x = ui.painter().round_to_pixel_center(x);
+        ui.painter()
+            .vline(x, (cell.top() - half_spacing)..=bottom, stroke);
+    }
 }
 
 fn apply_cursor_request(
