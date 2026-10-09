@@ -1,10 +1,11 @@
-use std::io;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, mpsc};
 
+use zcommon::vcs::git::{self, GitCommand, GitRunner};
 use zdiff::cached_file::CachedFile;
 use zdiff::lexer::{LEXER_MODE_DEFAULT, RawToken};
-use zdiff::universal_path::{DepotRev, UniversalPath};
+use zdiff::universal_path::{DepotRev, GitRev, UniversalPath};
 
 use crate::p4::P4Command;
 use crate::viewer::{ViewerKind, sniff_viewer_kind};
@@ -135,13 +136,38 @@ pub fn load_depot_file(
     loaded
 }
 
+pub fn load_git_file(
+    display_path: UniversalPath,
+    temp_root: &Path,
+    lexer_mode: u8,
+    git: &impl GitRunner,
+) -> Result<LoadedFile, String> {
+    let UniversalPath::Git(path, rev) = &display_path else {
+        return Err(format!("{display_path:?} is not a git revision path"));
+    };
+    let bytes = git::locate(git, path)
+        .and_then(|location| match rev {
+            GitRev::Index => git::read_index_file(git, &location.root, &location.rel),
+            GitRev::Rev(rev) => git::read_file(git, &location.root, rev, &location.rel),
+        })
+        .map_err(|e| format!("Cannot load {display_path}: {e}"))?;
+
+    let mut temp = tempfile::Builder::new()
+        .suffix(path.file_name().unwrap_or_default())
+        .tempfile_in(temp_root)
+        .map_err(|e| format!("Failed to create a temp file for {display_path}: {e}"))?;
+    temp.write_all(&bytes)
+        .map_err(|e| format!("Failed to write git content to temp file: {e}"))?;
+    load_file(display_path.clone(), temp.path(), lexer_mode)
+        .map_err(|e| format!("Cannot load file {}, Error: {e}", temp.path().display()))
+}
+
 fn default_channel() -> (mpsc::Sender<UniversalPath>, mpsc::Receiver<UniversalPath>) {
     mpsc::channel()
 }
-fn default_channel_loaded_file() -> (
-    mpsc::Sender<(UniversalPath, Option<LoadedFile>)>,
-    mpsc::Receiver<(UniversalPath, Option<LoadedFile>)>,
-) {
+type LoadResult = (UniversalPath, Result<LoadedFile, String>);
+
+fn default_channel_loaded_file() -> (mpsc::Sender<LoadResult>, mpsc::Receiver<LoadResult>) {
     mpsc::channel()
 }
 
@@ -171,14 +197,13 @@ pub struct FileProcessor {
         feature = "serde",
         serde(skip, default = "default_channel_loaded_file")
     )]
-    channel_loaded_file: (
-        mpsc::Sender<(UniversalPath, Option<LoadedFile>)>,
-        mpsc::Receiver<(UniversalPath, Option<LoadedFile>)>,
-    ),
+    channel_loaded_file: (mpsc::Sender<LoadResult>, mpsc::Receiver<LoadResult>),
     #[cfg_attr(feature = "serde", serde(skip))]
     loading_path: Option<UniversalPath>,
     #[cfg_attr(feature = "serde", serde(skip))]
     label: Option<String>,
+    #[cfg_attr(feature = "serde", serde(skip))]
+    load_error: Option<String>,
 }
 
 impl Default for FileProcessor {
@@ -193,6 +218,7 @@ impl Default for FileProcessor {
             channel_loaded_file: default_channel_loaded_file(),
             loading_path: None,
             label: None,
+            load_error: None,
         }
     }
 }
@@ -242,7 +268,10 @@ impl FileProcessor {
     }
 
     pub fn get_path_as_string(&self) -> String {
-        self.file_path.to_p4_string()
+        match &self.file_path {
+            UniversalPath::Git(_, rev) => format!("{}@git:{rev}", self.file_path.to_p4_string()),
+            path => path.to_p4_string(),
+        }
     }
 
     pub fn label(&self) -> Option<&str> {
@@ -275,6 +304,12 @@ impl FileProcessor {
                 log::debug!("is_root_depot {:?}", root.is_depot());
                 let mut new_path = root.clone();
                 new_path.append(path.clone());
+                // append keeps the root's kind, which would drop the path's revision.
+                if let (UniversalPath::Local(joined), UniversalPath::Git(_, rev)) =
+                    (&new_path, &path)
+                {
+                    new_path = UniversalPath::Git(joined.clone(), rev.clone());
+                }
                 self.file_path = new_path
             } else {
                 self.file_path = path;
@@ -326,7 +361,10 @@ impl FileProcessor {
 
     pub fn is_root_valid(root: &UniversalPath, path: &UniversalPath) -> bool {
         match (root, path) {
-            (UniversalPath::Local(root_local), UniversalPath::Local(path_local)) => {
+            (
+                UniversalPath::Local(root_local),
+                UniversalPath::Local(path_local) | UniversalPath::Git(path_local, _),
+            ) => {
                 let norm_root = Self::normalize_path(root_local);
                 let norm_path = Self::normalize_path(path_local);
                 norm_path.starts_with(norm_root)
@@ -360,10 +398,15 @@ impl FileProcessor {
         log::debug!("Invalidating cache file for path: {}", self.file_path);
         self.loaded_file = None;
         self.cached_file_path = None;
+        self.load_error = None;
     }
 
     pub fn get_loading_path(&self) -> Option<&UniversalPath> {
         self.loading_path.as_ref()
+    }
+
+    pub fn load_error(&self) -> Option<&str> {
+        self.load_error.as_deref()
     }
 
     /// The loaded file only when it is text; a binary load gives `None`.
@@ -372,9 +415,12 @@ impl FileProcessor {
     }
 
     pub fn get_loaded_file(&mut self) -> Option<LoadedFile> {
-        while let Ok((loaded_path, file_opt)) = self.channel_loaded_file.1.try_recv() {
+        while let Ok((loaded_path, loaded)) = self.channel_loaded_file.1.try_recv() {
             if self.cached_file_path.as_ref() == Some(&loaded_path) {
-                self.loaded_file = file_opt;
+                (self.loaded_file, self.load_error) = match loaded {
+                    Ok(file) => (Some(file), None),
+                    Err(e) => (None, Some(e)),
+                };
                 self.loading_path = None;
             }
         }
@@ -384,6 +430,7 @@ impl FileProcessor {
         if !path.is_empty() && self.cached_file_path.as_ref() != Some(path) {
             self.cached_file_path = Some(path.clone());
             self.loaded_file = None;
+            self.load_error = None;
             self.loading_path = Some(path.clone());
 
             log::debug!(
@@ -406,13 +453,16 @@ impl FileProcessor {
                         diff_lexer_mode,
                         P4Command::get_depot_file_bytes,
                     ),
-                    UniversalPath::Git(..) => Err(format!(
-                        "Cannot load {path_clone}: git revisions are not supported yet"
-                    )),
+                    UniversalPath::Git(..) => load_git_file(
+                        path_clone.clone(),
+                        &std::env::temp_dir(),
+                        diff_lexer_mode,
+                        &GitCommand::default(),
+                    ),
                 };
-                let loaded_file_opt = loaded.inspect_err(|e| log::error!("{e}")).ok();
+                let loaded = loaded.inspect_err(|e| log::error!("{e}"));
 
-                let _ = tx.send((path_clone, loaded_file_opt));
+                let _ = tx.send((path_clone, loaded));
             });
         }
 
@@ -431,6 +481,7 @@ mod tests {
     use super::*;
     use crate::viewer::ViewerKind;
     use std::path::PathBuf;
+    use zcommon::vcs::git::{GitError, GitErrorKind};
     #[test]
     fn test_is_root_valid_local() {
         let root = UniversalPath::Local(PathBuf::from(r"E:\Github\ZHashDiff\crates"));
@@ -675,5 +726,119 @@ mod tests {
         assert_eq!(file.display_name(), "A");
         file.set_label(None);
         assert_eq!(file.display_name(), file.get_path_as_string());
+    }
+
+    struct FakeGit<F: Fn(&[&str]) -> Result<Vec<u8>, GitError>>(F);
+
+    impl<F: Fn(&[&str]) -> Result<Vec<u8>, GitError>> GitRunner for FakeGit<F> {
+        fn run(&self, _cwd: &Path, args: &[&str]) -> Result<Vec<u8>, GitError> {
+            (self.0)(args)
+        }
+    }
+
+    fn load_git(
+        rev: GitRev,
+        expected_object: &str,
+        fetched: Result<&[u8], &str>,
+    ) -> Result<LoadedFile, String> {
+        let repo = tempfile::tempdir().unwrap();
+        std::fs::create_dir(repo.path().join("src")).unwrap();
+        let root = repo.path().display().to_string();
+        let git = FakeGit(|args: &[&str]| match args[0] {
+            "rev-parse" => Ok(format!("{root}\nsrc/\n").into_bytes()),
+            "cat-file" => {
+                assert_eq!(args.last(), Some(&expected_object), "{args:?}");
+                assert!(args.contains(&"--filters"), "{args:?}");
+                fetched.map(<[u8]>::to_vec).map_err(|stderr| GitError {
+                    command: args.join(" "),
+                    kind: GitErrorKind::Failed {
+                        status: "exit code: 128".into(),
+                        stderr: stderr.into(),
+                    },
+                })
+            }
+            _ => panic!("unexpected git {args:?}"),
+        });
+        let temp = tempfile::tempdir().unwrap();
+        let path = UniversalPath::Git(repo.path().join("src").join("a.rs"), rev);
+        let loaded = load_git_file(path.clone(), temp.path(), LEXER_MODE_DEFAULT, &git);
+        if let Ok(loaded) = &loaded {
+            assert_eq!(loaded.path(), &path);
+        }
+        assert!(walk_files(temp.path()).is_empty());
+        loaded
+    }
+
+    #[test]
+    fn git_revision_loads_the_fetched_bytes() {
+        let text = "fn main() {}\r\n";
+        let loaded = load_git(
+            GitRev::Rev("main".into()),
+            "main:src/a.rs",
+            Ok(text.as_bytes()),
+        )
+        .unwrap();
+        assert_eq!(loaded.text().unwrap().contents, text);
+    }
+
+    #[test]
+    fn git_index_loads_the_staged_bytes() {
+        let bytes = b"\x00\x01staged";
+        let loaded = load_git(GitRev::Index, ":src/a.rs", Ok(bytes)).unwrap();
+        assert_eq!(loaded.viewer_kind(), ViewerKind::Hex);
+        assert_eq!(loaded.bytes(), bytes);
+    }
+
+    #[test]
+    fn git_error_is_the_side_error() {
+        let stderr = "fatal: path 'src/a.rs' does not exist in 'main'";
+        let err = load_git(GitRev::Rev("main".into()), "main:src/a.rs", Err(stderr)).unwrap_err();
+        assert!(err.contains(stderr), "{err}");
+    }
+
+    #[test]
+    fn git_path_keeps_its_revision_under_a_local_root() {
+        let rev = GitRev::Rev("main".into());
+        for (root, path, expected) in [
+            ("", r"C:\repo\a.rs", r"C:\repo\a.rs"),
+            (r"C:\repo", r"C:\repo\a.rs", r"C:\repo\a.rs"),
+        ] {
+            let mut file = FileProcessor::new();
+            file.set_root(UniversalPath::new(root));
+            file.set_path(UniversalPath::Git(path.into(), rev.clone()));
+            assert_eq!(
+                file.get_full_path(),
+                UniversalPath::Git(expected.into(), rev.clone()),
+                "root={root:?}, path={path:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn display_name_of_a_git_path_shows_the_revision() {
+        let mut file = FileProcessor::new();
+        file.set_path(UniversalPath::new(r"C:\repo\a.rs@git:HEAD~3"));
+        assert_eq!(file.display_name(), "C:/repo/a.rs@git:HEAD~3");
+        file.set_path(UniversalPath::new(r"C:\repo\a.rs@git:index"));
+        assert_eq!(file.display_name(), "C:/repo/a.rs@git:index");
+    }
+
+    #[test]
+    fn load_error_is_kept_for_the_side() {
+        let missing = tempfile::tempdir().unwrap().path().join("missing.rs");
+        let mut file = FileProcessor::new();
+        file.set_path(UniversalPath::from(missing.clone()));
+        file.get_loaded_file();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while file.get_loading_path().is_some() {
+            assert!(std::time::Instant::now() < deadline, "load never finished");
+            std::thread::yield_now();
+            file.get_loaded_file();
+        }
+        let error = file.load_error().expect("a load error");
+        assert!(error.contains("missing.rs"), "{error}");
+
+        file.set_path(UniversalPath::new("other.rs"));
+        assert_eq!(file.load_error(), None);
     }
 }

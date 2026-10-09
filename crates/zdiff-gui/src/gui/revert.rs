@@ -862,6 +862,25 @@ mod tests {
     }
 
     #[test]
+    fn git_revision_target_is_refused_and_the_working_tree_side_still_reverts() {
+        let pair = Pair::new("a\nb\n", "a\nB\n");
+        let at_main = UniversalPath::new(format!("{}@git:main", pair.right.display()));
+        let left = cached(at_main, &pair.left, LEXER_MODE_DEFAULT);
+        let right = cached(
+            UniversalPath::from(pair.right.clone()),
+            &pair.right,
+            LEXER_MODE_DEFAULT,
+        );
+        let ctx = diff_files(left, right, DiffBuilderOptions::default());
+
+        assert_eq!(
+            check_revert(&ctx, Left, no_temp_root()),
+            Err(RevertRefusal::NotLocalTarget)
+        );
+        assert_eq!(check_revert(&ctx, Right, no_temp_root()), Ok(()));
+    }
+
+    #[test]
     fn temp_target_is_refused_and_the_other_side_still_reverts() {
         let temp_root = tempfile::tempdir().unwrap();
         let workspace = tempfile::tempdir().unwrap();

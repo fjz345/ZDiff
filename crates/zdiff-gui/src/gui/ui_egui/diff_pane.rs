@@ -70,6 +70,8 @@ pub struct FileDiffPaneCtx<'a> {
     pub file_target_root_valid: bool,
     pub file_source_path_valid: bool,
     pub file_target_path_valid: bool,
+    pub file_source_load_error: Option<String>,
+    pub file_target_load_error: Option<String>,
     pub file_source_loading: bool,
     pub file_target_loading: bool,
     pub diff_loading: bool,
@@ -691,14 +693,16 @@ impl FileDiffPane {
                                                  label: Option<&str>,
                                                  root: Option<&UniversalPath>,
                                                  is_valid: bool,
+                                                 load_error: Option<&str>,
                                                  spinner_active: bool|
                              -> (Option<UniversalPath>, Option<String>) {
                                 let segments = file_path_segments(path, label);
                                 let full_path = path.to_string();
+                                let reason = load_error.unwrap_or("Invalid path");
                                 let error = match (label, is_valid) {
                                     (_, true) => None,
-                                    (Some(_), false) => Some(format!("{full_path}\nInvalid path")),
-                                    (None, false) => Some("Invalid path".to_owned()),
+                                    (Some(_), false) => Some(format!("{full_path}\n{reason}")),
+                                    (None, false) => Some(reason.to_owned()),
                                 };
                                 let bar = ui.scope(|ui| {
                                     path_bar(
@@ -759,6 +763,7 @@ impl FileDiffPane {
                                                     ctx.file_source_label.as_deref(),
                                                     ctx.file_source_root.as_ref(),
                                                     ctx.file_source_path_valid,
+                                                    ctx.file_source_load_error.as_deref(),
                                                     ctx.file_source_loading,
                                                 );
                                                 ui.separator();
@@ -786,6 +791,7 @@ impl FileDiffPane {
                                                     ctx.file_target_label.as_deref(),
                                                     ctx.file_target_root.as_ref(),
                                                     ctx.file_target_path_valid,
+                                                    ctx.file_target_load_error.as_deref(),
                                                     ctx.file_target_loading,
                                                 );
                                                 ui.separator();

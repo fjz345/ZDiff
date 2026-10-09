@@ -1037,7 +1037,9 @@ impl<'a> ZApp {
                         || file_1.get_loaded_file().is_some(),
                     file_target_path_valid: file_2.get_loading_path().is_some()
                         || file_2.get_loaded_file().is_some(),
+                    file_source_load_error: file_1.load_error().map(str::to_owned),
                     file_source_loading: file_1.get_loading_path().is_some(),
+                    file_target_load_error: file_2.load_error().map(str::to_owned),
                     file_target_loading: file_2.get_loading_path().is_some(),
                     active_highlights: &active_highlights,
                     highlight_side,

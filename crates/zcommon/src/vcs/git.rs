@@ -399,7 +399,7 @@ pub fn list_index(
     })
 }
 
-/// The blob's bytes as stored, without checkout filters (line endings, LFS).
+/// The file as a checkout would write it: checkout filters (line endings, LFS) applied.
 pub fn read_file(
     git: &impl GitRunner,
     root: &Path,
@@ -409,16 +409,16 @@ pub fn read_file(
     let object = format!("{rev}:{path}");
     git.run(
         root,
-        &["cat-file", "--end-of-options", "blob", object.as_str()],
+        &["cat-file", "--filters", "--end-of-options", object.as_str()],
     )
 }
 
-/// The stage 0 blob's bytes, as [`read_file`].
+/// The stage 0 file, as [`read_file`].
 pub fn read_index_file(git: &impl GitRunner, root: &Path, path: &str) -> Result<Vec<u8>, GitError> {
     let object = format!(":{path}");
     git.run(
         root,
-        &["cat-file", "--end-of-options", "blob", object.as_str()],
+        &["cat-file", "--filters", "--end-of-options", object.as_str()],
     )
 }
 
@@ -800,7 +800,7 @@ refs/tags/v1.2 \n";
     }
 
     #[test]
-    fn read_file_returns_raw_bytes() {
+    fn read_file_applies_checkout_filters() {
         let git = FakeGit::new(|_: &Path, _: &[&str]| Ok(vec![0xff, 0, b'\r', b'\n']));
 
         let bytes = read_file(&git, Path::new("D:/repo"), "v1.2", "src/a b.rs").unwrap();
@@ -810,11 +810,16 @@ refs/tags/v1.2 \n";
         let calls = git.calls();
         assert_eq!(
             calls[0].1,
-            ["cat-file", "--end-of-options", "blob", "v1.2:src/a b.rs"]
+            [
+                "cat-file",
+                "--filters",
+                "--end-of-options",
+                "v1.2:src/a b.rs"
+            ]
         );
         assert_eq!(
             calls[1].1,
-            ["cat-file", "--end-of-options", "blob", ":src/a b.rs"]
+            ["cat-file", "--filters", "--end-of-options", ":src/a b.rs"]
         );
     }
 
@@ -873,6 +878,7 @@ refs/tags/v1.2 \n";
         std::fs::write(repo.join("src/a.rs"), "fn main() {}\n").unwrap();
         std::fs::write(repo.join("src/deep/b.bin"), [0u8, 1, 2, 3, 4]).unwrap();
         setup(dir.path(), &["init", "-q"]);
+        std::fs::write(repo.join(".git/info/attributes"), "*.rs text eol=crlf\n").unwrap();
         setup(dir.path(), &["add", "."]);
         setup(dir.path(), &["commit", "-q", "-m", "first"]);
         setup(dir.path(), &["tag", "v1"]);
@@ -915,11 +921,11 @@ refs/tags/v1.2 \n";
 
         assert_eq!(
             read_file(&git, &root, "v1", "src/a.rs").unwrap(),
-            b"fn main() {}\n"
+            b"fn main() {}\r\n"
         );
         assert_eq!(
             read_index_file(&git, &root, "src/a.rs").unwrap(),
-            b"changed\n"
+            b"changed\r\n"
         );
 
         let head = resolve_commit(&git, &root, "HEAD").unwrap();
