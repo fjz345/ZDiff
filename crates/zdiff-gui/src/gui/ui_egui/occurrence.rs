@@ -12,6 +12,8 @@ use eframe::egui::{
     },
 };
 
+pub use zcommon::find::find_occurrences;
+
 use crate::ui_egui::active_side::ActiveSide;
 
 /// Background of a highlighted occurrence. Purple, to stay apart from the amber of find matches,
@@ -237,54 +239,6 @@ pub const MAX_OCCURRENCES_PER_ROW: usize = 128;
 pub fn occurrence_needle(selected: &str) -> Option<&str> {
     let long_enough = selected.chars().nth(MIN_OCCURRENCE_CHARS - 1).is_some();
     (long_enough && !selected.trim().is_empty()).then_some(selected)
-}
-
-/// Byte ranges of every occurrence of `needle` in `text`, in order. Matches may overlap: "aa"
-/// occurs twice in "aaa". Lazy, so a caller can stop early.
-pub fn find_occurrences<'t>(
-    text: &'t str,
-    needle: &'t str,
-    case_sensitive: bool,
-) -> impl Iterator<Item = Range<usize>> + 't {
-    assert!(!needle.is_empty(), "an empty needle matches everywhere");
-    let mut from = 0;
-    std::iter::from_fn(move || {
-        let range = if case_sensitive {
-            let start = from + text[from..].find(needle)?;
-            start..start + needle.len()
-        } else {
-            text[from..].char_indices().find_map(|(offset, _)| {
-                let start = from + offset;
-                let len = match_len_ignoring_case(&text[start..], needle)?;
-                Some(start..start + len)
-            })?
-        };
-        // The next match may start inside this one, but only on a char boundary.
-        from = range.start
-            + text[range.start..]
-                .chars()
-                .next()
-                .expect("not empty")
-                .len_utf8();
-        Some(range)
-    })
-}
-
-/// Measured in `text`: a char and its other case may differ in byte length (KELVIN SIGN, 'k').
-fn match_len_ignoring_case(text: &str, needle: &str) -> Option<usize> {
-    let mut text_chars = text.char_indices();
-    for n in needle.chars() {
-        let (_, t) = text_chars.next()?;
-        let equal = if t.is_ascii() && n.is_ascii() {
-            t.eq_ignore_ascii_case(&n)
-        } else {
-            t.to_lowercase().eq(n.to_lowercase())
-        };
-        if !equal {
-            return None;
-        }
-    }
-    Some(text_chars.next().map_or(text.len(), |(end, _)| end))
 }
 
 #[cfg(test)]
