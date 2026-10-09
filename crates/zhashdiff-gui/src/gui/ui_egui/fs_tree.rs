@@ -14,7 +14,9 @@ use zcommon::{
 };
 use zhashdiff::{
     comparison::PathComparisonResult,
-    external_diff_tool::{DiffPair, DiffToolConfig, folder_labels, open_diff_tool},
+    external_diff_tool::{
+        CantDiff, DiffPair, DiffToolConfig, cant_diff, folder_labels, open_diff_tool,
+    },
     filter::PathFilter,
     fs::{FileSystemModel, FsNode, FsNodeDepth, FsNodeId, TreeIter},
 };
@@ -1139,6 +1141,11 @@ fn on_row_item_clicked(
                 );
                 return false;
             };
+            if config.mark_undiffable
+                && let Some(reason) = cant_diff(entry.file_kinds, diff_tool)
+            {
+                log::warn!("{}: opening anyway, {reason}", entry.rel_path);
+            }
             let exe = match resolve_tool_exe(&diff_tool.exe_path) {
                 Ok(exe) => exe,
                 Err(err) => {
@@ -1289,6 +1296,15 @@ enum RowLayout {
     FileList,
 }
 
+/// Checks the kinds before choosing the tool, which allocates per rule, since this runs per drawn row.
+fn undiffable(entry: &VisibleRowTwoFolderDiff, config: &DiffToolConfig) -> Option<CantDiff> {
+    if !config.mark_undiffable || entry.file_kinds.contains(&None) {
+        return None;
+    }
+    let tool = config.choose_tool_quietly(&KindTable::default(), Path::new(&entry.rel_path))?;
+    cant_diff(entry.file_kinds, tool)
+}
+
 /// Draws a row that `two_folder_cursor_rows` doesn't hide. Returns whether it was clicked,
 /// which moves the cursor to it.
 fn render_row_folder_tree_diff_column(
@@ -1329,13 +1345,24 @@ fn render_row_folder_tree_diff_column(
             ui.painter().rect_filled(rect, 0.0, FOLDER_ROW_TINT);
         }
     };
-    let tag = |ui: &mut egui::Ui, kind: Option<FileKind>| {
-        tint(ui);
-        if dimmed {
-            ui.multiply_opacity(0.5);
-        }
-        if let Some(kind) = kind {
-            ui.label(RichText::new(kind.tag()).monospace().color(tag_color(kind)));
+    let undiffable = undiffable(entry, diff_tool_config);
+    let tag = |row: &mut egui_extras::TableRow, kind: Option<FileKind>| {
+        let (_, response) = row.col(|ui| {
+            tint(ui);
+            if undiffable.is_some() {
+                let stroke = egui::Stroke::new(1.0, ui.visuals().warn_fg_color);
+                ui.painter()
+                    .rect_stroke(ui.max_rect(), 2.0, stroke, egui::StrokeKind::Inside);
+            }
+            if dimmed {
+                ui.multiply_opacity(0.5);
+            }
+            if let Some(kind) = kind {
+                ui.label(RichText::new(kind.tag()).monospace().color(tag_color(kind)));
+            }
+        });
+        if let Some(reason) = &undiffable {
+            response.on_hover_text(reason.to_string());
         }
     };
 
@@ -1366,7 +1393,7 @@ fn render_row_folder_tree_diff_column(
             || should_toggle_row = true,
         );
     });
-    row.col(|ui| tag(ui, entry.file_kinds[0]));
+    tag(row, entry.file_kinds[0]);
     // --- Middle Column (Diff Status) ---
     row.col(|ui| {
         tint(ui);
@@ -1377,7 +1404,7 @@ fn render_row_folder_tree_diff_column(
             ui_custom_diff_state(ui, &entry.diff_state);
         });
     });
-    row.col(|ui| tag(ui, entry.file_kinds[1]));
+    tag(row, entry.file_kinds[1]);
     // --- Right Column (Folder 2) ---
     row.col(|ui| {
         tint(ui);

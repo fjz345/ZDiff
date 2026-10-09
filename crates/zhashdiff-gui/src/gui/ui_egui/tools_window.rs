@@ -84,6 +84,11 @@ impl ToolsWindow {
         let was_open = self.open;
         let mut open = self.open;
         show_custom_popup(ctx, &mut open, "External Diff Tools", true, |ui| {
+            ui.checkbox(
+                &mut config.mark_undiffable,
+                "Mark file rows the chosen tool can't diff",
+            );
+            ui.separator();
             self.tools_ui(ui, config);
             ui.separator();
             Self::rules_ui(ui, config);
@@ -158,6 +163,23 @@ impl ToolsWindow {
                             ui.colored_label(ui.visuals().error_fg_color, err.to_string());
                         }
                     }
+                    ui.label("Kinds it diffs:");
+                    egui::Grid::new(("diff_tool_kinds", index)).show(ui, |ui| {
+                        for (i, kind) in FileKind::ALL.into_iter().enumerate() {
+                            let mut listed = tool.kinds.contains(&kind);
+                            if ui.checkbox(&mut listed, format!("{kind:?}")).changed() {
+                                if listed {
+                                    tool.kinds.push(kind);
+                                    tool.kinds.sort();
+                                } else {
+                                    tool.kinds.retain(|&k| k != kind);
+                                }
+                            }
+                            if i % 5 == 4 {
+                                ui.end_row();
+                            }
+                        }
+                    });
 
                     ui.horizontal(|ui| {
                         if ui.button("Test").clicked() {

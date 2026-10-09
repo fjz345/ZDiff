@@ -131,7 +131,22 @@ pub struct DiffToolPreset {
     pub install_paths: Vec<PathBuf>,
     pub bare_name: &'static str,
     pub template: &'static str,
-    pub kinds: &'static [FileKind],
+    pub kinds: Vec<FileKind>,
+}
+
+/// Exhaustive, so a new kind needs a decision here.
+fn zdiff_gui_handles(kind: FileKind) -> bool {
+    match kind {
+        FileKind::Text | FileKind::Image => true,
+        FileKind::Video
+        | FileKind::Audio
+        | FileKind::Model
+        | FileKind::Archive
+        | FileKind::Executable
+        | FileKind::UnrealAsset
+        | FileKind::UnrealMap
+        | FileKind::Binary => false,
+    }
 }
 
 pub fn presets(local_app_data: Option<&Path>) -> Vec<DiffToolPreset> {
@@ -145,21 +160,24 @@ pub fn presets(local_app_data: Option<&Path>) -> Vec<DiffToolPreset> {
             install_paths: Vec::new(),
             bare_name: "zdiff-gui.exe",
             template: r#""{left}" "{right}" -nl "{left_name}" -nr "{right_name}""#,
-            kinds: &[FileKind::Text, FileKind::Image],
+            kinds: FileKind::ALL
+                .into_iter()
+                .filter(|&kind| zdiff_gui_handles(kind))
+                .collect(),
         },
         DiffToolPreset {
             name: "TortoiseMerge",
             install_paths: paths(&[r"C:\Program Files\TortoiseSVN\bin\TortoiseMerge.exe"]),
             bare_name: "TortoiseMerge.exe",
             template: r#"/base:"{left}" /mine:"{right}" /basename:"{left_name}" /minename:"{right_name}""#,
-            kinds: &[FileKind::Text],
+            kinds: vec![FileKind::Text],
         },
         DiffToolPreset {
             name: "WinMerge",
             install_paths: paths(&[r"C:\Program Files\WinMerge\WinMergeU.exe"]),
             bare_name: "WinMergeU.exe",
             template: r#"/e /u /dl "{left_name}" /dr "{right_name}" "{left}" "{right}""#,
-            kinds: &[FileKind::Text],
+            kinds: vec![FileKind::Text],
         },
         DiffToolPreset {
             name: "Beyond Compare",
@@ -169,14 +187,14 @@ pub fn presets(local_app_data: Option<&Path>) -> Vec<DiffToolPreset> {
             ]),
             bare_name: "BCompare.exe",
             template: r#""{left}" "{right}" /lefttitle="{left_name}" /righttitle="{right_name}""#,
-            kinds: &[FileKind::Text, FileKind::Image],
+            kinds: vec![FileKind::Text, FileKind::Image],
         },
         DiffToolPreset {
             name: "p4merge",
             install_paths: paths(&[r"C:\Program Files\Perforce\p4merge.exe"]),
             bare_name: "p4merge.exe",
             template: r#"-nl "{left_name}" -nr "{right_name}" "{left}" "{right}""#,
-            kinds: &[FileKind::Text],
+            kinds: vec![FileKind::Text],
         },
         DiffToolPreset {
             name: "VS Code",
@@ -186,7 +204,7 @@ pub fn presets(local_app_data: Option<&Path>) -> Vec<DiffToolPreset> {
             // The PATH entry is VS Code's bin folder, which holds code.cmd (and a shell script named code).
             bare_name: "code.cmd",
             template: r#"--diff "{left}" "{right}""#,
-            kinds: &[FileKind::Text],
+            kinds: vec![FileKind::Text],
         },
         DiffToolPreset {
             name: "Meld",
@@ -196,7 +214,7 @@ pub fn presets(local_app_data: Option<&Path>) -> Vec<DiffToolPreset> {
             ]),
             bare_name: "Meld.exe",
             template: r#"--label "{left_name}" --label "{right_name}" "{left}" "{right}""#,
-            kinds: &[FileKind::Text],
+            kinds: vec![FileKind::Text],
         },
     ]
 }
@@ -214,7 +232,7 @@ impl DiffToolPreset {
             name: self.name.to_string(),
             exe_path,
             template: self.template.to_string(),
-            kinds: self.kinds.to_vec(),
+            kinds: self.kinds.clone(),
         }
     }
 }
@@ -260,6 +278,7 @@ pub struct DiffToolConfig {
     pub tools: Vec<DiffTool>,
     pub rules: Vec<DiffToolRule>,
     pub default_tool: String,
+    pub mark_undiffable: bool,
 }
 
 #[cfg(feature = "serde")]
@@ -270,6 +289,8 @@ enum PersistedDiffToolConfig {
         tools: Vec<DiffTool>,
         rules: Vec<DiffToolRule>,
         default_tool: String,
+        #[serde(default)]
+        mark_undiffable: bool,
     },
     Legacy(LegacyDiffToolConfig),
 }
@@ -282,10 +303,12 @@ impl From<PersistedDiffToolConfig> for DiffToolConfig {
                 tools,
                 rules,
                 default_tool,
+                mark_undiffable,
             } => Self {
                 tools,
                 rules,
                 default_tool,
+                mark_undiffable,
             },
             PersistedDiffToolConfig::Legacy(legacy) => legacy.into(),
         }
@@ -310,6 +333,7 @@ impl DiffToolConfig {
             default_tool: tool.name.clone(),
             tools: vec![tool],
             rules: Vec::new(),
+            mark_undiffable: false,
         }
     }
 
@@ -368,6 +392,15 @@ impl DiffToolConfig {
 
     /// First rule whose tool exists wins, else the default tool; `None` if that is missing too.
     pub fn choose_tool(&self, kinds: &KindTable, path: &Path) -> Option<&DiffTool> {
+        self.choose_tool_logged(kinds, path, true)
+    }
+
+    /// Without the warning for rules naming a missing tool, for callers that run every frame.
+    pub fn choose_tool_quietly(&self, kinds: &KindTable, path: &Path) -> Option<&DiffTool> {
+        self.choose_tool_logged(kinds, path, false)
+    }
+
+    fn choose_tool_logged(&self, kinds: &KindTable, path: &Path, log: bool) -> Option<&DiffTool> {
         let extension = path
             .extension()
             .map(|extension| extension.to_string_lossy())
@@ -384,13 +417,44 @@ impl DiffToolConfig {
             })
             .find_map(|rule| {
                 let tool = self.tool(&rule.tool);
-                if tool.is_none() {
+                if log && tool.is_none() {
                     log::warn!("diff tool rule {rule:?} names a missing tool, skipped");
                 }
                 tool
             })
             .or_else(|| self.tool(&self.default_tool))
     }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CantDiff {
+    pub tool: String,
+    pub kinds: [FileKind; 2],
+}
+
+impl fmt::Display for CantDiff {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let [left, right] = self.kinds;
+        if left == right {
+            write!(f, "{} can't diff {left:?} files", self.tool)
+        } else {
+            write!(f, "{} can't diff {left:?} against {right:?}", self.tool)
+        }
+    }
+}
+
+/// A `None` kind is a folder or a missing side, which is never marked.
+pub fn cant_diff(kinds: [Option<FileKind>; 2], tool: &DiffTool) -> Option<CantDiff> {
+    let [Some(left), Some(right)] = kinds else {
+        return None;
+    };
+    if tool.kinds.contains(&left) && tool.kinds.contains(&right) {
+        return None;
+    }
+    Some(CantDiff {
+        tool: tool.name.clone(),
+        kinds: [left, right],
+    })
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -622,6 +686,7 @@ mod tests {
             tools: vec![tool("default"), tool("first"), tool("second")],
             rules,
             default_tool: "default".to_string(),
+            mark_undiffable: false,
         }
     }
 
@@ -1165,5 +1230,95 @@ mod tests {
             serde_json::from_str::<DiffToolConfig>(&json).unwrap(),
             config
         );
+    }
+
+    fn kinds_tool(kinds: &[FileKind]) -> DiffTool {
+        DiffTool {
+            kinds: kinds.to_vec(),
+            ..tool("tool")
+        }
+    }
+
+    #[test]
+    fn same_kinds_the_tool_lists_can_be_diffed() {
+        let tool = kinds_tool(&[FileKind::Text, FileKind::Image]);
+        let image = Some(FileKind::Image);
+        assert_eq!(cant_diff([image, image], &tool), None);
+    }
+
+    #[test]
+    fn same_kinds_the_tool_does_not_list_name_the_tool_and_kind() {
+        let tool = kinds_tool(&[FileKind::Text]);
+        let asset = Some(FileKind::UnrealAsset);
+        let reason = cant_diff([asset, asset], &tool).unwrap();
+        assert_eq!(
+            reason,
+            CantDiff {
+                tool: "tool".to_string(),
+                kinds: [FileKind::UnrealAsset, FileKind::UnrealAsset],
+            }
+        );
+        assert_eq!(reason.to_string(), "tool can't diff UnrealAsset files");
+    }
+
+    #[test]
+    fn mixed_kinds_can_be_diffed_only_if_the_tool_lists_both() {
+        let pair = [Some(FileKind::Text), Some(FileKind::Image)];
+        assert_eq!(
+            cant_diff(pair, &kinds_tool(&[FileKind::Image, FileKind::Text])),
+            None
+        );
+        for listed in [&[FileKind::Text][..], &[FileKind::Image], &[]] {
+            let reason = cant_diff(pair, &kinds_tool(listed)).unwrap();
+            assert_eq!(
+                reason.kinds,
+                [FileKind::Text, FileKind::Image],
+                "{listed:?}"
+            );
+            assert_eq!(reason.to_string(), "tool can't diff Text against Image");
+        }
+    }
+
+    #[test]
+    fn one_sided_rows_and_folders_are_never_marked() {
+        let tool = kinds_tool(&[]);
+        let text = Some(FileKind::Text);
+        assert_eq!(cant_diff([text, None], &tool), None);
+        assert_eq!(cant_diff([None, text], &tool), None);
+        assert_eq!(cant_diff([None, None], &tool), None);
+    }
+
+    #[test]
+    fn zdiff_gui_preset_lists_the_kinds_zdiff_gui_has_a_viewer_for() {
+        let zdiff = presets(None).remove(0);
+        assert_eq!(zdiff.name, "zdiff-gui");
+        assert_eq!(zdiff.kinds, [FileKind::Text, FileKind::Image]);
+        let config = DiffToolConfig::default();
+        assert_eq!(
+            config.tool(&config.default_tool).unwrap().kinds,
+            [FileKind::Text, FileKind::Image]
+        );
+    }
+
+    #[test]
+    fn marking_undiffable_rows_defaults_to_off() {
+        assert!(!DiffToolConfig::default().mark_undiffable);
+        assert!(!DiffToolConfig::from(LegacyDiffToolConfig::default_zdiff()).mark_undiffable);
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn marking_undiffable_rows_persists_and_is_off_in_configs_saved_without_it() {
+        let config = DiffToolConfig {
+            mark_undiffable: true,
+            ..config(Vec::new())
+        };
+        let json = serde_json::to_string(&config).unwrap();
+        let loaded = serde_json::from_str::<DiffToolConfig>(&json).unwrap();
+        assert!(loaded.mark_undiffable);
+
+        let json = r#"{ "tools": [], "rules": [], "default_tool": "default" }"#;
+        let loaded = serde_json::from_str::<DiffToolConfig>(json).unwrap();
+        assert!(!loaded.mark_undiffable);
     }
 }
