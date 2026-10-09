@@ -462,7 +462,9 @@ impl TreeCompare {
         let total = job.tasks.len();
         if self.cancelled || disconnected || job.received == total {
             let elapsed = now.saturating_duration_since(job.started);
-            self.compare_time = Some(elapsed);
+            if job.tasks.iter().any(|task| task.compare) {
+                self.compare_time = Some(elapsed);
+            }
             let message = format!(
                 "Compared {} of {total} file pairs in {} ms",
                 job.received,
@@ -861,6 +863,46 @@ mod tests {
         let right = load_view(right_dir.path());
         compare.retain_for([Some(&left), Some(&right)]);
         assert_eq!(compare.compare_time(), None);
+    }
+
+    #[test]
+    fn a_measure_only_job_keeps_the_compare_time() {
+        let (left_dir, right_dir) = trees();
+        let (left, right) = (load_view(left_dir.path()), load_view(right_dir.path()));
+        let mut compare = TreeCompare::default();
+        let rows = build(&mut compare, &left, &right);
+        let start = Instant::now();
+        compare.start(&rows, [Some(&left), Some(&right)], start);
+        let (sender, paths) = compare.pause(start);
+        for i in 0..paths.len() {
+            let result = PairResult {
+                compare: Some(PairCompare {
+                    state: PairState::Different,
+                    error: None,
+                }),
+                likeness: None,
+            };
+            sender.send((i, result)).unwrap();
+        }
+        let end = start + Duration::from_secs(3);
+        assert_eq!(compare.poll(end), CompareUpdate::Finished);
+
+        assert!(compare.set_likeness(true));
+        let rows = build(&mut compare, &left, &right);
+        compare.start(&rows, [Some(&left), Some(&right)], end);
+        let (sender, paths) = compare.pause(end);
+        for i in 0..paths.len() {
+            let result = PairResult {
+                compare: None,
+                likeness: Some(Err(io::Error::other("locked"))),
+            };
+            sender.send((i, result)).unwrap();
+        }
+        assert_eq!(
+            compare.poll(end + Duration::from_secs(1)),
+            CompareUpdate::Finished
+        );
+        assert_eq!(compare.compare_time(), Some(Duration::from_secs(3)));
     }
 
     fn likeness_at(
