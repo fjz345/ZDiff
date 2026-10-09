@@ -11,7 +11,6 @@ use crate::{
     revert::{self, RevertRequest, RevertTarget},
     ui_egui::{
         active_side::{ActiveSide, ActiveSideState, outline_stroke},
-        h_scroll,
         occurrence::{
             FIND_BG, FIND_CURRENT_BG, OCCURRENCE_BG, OccurrenceState, RowFind, find_ranges,
         },
@@ -33,6 +32,7 @@ use zcommon::{
     path::{PathSegment, common_parent, split_path},
     presets::{BuiltinPreset, UserPresets},
     ui_egui::{
+        h_scroll,
         pathbar::{PathBarAction, path_bar},
         presets::presets_menu,
         toggle::{TOGGLE_BUTTON_SIZE, toggle_button},

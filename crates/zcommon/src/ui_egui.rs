@@ -1,8 +1,10 @@
 #![cfg(feature = "gui")]
 pub mod common;
 pub mod find_popup;
+pub mod h_scroll;
 pub mod keymap;
 pub mod keymap_editor;
 pub mod pathbar;
 pub mod presets;
+pub mod table;
 pub mod toggle;

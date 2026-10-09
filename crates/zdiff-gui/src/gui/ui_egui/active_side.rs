@@ -2,12 +2,7 @@
 
 use eframe::egui;
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum ActiveSide {
-    #[default]
-    Left,
-    Right,
-}
+pub use zcommon::ui_egui::table::Side as ActiveSide;
 
 /// With only one file loaded that side is always active, otherwise the stored side stands.
 pub fn effective_side(stored: ActiveSide, left_loaded: bool, right_loaded: bool) -> ActiveSide {

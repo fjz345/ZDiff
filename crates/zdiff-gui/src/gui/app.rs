@@ -9,6 +9,7 @@ use zcommon::find::FindQuery;
 use zcommon::presets::UserPresets;
 use zcommon::ui_egui::common::show_custom_popup;
 use zcommon::ui_egui::find_popup::{FindPopupEvent, find_popup};
+use zcommon::ui_egui::h_scroll::{self, WheelModifier};
 use zcommon::ui_egui::keymap::{Action, Shortcut};
 use zdiff::{
     diff_builder::DiffBuilderOptions,
@@ -37,7 +38,6 @@ use crate::{
     },
     ui_egui::{
         diff_pane::{FileDiffPane, FileDiffPaneCtx, wheel_rects_id},
-        h_scroll::{self, WheelModifier},
         panes::{Pane, TreeBehavior},
     },
     viewer::{

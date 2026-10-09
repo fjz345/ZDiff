@@ -1,9 +1,9 @@
-//! Horizontal scrolling of the text diff's two sides: offsets in points, `[left, right]`.
-//! Pure; the pane measures the rows and draws the scrollbars.
+//! Horizontal scrolling of a two-sided table's sides: offsets in points, `[left, right]`.
+//! Pure; the table measures the rows and draws the scrollbars.
 
 use eframe::egui::{self, Modifiers, Vec2};
 
-use super::active_side::ActiveSide;
+use super::table::Side;
 
 /// The modifier that turns the mouse wheel into horizontal scrolling over the text rows.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -74,6 +74,11 @@ pub fn ranges(max: [f32; 2], linked: bool) -> [f32; 2] {
     if linked { [max[0].max(max[1]); 2] } else { max }
 }
 
+/// Each side's scrollbar range, `None` where nothing scrolls and no bar is shown.
+pub fn bar_ranges(max: [f32; 2], linked: bool) -> [Option<f32>; 2] {
+    ranges(max, linked).map(|range| (range > 0.0).then_some(range))
+}
+
 /// `offsets` clamped to `max` (from `max_offset`). Linked sides that differ, as right after
 /// linking, take the left side's offset.
 pub fn clamp(offsets: [f32; 2], max: [f32; 2], linked: bool) -> [f32; 2] {
@@ -83,22 +88,16 @@ pub fn clamp(offsets: [f32; 2], max: [f32; 2], linked: bool) -> [f32; 2] {
 }
 
 /// Sets `side`'s offset, and with linked sides the other one too.
-pub fn set(
-    offsets: [f32; 2],
-    side: ActiveSide,
-    offset: f32,
-    max: [f32; 2],
-    linked: bool,
-) -> [f32; 2] {
+pub fn set(offsets: [f32; 2], side: Side, offset: f32, max: [f32; 2], linked: bool) -> [f32; 2] {
     let mut offsets = if linked { [offset; 2] } else { offsets };
     offsets[side_index(side)] = offset;
     clamp(offsets, max, linked)
 }
 
-pub fn side_index(side: ActiveSide) -> usize {
+pub fn side_index(side: Side) -> usize {
     match side {
-        ActiveSide::Left => 0,
-        ActiveSide::Right => 1,
+        Side::Left => 0,
+        Side::Right => 1,
     }
 }
 
@@ -230,7 +229,7 @@ mod tests {
 
         assert_eq!(max, 250.0);
         assert_eq!(max + viewport, 450.0);
-        let scrolled = set([0.0, 0.0], ActiveSide::Left, 10_000.0, [max, 0.0], false);
+        let scrolled = set([0.0, 0.0], Side::Left, 10_000.0, [max, 0.0], false);
         assert_eq!(scrolled, [250.0, 0.0]);
     }
 
@@ -240,9 +239,18 @@ mod tests {
         assert_eq!(max_offset(200.0, 200.0), 0.0);
         assert_eq!(max_offset(0.0, 200.0), 0.0);
         assert_eq!(
-            set([0.0, 0.0], ActiveSide::Right, 50.0, [0.0, 0.0], false),
+            set([0.0, 0.0], Side::Right, 50.0, [0.0, 0.0], false),
             [0.0, 0.0]
         );
+    }
+
+    #[test]
+    fn a_side_that_fits_gets_no_bar() {
+        let max = [max_offset(150.0, 200.0), max_offset(450.0, 200.0)];
+        assert_eq!(bar_ranges(max, false), [None, Some(250.0)]);
+        assert_eq!(bar_ranges(max, true), [Some(250.0), Some(250.0)]);
+        assert_eq!(bar_ranges([0.0, 0.0], false), [None, None]);
+        assert_eq!(bar_ranges([0.0, 0.0], true), [None, None]);
     }
 
     #[test]
@@ -257,10 +265,10 @@ mod tests {
     fn unlinked_sides_scroll_independently_within_their_own_range() {
         let max = [100.0, 300.0];
 
-        let offsets = set([10.0, 20.0], ActiveSide::Right, 250.0, max, false);
+        let offsets = set([10.0, 20.0], Side::Right, 250.0, max, false);
         assert_eq!(offsets, [10.0, 250.0]);
 
-        let offsets = set(offsets, ActiveSide::Left, 250.0, max, false);
+        let offsets = set(offsets, Side::Left, 250.0, max, false);
         assert_eq!(offsets, [100.0, 250.0]);
     }
 
@@ -272,15 +280,15 @@ mod tests {
 
         // Past the left side's own end: the right side's longest line stays reachable.
         assert_eq!(
-            set([0.0, 0.0], ActiveSide::Right, 250.0, max, true),
+            set([0.0, 0.0], Side::Right, 250.0, max, true),
             [250.0, 250.0]
         );
         assert_eq!(
-            set([0.0, 0.0], ActiveSide::Left, 250.0, max, true),
+            set([0.0, 0.0], Side::Left, 250.0, max, true),
             [250.0, 250.0]
         );
         assert_eq!(
-            set([0.0, 0.0], ActiveSide::Left, 999.0, max, true),
+            set([0.0, 0.0], Side::Left, 999.0, max, true),
             [300.0, 300.0]
         );
     }
