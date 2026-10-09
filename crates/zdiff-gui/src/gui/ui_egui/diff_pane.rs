@@ -132,6 +132,8 @@ pub struct FileDiffPane {
     /// Measured from the last frame's header: the header cells clip to the height they're given.
     #[serde(skip)]
     header_height: f32,
+    #[serde(skip)]
+    center_layout: Option<CenterLayoutCache>,
 }
 
 #[derive(Default)]
@@ -224,6 +226,7 @@ impl FileDiffPane {
             browsers: [None, None],
             split: Split::default(),
             header_height: 0.0,
+            center_layout: None,
         }
     }
 
@@ -277,6 +280,7 @@ impl FileDiffPane {
         let pin_input = &mut self.pin_input;
         let split = &mut self.split;
         let header_height = &mut self.header_height;
+        let center_layout_cache = &mut self.center_layout;
         let mono_font = egui::TextStyle::Monospace.resolve(ui.style());
         let egui_ctx = ui.ctx().clone();
         let keymap = ctx.keymap;
@@ -520,13 +524,27 @@ impl FileDiffPane {
                         .fill(egui::Color32::from_gray(15))
                         .show(ui, |ui| {
                             let area = ui.available_rect_before_wrap();
+                            let button_padding = ui.spacing().button_padding.x;
+                            let center = center_layout(
+                                center_layout_cache,
+                                &mono_font,
+                                ui.ctx().pixels_per_point(),
+                                || {
+                                    ui.fonts_mut(|fonts| {
+                                        CenterLayout::measure(
+                                            |c| fonts.glyph_width(&mono_font, c),
+                                            button_padding,
+                                        )
+                                    })
+                                },
+                            );
                             let side_widths = split.widths(shared_width(
                                 area.width(),
-                                CENTER_WIDTH,
+                                center.width(),
                                 ui.spacing().item_spacing.x,
                             ));
                             let mut table = SplitTable::new("file_diff_table", &mut *split)
-                                .center_width(CENTER_WIDTH);
+                                .center_width(center.width());
                             // Images are drawn below the header (the path editors), in the
                             // table's columns, outside its scroll area so the wheel zooms.
                             let mut image_left_width = None;
@@ -867,138 +885,57 @@ impl FileDiffPane {
                                                 }
 
                                                 SplitColumn::Center => {
-                                                    // The buttons are wider than the column and spill over the sides; 04 sizes it.
-                                                    ui.set_clip_rect(egui::Rect::from_x_y_ranges(
-                                                        area.x_range(),
-                                                        ui.clip_rect().y_range(),
-                                                    ));
                                                     ui.style_mut().wrap_mode = None;
-                                                    let has_op =
-                                                        |tokens: &[(DiffResult, _, _)], op| {
-                                                            tokens.iter().any(|f| {
-                                                                !f.0.hide_in_diff
-                                                                    && f.0.operation == op
-                                                            })
-                                                        };
-
-                                                    let symbol =
-                                                |contains_delete: bool, contains_insert: bool| {
-                                                    match (contains_delete, contains_insert) {
-                                                        (true, true) => "≠",
-                                                        (true, false) => "-",
-                                                        (false, true) => "+",
-                                                        (false, false) => " ",
-                                                    }
-                                                };
-
-                                                    let symbol_text =
-                                                        match (&diff_row.left, &diff_row.right) {
-                                                            (
-                                                                LineContent::Void,
-                                                                LineContent::Code {
-                                                                    tokens, ..
-                                                                },
-                                                            ) => symbol(
-                                                                has_op(tokens, DiffOp::Delete),
-                                                                has_op(tokens, DiffOp::Insert),
-                                                            ),
-
-                                                            (
-                                                                LineContent::Code {
-                                                                    tokens, ..
-                                                                },
-                                                                LineContent::Void,
-                                                            ) => symbol(
-                                                                has_op(tokens, DiffOp::Delete),
-                                                                has_op(tokens, DiffOp::Insert),
-                                                            ),
-
-                                                            (
-                                                                LineContent::Code {
-                                                                    tokens: t1,
-                                                                    ..
-                                                                },
-                                                                LineContent::Code {
-                                                                    tokens: t2,
-                                                                    ..
-                                                                },
-                                                            ) => {
-                                                                let contains_delete =
-                                                                    has_op(t1, DiffOp::Delete)
-                                                                        || has_op(
-                                                                            t2,
-                                                                            DiffOp::Delete,
-                                                                        );
-                                                                let contains_insert =
-                                                                    has_op(t1, DiffOp::Insert)
-                                                                        || has_op(
-                                                                            t2,
-                                                                            DiffOp::Insert,
-                                                                        );
-
-                                                                symbol(
-                                                                    contains_delete,
-                                                                    contains_insert,
-                                                                )
-                                                            }
-                                                            (
-                                                                LineContent::Collapsed,
-                                                                LineContent::Collapsed,
-                                                            ) => "...",
-                                                            _ => " ",
-                                                        };
-                                                    ui.centered_and_justified(|ui| {
-                                                        ui.horizontal(|ui|{
-                                                            let diff_ctx = ctx.diff_ctx;
-                                                            let hunk = diff_ctx.and_then(|d| {
-                                                                revert::hunk_starting_at(&d.precomputed_diffs, row_index)
-                                                                    .map(|hunk| (d, hunk))
-                                                            });
-                                                            let mut revert_button = |ui: &mut egui::Ui, target: RevertTarget, label: &str, hover: &str| {
-                                                                let Some((diff_ctx, hunk)) = hunk else {
-                                                                    return;
-                                                                };
-                                                                if revert::check_revert(diff_ctx, target, &temp_root).is_ok() {
-                                                                    if ui.button(label).on_hover_text(hover).clicked() {
-                                                                        *ctx.revert_request = Some(RevertRequest { hunk, target });
-                                                                    }
-                                                                }
-                                                            };
-                                                            // A collapsed row, or the first row of an expanded block.
-                                                            let block = diff_ctx.and_then(|d| {
-                                                                d.row_blocks
-                                                                    .binary_search_by_key(&row_index, |b| b.rows.start)
-                                                                    .ok()
-                                                                    .map(|i| &d.row_blocks[i])
-                                                            });
-                                                            if let Some(block) = block {
-                                                                let mut toggle_button = |label: &str, hover: &str, toggle: BlockToggle| {
-                                                                    if ui.button(label).on_hover_text(hover).clicked() {
-                                                                        *ctx.block_toggle_request = Some((block.key, toggle));
-                                                                    }
-                                                                };
-                                                                if !block.expanded {
-                                                                    toggle_button("+", "Expand the collapsed rows", BlockToggle::Expand);
-                                                                }
-                                                                // Only on a fully collapsed block: once rows are revealed, the
-                                                                // scope expansion has been done or wouldn't add anything.
-                                                                if !block.expanded && block.rows.len() == 1 {
-                                                                    toggle_button("{", "Expand up to the line opening the scope of the change below", BlockToggle::ExpandToScope);
-                                                                } else {
-                                                                    toggle_button("-", "Collapse these rows again", BlockToggle::Collapse);
-                                                                }
-                                                            }
-                                                            revert_button(ui, RevertTarget::Left, "<", "Replace this hunk in the left file with the right side");
-                                                            ui.add(
-                                                                egui::Label::new(
-                                                                    egui::RichText::new(symbol_text)
-                                                                        .color(egui::Color32::DARK_GRAY),
-                                                                )
-                                                                .selectable(false),
-                                                            );
-                                                            revert_button(ui, RevertTarget::Right, ">", "Replace this hunk in the right file with the left side");
-                                                        });
+                                                    let [expand_slot, toggle_slot, left_slot, symbol_slot, right_slot] =
+                                                        center.slots(ui.max_rect(), ui.spacing().interact_size.y);
+                                                    let diff_ctx = ctx.diff_ctx;
+                                                    let hunk = diff_ctx.and_then(|d| {
+                                                        revert::hunk_starting_at(&d.precomputed_diffs, row_index)
+                                                            .map(|hunk| (d, hunk))
                                                     });
+                                                    let mut revert_button = |ui: &mut egui::Ui, slot: egui::Rect, target: RevertTarget, label: &str, hover: &str| {
+                                                        let Some((diff_ctx, hunk)) = hunk else {
+                                                            return;
+                                                        };
+                                                        if revert::check_revert(diff_ctx, target, &temp_root).is_ok()
+                                                            && ui.put(slot, egui::Button::new(label)).on_hover_text(hover).clicked()
+                                                        {
+                                                            *ctx.revert_request = Some(RevertRequest { hunk, target });
+                                                        }
+                                                    };
+                                                    // A collapsed row, or the first row of an expanded block.
+                                                    let block = diff_ctx.and_then(|d| {
+                                                        d.row_blocks
+                                                            .binary_search_by_key(&row_index, |b| b.rows.start)
+                                                            .ok()
+                                                            .map(|i| &d.row_blocks[i])
+                                                    });
+                                                    if let Some(block) = block {
+                                                        let mut toggle_button = |slot: egui::Rect, label: &str, hover: &str, toggle: BlockToggle| {
+                                                            if ui.put(slot, egui::Button::new(label)).on_hover_text(hover).clicked() {
+                                                                *ctx.block_toggle_request = Some((block.key, toggle));
+                                                            }
+                                                        };
+                                                        if !block.expanded {
+                                                            toggle_button(expand_slot, "+", "Expand the collapsed rows", BlockToggle::Expand);
+                                                        }
+                                                        // Only on a fully collapsed block: once rows are revealed, the
+                                                        // scope expansion has been done or wouldn't add anything.
+                                                        if !block.expanded && block.rows.len() == 1 {
+                                                            toggle_button(toggle_slot, "{", "Expand up to the line opening the scope of the change below", BlockToggle::ExpandToScope);
+                                                        } else {
+                                                            toggle_button(toggle_slot, "-", "Collapse these rows again", BlockToggle::Collapse);
+                                                        }
+                                                    }
+                                                    revert_button(ui, left_slot, RevertTarget::Left, "<", "Replace this hunk in the left file with the right side");
+                                                    if let Some((symbol, color)) = row_symbol(diff_row) {
+                                                        ui.put(
+                                                            symbol_slot,
+                                                            egui::Label::new(egui::RichText::new(symbol).color(color))
+                                                                .selectable(false),
+                                                        );
+                                                    }
+                                                    revert_button(ui, right_slot, RevertTarget::Right, ">", "Replace this hunk in the right file with the left side");
                                                 }
                                                 }
                                             }
@@ -1455,7 +1392,93 @@ impl FileDiffPane {
 /// Line number column of a code row, and the gap between it and the row text.
 const GUTTER_WIDTH: f32 = 35.0;
 const GUTTER_GAP: f32 = 4.0;
-const CENTER_WIDTH: f32 = 12.0;
+const CENTER_GAP: f32 = 2.0;
+
+// The hues of zdiff's DiffTheme; modified is the two added.
+const SYMBOL_DELETE: egui::Color32 = egui::Color32::from_rgb(255, 100, 100);
+const SYMBOL_INSERT: egui::Color32 = egui::Color32::from_rgb(100, 255, 100);
+const SYMBOL_MODIFIED: egui::Color32 = egui::Color32::from_rgb(255, 255, 100);
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct CenterLayout {
+    button: f32,
+    symbol: f32,
+}
+
+impl CenterLayout {
+    fn measure(mut glyph_width: impl FnMut(char) -> f32, button_padding: f32) -> Self {
+        let mut widest = |chars: &[char]| chars.iter().map(|&c| glyph_width(c)).fold(0.0, f32::max);
+        Self {
+            button: widest(&['+', '{', '-', '<', '>']) + 2.0 * button_padding,
+            symbol: widest(&['≠', '-', '+']),
+        }
+    }
+
+    fn width(self) -> f32 {
+        4.0 * self.button + self.symbol + 4.0 * CENTER_GAP
+    }
+
+    /// Expand, scope or collapse, revert-left, symbol, revert-right; at most `height` tall,
+    /// centered in `cell`.
+    fn slots(self, cell: egui::Rect, height: f32) -> [egui::Rect; 5] {
+        let half = height.min(cell.height()) / 2.0;
+        let y = egui::Rangef::new(cell.center().y - half, cell.center().y + half);
+        let mut left = cell.left();
+        let button = self.button;
+        [button, button, button, self.symbol, button].map(|width| {
+            let slot = egui::Rect::from_x_y_ranges(left..=left + width, y);
+            left += width + CENTER_GAP;
+            slot
+        })
+    }
+}
+
+struct CenterLayoutCache {
+    font_id: egui::FontId,
+    pixels_per_point: f32,
+    layout: CenterLayout,
+}
+
+fn center_layout(
+    cache: &mut Option<CenterLayoutCache>,
+    font_id: &egui::FontId,
+    pixels_per_point: f32,
+    measure: impl FnOnce() -> CenterLayout,
+) -> CenterLayout {
+    match cache {
+        Some(cached)
+            if cached.font_id == *font_id && cached.pixels_per_point == pixels_per_point =>
+        {
+            cached.layout
+        }
+        _ => {
+            let layout = measure();
+            *cache = Some(CenterLayoutCache {
+                font_id: font_id.clone(),
+                pixels_per_point,
+                layout,
+            });
+            layout
+        }
+    }
+}
+
+fn row_symbol(row: &DiffRow) -> Option<(&'static str, egui::Color32)> {
+    let has_op = |content: &LineContent, op: DiffOp| match content {
+        LineContent::Code { tokens, .. } => tokens
+            .iter()
+            .any(|(result, _, _)| !result.hide_in_diff && result.operation == op),
+        LineContent::Void | LineContent::Collapsed => false,
+    };
+    let delete = has_op(&row.left, DiffOp::Delete) || has_op(&row.right, DiffOp::Delete);
+    let insert = has_op(&row.left, DiffOp::Insert) || has_op(&row.right, DiffOp::Insert);
+    match (delete, insert) {
+        (true, true) => Some(("≠", SYMBOL_MODIFIED)),
+        (true, false) => Some(("-", SYMBOL_DELETE)),
+        (false, true) => Some(("+", SYMBOL_INSERT)),
+        (false, false) => None,
+    }
+}
 
 const GOTO_LINE_NUM: egui::Color32 = egui::Color32::from_rgb(255, 210, 0);
 const CHANGED_CHARS_DEL_BG: egui::Color32 = egui::Color32::from_rgba_premultiplied(80, 0, 0, 80);
@@ -2583,9 +2606,11 @@ mod tests {
 
     use std::time::Duration;
 
+    use eframe::egui;
     use zcommon::ui_egui::table::{Split, SplitColumn, SplitTable};
     use zdiff::{
         diff_builder::{DiffBuilderOptions, DiffRow, LineContent},
+        diff_ir::{DiffOp, DiffResult},
         ignore::{IgnoreOptions, IgnorePatterns},
     };
 
@@ -2595,7 +2620,8 @@ mod tests {
     };
 
     use super::{
-        COPY_MARKER_BLANK_LINE, COPY_MARKER_NO_LINE, GUTTER_GAP, GUTTER_WIDTH, GhostInsertion,
+        CENTER_GAP, COPY_MARKER_BLANK_LINE, COPY_MARKER_NO_LINE, CenterLayout, GUTTER_GAP,
+        GUTTER_WIDTH, GhostInsertion, SYMBOL_DELETE, SYMBOL_INSERT, SYMBOL_MODIFIED,
         diff_status_text, highlight_ranges, insert_ghost_gaps, layout_side_text, recolor_ranges,
         row_find, strip_copy_markers,
     };
@@ -2611,6 +2637,133 @@ mod tests {
 
         assert_eq!(restored.title.as_deref(), Some("Diff"));
         assert_eq!(restored.split, Split::default());
+    }
+
+    #[test]
+    fn the_center_layout_is_measured_once_per_font_and_zoom() {
+        let mut cache = None;
+        let mut measured = 0;
+        for (size, pixels_per_point) in [
+            (12.0, 1.0),
+            (12.0, 1.0),
+            (14.0, 1.0),
+            (14.0, 1.0),
+            (14.0, 1.5),
+            (14.0, 1.5),
+        ] {
+            super::center_layout(
+                &mut cache,
+                &egui::FontId::monospace(size),
+                pixels_per_point,
+                || {
+                    measured += 1;
+                    CenterLayout {
+                        button: size,
+                        symbol: size,
+                    }
+                },
+            );
+        }
+        assert_eq!(measured, 3);
+    }
+
+    #[test]
+    fn the_center_column_fits_its_widest_buttons_and_symbol() {
+        let layout = CenterLayout::measure(|c| if c == '≠' { 9.0 } else { 7.0 }, 4.0);
+        assert_eq!(
+            layout,
+            CenterLayout {
+                button: 15.0,
+                symbol: 9.0
+            }
+        );
+        assert_eq!(layout.width(), 4.0 * 15.0 + 9.0 + 4.0 * CENTER_GAP);
+    }
+
+    #[test]
+    fn center_slots_are_toggles_revert_left_symbol_revert_right_edge_to_edge() {
+        let layout = CenterLayout {
+            button: 15.0,
+            symbol: 9.0,
+        };
+        let cell =
+            egui::Rect::from_min_size(egui::pos2(100.0, 40.0), egui::vec2(layout.width(), 14.0));
+        let slots = layout.slots(cell, 18.0);
+
+        assert_eq!(slots.map(|s| s.width()), [15.0, 15.0, 15.0, 9.0, 15.0]);
+        assert_eq!(slots[0].left(), cell.left());
+        assert_eq!(slots[4].right(), cell.right());
+        for pair in slots.windows(2) {
+            assert_eq!(pair[1].left() - pair[0].right(), CENTER_GAP);
+        }
+        for slot in slots {
+            assert_eq!(slot.y_range(), cell.y_range());
+        }
+    }
+
+    #[test]
+    fn center_slots_in_a_tall_row_are_one_button_high_and_centered() {
+        let layout = CenterLayout {
+            button: 15.0,
+            symbol: 9.0,
+        };
+        let cell =
+            egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(layout.width(), 50.0));
+        for slot in layout.slots(cell, 18.0) {
+            assert_eq!(slot.height(), 18.0);
+            assert_eq!(slot.center().y, cell.center().y);
+        }
+    }
+
+    fn code(ops: &[(DiffOp, bool)]) -> LineContent {
+        LineContent::Code {
+            tokens: ops
+                .iter()
+                .map(|(operation, hide_in_diff)| {
+                    (
+                        DiffResult {
+                            operation: operation.clone(),
+                            token_source_idx: None,
+                            token_target_idx: None,
+                            hide_in_diff: *hide_in_diff,
+                        },
+                        zdiff::diff_builder::Color32::TRANSPARENT,
+                        false,
+                    )
+                })
+                .collect(),
+            line_num: 1,
+            bg: zdiff::diff_builder::Color32::TRANSPARENT,
+            changed_chars: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn only_changed_rows_get_a_colored_symbol() {
+        let symbol = |left, right| super::row_symbol(&DiffRow { left, right });
+        const EQUAL: (DiffOp, bool) = (DiffOp::Equal(true), false);
+        const DELETE: (DiffOp, bool) = (DiffOp::Delete, false);
+        const INSERT: (DiffOp, bool) = (DiffOp::Insert, false);
+
+        assert_eq!(
+            symbol(code(&[EQUAL, DELETE]), LineContent::Void),
+            Some(("-", SYMBOL_DELETE))
+        );
+        assert_eq!(
+            symbol(LineContent::Void, code(&[INSERT])),
+            Some(("+", SYMBOL_INSERT))
+        );
+        assert_eq!(
+            symbol(code(&[EQUAL, DELETE]), code(&[EQUAL, INSERT])),
+            Some(("≠", SYMBOL_MODIFIED))
+        );
+        assert_eq!(symbol(code(&[EQUAL]), code(&[EQUAL])), None);
+        assert_eq!(
+            symbol(code(&[(DiffOp::Delete, true)]), LineContent::Void),
+            None
+        );
+        assert_eq!(symbol(LineContent::Collapsed, LineContent::Collapsed), None);
+        assert_eq!(symbol(LineContent::Void, LineContent::Void), None);
     }
 
     #[test]
