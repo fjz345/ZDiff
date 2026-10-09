@@ -74,6 +74,8 @@ pub enum FileAction {
     FewerContextRows,
     MoreContextRows,
     SaveMerge,
+    NextFrame,
+    PrevFrame,
 }
 
 impl Action for FileAction {
@@ -108,6 +110,8 @@ impl Action for FileAction {
             Self::FewerContextRows,
             Self::MoreContextRows,
             Self::SaveMerge,
+            Self::NextFrame,
+            Self::PrevFrame,
         ]
     }
 
@@ -142,6 +146,8 @@ impl Action for FileAction {
             Self::FewerContextRows => "diff_only_fewer_context_rows",
             Self::MoreContextRows => "diff_only_more_context_rows",
             Self::SaveMerge => "save_merge",
+            Self::NextFrame => "next_frame",
+            Self::PrevFrame => "prev_frame",
         }
     }
 
@@ -176,6 +182,8 @@ impl Action for FileAction {
             Self::FewerContextRows => "Diff Only: Fewer Context Rows",
             Self::MoreContextRows => "Diff Only: More Context Rows",
             Self::SaveMerge => "Save Merge",
+            Self::NextFrame => "Video: Next Frame",
+            Self::PrevFrame => "Video: Previous Frame",
         }
     }
 
@@ -314,6 +322,14 @@ impl Action for FileAction {
             Self::SaveMerge => &[Shortcut {
                 key: Key::S,
                 modifiers: CTRL,
+            }],
+            Self::NextFrame => &[Shortcut {
+                key: Key::ArrowRight,
+                modifiers: Modifiers::NONE,
+            }],
+            Self::PrevFrame => &[Shortcut {
+                key: Key::ArrowLeft,
+                modifiers: Modifiers::NONE,
             }],
         }
     }
@@ -797,6 +813,20 @@ mod tests {
     }
 
     #[test]
+    fn frame_steps_dispatch_from_the_arrow_keys_but_not_while_typing() {
+        let keymap = Keymap::<FileAction>::default();
+        let events = [
+            press(Key::ArrowRight, Modifiers::NONE),
+            press(Key::ArrowLeft, Modifiers::NONE),
+        ];
+        assert_eq!(
+            keymap.dispatch(&events, false),
+            [FileAction::NextFrame, FileAction::PrevFrame]
+        );
+        assert_eq!(keymap.dispatch(&events, true), []);
+    }
+
+    #[test]
     fn swap_and_toolbar_toggles_dispatch_from_the_default_keys() {
         let keymap = Keymap::<FileAction>::default();
         let expected = [
@@ -922,6 +952,8 @@ mod tests {
                 FileAction::FewerContextRows,
                 FileAction::MoreContextRows,
                 FileAction::SaveMerge,
+                FileAction::NextFrame,
+                FileAction::PrevFrame,
             ];
             let expected: Vec<_> = expected
                 .into_iter()

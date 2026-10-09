@@ -23,6 +23,7 @@ use crate::{
         hex::{self, HexViewCtx},
         image::{self, ImageDiffProcessor},
         media_placeholder,
+        video_frames::{self, VideoFrameProcessor},
     },
 };
 use eframe::egui::{self, Layout, TextEdit, UiBuilder, Vec2, text_selection::LabelSelectionState};
@@ -111,6 +112,7 @@ pub struct FileDiffPaneCtx<'a> {
     pub audio_view: Option<(&'a mut AudioDiffProcessor, &'a mut AudioSettings)>,
     pub media_view: Option<ViewerKind>,
     pub audio_meta: Option<&'a mut AudioMetaProcessor>,
+    pub video_frames: Option<&'a mut VideoFrameProcessor>,
     /// The toolbar's viewer switch for the current pair; `None` is Auto.
     pub viewer_override: &'a mut Option<ViewerKind>,
     /// Why the pair isn't in the viewer it asked for, if it isn't.
@@ -988,7 +990,7 @@ impl FileDiffPane {
                                 *header_height = measured;
                                 ui.ctx().request_repaint();
                             }
-                            if ctx.image_view.is_some() {
+                            if ctx.image_view.is_some() || ctx.video_frames.is_some() {
                                 image_left_width = Some(output.side_rects[0].width());
                             } else if !header_only {
                                 side_rects = output.side_rects;
@@ -1000,6 +1002,10 @@ impl FileDiffPane {
                             }
                             if let Some((processor, settings)) = ctx.audio_view.as_mut() {
                                 audio::show(ui, processor, settings);
+                            } else if let (Some(processor), Some(left_width)) =
+                                (ctx.video_frames.as_deref_mut(), image_left_width)
+                            {
+                                video_frames::show(ui, processor, left_width);
                             } else if let Some(kind) = ctx.media_view {
                                 media_placeholder(
                                     ui,

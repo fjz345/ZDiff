@@ -57,6 +57,7 @@ use crate::{
         hex::{HexDiffProcessor, parse_hex_offset},
         image::ImageDiffProcessor,
         image_decode_fallback, resolve_viewer, ui_extension_map, ui_ffmpeg_setting,
+        video_frames::VideoFrameProcessor,
     },
 };
 
@@ -78,6 +79,8 @@ pub struct AppStateCtx {
     pub audio_settings: AudioSettings,
     #[cfg_attr(feature = "serde", serde(skip), serde(default))]
     pub audio_meta: AudioMetaProcessor,
+    #[cfg_attr(feature = "serde", serde(skip), serde(default))]
+    pub video_frames: VideoFrameProcessor,
     /// Resolved each frame from the loaded files; `None` while neither side is loaded.
     #[cfg_attr(feature = "serde", serde(skip), serde(default))]
     pub viewer_kind: Option<ViewerKind>,
@@ -159,6 +162,7 @@ impl Default for AppStateCtx {
             audio_processor: Default::default(),
             audio_settings: Default::default(),
             audio_meta: Default::default(),
+            video_frames: Default::default(),
             viewer_kind: None,
             viewer_override: Default::default(),
             viewer_fallback: None,
@@ -867,6 +871,7 @@ impl<'a> ZApp {
                 audio_processor,
                 audio_settings,
                 audio_meta,
+                video_frames,
                 viewer_kind,
                 viewer_override,
                 viewer_fallback,
@@ -1048,6 +1053,7 @@ impl<'a> ZApp {
                         .then_some((audio_processor, audio_settings)),
                     media_view,
                     audio_meta: (media_view == Some(ViewerKind::Audio)).then_some(audio_meta),
+                    video_frames: (media_view == Some(ViewerKind::Video)).then_some(video_frames),
                     viewer_override: &mut viewer_override.kind,
                     viewer_fallback: viewer_fallback.as_deref(),
                     phase_overlay: self.phase_overlay,
@@ -1328,6 +1334,9 @@ impl<'a> ZApp {
                         FileAction::Find => app_state_ctx.find_open = true,
                         FileAction::Goto => app_state_ctx.goto_open = true,
                         FileAction::SaveMerge => save_merge = true,
+                        FileAction::NextFrame | FileAction::PrevFrame => app_state_ctx
+                            .video_frames
+                            .step(action == FileAction::NextFrame),
                         FileAction::NextConflict | FileAction::PrevConflict
                             if let Some(merge) = &mut self.merge =>
                         {
@@ -1627,6 +1636,15 @@ impl eframe::App for ZApp {
                     .poll(ctx.input(|i| i.max_texture_side));
                 let resolution =
                     resolution.map(|r| image_decode_fallback(r, &state.image_processor.failures()));
+                // Like the image decode above: probing follows the first resolution.
+                let video = resolution.as_ref().map(|r| r.kind) == Some(ViewerKind::Video);
+                let ffmpeg = video.then(|| state.ffmpeg.lookup().ok()).flatten();
+                state
+                    .video_frames
+                    .request([loaded_1.clone(), loaded_2.clone()], ffmpeg);
+                state.video_frames.poll(ctx.input(|i| i.max_texture_side));
+                let resolution = resolution
+                    .map(|r| decode_fallback(r, ViewerKind::Video, &state.video_frames.failures()));
                 // Only a media pair looks ffmpeg up.
                 let resolution = resolution.map(|r| match r.kind {
                     ViewerKind::Audio | ViewerKind::Video => {

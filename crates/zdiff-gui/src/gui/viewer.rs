@@ -14,6 +14,7 @@ pub mod audio;
 pub mod audio_meta;
 pub mod hex;
 pub mod image;
+pub mod video_frames;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -875,6 +876,26 @@ mod tests {
         let image = resolve_pair("png");
         assert_eq!(image.kind, ViewerKind::Image);
         assert_eq!(ffmpeg_fallback(image.clone(), Err(&not_found)), image);
+    }
+
+    #[test]
+    fn a_video_that_cant_be_probed_falls_back_to_hex_with_the_reason() {
+        let failures = ["b.mp4: no video stream".to_string()];
+        let resolution = decode_fallback(resolve_pair("mp4"), ViewerKind::Video, &failures);
+        assert_eq!(resolution.kind, ViewerKind::Hex);
+        let reason = resolution.fallback.unwrap();
+        assert!(reason.contains("b.mp4: no video stream"), "{reason}");
+
+        let video = resolve_pair("mp4");
+        assert_eq!(
+            decode_fallback(video.clone(), ViewerKind::Video, &[]),
+            video
+        );
+        let image = resolve_pair("png");
+        assert_eq!(
+            decode_fallback(image.clone(), ViewerKind::Video, &failures),
+            image
+        );
     }
 
     #[test]

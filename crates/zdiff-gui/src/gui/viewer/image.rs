@@ -467,6 +467,59 @@ impl ImageDiffProcessor {
             (None, false) => String::new(),
         }
     }
+
+    /// Shows images decoded elsewhere, such as video frames, in place of requested files. A
+    /// pending side keeps its shown image; the view fits again only when an image's size changes.
+    pub fn set_images(&mut self, sides: [ImageSide; 2], max_texture_side: usize) {
+        for (index, side) in sides.into_iter().enumerate() {
+            let state = match side {
+                ImageSide::Empty => SideState::Empty,
+                ImageSide::Pending => SideState::Decoding,
+                ImageSide::Image(image)
+                    if image.width.max(image.height) as usize > max_texture_side =>
+                {
+                    SideState::Failed(format!(
+                        "{} x {} is larger than the renderer's {} pixel limit",
+                        image.width, image.height, max_texture_side
+                    ))
+                }
+                ImageSide::Image(image) => SideState::Decoded {
+                    image,
+                    texture: None,
+                },
+                ImageSide::Failed(reason) => SideState::Failed(reason),
+            };
+            let unchanged = match (&self.sides[index], &state) {
+                (SideState::Empty, SideState::Empty)
+                | (SideState::Decoding, SideState::Decoding)
+                | (SideState::Decoded { .. }, SideState::Decoding) => true,
+                (SideState::Decoded { image: shown, .. }, SideState::Decoded { image, .. }) => {
+                    Arc::ptr_eq(shown, image)
+                }
+                (SideState::Failed(shown), SideState::Failed(reason)) => shown == reason,
+                _ => false,
+            };
+            if unchanged {
+                continue;
+            }
+            let size = |side: &SideState| match side {
+                SideState::Decoded { image, .. } => Some((image.width, image.height)),
+                _ => None,
+            };
+            if size(&state).is_some() && size(&state) != size(&self.sides[index]) {
+                self.fit_pending = true;
+            }
+            self.sides[index] = state;
+            self.reset_comparison();
+        }
+    }
+}
+
+pub enum ImageSide {
+    Empty,
+    Pending,
+    Image(Arc<DecodedImage>),
+    Failed(String),
 }
 
 /// Both sides, left one `left_width` wide like the table's left column, in the rest of `ui`.
@@ -915,6 +968,69 @@ mod tests {
         assert!(processor.diff_map.is_none());
         poll_until(&mut processor, |p| p.diff_map.is_some());
         assert_eq!(changed(&processor), Some((0, 0, 2)));
+    }
+
+    fn frame(width: u32, red: u8) -> Arc<DecodedImage> {
+        Arc::new(DecodedImage {
+            width,
+            height: 1,
+            format: "Frame",
+            rgba: [red, 0, 0, 255].repeat(width as usize),
+        })
+    }
+
+    #[test]
+    fn set_images_keep_the_shown_image_and_view_until_another_size_arrives() {
+        let mut processor = ImageDiffProcessor::default();
+        processor.set_images([ImageSide::Pending, ImageSide::Empty], usize::MAX);
+        assert_eq!(processor.status_text().0, "Decoding...");
+
+        let (first, second) = (frame(2, 0), frame(2, 10));
+        processor.set_images(
+            [
+                ImageSide::Image(first.clone()),
+                ImageSide::Image(second.clone()),
+            ],
+            usize::MAX,
+        );
+        poll_until(&mut processor, |p| p.diff_map.is_some());
+        assert_eq!(changed(&processor), Some((0, 2, 2)));
+        processor.fit_pending = false;
+
+        processor.set_images(
+            [ImageSide::Pending, ImageSide::Image(second.clone())],
+            usize::MAX,
+        );
+        assert!(processor.decoded(0).is_some());
+        assert_eq!(changed(&processor), Some((0, 2, 2)));
+
+        processor.set_images(
+            [
+                ImageSide::Image(frame(2, 10)),
+                ImageSide::Image(second.clone()),
+            ],
+            usize::MAX,
+        );
+        assert!(processor.diff_map.is_none());
+        poll_until(&mut processor, |p| p.diff_map.is_some());
+        assert_eq!(changed(&processor), Some((0, 0, 2)));
+        assert!(!processor.fit_pending);
+
+        processor.set_images(
+            [ImageSide::Image(frame(3, 10)), ImageSide::Image(second)],
+            usize::MAX,
+        );
+        assert!(processor.fit_pending);
+
+        processor.set_images(
+            [
+                ImageSide::Image(frame(3, 10)),
+                ImageSide::Failed("no frame".to_string()),
+            ],
+            2,
+        );
+        assert_eq!(processor.failures().len(), 2);
+        assert_eq!(processor.failures()[1], "no frame");
     }
 
     #[test]
