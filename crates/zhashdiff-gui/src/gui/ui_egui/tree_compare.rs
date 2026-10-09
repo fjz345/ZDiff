@@ -35,6 +35,15 @@ pub enum PairLikeness {
     Failed(String),
 }
 
+impl PairLikeness {
+    pub fn ratio(&self) -> Option<f64> {
+        match self {
+            PairLikeness::Measured(likeness) => Some(likeness.ratio),
+            PairLikeness::Failed(_) => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct PendingPair {
     pub rel_path: String,
@@ -452,6 +461,8 @@ impl TreeCompare {
                             pair,
                             likeness,
                         );
+                        // A likeness tolerance can turn the row Similar.
+                        job.unpatched = true;
                     }
                     job.received += 1;
                 }
@@ -586,6 +597,7 @@ mod tests {
         comparison::{PairCompare, PairState},
         filter::PathFilter,
         fs::FileSystemModel,
+        likeness::{Likeness, Measure},
     };
 
     fn write_files(root: &Path, files: &[(&str, &str)]) {
@@ -631,7 +643,14 @@ mod tests {
             &PathFilter::default(),
             &KindTable::default(),
             tolerance,
-            |rel_path, nodes| compare.state_of(rel_path, nodes),
+            |rel_path, nodes| {
+                (
+                    compare.state_of(rel_path, nodes),
+                    compare
+                        .likeness_of(rel_path, nodes)
+                        .and_then(PairLikeness::ratio),
+                )
+            },
             |_, _| None,
         )
         .unwrap()
@@ -845,6 +864,34 @@ mod tests {
     }
 
     #[test]
+    fn a_likeness_result_reaches_the_rows_at_the_next_interval() {
+        let (left_dir, right_dir) = trees();
+        let (left, right) = (load_view(left_dir.path()), load_view(right_dir.path()));
+        let mut compare = TreeCompare::default();
+        compare.set_likeness(true);
+        let rows = build(&mut compare, &left, &right);
+        let start = Instant::now();
+        compare.start(&rows, [Some(&left), Some(&right)], start);
+        let (sender, paths) = compare.pause(start);
+        assert!(paths.len() > 1);
+
+        let result = PairResult {
+            compare: None,
+            likeness: Some(Ok(Likeness {
+                ratio: 0.5,
+                measure: Measure::Bytes,
+                reason: None,
+            })),
+        };
+        sender.send((0, result)).unwrap();
+
+        assert_eq!(
+            compare.poll(start + ROWS_PATCH_INTERVAL),
+            CompareUpdate::Patch
+        );
+    }
+
+    #[test]
     fn the_compare_time_spans_restarts_and_lasts_until_the_trees_change() {
         let (left_dir, right_dir) = trees();
         let (left, right) = (load_view(left_dir.path()), load_view(right_dir.path()));
@@ -998,6 +1045,8 @@ mod tests {
         size: false,
         max_size_delta: SizeDelta::Bytes(0),
         same_size_and_time: true,
+        likeness: false,
+        min_likeness: 99.0,
     };
 
     #[test]

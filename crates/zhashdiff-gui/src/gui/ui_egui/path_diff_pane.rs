@@ -229,7 +229,8 @@ impl PathDiffPane {
                     ctx.keyboard_taken,
                     ctx.actions,
                     *ctx.diff_filter,
-                    ctx.likeness_bar.then_some(ctx.tree_compare),
+                    ctx.tree_compare,
+                    *ctx.likeness_bar,
                     ctx.tolerance,
                 );
             });
@@ -366,6 +367,19 @@ fn draw_tolerance_settings(ui: &mut egui::Ui, tolerance: &mut Tolerance) {
             "Same size and modification time",
         )
         .on_hover_text("Decides without reading the files");
+        ui.horizontal(|ui| {
+            ui.checkbox(&mut tolerance.likeness, "Likeness at least")
+                .on_hover_text(
+                    "Measured in the background; a pair stays different until it is measured",
+                );
+            ui.add_enabled(
+                tolerance.likeness,
+                egui::DragValue::new(&mut tolerance.min_likeness)
+                    .range(0.0..=100.0)
+                    .speed(0.1)
+                    .suffix(" %"),
+            );
+        });
     });
 }
 

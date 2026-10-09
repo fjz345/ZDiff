@@ -3,6 +3,8 @@ use std::time::SystemTime;
 use serde::{Deserialize, Serialize};
 use zhashdiff::{comparison::PairState, fs::FsNode};
 
+use crate::ui_egui::tree_likeness::percent;
+
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Tolerance {
@@ -10,6 +12,8 @@ pub struct Tolerance {
     pub size: bool,
     pub max_size_delta: SizeDelta,
     pub same_size_and_time: bool,
+    pub likeness: bool,
+    pub min_likeness: f64,
 }
 
 impl Default for Tolerance {
@@ -19,6 +23,8 @@ impl Default for Tolerance {
             size: true,
             max_size_delta: SizeDelta::Percent(1.0),
             same_size_and_time: false,
+            likeness: false,
+            min_likeness: 99.0,
         }
     }
 }
@@ -49,27 +55,38 @@ impl SideMeta {
 pub enum Passed {
     SizeDelta { sizes: [u64; 2] },
     SameSizeAndTime { size: u64 },
+    Likeness { ratio: f64 },
 }
 
 impl Tolerance {
+    pub fn uses_likeness(&self) -> bool {
+        self.enabled && self.likeness
+    }
+
     /// `exact` is None before the pair was compared. Then only the modification-time criterion
-    /// can decide, so the pair is never read.
-    pub fn is_similar(&self, sides: [Option<SideMeta>; 2], exact: Option<PairState>) -> bool {
+    /// can decide, so the pair is never read. An unknown `likeness` fails its criterion.
+    pub fn is_similar(
+        &self,
+        sides: [Option<SideMeta>; 2],
+        exact: Option<PairState>,
+        likeness: Option<f64>,
+    ) -> bool {
         let [Some(left), Some(right)] = sides else {
             return false;
         };
         let decides = match exact {
             Some(PairState::Same) => false,
-            Some(PairState::Different) => self.size || self.same_size_and_time,
+            Some(PairState::Different) => self.size || self.same_size_and_time || self.likeness,
             None => self.same_size_and_time,
         };
         self.enabled
             && decides
             && (!self.size || self.size_passes([left, right]))
             && (!self.same_size_and_time || same_size_and_time([left, right]))
+            && (!self.likeness || likeness.is_some_and(|ratio| self.likeness_passes(ratio)))
     }
 
-    pub fn passed(&self, sides: [SideMeta; 2]) -> Vec<Passed> {
+    pub fn passed(&self, sides: [SideMeta; 2], likeness: Option<f64>) -> Vec<Passed> {
         let mut passed = Vec::new();
         if self.size && self.size_passes(sides) {
             passed.push(Passed::SizeDelta {
@@ -81,7 +98,18 @@ impl Tolerance {
                 size: sides[0].size,
             });
         }
+        if let Some(ratio) = likeness
+            && self.likeness
+            && self.likeness_passes(ratio)
+        {
+            passed.push(Passed::Likeness { ratio });
+        }
         passed
+    }
+
+    // Dividing the threshold keeps 29 % equal to a measured 0.29; 0.29 * 100.0 is below 29.
+    fn likeness_passes(&self, ratio: f64) -> bool {
+        ratio >= self.min_likeness / 100.0
     }
 
     fn size_passes(&self, [left, right]: [SideMeta; 2]) -> bool {
@@ -100,12 +128,16 @@ fn same_size_and_time([left, right]: [SideMeta; 2]) -> bool {
 }
 
 /// `sides` is None for a folder.
-pub fn similar_tooltip(tolerance: &Tolerance, sides: Option<[SideMeta; 2]>) -> String {
+pub fn similar_tooltip(
+    tolerance: &Tolerance,
+    sides: Option<[SideMeta; 2]>,
+    likeness: Option<f64>,
+) -> String {
     let Some(sides) = sides else {
         return "Similar: every file below is the same or similar".to_owned();
     };
     let mut text = "Similar:".to_owned();
-    for passed in tolerance.passed(sides) {
+    for passed in tolerance.passed(sides, likeness) {
         let line = match passed {
             Passed::SizeDelta {
                 sizes: [left, right],
@@ -128,6 +160,11 @@ pub fn similar_tooltip(tolerance: &Tolerance, sides: Option<[SideMeta; 2]>) -> S
             Passed::SameSizeAndTime { size } => {
                 format!("same size ({size} bytes) and modification time")
             }
+            Passed::Likeness { ratio } => format!(
+                "likeness {} %, at least {} %",
+                percent(ratio),
+                tolerance.min_likeness
+            ),
         };
         text.push('\n');
         text.push_str(&line);
@@ -162,6 +199,8 @@ mod tests {
             size: true,
             max_size_delta,
             same_size_and_time: false,
+            likeness: false,
+            min_likeness: 99.0,
         }
     }
 
@@ -171,39 +210,108 @@ mod tests {
             size: false,
             max_size_delta: SizeDelta::Bytes(0),
             same_size_and_time: true,
+            likeness: false,
+            min_likeness: 99.0,
         }
+    }
+
+    fn likeness_only(min_likeness: f64) -> Tolerance {
+        Tolerance {
+            enabled: true,
+            size: false,
+            max_size_delta: SizeDelta::Bytes(0),
+            same_size_and_time: false,
+            likeness: true,
+            min_likeness,
+        }
+    }
+
+    #[test]
+    fn the_likeness_criterion_passes_from_its_threshold_up() {
+        let tolerance = likeness_only(29.0);
+        let pair = sides([100, 200], [1, 2]);
+        assert!(tolerance.is_similar(pair, DIFFERENT, Some(0.29)));
+        assert!(tolerance.is_similar(pair, DIFFERENT, Some(1.0)));
+        assert!(!tolerance.is_similar(pair, DIFFERENT, Some(0.2899)));
+        assert!(!tolerance.is_similar(pair, DIFFERENT, None));
+        assert!(likeness_only(99.0).is_similar(pair, DIFFERENT, Some(0.99)));
+        assert!(!likeness_only(99.0).is_similar(pair, DIFFERENT, Some(0.989)));
+    }
+
+    #[test]
+    fn the_likeness_criterion_combined_with_another_needs_both_to_pass() {
+        let tolerance = Tolerance {
+            size: true,
+            max_size_delta: SizeDelta::Bytes(10),
+            ..likeness_only(99.0)
+        };
+        assert!(tolerance.is_similar(sides([100, 105], [1, 2]), DIFFERENT, Some(0.995)));
+        assert!(!tolerance.is_similar(sides([100, 111], [1, 2]), DIFFERENT, Some(0.995)));
+        assert!(!tolerance.is_similar(sides([100, 105], [1, 2]), DIFFERENT, Some(0.98)));
+        assert!(!tolerance.is_similar(sides([100, 105], [1, 2]), DIFFERENT, None));
+    }
+
+    #[test]
+    fn with_the_likeness_criterion_an_unread_pair_is_not_decided_by_time() {
+        let tolerance = Tolerance {
+            same_size_and_time: true,
+            ..likeness_only(99.0)
+        };
+        assert!(!tolerance.is_similar(sides([5, 5], [7, 7]), None, None));
+        assert!(!likeness_only(0.0).is_similar(sides([5, 5], [7, 7]), None, None));
+        assert!(!likeness_only(0.0).is_similar(
+            sides([5, 5], [7, 7]),
+            Some(PairState::Same),
+            Some(1.0)
+        ));
+    }
+
+    #[test]
+    fn the_similar_tooltip_lists_the_likeness_with_its_threshold() {
+        let [Some(left), Some(right)] = sides([5, 8], [7, 7]) else {
+            unreachable!()
+        };
+        assert_eq!(
+            likeness_only(99.0).passed([left, right], Some(0.995)),
+            [Passed::Likeness { ratio: 0.995 }]
+        );
+        assert_eq!(likeness_only(99.0).passed([left, right], Some(0.98)), []);
+        assert_eq!(
+            similar_tooltip(&likeness_only(99.0), Some([left, right]), Some(0.995)),
+            "Similar:\nlikeness 99 %, at least 99 %"
+        );
     }
 
     #[test]
     fn the_size_criterion_in_bytes_passes_up_to_its_threshold() {
         let tolerance = size_only(SizeDelta::Bytes(10));
-        assert!(tolerance.is_similar(sides([100, 110], [1, 2]), DIFFERENT));
-        assert!(tolerance.is_similar(sides([110, 100], [1, 2]), DIFFERENT));
-        assert!(!tolerance.is_similar(sides([100, 111], [1, 2]), DIFFERENT));
-        assert!(!tolerance.is_similar(sides([111, 100], [1, 2]), DIFFERENT));
+        assert!(tolerance.is_similar(sides([100, 110], [1, 2]), DIFFERENT, None));
+        assert!(tolerance.is_similar(sides([110, 100], [1, 2]), DIFFERENT, None));
+        assert!(!tolerance.is_similar(sides([100, 111], [1, 2]), DIFFERENT, None));
+        assert!(!tolerance.is_similar(sides([111, 100], [1, 2]), DIFFERENT, None));
     }
 
     #[test]
     fn the_size_criterion_in_percent_passes_up_to_its_share_of_the_larger_size() {
         let tolerance = size_only(SizeDelta::Percent(1.0));
-        assert!(tolerance.is_similar(sides([1000, 1010], [1, 2]), DIFFERENT));
-        assert!(tolerance.is_similar(sides([1010, 1000], [1, 2]), DIFFERENT));
-        assert!(!tolerance.is_similar(sides([1000, 1011], [1, 2]), DIFFERENT));
-        assert!(tolerance.is_similar(sides([0, 0], [1, 2]), DIFFERENT));
-        assert!(!tolerance.is_similar(sides([0, 1], [1, 2]), DIFFERENT));
+        assert!(tolerance.is_similar(sides([1000, 1010], [1, 2]), DIFFERENT, None));
+        assert!(tolerance.is_similar(sides([1010, 1000], [1, 2]), DIFFERENT, None));
+        assert!(!tolerance.is_similar(sides([1000, 1011], [1, 2]), DIFFERENT, None));
+        assert!(tolerance.is_similar(sides([0, 0], [1, 2]), DIFFERENT, None));
+        assert!(!tolerance.is_similar(sides([0, 1], [1, 2]), DIFFERENT, None));
     }
 
     #[test]
     fn the_time_criterion_needs_the_same_size_and_modification_time() {
         let tolerance = time_only();
-        assert!(tolerance.is_similar(sides([5, 5], [7, 7]), DIFFERENT));
-        assert!(!tolerance.is_similar(sides([5, 5], [7, 8]), DIFFERENT));
-        assert!(!tolerance.is_similar(sides([5, 6], [7, 7]), DIFFERENT));
+        assert!(tolerance.is_similar(sides([5, 5], [7, 7]), DIFFERENT, None));
+        assert!(!tolerance.is_similar(sides([5, 5], [7, 8]), DIFFERENT, None));
+        assert!(!tolerance.is_similar(sides([5, 6], [7, 7]), DIFFERENT, None));
         let no_time = SideMeta {
             size: 5,
             modified: None,
         };
-        assert!(!tolerance.is_similar([Some(no_time), Some(no_time)], DIFFERENT));
+        assert!(!tolerance.is_similar([Some(no_time), Some(no_time)], DIFFERENT, None));
     }
 
     #[test]
@@ -212,9 +320,9 @@ mod tests {
             same_size_and_time: true,
             ..size_only(SizeDelta::Bytes(10))
         };
-        assert!(!tolerance.is_similar(sides([100, 105], [7, 7]), DIFFERENT));
-        assert!(!tolerance.is_similar(sides([100, 100], [7, 8]), DIFFERENT));
-        assert!(tolerance.is_similar(sides([100, 100], [7, 7]), DIFFERENT));
+        assert!(!tolerance.is_similar(sides([100, 105], [7, 7]), DIFFERENT, None));
+        assert!(!tolerance.is_similar(sides([100, 100], [7, 8]), DIFFERENT, None));
+        assert!(tolerance.is_similar(sides([100, 100], [7, 7]), DIFFERENT, None));
     }
 
     #[test]
@@ -224,37 +332,37 @@ mod tests {
             ..size_only(SizeDelta::Bytes(10))
         };
         let [left, right] = sides([5, 5], [7, 7]);
-        assert!(!tolerance.is_similar([left, None], DIFFERENT));
-        assert!(!tolerance.is_similar([None, right], DIFFERENT));
-        assert!(!tolerance.is_similar([left, None], None));
+        assert!(!tolerance.is_similar([left, None], DIFFERENT, None));
+        assert!(!tolerance.is_similar([None, right], DIFFERENT, None));
+        assert!(!tolerance.is_similar([left, None], None, None));
     }
 
     #[test]
     fn only_the_time_criterion_decides_a_pair_that_was_not_compared() {
-        assert!(time_only().is_similar(sides([5, 5], [7, 7]), None));
-        assert!(!time_only().is_similar(sides([5, 5], [7, 8]), None));
-        assert!(!size_only(SizeDelta::Bytes(10)).is_similar(sides([5, 6], [7, 7]), None));
+        assert!(time_only().is_similar(sides([5, 5], [7, 7]), None, None));
+        assert!(!time_only().is_similar(sides([5, 5], [7, 8]), None, None));
+        assert!(!size_only(SizeDelta::Bytes(10)).is_similar(sides([5, 6], [7, 7]), None, None));
         let both = Tolerance {
             same_size_and_time: true,
             ..size_only(SizeDelta::Bytes(10))
         };
-        assert!(both.is_similar(sides([5, 5], [7, 7]), None));
+        assert!(both.is_similar(sides([5, 5], [7, 7]), None, None));
     }
 
     #[test]
     fn same_pairs_stay_same_and_nothing_passes_while_off_or_without_criteria() {
         let tolerance = time_only();
-        assert!(!tolerance.is_similar(sides([5, 5], [7, 7]), Some(PairState::Same)));
+        assert!(!tolerance.is_similar(sides([5, 5], [7, 7]), Some(PairState::Same), None));
         let off = Tolerance {
             enabled: false,
             ..tolerance
         };
-        assert!(!off.is_similar(sides([5, 5], [7, 7]), DIFFERENT));
+        assert!(!off.is_similar(sides([5, 5], [7, 7]), DIFFERENT, None));
         let no_criteria = Tolerance {
             same_size_and_time: false,
             ..tolerance
         };
-        assert!(!no_criteria.is_similar(sides([5, 5], [7, 7]), DIFFERENT));
+        assert!(!no_criteria.is_similar(sides([5, 5], [7, 7]), DIFFERENT, None));
     }
 
     #[test]
@@ -267,7 +375,7 @@ mod tests {
             unreachable!()
         };
         assert_eq!(
-            both.passed([left, right]),
+            both.passed([left, right], None),
             [
                 Passed::SizeDelta { sizes: [5, 5] },
                 Passed::SameSizeAndTime { size: 5 }
@@ -277,10 +385,10 @@ mod tests {
             unreachable!()
         };
         assert_eq!(
-            both.passed([left, right]),
+            both.passed([left, right], None),
             [Passed::SizeDelta { sizes: [5, 8] }]
         );
-        assert_eq!(time_only().passed([left, right]), []);
+        assert_eq!(time_only().passed([left, right], None), []);
     }
 
     #[test]
@@ -293,7 +401,7 @@ mod tests {
             unreachable!()
         };
         assert_eq!(
-            similar_tooltip(&percent, Some([left, right])),
+            similar_tooltip(&percent, Some([left, right]), None),
             "Similar:\n\
              sizes 1000 and 1000 bytes differ by 0 bytes (0.00 %), at most 1 %\n\
              same size (1000 bytes) and modification time"
@@ -302,11 +410,11 @@ mod tests {
             unreachable!()
         };
         assert_eq!(
-            similar_tooltip(&size_only(SizeDelta::Bytes(10)), Some([left, right])),
+            similar_tooltip(&size_only(SizeDelta::Bytes(10)), Some([left, right]), None),
             "Similar:\nsizes 100 and 108 bytes differ by 8 bytes (7.41 %), at most 10 bytes"
         );
         assert_eq!(
-            similar_tooltip(&percent, None),
+            similar_tooltip(&percent, None, None),
             "Similar: every file below is the same or similar"
         );
     }

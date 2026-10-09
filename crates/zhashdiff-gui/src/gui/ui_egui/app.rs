@@ -29,7 +29,7 @@ use crate::ui_egui::{
     roots::{LaunchArgs, Side, apply_launch_args, clear_root, set_root},
     status_line::{ScanSummary, ToolMessage, ui_status_summary, ui_tool_message},
     tools_window::ToolsWindow,
-    tree_compare::{CompareUpdate, TreeCompare, patch_row_states},
+    tree_compare::{CompareUpdate, PairLikeness, TreeCompare, patch_row_states},
     tree_filter::{DiffFilter, arrange_two_folder_rows},
     tree_sort::TreeSort,
     tree_tolerance::Tolerance,
@@ -105,7 +105,8 @@ impl AppStateCtx {
             self.file_system_model_1_view.as_ref(),
             self.file_system_model_2_view.as_ref(),
         ]);
-        let likeness_changed = self.tree_compare.set_likeness(self.likeness_bar);
+        let measure_likeness = self.likeness_bar || self.tolerance.uses_likeness();
+        let likeness_changed = self.tree_compare.set_likeness(measure_likeness);
         if self.two_folder_diff_rows_filter != self.path_filter
             || self.two_folder_diff_rows_sort != self.tree_sort
             || self.two_folder_diff_rows_diff_filter != self.diff_filter
@@ -140,7 +141,7 @@ impl AppStateCtx {
                     .map_or(0, Vec::len)
             );
         } else if likeness_changed
-            && self.likeness_bar
+            && measure_likeness
             && let Some(rows) = &self.two_folder_diff_visible_rows
         {
             self.tree_compare.start(
@@ -164,7 +165,14 @@ impl AppStateCtx {
             &self.path_filter,
             &KindTable::default(),
             &self.tolerance,
-            |rel_path, nodes| compare.state_of(rel_path, nodes),
+            |rel_path, nodes| {
+                (
+                    compare.state_of(rel_path, nodes),
+                    compare
+                        .likeness_of(rel_path, nodes)
+                        .and_then(PairLikeness::ratio),
+                )
+            },
             |path, meta| {
                 check_blueprints
                     .then(|| detector.check(path, meta))
@@ -1108,7 +1116,7 @@ mod tests {
         sync::Arc,
         time::{Duration, Instant},
     };
-    use tempfile::tempdir;
+    use tempfile::{TempDir, tempdir};
     use zcommon::{logger::LogBuffer, ui_egui::keymap::Keymap};
     use zhashdiff::{
         comparison::{PairCompare, PairState},
@@ -1472,6 +1480,8 @@ mod tests {
                 size: false,
                 max_size_delta: SizeDelta::Bytes(12),
                 same_size_and_time: true,
+                likeness: true,
+                min_likeness: 95.5,
             },
             ..Default::default()
         };
@@ -1496,6 +1506,8 @@ mod tests {
                 size: true,
                 max_size_delta: SizeDelta::Percent(1.0),
                 same_size_and_time: false,
+                likeness: false,
+                min_likeness: 99.0,
             }
         );
     }
@@ -1531,6 +1543,80 @@ mod tests {
         assert!(!state.tree_compare.is_comparing());
 
         state.tolerance.enabled = false;
+        state.build_two_folder_diff_rows_if_stale();
+        assert!(matches!(b_state(&state), DiffState::Different(..)));
+        assert!(!state.tree_compare.is_comparing());
+    }
+
+    #[test]
+    fn a_tolerance_saved_before_the_likeness_criterion_existed_loads_it_off_at_99_percent() {
+        let mut json: serde_json::Value = serde_json::to_value(AppStateCtx::default()).unwrap();
+        let tolerance = json["tolerance"].as_object_mut().unwrap();
+        tolerance.remove("likeness").unwrap();
+        tolerance.remove("min_likeness").unwrap();
+
+        let restored: AppStateCtx = serde_json::from_value(json).unwrap();
+
+        assert!(!restored.tolerance.likeness);
+        assert_eq!(restored.tolerance.min_likeness, 99.0);
+    }
+
+    fn b_different_trees() -> (TempDir, TempDir, AppStateCtx) {
+        let (left, right) = (tempdir().unwrap(), tempdir().unwrap());
+        for root in [left.path(), right.path()] {
+            fs::write(root.join("a.txt"), "a").unwrap();
+        }
+        fs::write(left.path().join("b.txt"), "left b").unwrap();
+        fs::write(right.path().join("b.txt"), "right b").unwrap();
+        let state = AppStateCtx {
+            file_system_model_1_view: load_view(left.path()),
+            file_system_model_2_view: load_view(right.path()),
+            ..Default::default()
+        };
+        (left, right, state)
+    }
+
+    fn b_state(state: &AppStateCtx) -> DiffState {
+        let rows = state.two_folder_diff_visible_rows.as_ref().unwrap();
+        let row = rows.iter().find(|row| row.rel_path == "b.txt").unwrap();
+        row.diff_state.clone()
+    }
+
+    const LIKENESS_ONLY: Tolerance = Tolerance {
+        enabled: true,
+        size: false,
+        max_size_delta: SizeDelta::Percent(1.0),
+        same_size_and_time: false,
+        likeness: true,
+        min_likeness: 0.0,
+    };
+
+    #[test]
+    fn the_likeness_criterion_with_the_bar_off_queues_likeness_and_disabling_it_stops() {
+        let (_left, _right, mut state) = b_different_trees();
+        finish_compare(&mut state);
+
+        state.tolerance = LIKENESS_ONLY;
+        state.build_two_folder_diff_rows_if_stale();
+        assert!(!state.likeness_bar);
+        assert_eq!(state.tree_compare.queued(), [("b.txt", false, true)]);
+        assert!(matches!(b_state(&state), DiffState::Different(..)));
+
+        state.tolerance.likeness = false;
+        state.build_two_folder_diff_rows_if_stale();
+        assert!(!state.tree_compare.is_comparing());
+        assert_eq!(state.tree_compare.queued(), []);
+    }
+
+    #[test]
+    fn a_pair_passing_the_likeness_criterion_turns_similar_once_measured() {
+        let (_left, _right, mut state) = b_different_trees();
+        state.tolerance = LIKENESS_ONLY;
+
+        finish_compare(&mut state);
+
+        assert!(matches!(b_state(&state), DiffState::Similar(..)));
+        state.tolerance.min_likeness = 1.0;
         state.build_two_folder_diff_rows_if_stale();
         assert!(matches!(b_state(&state), DiffState::Different(..)));
         assert!(!state.tree_compare.is_comparing());

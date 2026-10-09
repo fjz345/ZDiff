@@ -29,7 +29,7 @@ use crate::ui_egui::folder_keymap::FolderAction;
 use crate::ui_egui::roots::{InvalidRoot, Side, set_root};
 use crate::ui_egui::status_line::ToolMessage;
 use crate::ui_egui::tools_window::resolve_tool_exe;
-use crate::ui_egui::tree_compare::TreeCompare;
+use crate::ui_egui::tree_compare::{PairLikeness, TreeCompare};
 use crate::ui_egui::tree_cursor::{CursorRequest, CursorRow, TreeCursor};
 use crate::ui_egui::tree_filter::DiffFilter;
 use crate::ui_egui::tree_guides::{Guide, tree_guides};
@@ -152,13 +152,14 @@ impl FileSystemView {
         }
     }
 
+    /// `pair_state` gives a file pair's exact state and likeness ratio, each when known.
     pub fn build_two_folder_diff_rows(
         file_system_1: Option<&FileSystemView>,
         file_system_2: Option<&FileSystemView>,
         filter: &PathFilter,
         kinds: &KindTable,
         tolerance: &Tolerance,
-        mut pair_state: impl FnMut(&str, [&FsNode; 2]) -> Option<PairState>,
+        mut pair_state: impl FnMut(&str, [&FsNode; 2]) -> (Option<PairState>, Option<f64>),
         mut blueprint: impl FnMut(&Path, FileMeta) -> Option<bool>,
     ) -> io::Result<Vec<VisibleRowTwoFolderDiff>> {
         let mut entries_map: BTreeMap<
@@ -622,7 +623,8 @@ pub fn draw_ui_two_folder_tree_with_diff(
     keyboard_taken: bool,
     actions: &[FolderAction],
     diff_filter: DiffFilter,
-    likeness: Option<&TreeCompare>,
+    compare: &TreeCompare,
+    likeness_bar: bool,
     tolerance: &Tolerance,
 ) -> egui::response::Response {
     if file_system_1_view.is_none() && file_system_2_view.is_none() {
@@ -793,9 +795,10 @@ pub fn draw_ui_two_folder_tree_with_diff(
             let tag_width = 4.0 * ui.fonts_mut(|f| f.glyph_width(&tag_font, 'M'));
 
             // egui_extras resets every column width when the column count changes.
-            let id_salt = match likeness {
-                Some(_) => "two_folder_diff_table_likeness",
-                None => "two_folder_diff_table",
+            let id_salt = if likeness_bar {
+                "two_folder_diff_table_likeness"
+            } else {
+                "two_folder_diff_table"
             };
             let mut table = TableBuilder::new(ui)
                 .sense(egui::Sense::all())
@@ -814,7 +817,7 @@ pub fn draw_ui_two_folder_tree_with_diff(
                 )
                 .column(Column::exact(tag_width))
                 .column(Column::auto().resizable(true).auto_size_this_frame(true));
-            if likeness.is_some() {
+            if likeness_bar {
                 table = table.column(Column::exact(1.5 * tag_width));
             }
             table
@@ -863,7 +866,7 @@ pub fn draw_ui_two_folder_tree_with_diff(
                             }
                         });
                     });
-                    if likeness.is_some() {
+                    if likeness_bar {
                         header.col(|ui| {
                             ui.label("%").on_hover_text("Likeness of the two files");
                         });
@@ -905,7 +908,8 @@ pub fn draw_ui_two_folder_tree_with_diff(
                             tool_message,
                             layout,
                             row_guides,
-                            likeness,
+                            compare,
+                            likeness_bar,
                             tolerance,
                         );
                         if clicked {
@@ -1105,14 +1109,14 @@ fn file_diff_state(
     left: (FsNodeId, &FsNode),
     right: (FsNodeId, &FsNode),
     tolerance: &Tolerance,
-    pair_state: &mut impl FnMut(&str, [&FsNode; 2]) -> Option<PairState>,
+    pair_state: &mut impl FnMut(&str, [&FsNode; 2]) -> (Option<PairState>, Option<f64>),
 ) -> DiffState {
     if right.1.is_dir() {
         return DiffState::Different(left.0, right.0);
     }
-    let exact = pair_state(rel_path, [left.1, right.1]);
+    let (exact, likeness) = pair_state(rel_path, [left.1, right.1]);
     let sides = [left.1, right.1].map(|node| Some(SideMeta::of(node)));
-    if tolerance.is_similar(sides, exact) {
+    if tolerance.is_similar(sides, exact, likeness) {
         return DiffState::Similar(left.0, right.0);
     }
     match exact {
@@ -1402,7 +1406,8 @@ fn render_row_folder_tree_diff_column(
     tool_message: &mut Option<ToolMessage>,
     layout: RowLayout,
     guides: [&[Guide]; 2],
-    likeness: Option<&TreeCompare>,
+    compare: &TreeCompare,
+    likeness_bar: bool,
     tolerance: &Tolerance,
 ) -> (bool, Option<RowAction>) {
     let rel_path = |shown: RowLayout| (layout == shown).then_some(entry.rel_path.as_str());
@@ -1504,17 +1509,20 @@ fn render_row_folder_tree_diff_column(
                     (file_system_2_view.as_deref(), second_node_id),
                 ]
                 .map(|(view, id)| view?.file_system.get_node(id?));
-                let sides = match nodes {
-                    [Some(left), Some(right)] if !entry.is_dir => {
-                        Some([left, right].map(SideMeta::of))
-                    }
-                    _ => None,
+                let (sides, likeness) = match nodes {
+                    [Some(left), Some(right)] if !entry.is_dir => (
+                        Some([left, right].map(SideMeta::of)),
+                        compare
+                            .likeness_of(&entry.rel_path, [left, right])
+                            .and_then(PairLikeness::ratio),
+                    ),
+                    _ => (None, None),
                 };
-                response.on_hover_text(similar_tooltip(tolerance, sides));
+                response.on_hover_text(similar_tooltip(tolerance, sides, likeness));
             }
         });
     });
-    if let Some(compare) = likeness {
+    if likeness_bar {
         row.col(|ui| {
             tint(ui);
             if dimmed {
@@ -2138,7 +2146,7 @@ mod tests {
             filter,
             &KindTable::default(),
             tolerance,
-            |rel_path, _| states.get(rel_path).copied(),
+            |rel_path, _| (states.get(rel_path).copied(), None),
             |_, _| None,
         )
         .unwrap()
@@ -2894,7 +2902,7 @@ mod tests {
             &PathFilter::default(),
             &kinds,
             &Tolerance::default(),
-            |_, _| None,
+            |_, _| (None, None),
             |_, _| None,
         )
         .unwrap();
@@ -2962,7 +2970,7 @@ mod tests {
             &PathFilter::default(),
             &KindTable::default(),
             &Tolerance::default(),
-            |_, _| None,
+            |_, _| (None, None),
             |path, meta| {
                 checked.push((path.to_path_buf(), meta.size));
                 (path == known_blueprint).then_some(true)
@@ -3004,7 +3012,7 @@ mod tests {
             &PathFilter::default(),
             &KindTable::default(),
             &Tolerance::default(),
-            |_, _| None,
+            |_, _| (None, None),
             |_, _| None,
         )
         .unwrap();
