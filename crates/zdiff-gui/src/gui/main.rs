@@ -1,3 +1,11 @@
+use std::{
+    process::ExitCode,
+    sync::{
+        Arc,
+        atomic::{AtomicU8, Ordering},
+    },
+};
+
 use eframe::egui;
 
 use crate::app::ZApp;
@@ -27,7 +35,7 @@ use std::alloc::System;
 #[global_allocator]
 pub static STATS_ALLOC: &StatsAlloc<System> = &INSTRUMENTED_SYSTEM;
 
-fn main() -> eframe::Result {
+fn main() -> ExitCode {
     #[cfg(feature = "pretty-backtrace")]
     {
         color_backtrace::install();
@@ -45,7 +53,9 @@ fn main() -> eframe::Result {
         ..Default::default()
     };
 
-    eframe::run_native(
+    let exit_code = Arc::new(AtomicU8::new(0));
+    let app_exit_code = exit_code.clone();
+    let result = eframe::run_native(
         "ZDiff",
         native_options,
         Box::new(move |cc: &eframe::CreationContext<'_>| {
@@ -58,6 +68,7 @@ fn main() -> eframe::Result {
                     if let Some(json) = storage.get_string(eframe::APP_KEY) {
                         if let Ok(mut app) = serde_json::from_str::<ZApp>(&json) {
                             log::info!("Found previous app storage");
+                            app.report_exit_code_to(app_exit_code);
                             app.request_init();
                             return Ok(Box::new(app));
                         }
@@ -66,8 +77,14 @@ fn main() -> eframe::Result {
             }
 
             let mut app = ZApp::new();
+            app.report_exit_code_to(app_exit_code);
             app.request_init();
             Ok(Box::<ZApp>::new(app))
         }),
-    )
+    );
+    if let Err(e) = result {
+        log::error!("{e}");
+        return ExitCode::FAILURE;
+    }
+    ExitCode::from(exit_code.load(Ordering::Relaxed))
 }

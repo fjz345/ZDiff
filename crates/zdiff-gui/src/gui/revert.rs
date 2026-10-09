@@ -267,18 +267,42 @@ pub fn write_guarded(
     if permissions.readonly() {
         return Err(WriteRefusal::ReadOnly);
     }
+    replace_atomically(path, contents, Some(permissions))?;
+    Ok(before)
+}
 
+/// The atomic replace of `write_guarded` without its guards, for a file the app never loaded
+/// (a merge output, which may be in the temp dir or not exist yet). Only read-only is refused.
+pub fn write_atomic(path: &Path, contents: &[u8]) -> Result<(), WriteRefusal> {
+    let permissions = match std::fs::metadata(path) {
+        Ok(metadata) => Some(metadata.permissions()),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => None,
+        Err(e) => return Err(WriteRefusal::Io(e)),
+    };
+    if permissions.as_ref().is_some_and(|p| p.readonly()) {
+        return Err(WriteRefusal::ReadOnly);
+    }
+    replace_atomically(path, contents, permissions)
+}
+
+fn replace_atomically(
+    path: &Path,
+    contents: &[u8],
+    permissions: Option<std::fs::Permissions>,
+) -> Result<(), WriteRefusal> {
     let dir = path.parent().unwrap_or(Path::new("."));
     let mut temp = tempfile::Builder::new()
-        .prefix(".zdiff-revert-")
+        .prefix(".zdiff-write-")
         .tempfile_in(dir)
         .map_err(WriteRefusal::Io)?;
     temp.write_all(contents).map_err(WriteRefusal::Io)?;
     temp.as_file().sync_all().map_err(WriteRefusal::Io)?;
     // The temp file is created with restrictive permissions; keep the target's.
-    std::fs::set_permissions(temp.path(), permissions).map_err(WriteRefusal::Io)?;
+    if let Some(permissions) = permissions {
+        std::fs::set_permissions(temp.path(), permissions).map_err(WriteRefusal::Io)?;
+    }
     temp.persist(path).map_err(|e| WriteRefusal::Io(e.error))?;
-    Ok(before)
+    Ok(())
 }
 
 /// A written revert: the target's bytes before and after it.
@@ -1081,6 +1105,36 @@ mod tests {
             let result = target.write(b"reverted\n");
             drop(holder);
             assert!(matches!(result, Err(WriteRefusal::Io(_))), "{result:?}");
+            assert_eq!(target.read(), b"loaded\n");
+            target.assert_no_leftovers();
+        }
+
+        #[test]
+        fn atomic_write_replaces_a_file_it_never_loaded_even_in_the_temp_dir() {
+            let target = Target::new(b"<<<<<<< markers from git\n");
+            let new = b"merged\r\nline\r\n";
+            write_atomic(&target.path, new).unwrap();
+            assert_eq!(target.read(), new);
+            target.assert_no_leftovers();
+            assert!(target.path.starts_with(std::env::temp_dir()));
+        }
+
+        #[test]
+        fn atomic_write_creates_a_missing_file() {
+            let target = Target::new(b"");
+            std::fs::remove_file(&target.path).unwrap();
+            write_atomic(&target.path, b"merged\n").unwrap();
+            assert_eq!(target.read(), b"merged\n");
+            target.assert_no_leftovers();
+        }
+
+        #[test]
+        fn atomic_write_refuses_a_read_only_file_and_leaves_it_untouched() {
+            let target = Target::new(b"loaded\n");
+            target.set_readonly(true);
+            let result = write_atomic(&target.path, b"merged\n");
+            target.set_readonly(false);
+            assert!(matches!(result, Err(WriteRefusal::ReadOnly)), "{result:?}");
             assert_eq!(target.read(), b"loaded\n");
             target.assert_no_leftovers();
         }

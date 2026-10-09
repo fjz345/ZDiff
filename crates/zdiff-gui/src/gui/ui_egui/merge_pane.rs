@@ -1,5 +1,6 @@
 use std::{
     ops::Range,
+    path::Path,
     sync::{Arc, atomic::AtomicBool, mpsc},
 };
 
@@ -17,6 +18,7 @@ use zdiff::{
 
 use crate::{
     file::FileProcessor,
+    revert::{WriteRefusal, write_atomic},
     ui_egui::{
         active_side::ActiveSide,
         diff_pane::FileDiffPane,
@@ -445,6 +447,28 @@ impl MergeDoc {
         let chunk = self.merge.redo()?;
         self.update_output();
         Some(chunk)
+    }
+
+    /// The output text already has yours' line endings.
+    pub fn save(&self, path: &Path) -> Result<SavedOutput, WriteRefusal> {
+        write_atomic(path, self.output_text().as_bytes())?;
+        Ok(SavedOutput {
+            text: self.output_text().to_string(),
+            unresolved: counts(&self.merge).unresolved,
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SavedOutput {
+    text: String,
+    unresolved: usize,
+}
+
+pub fn exit_code(saved: Option<&SavedOutput>, output: &str) -> u8 {
+    match saved {
+        Some(saved) if saved.unresolved == 0 && saved.text == output => 0,
+        _ => 1,
     }
 }
 
@@ -890,6 +914,22 @@ pub struct MergeView {
     top_occurrences: [OccurrenceState; 3],
     output_occurrences: OccurrenceState,
     scroll_to_row: Option<usize>,
+    saved: Option<SavedOutput>,
+    save_error: Option<String>,
+    confirm_save: bool,
+    close_prompt: Option<Closing>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Closing {
+    Merge,
+    App,
+}
+
+enum CloseAnswer {
+    Save,
+    Discard,
+    Cancel,
 }
 
 impl MergeView {
@@ -911,12 +951,150 @@ impl MergeView {
             top_occurrences: Default::default(),
             output_occurrences: OccurrenceState::default(),
             scroll_to_row: None,
+            saved: None,
+            save_error: None,
+            confirm_save: false,
+            close_prompt: None,
         }
     }
 
     pub fn navigate(&mut self, forward: bool) {
         if let Some(doc) = &mut self.doc {
             self.scroll_to_row = doc.navigate(forward);
+        }
+    }
+
+    pub fn exit_code(&self) -> u8 {
+        match &self.doc {
+            Some(doc) => exit_code(self.saved.as_ref(), doc.output_text()),
+            None => 1,
+        }
+    }
+
+    pub fn request_save(&mut self) {
+        let Some(doc) = &self.doc else {
+            log::warn!("Save merge: the inputs are not loaded");
+            return;
+        };
+        if counts(doc.merge()).unresolved > 0 {
+            self.confirm_save = true;
+        } else {
+            self.save();
+        }
+    }
+
+    fn save(&mut self) -> bool {
+        let Some(doc) = &self.doc else {
+            return false;
+        };
+        let path = self
+            .output
+            .as_path()
+            .expect("merge_request only accepts a local output");
+        match doc.save(path) {
+            Ok(saved) => {
+                log::info!("Saved merge output {}", path.display());
+                self.saved = Some(saved);
+                self.save_error = None;
+                true
+            }
+            Err(e) => {
+                let message = format!("Cannot save {}: {e}", path.display());
+                log::error!("{message}");
+                self.save_error = Some(message);
+                false
+            }
+        }
+    }
+
+    /// `Some` when the view can close now; otherwise it prompts and `ui` returns it later.
+    pub fn request_close(&mut self, closing: Closing) -> Option<Closing> {
+        if self.doc.is_none() || self.exit_code() == 0 {
+            return Some(closing);
+        }
+        self.close_prompt = Some(closing);
+        None
+    }
+
+    fn confirm_save_ui(&mut self, ctx: &egui::Context) {
+        let Some(doc) = &self.doc else {
+            self.confirm_save = false;
+            return;
+        };
+        let unresolved = counts(doc.merge()).unresolved;
+        let mut answer = None;
+        let modal = egui::Modal::new(egui::Id::new("merge_save_prompt")).show(ctx, |ui| {
+            ui.heading("Save with unresolved conflicts?");
+            ui.label(format!(
+                "{unresolved} unresolved conflicts are written as conflict markers."
+            ));
+            ui.horizontal(|ui| {
+                if ui.button("Save with markers").clicked() {
+                    answer = Some(true);
+                }
+                if ui.button("Cancel").clicked() {
+                    answer = Some(false);
+                }
+            });
+        });
+        if modal.should_close() {
+            answer.get_or_insert(false);
+        }
+        if let Some(save) = answer {
+            self.confirm_save = false;
+            if save {
+                self.save();
+            }
+        }
+    }
+
+    fn close_prompt_ui(&mut self, ctx: &egui::Context, closing: Closing) -> Option<Closing> {
+        let unresolved = self
+            .doc
+            .as_ref()
+            .map_or(0, |doc| counts(doc.merge()).unresolved);
+        let mut answer = None;
+        let modal = egui::Modal::new(egui::Id::new("merge_close_prompt")).show(ctx, |ui| {
+            ui.heading("Save the merge before closing?");
+            ui.label(format!("Output: {}", self.output));
+            if self.saved.as_ref().map(|s| s.text.as_str())
+                != self.doc.as_ref().map(MergeDoc::output_text)
+            {
+                ui.label("The output has unsaved changes.");
+            }
+            if unresolved > 0 {
+                ui.label(format!(
+                    "{unresolved} unresolved conflicts are saved as conflict markers."
+                ));
+            }
+            if let Some(error) = &self.save_error {
+                ui.colored_label(ui.visuals().error_fg_color, error);
+            }
+            ui.horizontal(|ui| {
+                if ui.button("Save").clicked() {
+                    answer = Some(CloseAnswer::Save);
+                }
+                if ui.button("Discard").clicked() {
+                    answer = Some(CloseAnswer::Discard);
+                }
+                if ui.button("Cancel").clicked() {
+                    answer = Some(CloseAnswer::Cancel);
+                }
+            });
+        });
+        if modal.should_close() {
+            answer.get_or_insert(CloseAnswer::Cancel);
+        }
+        match answer? {
+            CloseAnswer::Save if !self.save() => None,
+            CloseAnswer::Save | CloseAnswer::Discard => {
+                self.close_prompt = None;
+                Some(closing)
+            }
+            CloseAnswer::Cancel => {
+                self.close_prompt = None;
+                None
+            }
         }
     }
 
@@ -1049,11 +1227,12 @@ impl MergeView {
         }
     }
 
-    /// True when the view asks to be closed.
-    pub fn ui(&mut self, ui: &mut egui::Ui, code_language: &str) -> bool {
+    /// `Some` once the view is done and closes.
+    pub fn ui(&mut self, ui: &mut egui::Ui, code_language: &str) -> Option<Closing> {
         let status = self.poll();
         let scroll_to_row = self.scroll_to_row.take();
-        let mut close = false;
+        let mut close = None;
+        let mut save = false;
         let mut undo_redo = None;
         egui::TopBottomPanel::top("merge_toolbar").show_inside(ui, |ui| {
             ui.horizontal(|ui| {
@@ -1080,11 +1259,29 @@ impl MergeView {
                         ui.ctx().request_repaint();
                     }
                 }
+                if let Some(error) = &self.save_error {
+                    ui.colored_label(ui.visuals().error_fg_color, error);
+                }
+                save = ui
+                    .add_enabled(self.doc.is_some(), egui::Button::new("Save"))
+                    .clicked();
                 if ui.button("Close Merge").clicked() {
-                    close = true;
+                    close = Some(Closing::Merge);
                 }
             });
         });
+        if save {
+            self.request_save();
+        }
+        if self.confirm_save {
+            self.confirm_save_ui(ui.ctx());
+        }
+        if let Some(closing) = close {
+            close = self.request_close(closing);
+        }
+        if let Some(closing) = self.close_prompt {
+            close = self.close_prompt_ui(ui.ctx(), closing);
+        }
         let Some(doc) = &self.doc else {
             return close;
         };
@@ -1617,6 +1814,44 @@ mod tests {
         assert_eq!(doc.output_text(), "1\nE\n3\n");
         assert_eq!(origins(&doc)[1], (1, Some(Origin::Edited)));
         assert_eq!(doc.redo(), None);
+    }
+
+    fn saved(text: &str, unresolved: usize) -> SavedOutput {
+        SavedOutput {
+            text: text.to_string(),
+            unresolved,
+        }
+    }
+
+    #[test]
+    fn exit_code_is_0_only_for_a_clean_save_with_nothing_changed_since() {
+        assert_eq!(exit_code(None, "x\n"), 1);
+        assert_eq!(exit_code(Some(&saved("x\n", 0)), "x\n"), 0);
+        assert_eq!(exit_code(Some(&saved("x\n", 0)), "y\n"), 1);
+        assert_eq!(exit_code(Some(&saved("x\n", 1)), "x\n"), 1);
+    }
+
+    #[test]
+    fn saving_writes_the_output_with_yours_line_endings() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("merged.txt");
+        let mut doc = doc(Some("1\n2\n3\n"), "1\nT\n3\n", "1\r\nY\r\n3\r\n");
+
+        let first = doc.save(&path).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "<<<<<<< yours\r\n1\r\nY\r\n3\r\n||||||| base\r\n1\r\n2\r\n3\r\n=======\r\n1\r\nT\r\n3\r\n>>>>>>> theirs\r\n"
+        );
+        assert_eq!(exit_code(Some(&first), doc.output_text()), 1);
+
+        doc.pick(0, Pick::Theirs);
+        assert_eq!(exit_code(Some(&first), doc.output_text()), 1);
+        let second = doc.save(&path).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "1\r\nT\r\n3\r\n");
+        assert_eq!(exit_code(Some(&second), doc.output_text()), 0);
+
+        doc.pick(0, Pick::Yours);
+        assert_eq!(exit_code(Some(&second), doc.output_text()), 1);
     }
 
     fn fields(base: &str, theirs: &str, yours: &str, output: &str) -> [String; 4] {

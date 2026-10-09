@@ -73,6 +73,7 @@ pub enum FileAction {
     DiffOnly,
     FewerContextRows,
     MoreContextRows,
+    SaveMerge,
 }
 
 impl Action for FileAction {
@@ -106,6 +107,7 @@ impl Action for FileAction {
             Self::DiffOnly,
             Self::FewerContextRows,
             Self::MoreContextRows,
+            Self::SaveMerge,
         ]
     }
 
@@ -139,6 +141,7 @@ impl Action for FileAction {
             Self::DiffOnly => "diff_only",
             Self::FewerContextRows => "diff_only_fewer_context_rows",
             Self::MoreContextRows => "diff_only_more_context_rows",
+            Self::SaveMerge => "save_merge",
         }
     }
 
@@ -172,6 +175,7 @@ impl Action for FileAction {
             Self::DiffOnly => "Diff Only",
             Self::FewerContextRows => "Diff Only: Fewer Context Rows",
             Self::MoreContextRows => "Diff Only: More Context Rows",
+            Self::SaveMerge => "Save Merge",
         }
     }
 
@@ -306,6 +310,10 @@ impl Action for FileAction {
             Self::MoreContextRows => &[Shortcut {
                 key: Key::CloseBracket,
                 modifiers: Modifiers::ALT,
+            }],
+            Self::SaveMerge => &[Shortcut {
+                key: Key::S,
+                modifiers: CTRL,
             }],
         }
     }
@@ -772,6 +780,23 @@ mod tests {
     }
 
     #[test]
+    fn ctrl_s_saves_the_merge_and_ctrl_shift_s_still_swaps() {
+        let keymap = Keymap::<FileAction>::default();
+        assert_eq!(
+            keymap.dispatch(&[press(Key::S, CTRL)], false),
+            [FileAction::SaveMerge]
+        );
+        assert_eq!(
+            keymap.dispatch(&[press(Key::S, CTRL)], true),
+            [FileAction::SaveMerge]
+        );
+        assert_eq!(
+            keymap.dispatch(&[press(Key::S, CTRL_SHIFT)], false),
+            [FileAction::SwapSides]
+        );
+    }
+
+    #[test]
     fn swap_and_toolbar_toggles_dispatch_from_the_default_keys() {
         let keymap = Keymap::<FileAction>::default();
         let expected = [
@@ -896,6 +921,7 @@ mod tests {
                 FileAction::DiffOnly,
                 FileAction::FewerContextRows,
                 FileAction::MoreContextRows,
+                FileAction::SaveMerge,
             ];
             let expected: Vec<_> = expected
                 .into_iter()

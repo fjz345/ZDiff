@@ -3,7 +3,11 @@ use serde::{Deserialize, Serialize};
 use std::{
     env,
     path::{Path, PathBuf},
-    sync::mpsc,
+    sync::{
+        Arc,
+        atomic::{AtomicU8, Ordering},
+        mpsc,
+    },
 };
 use zcommon::find::FindQuery;
 use zcommon::presets::UserPresets;
@@ -39,7 +43,7 @@ use crate::{
     },
     ui_egui::{
         diff_pane::{FileDiffPane, FileDiffPaneCtx, wheel_rects_id},
-        merge_pane::{MergeView, OpenMergeForm},
+        merge_pane::{Closing, MergeView, OpenMergeForm},
         panes::{Pane, TreeBehavior},
     },
     viewer::{
@@ -227,6 +231,9 @@ pub struct ZApp {
     merge: Option<MergeView>,
     #[serde(skip)]
     open_merge_form: OpenMergeForm,
+    /// Read by main once the window closed: the exit code of the last closed merge view.
+    #[serde(skip)]
+    exit_code: Arc<AtomicU8>,
 }
 
 fn default_zoom() -> f32 {
@@ -242,6 +249,10 @@ fn deserialize_zoom<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result
 }
 
 impl<'a> ZApp {
+    pub fn report_exit_code_to(&mut self, exit_code: Arc<AtomicU8>) {
+        self.exit_code = exit_code;
+    }
+
     pub fn request_init(&mut self) {
         log::info!(
             "Request init called with state: {}",
@@ -296,6 +307,7 @@ impl<'a> ZApp {
             launch_error: None,
             merge: None,
             open_merge_form: OpenMergeForm::default(),
+            exit_code: Arc::default(),
         }
     }
 
@@ -981,18 +993,31 @@ impl<'a> ZApp {
             if let Some(request) = self.open_merge_form.ui(ctx) {
                 self.merge = Some(MergeView::new(request, *myers_diff_algorithm));
             }
-            let mut close_merge = false;
+            let close_requested = ctx.input(|i| i.viewport().close_requested());
+            let mut close_merge = None;
+            if close_requested && let Some(merge) = &mut self.merge {
+                close_merge = merge.request_close(Closing::App);
+                if close_merge.is_none() {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                }
+            }
             ui.with_layout(
                 Layout::left_to_right(egui::Align::Min),
                 |ui| match &mut self.merge {
                     Some(merge) => {
-                        close_merge = merge.ui(ui, behavior.ctx_file_diff.code_language);
+                        let closed = merge.ui(ui, behavior.ctx_file_diff.code_language);
+                        close_merge = close_merge.or(closed);
                     }
                     None => self.tree.ui(&mut behavior, ui),
                 },
             );
-            if close_merge {
-                self.merge = None;
+            if let Some(closing) = close_merge {
+                let merge = self.merge.take().expect("only an open merge closes");
+                self.exit_code.store(merge.exit_code(), Ordering::Relaxed);
+                // The prompt's close request was cancelled frames ago, so it is made again.
+                if closing == Closing::App && !close_requested {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
             }
 
             // TODO: Remove clones
@@ -1189,6 +1214,7 @@ impl<'a> ZApp {
         let mut diff_local_file = false;
         let mut tab_pressed = false;
         let mut esc_pressed = false;
+        let mut save_merge = false;
         {
             let _input_ctx = ctx.input(|r| {
                 if capturing {
@@ -1234,6 +1260,7 @@ impl<'a> ZApp {
                         FileAction::OpenUniversalPath => self.open_universal_path_window = true,
                         FileAction::Find => app_state_ctx.find_open = true,
                         FileAction::Goto => app_state_ctx.goto_open = true,
+                        FileAction::SaveMerge => save_merge = true,
                         FileAction::NextConflict | FileAction::PrevConflict
                             if let Some(merge) = &mut self.merge =>
                         {
@@ -1393,6 +1420,12 @@ impl<'a> ZApp {
             app_state_ctx.hex_processor.clear_highlight();
         }
         // After the input closure: this writes to disk.
+        if save_merge {
+            match &mut self.merge {
+                Some(merge) => merge.request_save(),
+                None => log::info!("Save Merge: no merge is open"),
+            }
+        }
         if let Some(step) = history_step {
             Self::step_revert_history(app_state_ctx, step);
         }
