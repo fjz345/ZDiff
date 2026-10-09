@@ -35,18 +35,54 @@ impl DiffFilter {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DuplicatesFilter {
+    pub duplicates_only: bool,
+    /// Only applies with `duplicates_only`.
+    pub show_parents: bool,
+    pub hash_column: bool,
+}
+
+impl Default for DuplicatesFilter {
+    fn default() -> Self {
+        Self {
+            duplicates_only: false,
+            show_parents: true,
+            hash_column: false,
+        }
+    }
+}
+
+impl DuplicatesFilter {
+    pub fn diff_filter(self) -> DiffFilter {
+        DiffFilter {
+            diff_only: self.duplicates_only,
+            show_parents: self.show_parents,
+        }
+    }
+}
+
 /// The root row is always kept: the tree sort hangs every row under it and the header shows its
 /// state.
 pub fn filter_diff_rows(
+    rows: Vec<VisibleRowTwoFolderDiff>,
+    filter: DiffFilter,
+) -> Vec<VisibleRowTwoFolderDiff> {
+    filter_rows(rows, filter, |row| {
+        !matches!(row.diff_state, DiffState::Same(..) | DiffState::Similar(..))
+    })
+}
+
+/// `filter_diff_rows` with `differs` deciding which rows are kept.
+pub fn filter_rows(
     mut rows: Vec<VisibleRowTwoFolderDiff>,
     filter: DiffFilter,
+    differs: impl Fn(&VisibleRowTwoFolderDiff) -> bool,
 ) -> Vec<VisibleRowTwoFolderDiff> {
     if !filter.diff_only {
         return rows;
     }
-    let differs = |row: &VisibleRowTwoFolderDiff| {
-        !matches!(row.diff_state, DiffState::Same(..) | DiffState::Similar(..))
-    };
     if filter.lists_files() {
         rows.retain(|row| row.rel_path.is_empty() || (!row.is_dir && differs(row)));
         return rows;

@@ -610,7 +610,7 @@ pub enum TreeMode<'a, 'b> {
     /// Folder 1 alone, without the center column and Folder 2: the duplicates tab.
     SingleSide {
         pending_deletion: &'a HashSet<PathBuf>,
-        column: NodeColumn<'a>,
+        columns: Vec<NodeColumn<'a>>,
         /// Items appended to a row's right-click menu.
         row_menu: &'a mut RowMenuItems<'a>,
         /// The caller moved the cursor.
@@ -826,14 +826,14 @@ pub fn draw_ui_folder_tree(
     let mut row_action = None;
     let mut chip_event = None;
 
-    let (mut two_folder, pending_deletion, mut node_column, mut extra_menu) = match mode {
+    let (mut two_folder, pending_deletion, mut node_columns, mut extra_menu) = match mode {
         TreeMode::TwoFolder(two_folder) => (Some(two_folder), None, None, None),
         TreeMode::SingleSide {
             pending_deletion,
-            column,
+            columns,
             row_menu,
             ..
-        } => (None, Some(pending_deletion), Some(column), Some(row_menu)),
+        } => (None, Some(pending_deletion), Some(columns), Some(row_menu)),
     };
     let (find_matcher, match_path, find_chip_query) =
         two_folder
@@ -909,17 +909,19 @@ pub fn draw_ui_folder_tree(
             };
 
             let Some(two_folder) = two_folder.as_mut() else {
-                let column = node_column
+                let columns = node_columns
                     .as_mut()
-                    .expect("single-side mode has a node column");
+                    .expect("single-side mode has node columns");
                 let mut table = TableBuilder::new(ui)
                     .id_salt("single_side_table")
                     .striped(true)
                     .resizable(false)
                     .auto_shrink([false, false])
                     .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-                    .column(Column::remainder().clip(true))
-                    .column(Column::exact(column.width).clip(true));
+                    .column(Column::remainder().clip(true));
+                for column in columns.iter() {
+                    table = table.column(Column::exact(column.width).clip(true));
+                }
                 if let Some(row) = scroll_to_row {
                     table = table.scroll_to_row(row, None);
                 }
@@ -935,22 +937,26 @@ pub fn draw_ui_folder_tree(
                                 None,
                             );
                         });
-                        header.col(|ui| {
-                            ui.label(column.header);
-                        });
+                        for column in columns.iter() {
+                            header.col(|ui| {
+                                ui.label(column.header);
+                            });
+                        }
                     })
                     .body(|body| {
                         body.rows(row_height, row_count, |mut row| {
                             let i = row.index();
                             row.set_selected(selected_row == Some(i));
                             row.col(|ui| side_cell(i, 0, ui));
-                            row.col(|ui| {
-                                if let Some(node_id) =
-                                    visible_rows[drawn_rows[i]].diff_state.first()
-                                {
-                                    (column.cell)(ui, node_id);
-                                }
-                            });
+                            for column in columns.iter_mut() {
+                                row.col(|ui| {
+                                    if let Some(node_id) =
+                                        visible_rows[drawn_rows[i]].diff_state.first()
+                                    {
+                                        (column.cell)(ui, node_id);
+                                    }
+                                });
+                            }
                         });
                     });
                 side_rects[0] = body.inner_rect;

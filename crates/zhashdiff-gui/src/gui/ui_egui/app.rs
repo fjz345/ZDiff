@@ -41,7 +41,7 @@ use crate::ui_egui::{
     status_line::{ScanSummary, ToolMessage, ui_status_summary, ui_tool_message},
     tools_window::ToolsWindow,
     tree_compare::{CompareUpdate, PairLikeness, TreeCompare, patch_row_states},
-    tree_filter::{DiffFilter, arrange_two_folder_rows},
+    tree_filter::{DiffFilter, DuplicatesFilter, arrange_two_folder_rows},
     tree_find::{FindChipEvent, FolderFind, TreeFindView, find_mask},
     tree_sort::TreeSort,
     tree_tolerance::Tolerance,
@@ -92,6 +92,8 @@ pub struct AppStateCtx {
     two_folder_diff_rows_diff_filter: DiffFilter,
     #[serde(default)]
     pub diff_filter: DiffFilter,
+    #[serde(default)]
+    pub duplicates_filter: DuplicatesFilter,
     #[serde(default)]
     pub likeness_bar: bool,
     #[serde(skip)]
@@ -980,6 +982,7 @@ impl ZApp {
                     filter_presets: &mut app_ctx.filter_presets,
                     tree_sort: &mut app_ctx.tree_sort,
                     diff_filter: &mut app_ctx.diff_filter,
+                    duplicates_filter: &mut app_ctx.duplicates_filter,
                     likeness_bar: &mut app_ctx.likeness_bar,
                     tolerance: &mut app_ctx.tolerance,
                     tree_compare: &app_ctx.tree_compare,
@@ -1258,7 +1261,7 @@ mod tests {
     use crate::ui_egui::path_diff_pane::{BLACKLIST_PRESETS, FilterField, FilterPresets};
     use crate::ui_egui::roots::{Side, clear_root, set_root};
     use crate::ui_egui::tree_compare::PairResult;
-    use crate::ui_egui::tree_filter::DiffFilter;
+    use crate::ui_egui::tree_filter::{DiffFilter, DuplicatesFilter};
     use crate::ui_egui::tree_find::FolderFind;
     use crate::ui_egui::tree_sort::{SortKey, TreeSort};
     use crate::ui_egui::tree_tolerance::{SizeDelta, Tolerance};
@@ -1573,6 +1576,43 @@ mod tests {
             DiffFilter {
                 diff_only: false,
                 show_parents: true,
+            }
+        );
+    }
+
+    #[test]
+    fn the_duplicates_bar_survives_a_restart() {
+        let state = AppStateCtx {
+            duplicates_filter: DuplicatesFilter {
+                duplicates_only: true,
+                show_parents: false,
+                hash_column: true,
+            },
+            ..Default::default()
+        };
+
+        let json = serde_json::to_string(&state).unwrap();
+        let restored: AppStateCtx = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(restored.duplicates_filter, state.duplicates_filter);
+    }
+
+    #[test]
+    fn a_state_saved_before_the_duplicates_bar_existed_shows_every_row_without_hashes() {
+        let mut json: serde_json::Value = serde_json::to_value(AppStateCtx::default()).unwrap();
+        json.as_object_mut()
+            .unwrap()
+            .remove("duplicates_filter")
+            .unwrap();
+
+        let restored: AppStateCtx = serde_json::from_value(json).unwrap();
+
+        assert_eq!(
+            restored.duplicates_filter,
+            DuplicatesFilter {
+                duplicates_only: false,
+                show_parents: true,
+                hash_column: false,
             }
         );
     }

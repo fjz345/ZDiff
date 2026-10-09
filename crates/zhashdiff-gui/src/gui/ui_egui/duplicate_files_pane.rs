@@ -13,6 +13,7 @@ use serde::Serialize;
 use zcommon::hash::HashRepresentation;
 use zcommon::hash::HashService;
 use zcommon::ui_egui::common::show_custom_popup;
+use zcommon::ui_egui::toggle::toggle_button;
 use zhashdiff::conflict::DuplicateGroup;
 use zhashdiff::conflict::ResolutionSummary;
 use zhashdiff::conflict::SizedFile;
@@ -45,13 +46,16 @@ use crate::ui_egui::roots::set_root;
 use crate::ui_egui::status_line::ToolMessage;
 use crate::ui_egui::tree_cursor::CursorRequest;
 use crate::ui_egui::tree_cursor::TreeCursor;
-use crate::ui_egui::tree_filter::DiffFilter;
+use crate::ui_egui::tree_filter::DuplicatesFilter;
+use crate::ui_egui::tree_filter::filter_rows;
 use crate::ui_egui::tree_sort::TreeSort;
+use crate::ui_egui::tree_sort::sort_file_list;
 use zcommon::ui_egui::common::hash_to_color;
 
 const MAX_CONCURRENT_HASHES: usize = 16;
 
 const GROUP_COLUMN_WIDTH: f32 = 80.0;
+const HASH_COLUMN_WIDTH: f32 = 140.0;
 const KEEPER_COLOR: egui::Color32 = egui::Color32::LIGHT_GREEN;
 const DUPLICATE_COUNT_COLOR: egui::Color32 = egui::Color32::from_gray(150);
 const TOOLTIP_MAX_MEMBERS: usize = 30;
@@ -63,6 +67,7 @@ struct DuplicateGroups {
     /// Group index and index into its paths.
     member_of: HashMap<FsNodeId, (usize, usize)>,
     duplicates_below: HashMap<FsNodeId, usize>,
+    hash_of: HashMap<FsNodeId, HashRepresentation>,
 }
 
 fn duplicate_groups(
@@ -73,6 +78,7 @@ fn duplicate_groups(
     let model = &view.file_system;
     let hidden = tree_hidden(view, filter);
     let mut node_of = HashMap::new();
+    let mut hash_of = HashMap::new();
     let files: Vec<_> = model
         .iter_tree()
         .filter(|(node_id, node, _)| node.is_file() && !hidden[*node_id])
@@ -82,6 +88,7 @@ fn duplicate_groups(
                 return None;
             };
             node_of.insert(path.clone(), node_id);
+            hash_of.insert(node_id, hash.clone());
             Some((path, node.size, hash.clone()))
         })
         .collect();
@@ -107,6 +114,7 @@ fn duplicate_groups(
         groups,
         member_of,
         duplicates_below,
+        hash_of,
     }
 }
 
@@ -436,6 +444,8 @@ pub struct DuplicateFilesPane {
     hash_batch: usize,
     #[serde(skip)]
     cursor_rows: CursorRowsCache,
+    #[serde(skip)]
+    members_generation: u64,
 }
 
 struct TreeRows {
@@ -443,6 +453,8 @@ struct TreeRows {
     model: Weak<FileSystemModel>,
     filter: PathFilter,
     sort: TreeSort,
+    duplicates_filter: DuplicatesFilter,
+    members: Option<u64>,
     rows: Vec<VisibleRowTwoFolderDiff>,
     id: RowsId,
 }
@@ -458,6 +470,7 @@ pub struct DuplicateFilesPaneCtx<'a, 'b> {
     pub path_diff_view: &'a mut PathDiffView<'b>,
     pub path_filter: &'a PathFilter,
     pub tree_sort: &'a mut TreeSort,
+    pub duplicates_filter: &'a mut DuplicatesFilter,
     pub diff_tool_config: &'a DiffToolConfig,
     pub tool_message: &'a mut Option<ToolMessage>,
     pub keyboard_taken: bool,
@@ -485,6 +498,7 @@ impl DuplicateFilesPane {
             hashed_for: None,
             hash_batch: 0,
             cursor_rows: CursorRowsCache::default(),
+            members_generation: 0,
         }
     }
 
@@ -534,26 +548,49 @@ impl DuplicateFilesPane {
         self.groups = None;
     }
 
-    /// Rebuilt when Folder 1 is rescanned or replaced, or the filter or sort changed.
+    /// Rebuilt when Folder 1 is rescanned or replaced, the filter or sort changed, or with
+    /// Duplicates only, the group members changed.
     fn tree_rows(
         &mut self,
         view: &FileSystemView,
         filter: &PathFilter,
         sort: TreeSort,
+        duplicates_filter: DuplicatesFilter,
     ) -> &[VisibleRowTwoFolderDiff] {
         let model = Arc::downgrade(&view.file_system);
+        let members = duplicates_filter
+            .duplicates_only
+            .then_some(self.members_generation);
         let current = self.tree_cache.as_ref().is_some_and(|cache| {
-            cache.model.ptr_eq(&model) && cache.filter == *filter && cache.sort == sort
+            cache.model.ptr_eq(&model)
+                && cache.filter == *filter
+                && cache.sort == sort
+                && cache.duplicates_filter == duplicates_filter
+                && cache.members == members
         });
         if !current {
             let rows = single_side_rows(view, filter, sort).unwrap_or_else(|e| {
                 log::error!("Duplicate tree rows not built: {e}");
                 Vec::new()
             });
+            let diff_filter = duplicates_filter.diff_filter();
+            let member_of = self.groups.as_ref().map(|groups| &groups.member_of);
+            let rows = filter_rows(rows, diff_filter, |row| {
+                row.diff_state
+                    .first()
+                    .is_some_and(|node_id| member_of.is_some_and(|m| m.contains_key(&node_id)))
+            });
+            let rows = if diff_filter.lists_files() {
+                sort_file_list(rows, sort)
+            } else {
+                rows
+            };
             self.tree_cache = Some(TreeRows {
                 model,
                 filter: filter.clone(),
                 sort,
+                duplicates_filter,
+                members,
                 rows,
                 id: RowsId::next(),
             });
@@ -578,12 +615,17 @@ impl DuplicateFilesPane {
         if ctx.actions.is_empty() {
             return false;
         }
-        self.tree_rows(view, ctx.path_filter, *ctx.tree_sort);
+        self.tree_rows(
+            view,
+            ctx.path_filter,
+            *ctx.tree_sort,
+            *ctx.duplicates_filter,
+        );
         let rows = &self.tree_cache.as_ref().expect("built above").rows;
         let Some(groups) = self.groups.as_ref() else {
             return false;
         };
-        let flat = DiffFilter::default().is_flat(*ctx.tree_sort);
+        let flat = ctx.duplicates_filter.diff_filter().is_flat(*ctx.tree_sort);
         let mut moved = false;
         for action in ctx.actions {
             let forward = match action {
@@ -678,6 +720,20 @@ impl DuplicateFilesPane {
                 .get(hash)
                 .is_some_and(|paths| paths.contains(keeper))
         });
+        let same_members = match (&self.groups, &groups) {
+            (Some(old), Some(new)) => {
+                old.member_of.len() == new.member_of.len()
+                    && new
+                        .member_of
+                        .keys()
+                        .all(|id| old.member_of.contains_key(id))
+            }
+            (None, None) => true,
+            _ => false,
+        };
+        if !same_members {
+            self.members_generation += 1;
+        }
         self.groups = groups;
     }
 
@@ -788,12 +844,48 @@ impl DuplicateFilesPane {
                 // Workers don't wake the ui.
                 ui.ctx().request_repaint_after(Duration::from_millis(100));
             }
+
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 4.0;
+                let filter = &mut *ctx.duplicates_filter;
+                toggle_button(
+                    ui,
+                    &mut filter.duplicates_only,
+                    egui::RichText::new("D").strong(),
+                    "Duplicates only: hide files without a duplicate and folders without one below",
+                );
+                toggle_button(
+                    ui,
+                    &mut ctx.tree_sort.flat,
+                    egui::RichText::new("F").strong(),
+                    "Flat: list all entries by depth, then by the sorted column (shared with the folder view)",
+                );
+                ui.add_enabled_ui(filter.duplicates_only, |ui| {
+                    toggle_button(
+                        ui,
+                        &mut filter.show_parents,
+                        egui::RichText::new("P").strong(),
+                        "Show parent folders: off lists only the files with a duplicate (needs Duplicates only)",
+                    );
+                });
+                toggle_button(
+                    ui,
+                    &mut filter.hash_column,
+                    egui::RichText::new("H").strong(),
+                    "Hash column: show the hash of each hashed file",
+                );
+            });
         });
 
         ui.separator();
 
         if let Some(view) = ctx.path_diff_view.file_system_1_view.as_ref() {
-            self.tree_rows(view, ctx.path_filter, *ctx.tree_sort);
+            self.tree_rows(
+                view,
+                ctx.path_filter,
+                *ctx.tree_sort,
+                *ctx.duplicates_filter,
+            );
             let cache = self.tree_cache.as_ref().expect("built above");
             let pending_deletion = pending_deletions(ctx.conflict_map, ctx.conflict_map_resolved);
             let root = view_root(Some(view)).expect("a view has a root");
@@ -804,6 +896,24 @@ impl DuplicateFilesPane {
                     groups.and_then(|groups| groups.cell(node_id, keepers, &pending_deletion));
                 ui_group_cell(ui, cell, keepers, &root);
             };
+            let mut hash_cell = |ui: &mut egui::Ui, node_id: FsNodeId| {
+                if let Some(hash) = groups.and_then(|groups| groups.hash_of.get(&node_id)) {
+                    ui.label(egui::RichText::new(hash).monospace())
+                        .on_hover_text(hash);
+                }
+            };
+            let mut columns = vec![NodeColumn {
+                header: "Group",
+                width: GROUP_COLUMN_WIDTH,
+                cell: &mut group_cell,
+            }];
+            if ctx.duplicates_filter.hash_column {
+                columns.push(NodeColumn {
+                    header: "Hash",
+                    width: HASH_COLUMN_WIDTH,
+                    cell: &mut hash_cell,
+                });
+            }
             let mut keep_clicked = None;
             let mut row_menu = |ui: &mut egui::Ui, node_id: FsNodeId| {
                 let Some(item) = groups.and_then(|groups| keep_item(groups, keepers, node_id))
@@ -836,14 +946,10 @@ impl DuplicateFilesPane {
                 ctx.tree_sort,
                 ctx.keyboard_taken,
                 &[],
-                DiffFilter::default(),
+                ctx.duplicates_filter.diff_filter(),
                 TreeMode::SingleSide {
                     pending_deletion: &pending_deletion,
-                    column: NodeColumn {
-                        header: "Group",
-                        width: GROUP_COLUMN_WIDTH,
-                        cell: &mut group_cell,
-                    },
+                    columns,
                     row_menu: &mut row_menu,
                     scroll_to_cursor,
                 },
@@ -994,6 +1100,7 @@ impl DuplicateFilesPane {
 mod tests {
     use super::*;
     use crate::ui_egui::app::{SideScan, finish_side_scan};
+    use crate::ui_egui::tree_sort::SortKey;
     use std::fs;
     use std::io;
     use std::path::Path;
@@ -1013,6 +1120,7 @@ mod tests {
         visible_rows: Option<Vec<VisibleRowTwoFolderDiff>>,
         path_filter: PathFilter,
         tree_sort: TreeSort,
+        duplicates_filter: DuplicatesFilter,
         diff_tool_config: DiffToolConfig,
         tool_message: Option<ToolMessage>,
         conflict_map: HashMap<String, Vec<PathBuf>>,
@@ -1033,6 +1141,7 @@ mod tests {
                 visible_rows: None,
                 path_filter: PathFilter::default(),
                 tree_sort: TreeSort::default(),
+                duplicates_filter: DuplicatesFilter::default(),
                 diff_tool_config: DiffToolConfig::default(),
                 tool_message: None,
                 conflict_map: HashMap::new(),
@@ -1098,6 +1207,7 @@ mod tests {
                 path_diff_view: &mut path_diff_view,
                 path_filter: &self.path_filter,
                 tree_sort: &mut self.tree_sort,
+                duplicates_filter: &mut self.duplicates_filter,
                 diff_tool_config: &self.diff_tool_config,
                 tool_message: &mut self.tool_message,
                 keyboard_taken: false,
@@ -1363,7 +1473,7 @@ mod tests {
         filter: &PathFilter,
         sort: TreeSort,
     ) -> Vec<String> {
-        pane.tree_rows(view, filter, sort)
+        pane.tree_rows(view, filter, sort, DuplicatesFilter::default())
             .iter()
             .map(|row| row.rel_path.clone())
             .collect()
@@ -1381,9 +1491,22 @@ mod tests {
             tree_paths(&mut pane, &view, &PathFilter::default(), sort),
             all
         );
-        let built = pane.tree_rows(&view, &PathFilter::default(), sort).as_ptr();
+        let built = pane
+            .tree_rows(
+                &view,
+                &PathFilter::default(),
+                sort,
+                DuplicatesFilter::default(),
+            )
+            .as_ptr();
         assert_eq!(
-            pane.tree_rows(&view, &PathFilter::default(), sort).as_ptr(),
+            pane.tree_rows(
+                &view,
+                &PathFilter::default(),
+                sort,
+                DuplicatesFilter::default()
+            )
+            .as_ptr(),
             built
         );
 
@@ -1408,6 +1531,114 @@ mod tests {
             tree_paths(&mut pane, &rescanned, &blacklist("a.txt, f.txt"), flat),
             ["", "b.txt", "d.txt", "e.txt", "sub", "sub/c.txt"]
         );
+    }
+
+    const DUPLICATES_ONLY: DuplicatesFilter = DuplicatesFilter {
+        duplicates_only: true,
+        show_parents: true,
+        hash_column: false,
+    };
+
+    fn duplicate_rows(
+        pane: &mut DuplicateFilesPane,
+        state: &PaneState,
+        duplicates_filter: DuplicatesFilter,
+    ) -> Vec<String> {
+        let view = state.view_1.as_ref().unwrap();
+        pane.tree_rows(view, &state.path_filter, state.tree_sort, duplicates_filter)
+            .iter()
+            .map(|row| row.rel_path.clone())
+            .collect()
+    }
+
+    #[test]
+    fn duplicates_only_hides_files_without_a_group_and_folders_without_a_member_below() {
+        let (dir, _) = duplicate_tree();
+        let root = dir.path();
+        fs::create_dir(root.join("solo")).unwrap();
+        fs::write(root.join("solo").join("u.txt"), "unique").unwrap();
+        let view = FileSystemView::new(Arc::new(FileSystemModel::new(root).unwrap()));
+        let hashes = hashes_of(&[
+            &root.join("a.txt"),
+            &root.join("b.txt"),
+            &root.join("sub").join("c.txt"),
+            &root.join("d.txt"),
+            &root.join("e.txt"),
+            &root.join("solo").join("u.txt"),
+        ]);
+        let mut state = PaneState::new(view);
+        let mut pane = DuplicateFilesPane::new(None);
+        state.regroup(&mut pane, &hashes);
+
+        assert_eq!(
+            duplicate_rows(&mut pane, &state, DuplicatesFilter::default()),
+            [
+                "",
+                "solo",
+                "solo/u.txt",
+                "sub",
+                "sub/c.txt",
+                "a.txt",
+                "b.txt",
+                "d.txt",
+                "e.txt"
+            ]
+        );
+        assert_eq!(
+            duplicate_rows(&mut pane, &state, DUPLICATES_ONLY),
+            ["", "sub", "sub/c.txt", "a.txt", "b.txt", "e.txt"]
+        );
+        let without_parents = DuplicatesFilter {
+            show_parents: false,
+            ..DUPLICATES_ONLY
+        };
+        assert_eq!(
+            duplicate_rows(&mut pane, &state, without_parents),
+            ["", "a.txt", "b.txt", "sub/c.txt", "e.txt"]
+        );
+        state.tree_sort.flat = true;
+        assert_eq!(
+            duplicate_rows(&mut pane, &state, DUPLICATES_ONLY),
+            ["", "a.txt", "b.txt", "e.txt", "sub", "sub/c.txt"]
+        );
+    }
+
+    #[test]
+    fn duplicates_only_rows_follow_the_group_members_as_hashes_arrive() {
+        let (dir, view) = duplicate_tree();
+        let root = dir.path();
+        let mut state = PaneState::new(view);
+        let mut pane = DuplicateFilesPane::new(None);
+        state.regroup(&mut pane, &HashMap::new());
+        assert_eq!(duplicate_rows(&mut pane, &state, DUPLICATES_ONLY), [""]);
+
+        let hashes = hashes_of(&[&root.join("a.txt"), &root.join("b.txt")]);
+        state.regroup(&mut pane, &hashes);
+        assert_eq!(
+            duplicate_rows(&mut pane, &state, DUPLICATES_ONLY),
+            ["", "a.txt", "b.txt"]
+        );
+
+        let built = pane.tree_cache.as_ref().unwrap().id;
+        state.regroup(&mut pane, &hashes);
+        duplicate_rows(&mut pane, &state, DUPLICATES_ONLY);
+        assert_eq!(pane.tree_cache.as_ref().unwrap().id, built);
+    }
+
+    #[test]
+    fn without_parent_folders_next_group_does_not_expand_the_folder_of_a_listed_file() {
+        let (dir, mut state, mut pane) = two_group_state();
+        let sub = node(state.view_1.as_ref().unwrap(), dir.path().join("sub"));
+        state.tree_sort = TreeSort::default().clicked(SortKey::State);
+        state.duplicates_filter = DuplicatesFilter {
+            show_parents: false,
+            ..DUPLICATES_ONLY
+        };
+
+        state.actions = vec![FolderAction::NextGroup];
+        assert!(state.with_ctx(|ctx| pane.apply_actions(ctx)));
+        assert_eq!(pane.cursor, TreeCursor::at("sub/c.txt"));
+        assert!(state.view_1.as_ref().unwrap().is_collapsed(sub));
     }
 
     #[test]
@@ -1835,7 +2066,12 @@ mod tests {
     ) -> Option<(String, Vec<CursorRequest>)> {
         let view = state.view_1.as_ref().unwrap();
         let cursor = from.map_or_else(TreeCursor::default, TreeCursor::at);
-        pane.tree_rows(view, &state.path_filter, state.tree_sort);
+        pane.tree_rows(
+            view,
+            &state.path_filter,
+            state.tree_sort,
+            state.duplicates_filter,
+        );
         let rows = &pane.tree_cache.as_ref().unwrap().rows;
         let groups = pane.groups.as_ref().unwrap();
         group_jump(&cursor, view, rows, groups, false, forward)
