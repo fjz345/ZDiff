@@ -580,6 +580,11 @@ pub enum FolderRole {
     OnlyInFirst,
     OnlyInSecond,
     PendingDeletion,
+    RowTint,
+    DimmedText,
+    GuideLine,
+    Tag(FileKind),
+    BlueprintTag,
 }
 
 impl Role for FolderRole {
@@ -591,6 +596,20 @@ impl Role for FolderRole {
             FolderRole::OnlyInFirst,
             FolderRole::OnlyInSecond,
             FolderRole::PendingDeletion,
+            FolderRole::RowTint,
+            FolderRole::DimmedText,
+            FolderRole::GuideLine,
+            FolderRole::Tag(FileKind::Text),
+            FolderRole::Tag(FileKind::Image),
+            FolderRole::Tag(FileKind::Video),
+            FolderRole::Tag(FileKind::Audio),
+            FolderRole::Tag(FileKind::Model),
+            FolderRole::Tag(FileKind::Archive),
+            FolderRole::Tag(FileKind::Executable),
+            FolderRole::Tag(FileKind::UnrealAsset),
+            FolderRole::Tag(FileKind::UnrealMap),
+            FolderRole::Tag(FileKind::Binary),
+            FolderRole::BlueprintTag,
         ]
     }
 
@@ -602,6 +621,22 @@ impl Role for FolderRole {
             FolderRole::OnlyInFirst => "folder_only_in_first",
             FolderRole::OnlyInSecond => "folder_only_in_second",
             FolderRole::PendingDeletion => "folder_pending_deletion",
+            FolderRole::RowTint => "folder_row_tint",
+            FolderRole::DimmedText => "folder_dimmed_text",
+            FolderRole::GuideLine => "folder_guide_line",
+            FolderRole::Tag(kind) => match kind {
+                FileKind::Text => "folder_tag_text",
+                FileKind::Image => "folder_tag_image",
+                FileKind::Video => "folder_tag_video",
+                FileKind::Audio => "folder_tag_audio",
+                FileKind::Model => "folder_tag_model",
+                FileKind::Archive => "folder_tag_archive",
+                FileKind::Executable => "folder_tag_executable",
+                FileKind::UnrealAsset => "folder_tag_unreal_asset",
+                FileKind::UnrealMap => "folder_tag_unreal_map",
+                FileKind::Binary => "folder_tag_binary",
+            },
+            FolderRole::BlueprintTag => "folder_tag_blueprint",
         }
     }
 
@@ -613,6 +648,22 @@ impl Role for FolderRole {
             FolderRole::OnlyInFirst => "Only in first",
             FolderRole::OnlyInSecond => "Only in second",
             FolderRole::PendingDeletion => "Pending deletion",
+            FolderRole::RowTint => "Folder row tint",
+            FolderRole::DimmedText => "Dimmed text",
+            FolderRole::GuideLine => "Guide lines",
+            FolderRole::Tag(kind) => match kind {
+                FileKind::Text => "Tag txt",
+                FileKind::Image => "Tag img",
+                FileKind::Video => "Tag vid",
+                FileKind::Audio => "Tag aud",
+                FileKind::Model => "Tag 3d",
+                FileKind::Archive => "Tag arc",
+                FileKind::Executable => "Tag exe",
+                FileKind::UnrealAsset => "Tag UASS",
+                FileKind::UnrealMap => "Tag UMAP",
+                FileKind::Binary => "Tag bin",
+            },
+            FolderRole::BlueprintTag => "Tag BP (Blueprint)",
         }
     }
 
@@ -623,6 +674,22 @@ impl Role for FolderRole {
             FolderRole::Similar => Rgba8([0xF8, 0xE7, 0x1C, 255]),
             FolderRole::OnlyInFirst | FolderRole::OnlyInSecond => Rgba8([0x4A, 0x90, 0xE2, 255]),
             FolderRole::PendingDeletion => Rgba8([255, 128, 128, 255]),
+            FolderRole::RowTint => Rgba8([120, 150, 255, 14]),
+            FolderRole::DimmedText => Rgba8([105, 105, 105, 255]),
+            FolderRole::GuideLine => Rgba8([95, 95, 95, 255]),
+            FolderRole::Tag(kind) => match kind {
+                FileKind::Text => Rgba8([170, 190, 215, 255]),
+                FileKind::Image => Rgba8([215, 130, 220, 255]),
+                FileKind::Video => Rgba8([235, 150, 80, 255]),
+                FileKind::Audio => Rgba8([90, 200, 190, 255]),
+                FileKind::Model => Rgba8([140, 210, 110, 255]),
+                FileKind::Archive => Rgba8([210, 180, 110, 255]),
+                FileKind::Executable => Rgba8([230, 105, 105, 255]),
+                FileKind::UnrealAsset => Rgba8([100, 170, 255, 255]),
+                FileKind::UnrealMap => Rgba8([150, 140, 255, 255]),
+                FileKind::Binary => Rgba8([130, 130, 130, 255]),
+            },
+            FolderRole::BlueprintTag => Rgba8([70, 120, 255, 255]),
         }
     }
 
@@ -633,33 +700,33 @@ impl Role for FolderRole {
             FolderRole::Similar => Rgba8([160, 120, 0, 255]),
             FolderRole::OnlyInFirst | FolderRole::OnlyInSecond => Rgba8([30, 100, 200, 255]),
             FolderRole::PendingDeletion => Rgba8([200, 40, 40, 255]),
+            FolderRole::RowTint => Rgba8([60, 100, 230, 22]),
+            FolderRole::DimmedText => Rgba8([160, 160, 160, 255]),
+            FolderRole::GuideLine => Rgba8([185, 185, 185, 255]),
+            FolderRole::Tag(kind) => match kind {
+                FileKind::Text => Rgba8([70, 95, 130, 255]),
+                FileKind::Image => Rgba8([150, 50, 160, 255]),
+                FileKind::Video => Rgba8([190, 95, 20, 255]),
+                FileKind::Audio => Rgba8([20, 130, 120, 255]),
+                FileKind::Model => Rgba8([60, 140, 30, 255]),
+                FileKind::Archive => Rgba8([140, 105, 30, 255]),
+                FileKind::Executable => Rgba8([190, 40, 40, 255]),
+                FileKind::UnrealAsset => Rgba8([30, 100, 200, 255]),
+                FileKind::UnrealMap => Rgba8([90, 70, 210, 255]),
+                FileKind::Binary => Rgba8([110, 110, 110, 255]),
+            },
+            FolderRole::BlueprintTag => Rgba8([30, 80, 220, 255]),
         }
     }
-}
-const FOLDER_ROW_TINT: egui::Color32 =
-    egui::Color32::from_rgba_unmultiplied_const(120, 150, 255, 14);
-const DIMMED_TEXT_COLOR: egui::Color32 = egui::Color32::from_gray(105);
-const FIND_MATCH_BG: egui::Color32 = egui::Color32::from_rgba_premultiplied(90, 66, 0, 140);
-const FIND_CHIP_MAX_CHARS: usize = 24;
-const GUIDE_LINE_COLOR: egui::Color32 = egui::Color32::from_gray(95);
-const BLUEPRINT_TAG_COLOR: egui::Color32 = egui::Color32::from_rgb(70, 120, 255);
-const TREE_INDENT: f32 = 16.0;
-const EXPANDER_WIDTH: f32 = 12.0;
 
-fn tag_color(kind: FileKind) -> egui::Color32 {
-    match kind {
-        FileKind::Text => egui::Color32::from_rgb(170, 190, 215),
-        FileKind::Image => egui::Color32::from_rgb(215, 130, 220),
-        FileKind::Video => egui::Color32::from_rgb(235, 150, 80),
-        FileKind::Audio => egui::Color32::from_rgb(90, 200, 190),
-        FileKind::Model => egui::Color32::from_rgb(140, 210, 110),
-        FileKind::Archive => egui::Color32::from_rgb(210, 180, 110),
-        FileKind::Executable => egui::Color32::from_rgb(230, 105, 105),
-        FileKind::UnrealAsset => egui::Color32::from_rgb(100, 170, 255),
-        FileKind::UnrealMap => egui::Color32::from_rgb(150, 140, 255),
-        FileKind::Binary => egui::Color32::from_gray(130),
+    fn has_alpha(self) -> bool {
+        self == FolderRole::RowTint
     }
 }
+const FIND_MATCH_BG: egui::Color32 = egui::Color32::from_rgba_premultiplied(90, 66, 0, 140);
+const FIND_CHIP_MAX_CHARS: usize = 24;
+const TREE_INDENT: f32 = 16.0;
+const EXPANDER_WIDTH: f32 = 12.0;
 
 pub struct TwoFolderTable<'a, 'b> {
     pub compare: &'a TreeCompare,
@@ -921,6 +988,7 @@ pub fn draw_ui_folder_tree(
             let header_height = row_height_header.max(interact_height)
                 + ui.spacing().item_spacing.y
                 + interact_height;
+            let row_tint = role_color(ui.ctx(), FolderRole::RowTint);
             let views = [file_system_1_view.as_ref(), file_system_2_view.as_ref()];
             let row_cell = |i: usize| {
                 let entry = &visible_rows[drawn_rows[i]];
@@ -948,7 +1016,7 @@ pub fn draw_ui_folder_tree(
                 let row = row_cell(i);
                 // A scrolled side's max rect is shifted; its clip is the cell.
                 if entry.is_dir {
-                    fill_cell(ui, ui.clip_rect().x_range(), FOLDER_ROW_TINT);
+                    fill_cell(ui, ui.clip_rect().x_range(), row_tint);
                 }
                 if let Some(guides) = &guides {
                     paint_guides(ui, guides[side].row(i));
@@ -1103,7 +1171,7 @@ pub fn draw_ui_folder_tree(
                     SplitColumn::Center => {
                         let row = row_cell(i);
                         if row.entry.is_dir {
-                            fill_cell(ui, ui.max_rect().x_range(), FOLDER_ROW_TINT);
+                            fill_cell(ui, ui.max_rect().x_range(), row_tint);
                         }
                         render_center_cell(ui, &row, &center, compare, tolerance);
                     }
@@ -1886,7 +1954,7 @@ fn render_side_cell(
         if pending {
             Some(role_color(ui.ctx(), FolderRole::PendingDeletion))
         } else {
-            dimmed.then_some(DIMMED_TEXT_COLOR)
+            dimmed.then(|| role_color(ui.ctx(), FolderRole::DimmedText))
         },
         row_height,
         flat_rel_path,
@@ -1964,9 +2032,9 @@ fn render_center_cell(
             CenterSlot::Tag(side) => {
                 if let Some(kind) = entry.file_kinds[side] {
                     let (text, color) = if entry.blueprints[side] {
-                        ("BP", BLUEPRINT_TAG_COLOR)
+                        ("BP", role_color(ui.ctx(), FolderRole::BlueprintTag))
                     } else {
-                        (kind.tag(), tag_color(kind))
+                        (kind.tag(), role_color(ui.ctx(), FolderRole::Tag(kind)))
                     };
                     // Not selectable: a selectable label takes the hover, hiding the tag's tooltip.
                     let text = RichText::new(text).monospace().color(color);
@@ -2004,7 +2072,7 @@ fn paint_guides(ui: &egui::Ui, guides: &[Guide]) {
     let cell = ui.max_rect();
     // Spans the item spacing between rows, like the folder tint, so the lines have no gaps.
     let half_spacing = 0.5 * ui.spacing().item_spacing.y;
-    let stroke = egui::Stroke::new(1.0, GUIDE_LINE_COLOR);
+    let stroke = egui::Stroke::new(1.0, role_color(ui.ctx(), FolderRole::GuideLine));
     for (k, guide) in guides.iter().enumerate() {
         let bottom = match guide {
             Guide::Blank => continue,
@@ -2132,6 +2200,18 @@ mod tests {
         names.sort_unstable();
         names.dedup();
         assert_eq!(names.len(), count);
+    }
+
+    #[test]
+    fn every_file_kind_has_a_tag_role() {
+        use crate::ui_egui::fs_tree::FolderRole;
+        use zcommon::style::Role;
+        for kind in FileKind::ALL {
+            assert!(
+                FolderRole::all().contains(&FolderRole::Tag(kind)),
+                "{kind:?}"
+            );
+        }
     }
 
     struct CollapsedTestCase {
