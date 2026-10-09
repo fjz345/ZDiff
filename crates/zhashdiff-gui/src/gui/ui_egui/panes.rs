@@ -11,6 +11,7 @@ use zhashdiff::{external_diff_tool::DiffToolConfig, filter::PathFilter};
 use crate::ui_egui::{
     app::SideScan,
     duplicate_files_pane::{DuplicateFilesPane, DuplicateFilesPaneCtx},
+    folder_keymap::FolderAction,
     fs_tree::{FileSystemView, VisibleRowTwoFolderDiff},
     path_diff_pane::{FilterPresets, PathDiffPane, PathDiffPaneCtx},
     status_line::ToolMessage,
@@ -48,6 +49,7 @@ pub struct TreeBehavior<'a, 'b> {
     pub likeness_bar: &'a mut bool,
     pub tree_compare: &'a TreeCompare,
     pub keyboard_taken: bool,
+    pub actions: &'a [FolderAction],
 }
 
 impl<'a, 'b> TreeBehavior<'a, 'b> {
@@ -63,6 +65,7 @@ impl<'a, 'b> TreeBehavior<'a, 'b> {
             tree_compare: self.tree_compare,
             path_diff_view: self.path_diff_view,
             keyboard_taken: self.keyboard_taken,
+            actions: self.actions,
         }
     }
 

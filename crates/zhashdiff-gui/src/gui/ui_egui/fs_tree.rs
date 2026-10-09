@@ -25,6 +25,7 @@ use zcommon::path::{common_parent, split_path};
 use zcommon::ui_egui::common::{CheckboxSelectState, hash_to_color, ui_custom_checkbox};
 use zcommon::ui_egui::pathbar::{PathBarAction, path_bar};
 
+use crate::ui_egui::folder_keymap::FolderAction;
 use crate::ui_egui::roots::{InvalidRoot, Side, set_root};
 use crate::ui_egui::status_line::ToolMessage;
 use crate::ui_egui::tools_window::resolve_tool_exe;
@@ -609,6 +610,7 @@ pub fn draw_ui_two_folder_tree_with_diff(
     cursor: &mut TreeCursor,
     sort: &mut TreeSort,
     keyboard_taken: bool,
+    actions: &[FolderAction],
     diff_filter: DiffFilter,
     likeness: Option<&TreeCompare>,
 ) -> egui::response::Response {
@@ -684,34 +686,35 @@ pub fn draw_ui_two_folder_tree_with_diff(
                 );
             }
         }
-        for jump in ui.input(diff_jump_keys) {
-            let cursor_rows = two_folder_cursor_rows(
-                file_system_1_view.as_ref(),
-                file_system_2_view.as_ref(),
+    }
+    for action in actions {
+        let cursor_rows = two_folder_cursor_rows(
+            file_system_1_view.as_ref(),
+            file_system_2_view.as_ref(),
+            visible_rows,
+            flat,
+        );
+        let target = match action {
+            FolderAction::NextDiff => cursor.next_diff(&cursor_rows),
+            FolderAction::PrevDiff => cursor.prev_diff(&cursor_rows),
+            FolderAction::OpenKeybindings => continue,
+        };
+        let Some((moved, expand)) = target else {
+            log::info!("No more diffs");
+            continue;
+        };
+        for request in &expand {
+            apply_cursor_request(
+                file_system_1_view.as_mut(),
+                file_system_2_view.as_mut(),
                 visible_rows,
-                flat,
+                request,
+                diff_tool_config,
+                tool_message,
             );
-            let target = match jump {
-                DiffJump::Next => cursor.next_diff(&cursor_rows),
-                DiffJump::Prev => cursor.prev_diff(&cursor_rows),
-            };
-            let Some((moved, expand)) = target else {
-                log::info!("No more diffs");
-                continue;
-            };
-            for request in &expand {
-                apply_cursor_request(
-                    file_system_1_view.as_mut(),
-                    file_system_2_view.as_mut(),
-                    visible_rows,
-                    request,
-                    diff_tool_config,
-                    tool_message,
-                );
-            }
-            scroll_to_cursor |= moved != *cursor;
-            *cursor = moved;
         }
+        scroll_to_cursor |= moved != *cursor;
+        *cursor = moved;
     }
 
     // After the keys, so a fold they made is drawn this frame.
@@ -1661,40 +1664,6 @@ fn cursor_keys(input: &egui::InputState) -> Vec<egui::Key> {
         .collect()
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum DiffJump {
-    Next,
-    Prev,
-}
-
-/// Command+2 or Alt+Down for the next differing file, Command+1 or Alt+Up for the previous
-/// one, in press order, repeats included. Command is Ctrl except on macOS.
-fn diff_jump_keys(input: &egui::InputState) -> Vec<DiffJump> {
-    input
-        .events
-        .iter()
-        .filter_map(|event| match event {
-            egui::Event::Key {
-                key,
-                pressed: true,
-                modifiers,
-                ..
-            } => {
-                let command = modifiers.matches_exact(egui::Modifiers::COMMAND);
-                let alt = modifiers.matches_exact(egui::Modifiers::ALT);
-                match key {
-                    egui::Key::Num2 if command => Some(DiffJump::Next),
-                    egui::Key::ArrowDown if alt => Some(DiffJump::Next),
-                    egui::Key::Num1 if command => Some(DiffJump::Prev),
-                    egui::Key::ArrowUp if alt => Some(DiffJump::Prev),
-                    _ => None,
-                }
-            }
-            _ => None,
-        })
-        .collect()
-}
-
 fn render_row_folder_tree_with_checkbox(
     hash_service: &mut HashService,
     file_system_view: &mut FileSystemView,
@@ -1873,8 +1842,8 @@ fn get_folder_selection_state(
 mod tests {
     use crate::ui_egui::fs_tree::apply_path_bar;
     use crate::ui_egui::fs_tree::{
-        DiffJump, DiffState, FileSystemView, VisibleRowTwoFolderDiff, aggregate_folder_state,
-        apply_blueprint_results, apply_cursor_request, cursor_keys, diff_jump_keys, tree_hidden,
+        DiffState, FileSystemView, VisibleRowTwoFolderDiff, aggregate_folder_state,
+        apply_blueprint_results, apply_cursor_request, cursor_keys, tree_hidden,
         two_folder_cursor_rows,
     };
     use crate::ui_egui::roots::{InvalidRoot, Side};
@@ -3111,54 +3080,6 @@ mod tests {
                 Key::Enter,
                 Key::ArrowLeft,
                 Key::ArrowUp
-            ]
-        );
-    }
-
-    #[test]
-    fn diff_jump_keys_read_command_digits_and_alt_arrows_in_press_order() {
-        use eframe::egui::{Event, InputState, Key, Modifiers};
-        let press = |key, modifiers, pressed, repeat| Event::Key {
-            key,
-            physical_key: None,
-            pressed,
-            repeat,
-            modifiers,
-        };
-        let mut input = InputState::default();
-        input.events = vec![
-            press(Key::Num2, Modifiers::COMMAND, true, false),
-            press(Key::ArrowUp, Modifiers::ALT, true, false),
-            // Held, like the arrows, to step through diffs.
-            press(Key::ArrowDown, Modifiers::ALT, true, true),
-            press(Key::Num1, Modifiers::COMMAND, true, false),
-            // Not diff jumps: no or other modifiers, other keys, releases.
-            press(Key::ArrowDown, Modifiers::NONE, true, false),
-            press(Key::Num2, Modifiers::NONE, true, false),
-            press(
-                Key::ArrowDown,
-                Modifiers::ALT | Modifiers::SHIFT,
-                true,
-                false,
-            ),
-            press(
-                Key::Num1,
-                Modifiers::COMMAND | Modifiers::SHIFT,
-                true,
-                false,
-            ),
-            press(Key::ArrowUp, Modifiers::COMMAND, true, false),
-            press(Key::Num3, Modifiers::COMMAND, true, false),
-            press(Key::Num2, Modifiers::COMMAND, false, false),
-        ];
-
-        assert_eq!(
-            diff_jump_keys(&input),
-            [
-                DiffJump::Next,
-                DiffJump::Prev,
-                DiffJump::Next,
-                DiffJump::Prev
             ]
         );
     }

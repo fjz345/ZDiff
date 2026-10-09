@@ -11,7 +11,7 @@ use std::{
     },
     time::{Duration, Instant},
 };
-use zcommon::{hash::HashService, kinds::KindTable, logger::LogBuffer};
+use zcommon::{hash::HashService, kinds::KindTable, logger::LogBuffer, ui_egui::keymap::Keymap};
 use zhashdiff::{
     external_diff_tool::DiffToolConfig,
     filter::PathFilter,
@@ -22,6 +22,7 @@ use zhashdiff::{
 
 use crate::ui_egui::{
     duplicate_files_pane::DuplicateFilesPane,
+    folder_keymap::{FolderAction, KeybindingsWindow},
     fs_tree::{FileSystemView, VisibleRowTwoFolderDiff, apply_blueprint_results},
     panes::{Pane, PathDiffView, TreeBehavior},
     path_diff_pane::{FilterPresets, PathDiffPane},
@@ -87,6 +88,8 @@ pub struct AppStateCtx {
     diff_config: DiffToolConfig,
     #[serde(skip)]
     tool_message: Option<ToolMessage>,
+    #[serde(default)]
+    keymap: Keymap<FolderAction>,
 }
 
 impl AppStateCtx {
@@ -553,6 +556,8 @@ pub struct ZApp {
 
     #[serde(skip)]
     tools_window: ToolsWindow,
+    #[serde(skip)]
+    keybindings_window: KeybindingsWindow,
 }
 
 const LONG_FRAME: Duration = Duration::from_millis(200);
@@ -602,6 +607,7 @@ impl ZApp {
             open_dir_window_2: false,
             diff_mode_path_diff: true,
             tools_window: ToolsWindow::default(),
+            keybindings_window: KeybindingsWindow::default(),
         }
     }
 
@@ -670,6 +676,9 @@ impl ZApp {
                 ui.menu_button("Options", |ui| {
                     if ui.button("External Diff Tools").clicked() {
                         self.tools_window.open = true;
+                    }
+                    if ui.button("Keybindings").clicked() {
+                        self.keybindings_window.open = true;
                     }
                     if ui.button("Setup colors").clicked() {
                         log::error!("NYI");
@@ -743,12 +752,24 @@ impl ZApp {
         if self.tools_window.open {
             self.tools_window.show(ui.ctx(), &mut app_ctx.diff_config);
         }
+        if self.keybindings_window.open {
+            self.keybindings_window.show(ui.ctx(), &mut app_ctx.keymap);
+        }
     }
 
     fn ui(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame, app_ctx: &mut AppStateCtx) {
         // Read before any widget runs: a single-line TextEdit gives up focus on Enter without
         // consuming the key, so a later check would hand that Enter to the tree cursor.
-        let keyboard_taken = ctx.wants_keyboard_input();
+        let capturing = self.keybindings_window.is_capturing();
+        let keyboard_taken = ctx.wants_keyboard_input() || capturing;
+        let actions = if capturing {
+            Vec::new()
+        } else {
+            ctx.input(|i| app_ctx.keymap.dispatch(&i.events, keyboard_taken))
+        };
+        if actions.contains(&FolderAction::OpenKeybindings) {
+            self.keybindings_window.open = true;
+        }
         let working = app_ctx.file_system_1_scan.is_scanning()
             || app_ctx.file_system_2_scan.is_scanning()
             || app_ctx.tree_compare.is_comparing();
@@ -821,6 +842,7 @@ impl ZApp {
                     tree_compare: &app_ctx.tree_compare,
                     path_diff_view: &mut path_diff_view,
                     keyboard_taken,
+                    actions: &actions,
                 };
 
                 self.tree.ui(&mut behavior, ui);
@@ -1037,6 +1059,7 @@ mod tests {
         AppState, AppStateCtx, ScanAction, ZApp, cancel_scan, finish_side_scan, scan_action,
         update_side_scan,
     };
+    use crate::ui_egui::folder_keymap::FolderAction;
     use crate::ui_egui::fs_tree::{DiffState, FileSystemView};
     use crate::ui_egui::path_diff_pane::{BLACKLIST_PRESETS, FilterField, FilterPresets};
     use crate::ui_egui::roots::{Side, clear_root, set_root};
@@ -1051,7 +1074,7 @@ mod tests {
         time::{Duration, Instant},
     };
     use tempfile::tempdir;
-    use zcommon::logger::LogBuffer;
+    use zcommon::{logger::LogBuffer, ui_egui::keymap::Keymap};
     use zhashdiff::{
         comparison::{PairCompare, PairState},
         filter::{PathFilter, PatternList},
@@ -1149,6 +1172,32 @@ mod tests {
         let restored: AppStateCtx = serde_json::from_value(json).unwrap();
 
         assert_eq!(restored.path_filter, PathFilter::default());
+    }
+
+    #[test]
+    fn the_keymap_survives_a_restart() {
+        let mut state = AppStateCtx::default();
+        state.keymap.shortcuts_mut(FolderAction::NextDiff).remove(0);
+        state
+            .keymap
+            .shortcuts_mut(FolderAction::OpenKeybindings)
+            .clear();
+
+        let json = serde_json::to_string(&state).unwrap();
+        let restored: AppStateCtx = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(restored.keymap, state.keymap);
+        assert_ne!(restored.keymap, Keymap::default());
+    }
+
+    #[test]
+    fn a_state_saved_before_the_keymap_existed_loads_the_default_keymap() {
+        let mut json: serde_json::Value = serde_json::to_value(AppStateCtx::default()).unwrap();
+        json.as_object_mut().unwrap().remove("keymap");
+
+        let restored: AppStateCtx = serde_json::from_value(json).unwrap();
+
+        assert_eq!(restored.keymap, Keymap::default());
     }
 
     #[test]

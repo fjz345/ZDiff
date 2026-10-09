@@ -12,6 +12,7 @@ use zhashdiff::{
 };
 
 use crate::ui_egui::{
+    folder_keymap::FolderAction,
     fs_tree::{DiffState, FileSystemView, draw_ui_two_folder_tree_with_diff},
     panes::{PathDiffView, ZAppPane},
     roots::{Side, set_root},
@@ -37,6 +38,7 @@ pub struct PathDiffPaneCtx<'a, 'b> {
     /// A widget had keyboard focus when the frame started, so the tree's keys are not
     /// for the cursor.
     pub keyboard_taken: bool,
+    pub actions: &'a [FolderAction],
 }
 
 #[derive(Serialize, Deserialize)]
@@ -211,6 +213,7 @@ impl PathDiffPane {
                     &mut self.cursor,
                     ctx.tree_sort,
                     ctx.keyboard_taken,
+                    ctx.actions,
                     *ctx.diff_filter,
                     ctx.likeness_bar.then_some(ctx.tree_compare),
                 );
