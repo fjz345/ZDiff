@@ -158,10 +158,8 @@ impl<'a> Cursor<'a> {
     }
 }
 
-/// The names of the package's name table that lie within `header`. Follows
-/// FPackageFileSummary's serializer (PackageFileSummary.cpp, UE 5.6) up to NameOffset. Empty
-/// for anything that isn't a versioned package header with Guid or optimized custom versions
-/// (UE 4.0 and later).
+/// Names of the name table within `header`, per PackageFileSummary.cpp (UE 5.6); empty if the
+/// summary doesn't parse.
 fn package_names(header: &[u8]) -> Vec<String> {
     let mut names = Vec::new();
     let Some((name_count, name_offset, has_hashes)) = name_table(header) else {
