@@ -1,6 +1,7 @@
 use eframe::egui::{self, Layout, PointerButton, containers::menu::MenuConfig};
 use serde::{Deserialize, Serialize};
 use std::{
+    collections::BTreeMap,
     env,
     path::{Path, PathBuf},
     sync::{
@@ -47,7 +48,7 @@ use crate::{
         panes::{Pane, TreeBehavior},
     },
     viewer::{
-        ExtensionMap, LoadedSide, ViewerKind, ViewerOverride, conflict_count,
+        LoadedSide, SharedKinds, ViewerKind, ViewerOverride, conflict_count,
         hex::{HexDiffProcessor, parse_hex_offset},
         image::ImageDiffProcessor,
         image_decode_fallback, resolve_viewer, ui_extension_map,
@@ -75,8 +76,18 @@ pub struct AppStateCtx {
     /// The last logged reason the pair isn't in the viewer it asked for.
     #[cfg_attr(feature = "serde", serde(skip), serde(default))]
     pub viewer_fallback: Option<String>,
-    #[cfg_attr(feature = "serde", serde(default))]
-    pub extension_map: ExtensionMap,
+    // Pre-shared-table viewer map, kept in the save until migrated into the kind file.
+    #[cfg_attr(
+        feature = "serde",
+        serde(
+            default,
+            rename = "extension_map",
+            skip_serializing_if = "Option::is_none"
+        )
+    )]
+    pub legacy_extension_map: Option<BTreeMap<String, ViewerKind>>,
+    #[cfg_attr(feature = "serde", serde(skip), serde(default))]
+    pub kinds: SharedKinds,
     /// Undo and redo of reverts; in memory only.
     #[cfg_attr(feature = "serde", serde(skip), serde(default))]
     pub revert_history: RevertHistory,
@@ -135,7 +146,8 @@ impl Default for AppStateCtx {
             viewer_kind: None,
             viewer_override: Default::default(),
             viewer_fallback: None,
-            extension_map: Default::default(),
+            legacy_extension_map: None,
+            kinds: Default::default(),
             revert_history: Default::default(),
             scroll_left: Default::default(),
             scroll_right: Default::default(),
@@ -270,6 +282,10 @@ impl<'a> ZApp {
             match state {
                 AppState::Startup(ctx) | AppState::Idle(ctx) => {
                     update_p4_profiles(ctx.p4_profiles.clone());
+                    ctx.kinds = SharedKinds::load(
+                        zcommon::kinds::kinds_file_path(),
+                        &mut ctx.legacy_extension_map,
+                    );
 
                     let args: Vec<String> = env::args().skip(1).collect();
                     if args.is_empty() {
@@ -452,7 +468,7 @@ impl<'a> ZApp {
         lexer_mode: &mut u8,
         keybindings: &mut Keybindings,
         p4_profiles: &mut P4Profiles,
-        extension_map: &mut ExtensionMap,
+        kinds: &mut SharedKinds,
         myers_diff_algorithm: &mut MyersDiffAlgorithm,
         diff_phases: &mut DiffPhases,
         code_language: &mut String,
@@ -743,7 +759,8 @@ impl<'a> ZApp {
                 "Option - File Viewers",
                 true,
                 |ui| {
-                    ui_extension_map(ui, extension_map);
+                    let edits = ui_extension_map(ui, &kinds.table);
+                    kinds.apply(edits);
                 },
             );
         }
@@ -814,7 +831,8 @@ impl<'a> ZApp {
                 viewer_kind,
                 viewer_override,
                 viewer_fallback,
-                extension_map,
+                kinds,
+                legacy_extension_map: _,
                 revert_history,
                 code_language,
                 code_language_custom,
@@ -835,7 +853,7 @@ impl<'a> ZApp {
                 lexer_mode,
                 keybindings,
                 p4_profiles,
-                extension_map,
+                kinds,
                 myers_diff_algorithm,
                 &mut diff_options.phases,
                 code_language,
@@ -1541,7 +1559,7 @@ impl eframe::App for ZApp {
                 }
                 let resolution = resolve_viewer(
                     state.viewer_override.kind,
-                    &state.extension_map,
+                    &state.kinds.table,
                     loaded_1.as_ref().map(side),
                     loaded_2.as_ref().map(side),
                 );
@@ -1838,28 +1856,38 @@ mod tests {
     use zdiff::ignore::IgnorePatterns;
 
     #[test]
-    fn extension_map_edits_survive_a_restart() {
-        let mut ctx = AppStateCtx::default();
-        ctx.extension_map.insert(".ZBIN", ViewerKind::Hex);
-        ctx.viewer_override.kind = Some(ViewerKind::Text);
+    fn an_old_viewer_map_is_read_and_saved_again_until_migrated() {
+        let mut json = serde_json::to_value(AppStateCtx::default()).unwrap();
+        json.as_object_mut().unwrap().insert(
+            "extension_map".into(),
+            serde_json::json!({ ".ZBIN": "Hex", "png": "Image" }),
+        );
+        let mut restored: AppStateCtx = serde_json::from_value(json).unwrap();
+        let old = BTreeMap::from([
+            (".ZBIN".to_string(), ViewerKind::Hex),
+            ("png".to_string(), ViewerKind::Image),
+        ]);
+        assert_eq!(restored.legacy_extension_map, Some(old.clone()));
 
-        let json = serde_json::to_string(&ctx).unwrap();
-        let restored: AppStateCtx = serde_json::from_str(&json).unwrap();
-        assert_eq!(restored.extension_map, ctx.extension_map);
-        assert_eq!(restored.extension_map.get("zbin"), Some(ViewerKind::Hex));
-        // Paths aren't saved, so a restart opens a new pair and the override is gone.
-        assert_eq!(restored.viewer_override.kind, None);
+        let resaved: AppStateCtx =
+            serde_json::from_str(&serde_json::to_string(&restored).unwrap()).unwrap();
+        assert_eq!(resaved.legacy_extension_map, Some(old));
+
+        restored.legacy_extension_map = None;
+        let json = serde_json::to_value(&restored).unwrap();
+        assert!(json.get("extension_map").is_none());
     }
 
     #[test]
-    fn a_save_without_an_extension_map_loads_the_defaults() {
-        let mut json = serde_json::to_value(AppStateCtx::default()).unwrap();
-        json.as_object_mut()
-            .unwrap()
-            .remove("extension_map")
-            .unwrap();
+    fn a_save_without_a_viewer_map_has_nothing_to_migrate() {
+        let mut ctx = AppStateCtx::default();
+        ctx.viewer_override.kind = Some(ViewerKind::Text);
+        let json = serde_json::to_value(&ctx).unwrap();
+        assert!(json.get("extension_map").is_none());
         let restored: AppStateCtx = serde_json::from_value(json).unwrap();
-        assert_eq!(restored.extension_map, ExtensionMap::defaults());
+        assert_eq!(restored.legacy_extension_map, None);
+        // Paths aren't saved, so a restart opens a new pair and the override is gone.
+        assert_eq!(restored.viewer_override.kind, None);
     }
 
     #[test]
