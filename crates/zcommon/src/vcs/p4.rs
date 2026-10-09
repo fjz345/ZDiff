@@ -427,8 +427,8 @@ impl<F: Fn(&[&str]) -> Result<String, String>> P4Runner for FakeP4<F> {
 
 #[cfg(test)]
 mod tests {
-    use std::ffi::OsStr;
     use crate::universal_path::DepotRev;
+    use std::ffi::OsStr;
 
     use super::*;
 
