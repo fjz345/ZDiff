@@ -348,7 +348,6 @@ fn ztag_field<'a>(record: &[(&str, &'a str)], key: &str) -> Option<&'a str> {
         .map(|(_, value)| *value)
 }
 
-/// The folders in `p4 -ztag dirs` output.
 pub fn parse_dirs(ztag: &str) -> Vec<String> {
     ztag_records(ztag)
         .iter()
@@ -357,7 +356,6 @@ pub fn parse_dirs(ztag: &str) -> Vec<String> {
         .collect()
 }
 
-/// The files in `p4 -ztag files` output, leaving out those deleted at head.
 pub fn parse_files_at_head(ztag: &str) -> Vec<String> {
     ztag_records(ztag)
         .iter()
