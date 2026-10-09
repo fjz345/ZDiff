@@ -25,11 +25,13 @@ impl fmt::Display for FindError {
     }
 }
 
+#[derive(Clone, Debug)]
 pub struct Matcher {
     kind: MatcherKind,
     whole_word: bool,
 }
 
+#[derive(Clone, Debug)]
 enum MatcherKind {
     Plain {
         needle: String,

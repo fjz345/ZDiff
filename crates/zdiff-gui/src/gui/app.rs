@@ -5,8 +5,10 @@ use std::{
     path::{Path, PathBuf},
     sync::mpsc,
 };
+use zcommon::find::FindQuery;
 use zcommon::presets::UserPresets;
 use zcommon::ui_egui::common::show_custom_popup;
+use zcommon::ui_egui::find_popup::{FindPopupEvent, find_popup};
 use zdiff::{
     diff_builder::DiffBuilderOptions,
     lexer::{LEXER_MODE_DEFAULT, LEXER_MODE_GREEDY, LEXER_MODE_NEWLINE, LEXER_MODE_TOKENIZE},
@@ -19,7 +21,7 @@ use egui_tiles::Tile;
 
 use crate::{
     cli::{self, LaunchRequest},
-    diff_ctx::{DiffProcessor, FindCtx, UpdateDiffRowsInput},
+    diff_ctx::{DiffProcessor, UpdateDiffRowsInput},
     diff_phases::diff_phases_menu,
     file::{FileProcessor, LoadedFile},
     keybindings::{Keybindings, QuickDiffPaths, Shortcut, ui_keybindings},
@@ -102,9 +104,9 @@ pub struct AppStateCtx {
     #[cfg_attr(feature = "serde", serde(skip))]
     pub find_open: bool,
     #[cfg_attr(feature = "serde", serde(skip))]
-    pub find_input: String,
-    #[cfg_attr(feature = "serde", serde(default))]
-    pub find_case_sensitive: bool,
+    pub find_query: FindQuery,
+    #[cfg_attr(feature = "serde", serde(skip))]
+    pub find_error: Option<String>,
 }
 
 fn default_h_scroll_linked() -> bool {
@@ -132,8 +134,8 @@ impl Default for AppStateCtx {
             goto_open: Default::default(),
             find_open: Default::default(),
             goto_input: Default::default(),
-            find_input: Default::default(),
-            find_case_sensitive: false,
+            find_query: Default::default(),
+            find_error: None,
             diff_lexer_mode: LEXER_MODE_DEFAULT,
             keybindings: Default::default(),
             p4_profiles: Default::default(),
@@ -801,8 +803,8 @@ impl<'a> ZApp {
                 goto_open,
                 find_open,
                 goto_input,
-                find_input,
-                find_case_sensitive,
+                find_query,
+                find_error,
                 diff_lexer_mode: lexer_mode,
                 keybindings,
                 myers_diff_algorithm,
@@ -875,31 +877,21 @@ impl<'a> ZApp {
                 goto_input.clear();
                 *goto_open = goto_window_open;
             }
-            let mut find_window_open = *find_open;
-            show_custom_popup(ctx, &mut find_window_open, "Find", true, |ui| {
-                let response = ui.add(
-                    egui::TextEdit::singleline(find_input)
-                        .desired_width(40.0)
-                        .hint_text(""),
-                );
-                response.request_focus();
-                let case_toggled = ui.checkbox(find_case_sensitive, "Case sensitive").changed();
-                let enter = ui.input(|i| i.key_pressed(egui::Key::Enter));
-
-                if (response.changed() || case_toggled || enter)
-                    && let Some(ctx) = &diff_processor.get_minimal_diff_ctx()
-                {
-                    let find_ctx = FindCtx::new(find_input, *find_case_sensitive, ctx);
-                    diff_processor.update_find(find_ctx);
+            if *find_open {
+                let event = find_popup(ctx, find_query, find_error.as_deref(), None, |_| false);
+                match event {
+                    Some(FindPopupEvent::Changed | FindPopupEvent::Submitted) => {
+                        *find_error = diff_processor
+                            .update_find_query(find_query)
+                            .err()
+                            .map(|e| e.to_string());
+                        if event == Some(FindPopupEvent::Submitted) && find_error.is_none() {
+                            *find_open = false;
+                        }
+                    }
+                    Some(FindPopupEvent::Closed) => *find_open = false,
+                    None => {}
                 }
-                if enter {
-                    find_input.clear();
-                    *find_open = false;
-                }
-            });
-            if !find_window_open {
-                find_input.clear();
-                *find_open = find_window_open;
             }
 
             // The text diff's state is stale while another viewer shows the pair.
@@ -920,8 +912,7 @@ impl<'a> ZApp {
             let mut pins_request = None;
             let mut find_cursor = diff_processor.find_cursor.clone();
             let highlight_side = diff_processor.highlight_side;
-            let find_needle = diff_processor.find_ctx.needle().to_owned();
-            let searched_case_sensitive = diff_processor.find_ctx.case_sensitive();
+            let find_matcher = diff_processor.find_ctx.matcher().cloned();
             let find_hit = diff_processor.current_find_hit();
             let find_count = diff_processor.find_ctx.hits().len();
             let mut active_side = diff_processor.active_side;
@@ -980,8 +971,7 @@ impl<'a> ZApp {
                     pins: &pins,
                     pins_request: &mut pins_request,
                     find_cursor: &mut find_cursor,
-                    find_needle: &find_needle,
-                    find_case_sensitive: searched_case_sensitive,
+                    find_matcher: find_matcher.as_ref(),
                     find_hit,
                     find_count,
                     active_side: &mut active_side,

@@ -29,6 +29,7 @@ use eframe::egui::{
 };
 use serde::{Deserialize, Serialize};
 use zcommon::{
+    find::Matcher,
     path::{PathSegment, common_parent, split_path},
     presets::{BuiltinPreset, UserPresets},
     ui_egui::{
@@ -84,8 +85,7 @@ pub struct FileDiffPaneCtx<'a> {
     pub highlight_side: Option<ActiveSide>,
     pub conflict_cursor: &'a mut ClampedCursor,
     pub find_cursor: &'a mut ClampedCursor,
-    pub find_needle: &'a str,
-    pub find_case_sensitive: bool,
+    pub find_matcher: Option<&'a Matcher>,
     pub find_hit: Option<FindHit>,
     pub find_count: usize,
     pub active_side: &'a mut ActiveSide,
@@ -778,8 +778,8 @@ impl FileDiffPane {
                                                 let accent_line_num = |side| {
                                                     is_highlighted && highlight_side == Some(side)
                                                 };
-                                                let (find_needle, find_case_sensitive, find_hit) =
-                                                    (ctx.find_needle, ctx.find_case_sensitive, ctx.find_hit);
+                                                let (find_matcher, find_hit) =
+                                                    (ctx.find_matcher, ctx.find_hit);
 
                                                 log::trace!("==LEFT==");
                                                 row.col(|ui| {
@@ -801,8 +801,7 @@ impl FileDiffPane {
                                                             lit(ActiveSide::Left),
                                                             accent_line_num(ActiveSide::Left),
                                                             row_find(
-                                                                find_needle,
-                                                                find_case_sensitive,
+                                                                find_matcher,
                                                                 find_hit,
                                                                 ActiveSide::Left,
                                                                 row_index,
@@ -971,8 +970,7 @@ impl FileDiffPane {
                                                             lit(ActiveSide::Right),
                                                             accent_line_num(ActiveSide::Right),
                                                             row_find(
-                                                                find_needle,
-                                                                find_case_sensitive,
+                                                                find_matcher,
                                                                 find_hit,
                                                                 ActiveSide::Right,
                                                                 row_index,
@@ -1735,8 +1733,7 @@ fn parse_pin(left: &str, right: &str) -> Result<Pin, String> {
 
 /// Lines hidden in a collapsed block share another line's row, hence the line check.
 fn row_find<'a>(
-    needle: &'a str,
-    case_sensitive: bool,
+    matcher: Option<&'a Matcher>,
     hit: Option<FindHit>,
     side: ActiveSide,
     row: usize,
@@ -1749,11 +1746,7 @@ fn row_find<'a>(
     let current = hit
         .filter(|hit| hit.side == side && hit.row == row && line_num == Some(hit.line + 1))
         .map(|hit| hit.ordinal);
-    RowFind {
-        needle,
-        case_sensitive,
-        current,
-    }
+    RowFind { matcher, current }
 }
 
 /// Width a side's text wraps at in a cell `cell_width` wide: what the gutter leaves.
@@ -2694,7 +2687,7 @@ mod tests {
             row: 4,
         };
         let current = |side, row, content: &LineContent| {
-            row_find("x", true, Some(hit), side, row, content).current
+            row_find(None, Some(hit), side, row, content).current
         };
 
         assert_eq!(current(ActiveSide::Right, 4, &code(10)), Some(2));
@@ -2703,7 +2696,7 @@ mod tests {
         assert_eq!(current(ActiveSide::Right, 4, &code(3)), None);
         assert_eq!(current(ActiveSide::Right, 4, &LineContent::Void), None);
         assert_eq!(
-            row_find("x", true, None, ActiveSide::Right, 4, &code(10)).current,
+            row_find(None, None, ActiveSide::Right, 4, &code(10)).current,
             None
         );
     }

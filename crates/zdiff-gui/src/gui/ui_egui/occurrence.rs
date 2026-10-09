@@ -12,6 +12,7 @@ use eframe::egui::{
     },
 };
 
+use zcommon::find::Matcher;
 pub use zcommon::find::find_occurrences;
 
 use crate::ui_egui::active_side::ActiveSide;
@@ -25,22 +26,22 @@ pub const FIND_CURRENT_BG: egui::Color32 = egui::Color32::from_rgb(176, 104, 0);
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct RowFind<'a> {
-    pub needle: &'a str,
-    pub case_sensitive: bool,
+    pub matcher: Option<&'a Matcher>,
     /// Ordinal of the current find hit among this row's matches.
     pub current: Option<usize>,
 }
 
 pub fn find_ranges(text: &str, find: RowFind) -> (Vec<Range<usize>>, Option<Range<usize>>) {
-    if find.needle.is_empty() {
+    let Some(matcher) = find.matcher else {
         return (Vec::new(), None);
-    }
-    let all = find_occurrences(text, find.needle, find.case_sensitive)
+    };
+    let all = matcher
+        .find_iter(text)
         .take(MAX_OCCURRENCES_PER_ROW)
         .collect();
     let current = find
         .current
-        .and_then(|ordinal| find_occurrences(text, find.needle, find.case_sensitive).nth(ordinal));
+        .and_then(|ordinal| matcher.find_iter(text).nth(ordinal));
     (all, current)
 }
 
@@ -243,6 +244,8 @@ pub fn occurrence_needle(selected: &str) -> Option<&str> {
 
 #[cfg(test)]
 mod tests {
+    use zcommon::find::FindQuery;
+
     use super::*;
 
     fn find(text: &str, needle: &str) -> Vec<Range<usize>> {
@@ -324,14 +327,24 @@ mod tests {
         );
     }
 
+    fn matcher(text: &str, case_sensitive: bool, whole_word: bool, regex: bool) -> Matcher {
+        Matcher::new(&FindQuery {
+            text: text.to_owned(),
+            case_sensitive,
+            whole_word,
+            regex,
+        })
+        .unwrap()
+    }
+
     #[test]
     fn find_paints_every_match_in_the_row_and_the_current_one_apart() {
         let find = |needle, current| {
+            let matcher = matcher(needle, true, false, false);
             find_ranges(
                 "ab ab ab",
                 RowFind {
-                    needle,
-                    case_sensitive: true,
+                    matcher: Some(&matcher),
                     current,
                 },
             )
@@ -341,18 +354,22 @@ mod tests {
         assert_eq!(find("ab", None), (vec![0..2, 3..5, 6..8], None));
         assert_eq!(find("ab", Some(3)), (vec![0..2, 3..5, 6..8], None));
         assert_eq!(find("zz", Some(0)), (vec![], None));
-        assert_eq!(find("", Some(0)), (vec![], None));
+        let no_query = RowFind {
+            matcher: None,
+            current: Some(0),
+        };
+        assert_eq!(find_ranges("ab ab ab", no_query), (vec![], None));
     }
 
     #[test]
     fn find_paints_at_most_the_cap_per_row_but_finds_the_current_one_past_it() {
         let row = "a".repeat(1000);
         let current = MAX_OCCURRENCES_PER_ROW + 10;
+        let matcher = matcher("aa", true, false, false);
         let (all, found) = find_ranges(
             &row,
             RowFind {
-                needle: "aa",
-                case_sensitive: true,
+                matcher: Some(&matcher),
                 current: Some(current),
             },
         );
@@ -363,11 +380,11 @@ mod tests {
     #[test]
     fn find_ignoring_case_paints_every_casing() {
         let find = |case_sensitive| {
+            let matcher = matcher("ab", case_sensitive, false, false);
             find_ranges(
                 "ab AB Ab",
                 RowFind {
-                    needle: "ab",
-                    case_sensitive,
+                    matcher: Some(&matcher),
                     current: Some(2),
                 },
             )
@@ -375,6 +392,28 @@ mod tests {
 
         assert_eq!(find(false), (vec![0..2, 3..5, 6..8], Some(6..8)));
         assert_eq!(find(true), (vec![0..2], None));
+    }
+
+    #[test]
+    fn find_paints_whole_word_and_regex_matches_as_the_matcher_finds_them() {
+        let find = |matcher: Matcher| {
+            find_ranges(
+                "id width (id) id2",
+                RowFind {
+                    matcher: Some(&matcher),
+                    current: Some(1),
+                },
+            )
+        };
+
+        assert_eq!(
+            find(matcher("id", true, true, false)),
+            (vec![0..2, 10..12], Some(10..12))
+        );
+        assert_eq!(
+            find(matcher(r"id\d?", true, false, true)),
+            (vec![0..2, 4..6, 10..12, 14..17], Some(4..6))
+        );
     }
 
     #[test]

@@ -9,6 +9,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use zcommon::find::{FindError, FindQuery, Matcher};
 use zdiff::universal_path::UniversalPath;
 use zdiff::{
     cached_file::CachedFile,
@@ -25,11 +26,7 @@ use zdiff::{
     trace::PhaseTrace,
 };
 
-use crate::{
-    clamped_cursor::ClampedCursor,
-    scope,
-    ui_egui::{active_side::ActiveSide, occurrence::find_occurrences},
-};
+use crate::{clamped_cursor::ClampedCursor, scope, ui_egui::active_side::ActiveSide};
 
 #[derive(Debug, Default, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -73,13 +70,20 @@ pub struct FindHit {
 
 #[derive(Debug, Clone, Default)]
 pub struct FindCtx {
-    needle: String,
-    case_sensitive: bool,
+    query: FindQuery,
+    /// `None` for an empty query.
+    matcher: Option<Matcher>,
     /// Sorted by row, then side (left first), then position.
     hits: Vec<FindHit>,
 }
 impl FindCtx {
-    pub fn new(find_input: &str, case_sensitive: bool, diff_ctx: &MinimalDiffCtx) -> Self {
+    /// An empty query gives no hits; only an invalid regex is an error.
+    pub fn new(query: &FindQuery, diff_ctx: &MinimalDiffCtx) -> Result<Self, FindError> {
+        let matcher = match Matcher::new(query) {
+            Ok(matcher) => Some(matcher),
+            Err(FindError::EmptyQuery) => None,
+            Err(e) => return Err(e),
+        };
         let mut hits = Vec::new();
         let files = [
             (ActiveSide::Left, &diff_ctx.input.file_1),
@@ -87,56 +91,60 @@ impl FindCtx {
         ];
         for (side, file) in files {
             if let Some(file) = file
-                && !find_input.is_empty()
+                && let Some(matcher) = &matcher
             {
-                hits.extend(Self::search(file, find_input, case_sensitive, side));
+                hits.extend(Self::search(file, matcher, side));
             }
         }
         let mut find_ctx = Self {
-            needle: find_input.to_owned(),
-            case_sensitive,
+            query: query.clone(),
+            matcher,
             hits,
         };
         find_ctx.map_to_rows(&diff_ctx.precomputed_file_rows);
         log::debug!(
             "create_find_ctx: {} hits for {:?}",
             find_ctx.hits.len(),
-            find_ctx.needle
+            find_ctx.query
         );
-        find_ctx
+        Ok(find_ctx)
     }
 
-    pub fn needle(&self) -> &str {
-        &self.needle
+    #[cfg(test)]
+    pub fn query(&self) -> &FindQuery {
+        &self.query
     }
 
-    pub fn case_sensitive(&self) -> bool {
-        self.case_sensitive
+    pub fn matcher(&self) -> Option<&Matcher> {
+        self.matcher.as_ref()
     }
 
     pub fn hits(&self) -> &[FindHit] {
         &self.hits
     }
 
-    fn search(
-        file: &CachedFile<RawToken>,
-        needle: &str,
-        case_sensitive: bool,
-        side: ActiveSide,
-    ) -> Vec<FindHit> {
-        let mut hits: Vec<FindHit> = Vec::new();
-        for range in find_occurrences(&file.contents, needle, case_sensitive) {
-            let line = file.metadata.get_line_index(range.start);
-            let ordinal = match hits.last() {
-                Some(last) if last.line == line => last.ordinal + 1,
-                _ => 0,
-            };
-            hits.push(FindHit {
-                side,
-                line,
-                ordinal,
-                row: 0,
-            });
+    /// Searches each line as the pane's row text has it, so ordinals match what the pane paints.
+    fn search(file: &CachedFile<RawToken>, matcher: &Matcher, side: ActiveSide) -> Vec<FindHit> {
+        let contents = &file.contents;
+        // `line_starts` holds the index of each line's '\n', not of the byte after it.
+        let starts = &file.metadata.line_starts;
+        let mut hits = Vec::new();
+        for (line, &start) in starts.iter().enumerate() {
+            let start = if line == 0 { start } else { start + 1 };
+            let end = starts.get(line + 1).copied().unwrap_or(contents.len());
+            let text = &contents[start..end];
+            let text = text.strip_suffix('\r').unwrap_or(text);
+            hits.extend(
+                matcher
+                    .find_iter(text)
+                    .enumerate()
+                    .map(|(ordinal, _)| FindHit {
+                        side,
+                        line,
+                        ordinal,
+                        row: 0,
+                    }),
+            );
         }
         hits
     }
@@ -993,6 +1001,14 @@ impl DiffProcessor {
         self.find_cursor.set(0);
     }
 
+    /// Without a finished diff there is nothing to search and the query isn't checked.
+    pub fn update_find_query(&mut self, query: &FindQuery) -> Result<(), FindError> {
+        if let Some(diff_ctx) = self.get_minimal_diff_ctx() {
+            self.update_find(FindCtx::new(query, &diff_ctx)?);
+        }
+        Ok(())
+    }
+
     pub fn clear_results(&mut self) {
         self.update_find(FindCtx::default());
         self.goto_line_number = None;
@@ -1800,6 +1816,18 @@ mod tests {
             processor.get_minimal_diff_ctx()
         }
 
+        fn plain(text: &str, case_sensitive: bool) -> FindQuery {
+            FindQuery {
+                text: text.to_owned(),
+                case_sensitive,
+                ..Default::default()
+            }
+        }
+
+        fn plain_find(text: &str, case_sensitive: bool, ctx: &MinimalDiffCtx) -> FindCtx {
+            FindCtx::new(&plain(text, case_sensitive), ctx).unwrap()
+        }
+
         #[test]
         fn reopening_a_pair_after_a_cached_pair_interrupted_it_completes() {
             let dir = tempfile::tempdir().unwrap();
@@ -2311,7 +2339,7 @@ mod tests {
                 assert_eq!(collapsed.precomputed_diffs.len(), 2);
                 processor.conflict_cursor.set_max(2);
                 processor.conflict_cursor.set(2);
-                processor.update_find(FindCtx::new("keep_19", true, &collapsed));
+                processor.update_find(plain_find("keep_19", true, &collapsed));
                 assert!(processor.get_scroll_to_row().is_some());
 
                 processor.set_block_expanded(key, true);
@@ -2459,7 +2487,7 @@ mod tests {
                 let (mut processor, collapsed) = opened(&diff_only(&pair, 2));
                 // Hidden lines have no row of their own, so the hit sits on row 0.
                 assert_eq!(collapsed.precomputed_file_rows.0[9], 0);
-                processor.update_find(FindCtx::new("keep_10", true, &collapsed));
+                processor.update_find(plain_find("keep_10", true, &collapsed));
                 processor.get_scroll_to_row();
 
                 processor.set_block_expanded(only_block(&collapsed), true);
@@ -2481,7 +2509,7 @@ mod tests {
                 let dir = tempfile::tempdir().unwrap();
                 let pair = gap_pair(dir.path());
                 let (mut processor, collapsed) = opened(&diff_only(&pair, 2));
-                processor.update_find(FindCtx::new("keep_1", true, &collapsed));
+                processor.update_find(plain_find("keep_1", true, &collapsed));
                 let is_left_12 = |hit: &FindHit| hit.side == ActiveSide::Left && hit.line == 11;
                 let before = processor.find_ctx.hits().iter().position(is_left_12);
                 processor
@@ -2537,7 +2565,7 @@ mod tests {
                 let dir = tempfile::tempdir().unwrap();
                 let (_, ctx) = foo_pair(dir.path());
 
-                let find = FindCtx::new("foo", true, &ctx);
+                let find = plain_find("foo", true, &ctx);
 
                 let hits: Vec<_> = find.hits().iter().map(|&h| hit(Some(h)).unwrap()).collect();
                 assert_eq!(
@@ -2552,7 +2580,7 @@ mod tests {
                         (Right, 2, 0),
                     ]
                 );
-                assert_eq!(find.needle(), "foo");
+                assert_eq!(find.query().text, "foo");
             }
 
             #[test]
@@ -2560,12 +2588,12 @@ mod tests {
                 let dir = tempfile::tempdir().unwrap();
                 let (_, ctx) = foo_pair(dir.path());
 
-                let ignoring_case = FindCtx::new("FOO", false, &ctx);
-                let exact = FindCtx::new("foo", true, &ctx);
-                assert!(!ignoring_case.case_sensitive());
+                let ignoring_case = plain_find("FOO", false, &ctx);
+                let exact = plain_find("foo", true, &ctx);
+                assert!(!ignoring_case.query().case_sensitive);
                 assert_eq!(ignoring_case.hits(), exact.hits());
                 assert_eq!(ignoring_case.hits().len(), 7);
-                assert!(FindCtx::new("FOO", true, &ctx).hits().is_empty());
+                assert!(plain_find("FOO", true, &ctx).hits().is_empty());
             }
 
             #[test]
@@ -2573,7 +2601,7 @@ mod tests {
                 let dir = tempfile::tempdir().unwrap();
                 let (_, ctx) = opened_pair(dir.path(), "aaa\n", "x\n");
 
-                let find = FindCtx::new("aa", true, &ctx);
+                let find = plain_find("aa", true, &ctx);
 
                 let ordinals: Vec<_> = find.hits().iter().map(|h| h.ordinal).collect();
                 assert_eq!(ordinals, [0, 1]);
@@ -2585,7 +2613,7 @@ mod tests {
                 let (mut processor, ctx) = foo_pair(dir.path());
 
                 for needle in ["zzz", ""] {
-                    processor.update_find(FindCtx::new(needle, true, &ctx));
+                    processor.update_find(plain_find(needle, true, &ctx));
                     assert!(processor.find_ctx.hits().is_empty(), "{needle:?}");
                     assert_eq!(processor.current_find_hit(), None, "{needle:?}");
                     assert_eq!(processor.find_scroll_to_row(), None, "{needle:?}");
@@ -2598,7 +2626,7 @@ mod tests {
             fn stepping_find_visits_each_match_and_lights_up_both_sides() {
                 let dir = tempfile::tempdir().unwrap();
                 let (mut processor, ctx) = foo_pair(dir.path());
-                processor.update_find(FindCtx::new("foo", true, &ctx));
+                processor.update_find(plain_find("foo", true, &ctx));
 
                 assert_eq!(hit(processor.current_find_hit()), Some((Left, 0, 0)));
                 assert_eq!(processor.get_scroll_to_row().map(|s| s.start), Some(0));
@@ -2618,16 +2646,16 @@ mod tests {
             fn clear_results_drops_find_and_goto() {
                 let dir = tempfile::tempdir().unwrap();
                 let (mut processor, ctx) = foo_pair(dir.path());
-                processor.update_find(FindCtx::new("bar", true, &ctx));
+                processor.update_find(plain_find("bar", true, &ctx));
                 assert_eq!(processor.get_scroll_to_row().map(|s| s.start), Some(1));
 
                 processor.clear_results();
                 assert!(processor.find_ctx.hits().is_empty());
-                assert_eq!(processor.find_ctx.needle(), "");
+                assert_eq!(processor.find_ctx.query().text, "");
                 assert!(processor.active_highlights.is_empty());
                 assert_eq!(processor.get_scroll_to_row(), None);
 
-                processor.update_find(FindCtx::new("bar", true, &ctx));
+                processor.update_find(plain_find("bar", true, &ctx));
                 assert_eq!(processor.get_scroll_to_row().map(|s| s.start), Some(1));
 
                 processor.active_side = Right;
@@ -2652,9 +2680,113 @@ mod tests {
                 assert_eq!(processor.get_scroll_to_row(), None);
                 assert_eq!(processor.highlight_side, Some(Right));
 
-                processor.update_find(FindCtx::new("bar", true, &ctx));
+                processor.update_find(plain_find("bar", true, &ctx));
                 assert_eq!(processor.get_scroll_to_row().map(|s| s.start), Some(1));
                 assert_eq!(processor.highlight_side, None);
+            }
+
+            fn regex(text: &str, case_sensitive: bool) -> FindQuery {
+                FindQuery {
+                    regex: true,
+                    ..plain(text, case_sensitive)
+                }
+            }
+
+            fn lines_on(find: &FindCtx, side: ActiveSide) -> Vec<(usize, usize)> {
+                let mut lines: Vec<_> = find
+                    .hits()
+                    .iter()
+                    .filter(|h| h.side == side)
+                    .map(|h| (h.line, h.ordinal))
+                    .collect();
+                lines.sort();
+                lines
+            }
+
+            #[test]
+            fn find_with_whole_word_skips_matches_inside_identifiers() {
+                let dir = tempfile::tempdir().unwrap();
+                let (_, ctx) = opened_pair(dir.path(), "id width _id id_x (id)\n", "width\n");
+                let query = FindQuery {
+                    whole_word: true,
+                    ..plain("id", true)
+                };
+
+                let find = FindCtx::new(&query, &ctx).unwrap();
+
+                assert_eq!(lines_on(&find, Left), [(0, 0), (0, 1)]);
+                assert_eq!(lines_on(&find, Right), []);
+                assert!(find.query().whole_word);
+            }
+
+            #[test]
+            fn find_with_regex_anchors_to_each_line() {
+                let dir = tempfile::tempdir().unwrap();
+                let (_, ctx) = opened_pair(dir.path(), "foo\nfoo bar foo\nbar\n", "xfoo\nfoo\n");
+
+                let find = FindCtx::new(&regex("^foo", true), &ctx).unwrap();
+
+                assert_eq!(lines_on(&find, Left), [(0, 0), (1, 0)]);
+                assert_eq!(lines_on(&find, Right), [(1, 0)]);
+            }
+
+            #[test]
+            fn find_with_regex_anchors_to_line_ends_in_a_crlf_file() {
+                let dir = tempfile::tempdir().unwrap();
+                let (_, ctx) = opened_pair(dir.path(), "a foo\r\nfoo\r\nfoo x\r\n", "x\r\n");
+
+                let find = FindCtx::new(&regex("foo$", true), &ctx).unwrap();
+
+                assert_eq!(lines_on(&find, Left), [(0, 0), (1, 0)]);
+            }
+
+            #[test]
+            fn find_with_regex_never_matches_across_lines() {
+                let dir = tempfile::tempdir().unwrap();
+                let (_, ctx) = opened_pair(dir.path(), "foo\nbar\n", "foo bar\n");
+
+                let find = FindCtx::new(&regex(r"o\sb", true), &ctx).unwrap();
+
+                assert_eq!(lines_on(&find, Left), []);
+                assert_eq!(lines_on(&find, Right), [(0, 0)]);
+            }
+
+            #[test]
+            fn find_with_regex_follows_the_case_flag_and_counts_each_match_in_a_line() {
+                let dir = tempfile::tempdir().unwrap();
+                let (_, ctx) = opened_pair(dir.path(), "x\n", "Foo foo\n");
+
+                let ignoring_case = FindCtx::new(&regex("FO+", false), &ctx).unwrap();
+                let exact = FindCtx::new(&regex("fo+", true), &ctx).unwrap();
+
+                assert_eq!(lines_on(&ignoring_case, Right), [(0, 0), (0, 1)]);
+                assert_eq!(lines_on(&exact, Right), [(0, 0)]);
+            }
+
+            #[test]
+            fn an_invalid_regex_is_an_error_and_keeps_the_previous_results() {
+                let dir = tempfile::tempdir().unwrap();
+                let (mut processor, _) = foo_pair(dir.path());
+                processor.update_find_query(&plain("foo", true)).unwrap();
+                processor.find_cursor.inc();
+
+                let result = processor.update_find_query(&regex("foo(", true));
+
+                assert!(matches!(result, Err(FindError::InvalidRegex(_))));
+                assert_eq!(processor.find_ctx.hits().len(), 7);
+                assert_eq!(processor.find_ctx.query().text, "foo");
+                assert_eq!(processor.find_cursor.get(), 1);
+            }
+
+            #[test]
+            fn an_empty_query_clears_the_results_without_an_error() {
+                let dir = tempfile::tempdir().unwrap();
+                let (mut processor, _) = foo_pair(dir.path());
+                processor.update_find_query(&plain("foo", true)).unwrap();
+
+                processor.update_find_query(&regex("", true)).unwrap();
+
+                assert!(processor.find_ctx.hits().is_empty());
             }
         }
 
