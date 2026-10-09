@@ -39,6 +39,15 @@ pub struct MergeRequest {
     pub output: UniversalPath,
 }
 
+/// Command-line labels; a side without one shows its path.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MergeNames {
+    pub base: Option<String>,
+    pub theirs: Option<String>,
+    pub yours: Option<String>,
+    pub output: Option<String>,
+}
+
 pub const MERGE_FIELDS: [&str; 4] = ["Base", "Theirs", "Yours", "Output"];
 
 /// Fields in `MERGE_FIELDS` order. An empty base is a two-way merge.
@@ -49,15 +58,20 @@ pub fn merge_request(fields: &[String; 4]) -> Result<MergeRequest, String> {
     };
     let required = |i: usize| path(i).ok_or_else(|| format!("{} is required", MERGE_FIELDS[i]));
     let output = required(3)?;
-    if output.is_depot() {
-        return Err("Output must be a local path".to_string());
-    }
+    check_output(&output)?;
     Ok(MergeRequest {
         base: path(0),
         theirs: required(1)?,
         yours: required(2)?,
         output,
     })
+}
+
+pub fn check_output(output: &UniversalPath) -> Result<(), String> {
+    match output.is_depot() {
+        true => Err("Output must be a local path".to_string()),
+        false => Ok(()),
+    }
 }
 
 /// One row of the top panes; a side's line is `None` where the chunk is shorter on that side.
@@ -907,6 +921,7 @@ pub struct MergeView {
     theirs: FileProcessor,
     yours: FileProcessor,
     output: UniversalPath,
+    output_name: Option<String>,
     algorithm: MyersDiffAlgorithm,
     doc: Option<MergeDoc>,
     edit: Option<ChunkEdit>,
@@ -944,6 +959,7 @@ impl MergeView {
             theirs: processor(request.theirs),
             yours: processor(request.yours),
             output: request.output,
+            output_name: None,
             algorithm,
             doc: None,
             edit: None,
@@ -955,6 +971,23 @@ impl MergeView {
             save_error: None,
             confirm_save: false,
             close_prompt: None,
+        }
+    }
+
+    pub fn with_names(mut self, names: MergeNames) -> Self {
+        if let Some(base) = &mut self.base {
+            base.set_label(names.base);
+        }
+        self.theirs.set_label(names.theirs);
+        self.yours.set_label(names.yours);
+        self.output_name = names.output;
+        self
+    }
+
+    fn output_display(&self) -> String {
+        match &self.output_name {
+            Some(name) => format!("{name} ({})", self.output),
+            None => self.output.to_string(),
         }
     }
 
@@ -1058,7 +1091,7 @@ impl MergeView {
         let mut answer = None;
         let modal = egui::Modal::new(egui::Id::new("merge_close_prompt")).show(ctx, |ui| {
             ui.heading("Save the merge before closing?");
-            ui.label(format!("Output: {}", self.output));
+            ui.label(format!("Output: {}", self.output_display()));
             if self.saved.as_ref().map(|s| s.text.as_str())
                 != self.doc.as_ref().map(MergeDoc::output_text)
             {
@@ -1284,6 +1317,7 @@ impl MergeView {
         if let Some(closing) = self.close_prompt {
             close = self.close_prompt_ui(ui.ctx(), closing);
         }
+        let output_title = format!("Output: {}", self.output_display());
         let Some(doc) = &self.doc else {
             return close;
         };
@@ -1291,7 +1325,7 @@ impl MergeView {
             .resizable(true)
             .default_height(ui.available_height() / 3.0)
             .show_inside(ui, |ui| {
-                ui.strong(format!("Output: {}", self.output));
+                ui.strong(output_title);
                 output_ui(
                     ui,
                     doc,
@@ -1881,6 +1915,36 @@ mod tests {
         view.edit.as_mut().unwrap().text = "F\n".to_string();
         assert_eq!(view.request_close(Closing::Merge), None);
         assert_eq!(view.exit_code(), 1);
+    }
+
+    #[test]
+    fn names_replace_the_paths_in_the_conflict_markers() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = |name: &str| dir.path().join(name).to_str().unwrap().to_string();
+        for (name, text) in [("b", "1\n2\n3\n"), ("t", "1\nT\n3\n"), ("y", "1\nY\n3\n")] {
+            std::fs::write(path(name), text).unwrap();
+        }
+        let request = merge_request(&fields(&path("b"), &path("t"), &path("y"), &path("o")));
+        let names = MergeNames {
+            base: Some("Base".into()),
+            theirs: Some("Theirs".into()),
+            yours: Some("Yours".into()),
+            output: Some("Result".into()),
+        };
+        let mut view =
+            MergeView::new(request.unwrap(), MyersDiffAlgorithm::Linear).with_names(names);
+        let start = std::time::Instant::now();
+        while view.doc.is_none() {
+            assert!(start.elapsed().as_secs() < 10, "{:?}", view.poll());
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            view.poll().unwrap();
+        }
+
+        assert!(view.save());
+        assert_eq!(
+            std::fs::read_to_string(path("o")).unwrap(),
+            "1\n<<<<<<< Yours\nY\n||||||| Base\n2\n=======\nT\n>>>>>>> Theirs\n3\n"
+        );
     }
 
     fn fields(base: &str, theirs: &str, yours: &str, output: &str) -> [String; 4] {

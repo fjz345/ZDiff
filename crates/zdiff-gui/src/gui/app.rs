@@ -45,7 +45,7 @@ use crate::{
     },
     ui_egui::{
         diff_pane::{FileDiffPane, FileDiffPaneCtx, wheel_rects_id},
-        merge_pane::{Closing, MergeView, OpenMergeForm},
+        merge_pane::{self, Closing, MergeNames, MergeRequest, MergeView, OpenMergeForm},
         panes::{Pane, TreeBehavior},
     },
     viewer::{
@@ -304,8 +304,18 @@ impl<'a> ZApp {
                         cli::parse_launch_args(args),
                     ) {
                         LaunchOutcome::Opened => {}
+                        LaunchOutcome::Merge(request, names) => {
+                            self.merge = Some(
+                                MergeView::new(*request, ctx.myers_diff_algorithm)
+                                    .with_names(names),
+                            );
+                        }
                         LaunchOutcome::Help => self.open_help_window = true,
-                        LaunchOutcome::Error(message) => self.launch_error = Some(message),
+                        LaunchOutcome::Error(message) => {
+                            // A tool trusting the exit code must not take a failed launch as a merge.
+                            self.exit_code.store(1, Ordering::Relaxed);
+                            self.launch_error = Some(message);
+                        }
                     }
                 }
                 _ => {}
@@ -1682,6 +1692,7 @@ impl eframe::App for ZApp {
 #[derive(Debug, PartialEq, Eq)]
 enum LaunchOutcome {
     Opened,
+    Merge(Box<MergeRequest>, MergeNames),
     Help,
     Error(String),
 }
@@ -1703,9 +1714,29 @@ fn apply_launch(
     }
     let (left, right) = match launch.request {
         LaunchRequest::Diff { left, right } => (left, right),
-        LaunchRequest::Merge { left, right, .. } => {
-            log::warn!("merge is not supported yet; opening left and right as a diff");
-            (left, right)
+        LaunchRequest::Merge {
+            base,
+            left,
+            right,
+            output,
+        } => {
+            if let Err(err) = merge_pane::check_output(&output.path) {
+                log::error!("{err}");
+                return LaunchOutcome::Error(err);
+            }
+            let request = MergeRequest {
+                base: Some(base.path),
+                theirs: left.path,
+                yours: right.path,
+                output: output.path,
+            };
+            let names = MergeNames {
+                base: base.label,
+                theirs: left.label,
+                yours: right.label,
+                output: output.label,
+            };
+            return LaunchOutcome::Merge(Box::new(request), names);
         }
         LaunchRequest::Help => return LaunchOutcome::Help,
     };
@@ -1880,7 +1911,6 @@ fn diff_against_local_file(
 #[cfg(all(test, feature = "serde"))]
 mod tests {
     use super::*;
-    use crate::ui_egui::merge_pane::MergeRequest;
     use zdiff::ignore::IgnorePatterns;
 
     #[test]
@@ -2676,6 +2706,41 @@ mod tests {
                 LaunchOutcome::Error(cli::LaunchError::PositionalCount(3).to_string())
             );
             assert_eq!(left.get_full_path(), UniversalPath::default());
+        }
+
+        #[test]
+        fn merge_opens_a_merge_with_labels_and_leaves_the_diff_sides() {
+            let (mut left, mut right, outcome) = launch(&[
+                "-nb", "B", "-nl", "T", "-nr", "Y", "-nm", "R", "b", "t", "y", "o",
+            ]);
+            assert_eq!(
+                outcome,
+                LaunchOutcome::Merge(
+                    Box::new(MergeRequest {
+                        base: Some(UniversalPath::new("b")),
+                        theirs: UniversalPath::new("t"),
+                        yours: UniversalPath::new("y"),
+                        output: UniversalPath::new("o"),
+                    }),
+                    MergeNames {
+                        base: Some("B".into()),
+                        theirs: Some("T".into()),
+                        yours: Some("Y".into()),
+                        output: Some("R".into()),
+                    }
+                )
+            );
+            assert_eq!(left.get_full_path(), UniversalPath::default());
+            assert_eq!(right.get_full_path(), UniversalPath::default());
+        }
+
+        #[test]
+        fn merge_into_a_depot_output_is_an_error() {
+            let (_, _, outcome) = launch(&["b", "t", "y", "//depot/o.txt"]);
+            assert_eq!(
+                outcome,
+                LaunchOutcome::Error("Output must be a local path".to_string())
+            );
         }
     }
 }
