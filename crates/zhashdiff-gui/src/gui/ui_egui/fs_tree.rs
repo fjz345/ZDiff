@@ -23,7 +23,9 @@ use zhashdiff::{
 
 use zcommon::path::{common_parent, split_path};
 use zcommon::ui_egui::common::{CheckboxSelectState, hash_to_color, ui_custom_checkbox};
+use zcommon::ui_egui::h_scroll::text_width;
 use zcommon::ui_egui::pathbar::{PathBarAction, path_bar};
+use zcommon::ui_egui::table::{Rows, Split, SplitColumn, SplitTable};
 
 use crate::ui_egui::folder_keymap::FolderAction;
 use crate::ui_egui::roots::{InvalidRoot, Side, set_root};
@@ -54,6 +56,22 @@ pub struct VisibleRowTwoFolderDiff {
     pub diff_state: DiffState,
     pub file_kinds: [Option<FileKind>; 2],
     pub blueprints: [bool; 2],
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct HScrollLink(pub bool);
+
+impl Default for HScrollLink {
+    fn default() -> Self {
+        Self(true)
+    }
+}
+
+#[derive(Default)]
+pub struct TreeTable {
+    split: Split,
+    offsets: [f32; 2],
 }
 
 #[derive(Debug)]
@@ -626,6 +644,8 @@ pub fn draw_ui_two_folder_tree_with_diff(
     compare: &TreeCompare,
     likeness_bar: bool,
     tolerance: &Tolerance,
+    table: &mut TreeTable,
+    linked: bool,
 ) -> egui::response::Response {
     if file_system_1_view.is_none() && file_system_2_view.is_none() {
         return ui
@@ -743,13 +763,10 @@ pub fn draw_ui_two_folder_tree_with_diff(
     let drawn_rows: Vec<usize> = (0..cursor_rows.len())
         .filter(|&i| !cursor_rows[i].hidden)
         .collect();
-    let scroll_to_row = if scroll_to_cursor {
-        drawn_rows
-            .iter()
-            .position(|&i| cursor.is_at(cursor_rows[i].rel_path))
-    } else {
-        None
-    };
+    let selected_row = drawn_rows
+        .iter()
+        .position(|&i| cursor.is_at(cursor_rows[i].rel_path));
+    let scroll_to_row = selected_row.filter(|_| scroll_to_cursor);
 
     let row_count = drawn_rows.len();
     let layout = if diff_filter.lists_files() {
@@ -774,11 +791,28 @@ pub fn draw_ui_two_folder_tree_with_diff(
         };
         [side(DiffState::first), side(DiffState::second)]
     });
+    let root_state = match (file_system_1_view.as_ref(), file_system_2_view.as_ref()) {
+        (Some(view), _) => {
+            let root_id = view.file_system.get_root_node_id();
+            visible_rows
+                .iter()
+                .find(|r| r.diff_state.first() == Some(root_id))
+        }
+        (None, Some(view)) => {
+            let root_id = view.file_system.get_root_node_id();
+            visible_rows
+                .iter()
+                .find(|r| r.diff_state.second() == Some(root_id))
+        }
+        (None, None) => None,
+    }
+    .map(|row| &row.diff_state);
     let available_height = ui.available_height();
     let available_width = ui.available_width();
-    let mut col0_rect = egui::Rect::NOTHING;
-    let mut col2_rect = egui::Rect::NOTHING;
     let table_top = ui.cursor().top();
+    let mut side_rects = [egui::Rect::NOTHING; 2];
+    let mut clicked_row = None;
+    let mut toggle_row = None;
     let mut row_action = None;
 
     let frame_output = egui::Frame::default()
@@ -790,42 +824,32 @@ pub fn draw_ui_two_folder_tree_with_diff(
 
             let row_height = ui.text_style_height(&egui::TextStyle::Body);
             let row_height_header = ui.text_style_height(&egui::TextStyle::Heading);
-            let available_size = ui.available_size();
-            let tag_font = egui::TextStyle::Monospace.resolve(ui.style());
-            let tag_width = 4.0 * ui.fonts_mut(|f| f.glyph_width(&tag_font, 'M'));
+            let interact_height = ui.spacing().interact_size.y;
+            let header_height = row_height_header.max(interact_height)
+                + ui.spacing().item_spacing.y
+                + interact_height;
+            let center = CenterLayout::measure(ui, likeness_bar);
+            let views = [file_system_1_view.as_ref(), file_system_2_view.as_ref()];
+            let content_widths = side_content_widths(
+                ui,
+                views,
+                drawn_rows.iter().map(|&i| &visible_rows[i]),
+                layout,
+            );
 
-            // egui_extras resets every column width when the column count changes.
-            let id_salt = if likeness_bar {
-                "two_folder_diff_table_likeness"
-            } else {
-                "two_folder_diff_table"
-            };
-            let mut table = TableBuilder::new(ui)
-                .sense(egui::Sense::all())
-                .id_salt(id_salt)
+            let mut split_table = SplitTable::new("two_folder_diff_table", &mut table.split)
+                .center_width(center.width(ui.spacing().item_spacing.x))
+                .h_scroll(&mut table.offsets, linked, content_widths)
                 .striped(true)
-                .resizable(false)
-                .auto_shrink([false, true]);
+                .selected_row(selected_row);
             if let Some(row) = scroll_to_row {
-                table = table.scroll_to_row(row, None);
+                split_table = split_table.scroll_to_row(row, None);
             }
-            table = table
-                .column(
-                    Column::initial(available_size.x * 0.5)
-                        .at_least(100.0)
-                        .resizable(true),
-                )
-                .column(Column::exact(tag_width))
-                .column(Column::auto().resizable(true).auto_size_this_frame(true));
-            if likeness_bar {
-                table = table.column(Column::exact(1.5 * tag_width));
-            }
-            table
-                .column(Column::exact(tag_width))
-                .column(Column::remainder().resizable(true).clip(false))
-                .header(row_height_header, |mut header| {
-                    header.col(|ui| {
-                        col0_rect = ui.max_rect();
+            let output = split_table.show(
+                ui,
+                header_height,
+                |column, ui| match column {
+                    SplitColumn::Left => {
                         ui.vertical(|ui| {
                             ui.horizontal(|ui| {
                                 sort_header(ui, "Name", SortKey::Name, sort);
@@ -842,38 +866,22 @@ pub fn draw_ui_two_folder_tree_with_diff(
                             });
                             root_path_bar(ui, [&mut *root_1, &mut *root_2], Side::Folder1);
                         });
-                    });
-                    header.col(|_| {});
-                    header.col(|ui| {
-                        ui.vertical(|ui| {
-                            sort_header(ui, "≠", SortKey::State, sort);
-                            if let Some(fs1_view) = file_system_1_view {
-                                let root_1_id = fs1_view.file_system.get_root_node_id();
-                                if let Some(row) = visible_rows
-                                    .iter()
-                                    .find(|r| r.diff_state.first() == Some(root_1_id))
-                                {
-                                    ui_custom_diff_state(ui, &row.diff_state);
-                                }
-                            } else if let Some(fs2_view) = file_system_2_view {
-                                let root_2_id = fs2_view.file_system.get_root_node_id();
-                                if let Some(row) = visible_rows
-                                    .iter()
-                                    .find(|r| r.diff_state.second() == Some(root_2_id))
-                                {
-                                    ui_custom_diff_state(ui, &row.diff_state);
-                                }
-                            }
-                        });
-                    });
-                    if likeness_bar {
-                        header.col(|ui| {
-                            ui.label("%").on_hover_text("Likeness of the two files");
-                        });
                     }
-                    header.col(|_| {});
-                    header.col(|ui| {
-                        col2_rect = ui.max_rect();
+                    SplitColumn::Center => center.show(ui, |slot, ui| match slot {
+                        CenterSlot::State => {
+                            ui.vertical(|ui| {
+                                sort_header(ui, "≠", SortKey::State, sort);
+                                if let Some(state) = root_state {
+                                    ui_custom_diff_state(ui, state);
+                                }
+                            });
+                        }
+                        CenterSlot::Likeness => {
+                            ui.label("%").on_hover_text("Likeness of the two files");
+                        }
+                        CenterSlot::Tag(_) => {}
+                    }),
+                    SplitColumn::Right => {
                         let available = ui.available_width();
                         ui.vertical(|ui| {
                             if ui
@@ -887,48 +895,75 @@ pub fn draw_ui_two_folder_tree_with_diff(
                             }
                             root_path_bar(ui, [&mut *root_1, &mut *root_2], Side::Folder2);
                         });
-                    });
-                })
-                .body(|body| {
-                    body.rows(row_height, row_count, |mut row| {
-                        let entry = &visible_rows[drawn_rows[row.index()]];
-                        let row_guides = guides.as_ref().map_or([&[][..]; 2], |[left, right]| {
-                            [left.row(row.index()), right.row(row.index())]
-                        });
-                        let is_cursor = cursor.is_at(&entry.rel_path);
-                        row.set_selected(is_cursor);
-                        let (clicked, action) = render_row_folder_tree_diff_column(
-                            file_system_1_view.as_mut(),
-                            file_system_2_view.as_mut(),
-                            &mut row,
-                            entry,
-                            is_cursor,
-                            row_height,
-                            diff_tool_config,
-                            tool_message,
-                            layout,
-                            row_guides,
-                            compare,
-                            likeness_bar,
-                            tolerance,
-                        );
-                        if clicked {
-                            *cursor = TreeCursor::at(&entry.rel_path);
+                    }
+                },
+                Rows::Uniform {
+                    height: row_height,
+                    count: row_count,
+                },
+                |i, column, ui| {
+                    let entry = &visible_rows[drawn_rows[i]];
+                    // Selected cells get their text color from egui_extras; an explicit color
+                    // would override it.
+                    let dimmed =
+                        selected_row != Some(i) && matches!(entry.diff_state, DiffState::Same(..));
+                    let row = RowCell {
+                        views,
+                        entry,
+                        dimmed,
+                        row_height,
+                        diff_tool_config,
+                    };
+                    let side = match column {
+                        SplitColumn::Left => 0,
+                        SplitColumn::Right => 1,
+                        SplitColumn::Center => {
+                            if entry.is_dir {
+                                fill_cell(ui, ui.max_rect().x_range(), FOLDER_ROW_TINT);
+                            }
+                            render_center_cell(ui, &row, &center, compare, tolerance);
+                            return;
                         }
-                        if action.is_some() {
-                            row_action = action;
-                        }
-                    });
-                });
+                    };
+                    // A scrolled side's max rect is shifted; its clip is the cell.
+                    if entry.is_dir {
+                        fill_cell(ui, ui.clip_rect().x_range(), FOLDER_ROW_TINT);
+                    }
+                    if let Some(guides) = &guides {
+                        paint_guides(ui, guides[side].row(i));
+                    }
+                    ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
+                    let cell = render_side_cell(ui, &row, side, tool_message, layout);
+                    if cell.clicked {
+                        clicked_row = Some(entry);
+                    }
+                    if cell.toggle {
+                        toggle_row = Some(entry);
+                    }
+                    if cell.action.is_some() {
+                        row_action = cell.action;
+                    }
+                },
+            );
+            side_rects = output.side_rects;
         });
 
-    let table_bottom = ui.min_rect().bottom();
-    col0_rect.set_top(table_top);
-    col0_rect.set_bottom(table_bottom);
-    col2_rect.set_top(table_top);
-    col2_rect.set_bottom(table_bottom);
+    if let Some(entry) = toggle_row {
+        if let (Some(view), Some(id)) = (file_system_1_view.as_mut(), entry.diff_state.first()) {
+            view.toggle_collapse(id);
+        }
+        if let (Some(view), Some(id)) = (file_system_2_view.as_mut(), entry.diff_state.second()) {
+            view.toggle_collapse(id);
+        }
+    }
+    if let Some(entry) = clicked_row {
+        *cursor = TreeCursor::at(&entry.rel_path);
+    }
 
-    handle_drops(ui, root_1, root_2, col0_rect, col2_rect);
+    let table_y = table_top..=ui.min_rect().bottom();
+    let [left_rect, right_rect] =
+        side_rects.map(|rect| egui::Rect::from_x_y_ranges(rect.x_range(), table_y.clone()));
+    handle_drops(ui, root_1, root_2, left_rect, right_rect);
     if let Some(action) = row_action {
         apply_row_action(ui.ctx(), action, root_1, root_2);
     }
@@ -1375,6 +1410,27 @@ fn render_diff_side(
     .inner
 }
 
+/// Must match what `render_diff_side` draws for a name `text_width` wide.
+fn side_width(
+    layout: RowLayout,
+    depth: FsNodeDepth,
+    is_dir: bool,
+    text_width: f32,
+    spacing: f32,
+) -> f32 {
+    let indent = match layout {
+        RowLayout::Tree => depth as f32 * TREE_INDENT,
+        RowLayout::RelPaths => return text_width,
+        RowLayout::FileList => 0.0,
+    };
+    let expander = if is_dir {
+        EXPANDER_WIDTH + spacing
+    } else {
+        0.0
+    };
+    indent + expander + text_width
+}
+
 #[derive(Clone, Copy, PartialEq)]
 enum RowLayout {
     Tree,
@@ -1393,23 +1449,152 @@ fn undiffable(entry: &VisibleRowTwoFolderDiff, config: &DiffToolConfig) -> Optio
     cant_diff(entry.file_kinds, tool)
 }
 
-/// Draws a row that `two_folder_cursor_rows` doesn't hide. Returns whether it was clicked with
-/// either button, which moves the cursor to it, and the action picked in its menu.
-fn render_row_folder_tree_diff_column(
-    mut file_system_1_view: Option<&mut FileSystemView>,
-    mut file_system_2_view: Option<&mut FileSystemView>,
-    row: &mut egui_extras::TableRow,
-    entry: &VisibleRowTwoFolderDiff,
-    is_cursor: bool,
+#[derive(Clone, Copy)]
+enum CenterSlot {
+    Tag(usize),
+    State,
+    Likeness,
+}
+
+/// Sized from the font, not the rows, so the center keeps its width as rows scroll by.
+struct CenterLayout {
+    tag: f32,
+    state: f32,
+    likeness: Option<f32>,
+}
+
+impl CenterLayout {
+    fn measure(ui: &egui::Ui, likeness_bar: bool) -> Self {
+        let tag_font = egui::TextStyle::Monospace.resolve(ui.style());
+        let header_font = egui::TextStyle::Button.resolve(ui.style());
+        let (tag_glyph, header) = ui.fonts_mut(|f| {
+            let header = ["≠ ⏶", "≠ ⏷"].map(|text| {
+                f.layout_no_wrap(
+                    text.to_owned(),
+                    header_font.clone(),
+                    egui::Color32::PLACEHOLDER,
+                )
+                .size()
+                .x
+            });
+            (f.glyph_width(&tag_font, 'M'), header[0].max(header[1]))
+        });
+        let tag = 4.0 * tag_glyph;
+        // The sort header is a selectable label, padded like a button.
+        let state = (header + 2.0 * ui.spacing().button_padding.x)
+            .max(ui.text_style_height(&egui::TextStyle::Body));
+        Self {
+            tag,
+            state,
+            likeness: likeness_bar.then_some(1.5 * tag),
+        }
+    }
+
+    fn slots(&self) -> impl Iterator<Item = (CenterSlot, f32)> {
+        [
+            (CenterSlot::Tag(0), self.tag),
+            (CenterSlot::State, self.state),
+        ]
+        .into_iter()
+        .chain(self.likeness.map(|width| (CenterSlot::Likeness, width)))
+        .chain([(CenterSlot::Tag(1), self.tag)])
+    }
+
+    fn width(&self, spacing: f32) -> f32 {
+        self.slots().map(|(_, width)| width + spacing).sum::<f32>() - spacing
+    }
+
+    fn show(&self, ui: &mut egui::Ui, mut add: impl FnMut(CenterSlot, &mut egui::Ui)) {
+        for (i, (slot, width)) in self.slots().enumerate() {
+            let (rect, _) = ui.allocate_exact_size(
+                egui::vec2(width, ui.available_height()),
+                egui::Sense::hover(),
+            );
+            let mut child = ui.new_child(
+                egui::UiBuilder::new()
+                    .id_salt(i)
+                    .max_rect(rect)
+                    .layout(egui::Layout::left_to_right(egui::Align::Center)),
+            );
+            add(slot, &mut child);
+        }
+    }
+}
+
+fn side_content_widths<'a>(
+    ui: &egui::Ui,
+    views: [Option<&FileSystemView>; 2],
+    rows: impl Iterator<Item = &'a VisibleRowTwoFolderDiff>,
+    layout: RowLayout,
+) -> [f32; 2] {
+    let font = egui::TextStyle::Body.resolve(ui.style());
+    let spacing = ui.spacing().item_spacing.x;
+    ui.fonts_mut(|fonts| {
+        let mut glyph_width = |c: char| fonts.glyph_width(&font, c);
+        let folder_width = text_width("📁 ", &mut glyph_width);
+        let mut widths = [0.0f32; 2];
+        for entry in rows {
+            let ids = [entry.diff_state.first(), entry.diff_state.second()];
+            for side in 0..2 {
+                let Some(node) = side_node(views[side], ids[side]) else {
+                    continue;
+                };
+                let name = if layout == RowLayout::RelPaths {
+                    entry.rel_path.as_str()
+                } else {
+                    node.display_name()
+                };
+                let folder = if entry.is_dir { folder_width } else { 0.0 };
+                let text = folder + text_width(name, &mut glyph_width);
+                let width = side_width(layout, entry.depth, entry.is_dir, text, spacing);
+                widths[side] = widths[side].max(width);
+            }
+        }
+        widths
+    })
+}
+
+/// Fills `cell_x` and half the gaps around it, like egui_extras' stripes, so a tinted row has
+/// no seams. A cell's own clip stops short of the gaps.
+fn fill_cell(ui: &egui::Ui, cell_x: egui::Rangef, color: egui::Color32) {
+    let rect = egui::Rect::from_x_y_ranges(
+        cell_x.expand(0.5 * ui.spacing().item_spacing.x),
+        ui.clip_rect().y_range(),
+    );
+    egui::Painter::new(ui.ctx().clone(), ui.layer_id(), rect).rect_filled(rect, 0.0, color);
+}
+
+#[derive(Clone, Copy)]
+struct RowCell<'a> {
+    views: [Option<&'a FileSystemView>; 2],
+    entry: &'a VisibleRowTwoFolderDiff,
+    dimmed: bool,
     row_height: f32,
-    diff_tool_config: &DiffToolConfig,
+    diff_tool_config: &'a DiffToolConfig,
+}
+
+struct SideCell {
+    clicked: bool,
+    toggle: bool,
+    action: Option<RowAction>,
+}
+
+/// Draws one side of a row that `two_folder_cursor_rows` doesn't hide. `clicked` is a click
+/// with either button, which moves the cursor to the row.
+fn render_side_cell(
+    ui: &mut egui::Ui,
+    row: &RowCell,
+    side: usize,
     tool_message: &mut Option<ToolMessage>,
     layout: RowLayout,
-    guides: [&[Guide]; 2],
-    compare: &TreeCompare,
-    likeness_bar: bool,
-    tolerance: &Tolerance,
-) -> (bool, Option<RowAction>) {
+) -> SideCell {
+    let RowCell {
+        views,
+        entry,
+        dimmed,
+        row_height,
+        diff_tool_config,
+    } = *row;
     let rel_path = |shown: RowLayout| (layout == shown).then_some(entry.rel_path.as_str());
     let flat_rel_path = rel_path(RowLayout::RelPaths);
     let list_rel_path = rel_path(RowLayout::FileList);
@@ -1418,170 +1603,33 @@ fn render_row_folder_tree_diff_column(
     } else {
         entry.depth
     };
-    let first_node_id = entry.diff_state.first();
-    let second_node_id = entry.diff_state.second();
-    let mut should_toggle_row = false;
-    let mut should_select_row = false;
-
-    let is_collapsed = |view: Option<&FileSystemView>, id: Option<FsNodeId>| match (view, id) {
+    let ids = [entry.diff_state.first(), entry.diff_state.second()];
+    let is_collapsed = match (views[side], ids[side]) {
         (Some(view), Some(id)) => view.is_collapsed(id),
         _ => false,
     };
-    let is_collapsed_1 = is_collapsed(file_system_1_view.as_deref(), first_node_id);
-    let is_collapsed_2 = is_collapsed(file_system_2_view.as_deref(), second_node_id);
-    // Selected cells get their text color from egui_extras; an explicit color would override it.
-    let dimmed = !is_cursor && matches!(entry.diff_state, DiffState::Same(..));
-    let tint = |ui: &egui::Ui| {
-        if entry.is_dir {
-            let rect = ui.max_rect().expand2(0.5 * ui.spacing().item_spacing);
-            ui.painter().rect_filled(rect, 0.0, FOLDER_ROW_TINT);
-        }
-    };
-    let undiffable = undiffable(entry, diff_tool_config);
-    let tag = |row: &mut egui_extras::TableRow, side: usize| {
-        let (_, response) = row.col(|ui| {
-            tint(ui);
-            if undiffable.is_some() {
-                let stroke = egui::Stroke::new(1.0, ui.visuals().warn_fg_color);
-                ui.painter()
-                    .rect_stroke(ui.max_rect(), 2.0, stroke, egui::StrokeKind::Inside);
-            }
-            if dimmed {
-                ui.multiply_opacity(0.5);
-            }
-            if let Some(kind) = entry.file_kinds[side] {
-                let (text, color) = if entry.blueprints[side] {
-                    ("BP", BLUEPRINT_TAG_COLOR)
-                } else {
-                    (kind.tag(), tag_color(kind))
-                };
-                // Not selectable: a selectable label takes the hover, hiding the cell's tooltip.
-                let text = RichText::new(text).monospace().color(color);
-                ui.add(egui::Label::new(text).selectable(false));
-            }
-        });
-        if let Some(reason) = &undiffable {
-            response.on_hover_text(reason.to_string());
-        }
-    };
+    // Before the labels, so they are on top and keep their own clicks.
+    let cell_rect = egui::Rect::from_x_y_ranges(ui.clip_rect().x_range(), ui.max_rect().y_range());
+    let cell = ui.interact(cell_rect, ui.id().with("side_cell"), egui::Sense::click());
+    let mut select = false;
+    let mut toggle = false;
+    let label = render_diff_side(
+        ui,
+        views[side],
+        ids[side],
+        depth,
+        entry.is_dir,
+        is_collapsed,
+        dimmed,
+        row_height,
+        flat_rel_path,
+        list_rel_path,
+        || select = true,
+        || *tool_message = on_row_item_clicked(views[0], views[1], entry, diff_tool_config),
+        || toggle = true,
+    );
 
-    let mut label_1 = None;
-    let mut label_2 = None;
-    // --- Left Column (Folder 1) ---
-    let (_, cell_1) = row.col(|ui| {
-        tint(ui);
-        paint_guides(ui, guides[0]);
-        label_1 = render_diff_side(
-            ui,
-            file_system_1_view.as_deref(),
-            first_node_id,
-            depth,
-            entry.is_dir,
-            is_collapsed_1,
-            dimmed,
-            row_height,
-            flat_rel_path,
-            list_rel_path,
-            || should_select_row = true,
-            || {
-                *tool_message = on_row_item_clicked(
-                    file_system_1_view.as_deref(),
-                    file_system_2_view.as_deref(),
-                    entry,
-                    diff_tool_config,
-                );
-            },
-            || should_toggle_row = true,
-        );
-    });
-    tag(row, 0);
-    // --- Middle Column (Diff Status) ---
-    row.col(|ui| {
-        tint(ui);
-        if dimmed {
-            ui.multiply_opacity(0.5);
-        }
-        ui.horizontal(|ui| {
-            let response = ui_custom_diff_state(ui, &entry.diff_state);
-            if matches!(entry.diff_state, DiffState::Similar(..)) {
-                let nodes = [
-                    (file_system_1_view.as_deref(), first_node_id),
-                    (file_system_2_view.as_deref(), second_node_id),
-                ]
-                .map(|(view, id)| view?.file_system.get_node(id?));
-                let (sides, likeness) = match nodes {
-                    [Some(left), Some(right)] if !entry.is_dir => (
-                        Some([left, right].map(SideMeta::of)),
-                        compare
-                            .likeness_of(&entry.rel_path, [left, right])
-                            .and_then(PairLikeness::ratio),
-                    ),
-                    _ => (None, None),
-                };
-                response.on_hover_text(similar_tooltip(tolerance, sides, likeness));
-            }
-        });
-    });
-    if likeness_bar {
-        row.col(|ui| {
-            tint(ui);
-            if dimmed {
-                ui.multiply_opacity(0.5);
-            }
-            let nodes = [
-                (file_system_1_view.as_deref(), first_node_id),
-                (file_system_2_view.as_deref(), second_node_id),
-            ]
-            .map(|(view, id)| view?.file_system.get_node(id?));
-            ui_likeness_cell(ui, likeness_cell(entry, nodes, compare), row_height);
-        });
-    }
-    tag(row, 1);
-    // --- Right Column (Folder 2) ---
-    let (_, cell_2) = row.col(|ui| {
-        tint(ui);
-        paint_guides(ui, guides[1]);
-        label_2 = render_diff_side(
-            ui,
-            file_system_2_view.as_deref(),
-            second_node_id,
-            depth,
-            entry.is_dir,
-            is_collapsed_2,
-            dimmed,
-            row_height,
-            flat_rel_path,
-            list_rel_path,
-            || should_select_row = true,
-            || {
-                *tool_message = on_row_item_clicked(
-                    file_system_1_view.as_deref(),
-                    file_system_2_view.as_deref(),
-                    entry,
-                    diff_tool_config,
-                );
-            },
-            || should_toggle_row = true,
-        );
-    });
-
-    if should_toggle_row {
-        if let Some(first) = &entry.diff_state.first() {
-            if let Some(view) = file_system_1_view.as_mut() {
-                view.toggle_collapse(*first);
-            }
-        }
-        if let Some(second) = &entry.diff_state.second() {
-            if let Some(view) = file_system_2_view.as_mut() {
-                view.toggle_collapse(*second);
-            }
-        }
-    }
-
-    let nodes = [
-        side_node(file_system_1_view.as_deref(), first_node_id),
-        side_node(file_system_2_view.as_deref(), second_node_id),
-    ];
+    let nodes = [side_node(views[0], ids[0]), side_node(views[1], ids[1])];
     let entries = nodes.map(|node| {
         node.map(|n| {
             if n.is_dir() {
@@ -1591,28 +1639,87 @@ fn render_row_folder_tree_diff_column(
             }
         })
     });
+    let menu_side = [Side::Folder1, Side::Folder2][side];
+    // Labels take their own clicks, so the cell alone misses a right-click on the name.
+    let response = label.map_or(cell.clone(), |label| cell | label);
     let mut action = None;
-    let sides = [
-        (Side::Folder1, cell_1, label_1),
-        (Side::Folder2, cell_2, label_2),
-    ];
-    for (side, cell, label) in sides {
-        // Labels take their own clicks, so the cell alone misses a right-click on the name.
-        let response = label.map_or(cell.clone(), |label| cell | label);
-        should_select_row |= response.secondary_clicked();
-        if let Some(menu) = row_menu(entries, side) {
-            response.context_menu(|ui| {
-                let paths = nodes.map(|node| node.map(|n| n.as_path()));
-                let paths = [0, 1].map(|i| paths[i].as_ref().map(|p| p.as_ref()));
-                action = show_row_menu(ui, &menu, paths, side);
-            });
-        }
+    if let Some(menu) = row_menu(entries, menu_side) {
+        response.context_menu(|ui| {
+            let paths = nodes.map(|node| node.map(|n| n.as_path()));
+            let paths = [0, 1].map(|i| paths[i].as_ref().map(|p| p.as_ref()));
+            action = show_row_menu(ui, &menu, paths, menu_side);
+        });
     }
+    SideCell {
+        clicked: select || response.clicked() || response.secondary_clicked(),
+        toggle,
+        action,
+    }
+}
 
-    // Labels take their own clicks; this catches clicks elsewhere on the row.
-    let row_response = row.response();
-    let clicked = should_select_row || row_response.clicked() || row_response.secondary_clicked();
-    (clicked, action)
+fn render_center_cell(
+    ui: &mut egui::Ui,
+    row: &RowCell,
+    center: &CenterLayout,
+    compare: &TreeCompare,
+    tolerance: &Tolerance,
+) {
+    let RowCell {
+        views,
+        entry,
+        dimmed,
+        row_height,
+        diff_tool_config,
+    } = *row;
+    let nodes = [
+        side_node(views[0], entry.diff_state.first()),
+        side_node(views[1], entry.diff_state.second()),
+    ];
+    let undiffable = undiffable(entry, diff_tool_config);
+    center.show(ui, |slot, ui| {
+        if let (CenterSlot::Tag(_), Some(reason)) = (slot, &undiffable) {
+            let stroke = egui::Stroke::new(1.0, ui.visuals().warn_fg_color);
+            ui.painter()
+                .rect_stroke(ui.max_rect(), 2.0, stroke, egui::StrokeKind::Inside);
+            ui.interact(ui.max_rect(), ui.id().with("tag"), egui::Sense::hover())
+                .on_hover_text(reason.to_string());
+        }
+        if dimmed {
+            ui.multiply_opacity(0.5);
+        }
+        match slot {
+            CenterSlot::Tag(side) => {
+                if let Some(kind) = entry.file_kinds[side] {
+                    let (text, color) = if entry.blueprints[side] {
+                        ("BP", BLUEPRINT_TAG_COLOR)
+                    } else {
+                        (kind.tag(), tag_color(kind))
+                    };
+                    // Not selectable: a selectable label takes the hover, hiding the tag's tooltip.
+                    let text = RichText::new(text).monospace().color(color);
+                    ui.add(egui::Label::new(text).selectable(false));
+                }
+            }
+            CenterSlot::State => {
+                let response = ui_custom_diff_state(ui, &entry.diff_state);
+                if matches!(entry.diff_state, DiffState::Similar(..)) {
+                    let (sides, likeness) = match nodes {
+                        [Some(left), Some(right)] if !entry.is_dir => (
+                            Some([left, right].map(SideMeta::of)),
+                            compare
+                                .likeness_of(&entry.rel_path, [left, right])
+                                .and_then(PairLikeness::ratio),
+                        ),
+                        _ => (None, None),
+                    };
+                    response.on_hover_text(similar_tooltip(tolerance, sides, likeness));
+                }
+            }
+            CenterSlot::Likeness => {
+                ui_likeness_cell(ui, likeness_cell(entry, nodes, compare), row_height);
+            }
+        }
+    });
 }
 
 fn side_node(view: Option<&FileSystemView>, id: Option<FsNodeId>) -> Option<&FsNode> {
@@ -1888,9 +1995,9 @@ fn get_folder_selection_state(
 mod tests {
     use crate::ui_egui::fs_tree::apply_path_bar;
     use crate::ui_egui::fs_tree::{
-        DiffState, FileSystemView, VisibleRowTwoFolderDiff, aggregate_folder_state,
-        apply_blueprint_results, apply_cursor_request, cursor_keys, tree_hidden,
-        two_folder_cursor_rows,
+        DiffState, EXPANDER_WIDTH, FileSystemView, RowLayout, TREE_INDENT, VisibleRowTwoFolderDiff,
+        aggregate_folder_state, apply_blueprint_results, apply_cursor_request, cursor_keys,
+        side_width, tree_hidden, two_folder_cursor_rows,
     };
     use crate::ui_egui::roots::{InvalidRoot, Side};
     use crate::ui_egui::status_line::ToolMessage;
@@ -2844,6 +2951,27 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn a_side_is_as_wide_as_its_indentation_expander_and_name() {
+        let spacing = 8.0;
+        assert_eq!(
+            side_width(RowLayout::Tree, 2, true, 50.0, spacing),
+            2.0 * TREE_INDENT + EXPANDER_WIDTH + spacing + 50.0
+        );
+        assert_eq!(
+            side_width(RowLayout::Tree, 2, false, 50.0, spacing),
+            2.0 * TREE_INDENT + 50.0
+        );
+        assert_eq!(
+            side_width(RowLayout::RelPaths, 2, true, 50.0, spacing),
+            50.0
+        );
+        assert_eq!(
+            side_width(RowLayout::FileList, 2, false, 50.0, spacing),
+            50.0
+        );
     }
 
     #[test]

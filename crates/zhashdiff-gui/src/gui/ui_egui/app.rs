@@ -32,7 +32,7 @@ use zhashdiff::{
 use crate::ui_egui::{
     duplicate_files_pane::DuplicateFilesPane,
     folder_keymap::{FolderAction, KeybindingsWindow},
-    fs_tree::{FileSystemView, VisibleRowTwoFolderDiff, apply_blueprint_results},
+    fs_tree::{FileSystemView, HScrollLink, VisibleRowTwoFolderDiff, apply_blueprint_results},
     panes::{Pane, PathDiffView, TreeBehavior},
     path_diff_pane::{FilterPresets, PathDiffPane},
     roots::{LaunchArgs, Side, apply_launch_args, clear_root, set_root},
@@ -105,6 +105,8 @@ pub struct AppStateCtx {
     two_folder_diff_rows_find: FolderFind,
     #[serde(skip)]
     find_matches: Option<usize>,
+    #[serde(default)]
+    pub h_scroll_link: HScrollLink,
 
     #[serde(skip)]
     pub active_conflict_hash: Option<String>,
@@ -783,6 +785,8 @@ impl ZApp {
                     if ui.button("Keybindings").clicked() {
                         self.keybindings_window.open = true;
                     }
+                    ui.checkbox(&mut app_ctx.h_scroll_link.0, "Link horizontal scroll")
+                        .on_hover_text("Scroll both folder sides sideways together");
                     if ui.button("Setup colors").clicked() {
                         log::error!("NYI");
                     }
@@ -969,6 +973,7 @@ impl ZApp {
                     likeness_bar: &mut app_ctx.likeness_bar,
                     tolerance: &mut app_ctx.tolerance,
                     tree_compare: &app_ctx.tree_compare,
+                    h_scroll_link: app_ctx.h_scroll_link,
                     path_diff_view: &mut path_diff_view,
                     keyboard_taken,
                     actions: &actions,
@@ -1224,7 +1229,7 @@ mod tests {
         update_side_scan,
     };
     use crate::ui_egui::folder_keymap::FolderAction;
-    use crate::ui_egui::fs_tree::{DiffState, FileSystemView};
+    use crate::ui_egui::fs_tree::{DiffState, FileSystemView, HScrollLink};
     use crate::ui_egui::path_diff_pane::{BLACKLIST_PRESETS, FilterField, FilterPresets};
     use crate::ui_egui::roots::{Side, clear_root, set_root};
     use crate::ui_egui::tree_compare::PairResult;
@@ -1570,6 +1575,37 @@ mod tests {
         let restored: AppStateCtx = serde_json::from_value(json).unwrap();
 
         assert!(!restored.likeness_bar);
+    }
+
+    #[test]
+    fn linked_horizontal_scroll_is_on_by_default() {
+        assert!(AppStateCtx::default().h_scroll_link.0);
+    }
+
+    #[test]
+    fn unlinked_horizontal_scroll_survives_a_restart() {
+        let state = AppStateCtx {
+            h_scroll_link: HScrollLink(false),
+            ..Default::default()
+        };
+
+        let json = serde_json::to_string(&state).unwrap();
+        let restored: AppStateCtx = serde_json::from_str(&json).unwrap();
+
+        assert!(!restored.h_scroll_link.0);
+    }
+
+    #[test]
+    fn a_state_saved_before_the_link_toggle_existed_loads_it_on() {
+        let mut json: serde_json::Value = serde_json::to_value(AppStateCtx::default()).unwrap();
+        json.as_object_mut()
+            .unwrap()
+            .remove("h_scroll_link")
+            .unwrap();
+
+        let restored: AppStateCtx = serde_json::from_value(json).unwrap();
+
+        assert!(restored.h_scroll_link.0);
     }
 
     #[test]

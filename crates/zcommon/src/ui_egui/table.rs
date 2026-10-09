@@ -86,6 +86,8 @@ pub struct SplitTable<'a> {
     center_width: f32,
     h_scroll: Option<HScroll<'a>>,
     scroll_to_row: Option<(usize, Option<egui::Align>)>,
+    striped: bool,
+    selected_row: Option<usize>,
 }
 
 impl<'a> SplitTable<'a> {
@@ -96,6 +98,8 @@ impl<'a> SplitTable<'a> {
             center_width: 0.0,
             h_scroll: None,
             scroll_to_row: None,
+            striped: false,
+            selected_row: None,
         }
     }
 
@@ -126,6 +130,16 @@ impl<'a> SplitTable<'a> {
         self
     }
 
+    pub fn striped(mut self, striped: bool) -> Self {
+        self.striped = striped;
+        self
+    }
+
+    pub fn selected_row(mut self, row: Option<usize>) -> Self {
+        self.selected_row = row;
+        self
+    }
+
     pub fn show(
         self,
         ui: &mut egui::Ui,
@@ -140,6 +154,8 @@ impl<'a> SplitTable<'a> {
             center_width,
             mut h_scroll,
             scroll_to_row,
+            striped,
+            selected_row,
         } = self;
         let spacing = ui.spacing().item_spacing.x;
         let area = ui.available_rect_before_wrap();
@@ -212,7 +228,7 @@ impl<'a> SplitTable<'a> {
             .allocate_ui(table_size, |ui| {
                 let mut table = TableBuilder::new(ui)
                     .id_salt(id_salt)
-                    .striped(false)
+                    .striped(striped)
                     .resizable(false)
                     // The strip's drag moves the split; a body drag would take it over.
                     .drag_to_scroll(false)
@@ -226,6 +242,7 @@ impl<'a> SplitTable<'a> {
                 }
                 let mut add_row = |mut row: TableRow<'_, '_>| {
                     let i = row.index();
+                    row.set_selected(selected_row == Some(i));
                     row.col(|ui| {
                         show_scrolled(ui, offsets[0], |ui| cell(i, SplitColumn::Left, ui))
                     });
@@ -299,7 +316,12 @@ fn show_scrolled(ui: &mut egui::Ui, offset: f32, add_contents: impl FnOnce(&mut 
     );
     let mut child = ui.new_child(UiBuilder::new().max_rect(shifted));
     // Clipping also limits hit-testing, so shifted content can't take clicks from the center.
-    child.set_clip_rect(cell.intersect(ui.clip_rect()));
+    // Vertically the cell's own clip reaches into the row gaps, so row fills have no gaps.
+    let clip = ui.clip_rect();
+    child.set_clip_rect(egui::Rect::from_x_y_ranges(
+        cell.x_range().intersection(clip.x_range()),
+        clip.y_range(),
+    ));
     add_contents(&mut child);
     ui.advance_cursor_after_rect(cell);
 }
