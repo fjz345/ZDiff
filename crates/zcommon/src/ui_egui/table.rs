@@ -223,7 +223,16 @@ impl<'a> SplitTable<'a> {
         }
         let offsets = h_scroll.as_ref().map_or([0.0; 2], |hs| *hs.offsets);
 
-        let table_size = egui::vec2(area.width(), (area.height() - bar_height).max(0.0));
+        // The bar is allocated after the table, so egui puts item spacing between them.
+        let bar_gap = if bar_height > 0.0 {
+            ui.spacing().item_spacing.y
+        } else {
+            0.0
+        };
+        let table_size = egui::vec2(
+            area.width(),
+            (area.height() - bar_height - bar_gap).max(0.0),
+        );
         let body_rect = ui
             .allocate_ui(table_size, |ui| {
                 let mut table = TableBuilder::new(ui)
@@ -427,5 +436,45 @@ mod tests {
         assert_eq!(split.widths(2000.0), [1500.0, 500.0]);
         assert_eq!(split.widths(300.0), [200.0, 100.0]);
         assert_eq!(split.widths(1000.0), [750.0, 250.0]);
+    }
+
+    fn area_and_used_height(content_width: f32) -> (f32, f32) {
+        let ctx = egui::Context::default();
+        let mut split = Split::default();
+        let mut offsets = [0.0; 2];
+        let mut heights = (0.0, 0.0);
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                let area = ui.available_height();
+                let top = ui.cursor().top();
+                SplitTable::new("table", &mut split)
+                    .center_width(20.0)
+                    .h_scroll(&mut offsets, false, [content_width; 2])
+                    .show(
+                        ui,
+                        20.0,
+                        |_, _| {},
+                        Rows::Uniform {
+                            height: 16.0,
+                            count: 1000,
+                        },
+                        |_, _, _| {},
+                    );
+                heights = (area, ui.min_rect().bottom() - top);
+            });
+        });
+        heights
+    }
+
+    #[test]
+    fn the_table_fills_its_area_exactly_without_scroll_bars() {
+        let (area, used) = area_and_used_height(10.0);
+        assert_eq!(used, area);
+    }
+
+    #[test]
+    fn the_table_fills_its_area_exactly_with_scroll_bars() {
+        let (area, used) = area_and_used_height(10_000.0);
+        assert_eq!(used, area);
     }
 }
