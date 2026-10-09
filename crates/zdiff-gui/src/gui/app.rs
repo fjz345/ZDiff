@@ -39,6 +39,7 @@ use crate::{
     },
     ui_egui::{
         diff_pane::{FileDiffPane, FileDiffPaneCtx, wheel_rects_id},
+        merge_pane::{MergeView, OpenMergeForm},
         panes::{Pane, TreeBehavior},
     },
     viewer::{
@@ -221,6 +222,11 @@ pub struct ZApp {
     open_help_window: bool,
     #[serde(skip)]
     launch_error: Option<String>,
+    /// Shown instead of the file diff while open.
+    #[serde(skip)]
+    merge: Option<MergeView>,
+    #[serde(skip)]
+    open_merge_form: OpenMergeForm,
 }
 
 fn default_zoom() -> f32 {
@@ -288,6 +294,8 @@ impl<'a> ZApp {
             toggle_active_side: false,
             open_help_window: false,
             launch_error: None,
+            merge: None,
+            open_merge_form: OpenMergeForm::default(),
         }
     }
 
@@ -456,6 +464,9 @@ impl<'a> ZApp {
                             .clicked()
                         {
                             Self::open_file_picker(file_2.get_tx());
+                        }
+                        if ui.button("Open Merge...").clicked() {
+                            self.open_merge_form.open = true;
                         }
                         if menu_item(ui, "Swap Source/Target", keybindings, FileAction::SwapSides)
                             .clicked()
@@ -967,9 +978,22 @@ impl<'a> ZApp {
                 },
             };
 
-            ui.with_layout(Layout::left_to_right(egui::Align::Min), |ui| {
-                self.tree.ui(&mut behavior, ui);
-            });
+            if let Some(request) = self.open_merge_form.ui(ctx) {
+                self.merge = Some(MergeView::new(request, *myers_diff_algorithm));
+            }
+            let mut close_merge = false;
+            ui.with_layout(
+                Layout::left_to_right(egui::Align::Min),
+                |ui| match &mut self.merge {
+                    Some(merge) => {
+                        close_merge = merge.ui(ui, behavior.ctx_file_diff.code_language);
+                    }
+                    None => self.tree.ui(&mut behavior, ui),
+                },
+            );
+            if close_merge {
+                self.merge = None;
+            }
 
             // TODO: Remove clones
             let clone_find = behavior.ctx_file_diff.find_cursor.clone();
@@ -1772,6 +1796,7 @@ fn diff_against_local_file(
 #[cfg(all(test, feature = "serde"))]
 mod tests {
     use super::*;
+    use crate::ui_egui::merge_pane::MergeRequest;
     use zdiff::ignore::IgnorePatterns;
 
     #[test]
@@ -1912,6 +1937,24 @@ mod tests {
         let json = serde_json::to_string(&app).unwrap();
         let restored: ZApp = serde_json::from_str(&json).unwrap();
         assert_eq!(restored.zoom, 1.7);
+    }
+
+    #[test]
+    fn a_merge_is_never_saved() {
+        let mut app = ZApp::new();
+        app.merge = Some(MergeView::new(
+            MergeRequest {
+                base: None,
+                theirs: UniversalPath::from("merge_theirs.txt"),
+                yours: UniversalPath::from("merge_yours.txt"),
+                output: UniversalPath::from("merge_output.txt"),
+            },
+            MyersDiffAlgorithm::Linear,
+        ));
+        let json = serde_json::to_string(&app).unwrap();
+        assert!(!json.contains("merge"), "{json}");
+        let restored: ZApp = serde_json::from_str(&json).unwrap();
+        assert!(restored.merge.is_none());
     }
 
     #[test]

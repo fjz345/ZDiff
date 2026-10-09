@@ -4,3 +4,4 @@ pub mod diff_pane;
 pub mod occurrence;
 #[cfg(test)]
 pub mod copy_harness;
+pub mod merge_pane;
