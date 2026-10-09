@@ -26,6 +26,7 @@ use zcommon::ui_egui::common::{CheckboxSelectState, hash_to_color, ui_custom_che
 use zcommon::ui_egui::pathbar::{PathBarAction, path_bar};
 
 use crate::ui_egui::roots::{InvalidRoot, Side, set_root};
+use crate::ui_egui::status_line::ToolMessage;
 use crate::ui_egui::tools_window::resolve_tool_exe;
 use crate::ui_egui::tree_cursor::{CursorRequest, CursorRow, TreeCursor};
 use crate::ui_egui::tree_filter::DiffFilter;
@@ -602,6 +603,7 @@ pub fn draw_ui_two_folder_tree_with_diff(
     open_dir_window_1: &mut bool,
     open_dir_window_2: &mut bool,
     diff_tool_config: &DiffToolConfig,
+    tool_message: &mut Option<ToolMessage>,
     cursor: &mut TreeCursor,
     sort: &mut TreeSort,
     keyboard_taken: bool,
@@ -634,6 +636,7 @@ pub fn draw_ui_two_folder_tree_with_diff(
 
     let visible_rows = visible_rows.as_ref().unwrap();
     let flat = diff_filter.is_flat(*sort);
+    let tool_message_before = tool_message.clone();
 
     // Every frame rather than at each rebuild or collapse: filter, rescan, the collapse
     // buttons and the expander arrows all change the rows, and this sees all of them.
@@ -674,6 +677,7 @@ pub fn draw_ui_two_folder_tree_with_diff(
                     visible_rows,
                     &request,
                     diff_tool_config,
+                    tool_message,
                 );
             }
         }
@@ -699,6 +703,7 @@ pub fn draw_ui_two_folder_tree_with_diff(
                     visible_rows,
                     request,
                     diff_tool_config,
+                    tool_message,
                 );
             }
             scroll_to_cursor |= moved != *cursor;
@@ -866,6 +871,7 @@ pub fn draw_ui_two_folder_tree_with_diff(
                             is_cursor,
                             row_height,
                             diff_tool_config,
+                            tool_message,
                             layout,
                             row_guides,
                         );
@@ -888,6 +894,10 @@ pub fn draw_ui_two_folder_tree_with_diff(
     handle_drops(ui, root_1, root_2, col0_rect, col2_rect);
     if let Some(action) = row_action {
         apply_row_action(ui.ctx(), action, root_1, root_2);
+    }
+    // The status line was drawn before this pane; show the new message next frame.
+    if *tool_message != tool_message_before {
+        ui.ctx().request_repaint();
     }
 
     frame_output.response
@@ -1132,7 +1142,7 @@ fn on_row_item_clicked(
     file_system_2_view: Option<&FileSystemView>,
     entry: &VisibleRowTwoFolderDiff,
     config: &DiffToolConfig,
-) -> bool {
+) -> Option<ToolMessage> {
     log::info!("on_row_iten_clicked");
 
     let path1 = entry.diff_state.first();
@@ -1142,29 +1152,36 @@ fn on_row_item_clicked(
         (None, None) => panic!("should not have a row if both paths are none"),
         (None, Some(p)) | (Some(p), None) => {
             log::info!("nothing to diff, only in one tree {:?}", p);
-            return false;
+            None
         }
         (Some(path1), Some(path2)) => {
             assert_eq!(file_system_1_view.is_some(), file_system_2_view.is_some()); // Model/View diff
+            let mut message = ToolMessage::default();
             let Some(diff_tool) =
                 config.choose_tool(&KindTable::default(), Path::new(&entry.rel_path))
             else {
-                log::error!(
+                let error = format!(
                     "diffing failed: default diff tool {:?} is missing",
                     config.default_tool
                 );
-                return false;
+                log::error!("{error}");
+                message.error = Some(error);
+                return Some(message);
             };
             if config.mark_undiffable
                 && let Some(reason) = cant_diff(entry.file_kinds, diff_tool)
             {
-                log::warn!("{}: opening anyway, {reason}", entry.rel_path);
+                let warning = format!("{}: opening anyway, {reason}", entry.rel_path);
+                log::warn!("{warning}");
+                message.warning = Some(warning);
             }
             let exe = match resolve_tool_exe(&diff_tool.exe_path) {
                 Ok(exe) => exe,
                 Err(err) => {
-                    log::error!("diffing failed: {err}");
-                    return false;
+                    let error = format!("diffing failed: {err}");
+                    log::error!("{error}");
+                    message.error = Some(error);
+                    return Some(message);
                 }
             };
             let left = file_system_1_view
@@ -1197,14 +1214,18 @@ fn on_row_item_clicked(
                 },
             );
             if let Err(err) = result {
-                log::error!("diffing failed...");
-                log::error!("{err}");
-                return false;
+                // The spawn error doesn't name the program.
+                let error = format!(
+                    "diffing failed: {} ({}): {err}",
+                    diff_tool.name,
+                    exe.display()
+                );
+                log::error!("{error}");
+                message.error = Some(error);
             };
+            (message != ToolMessage::default()).then_some(message)
         }
     }
-
-    return true;
 }
 
 /// `flat_rel_path`: in flat mode, the row's relative path, drawn instead of the indented name and
@@ -1334,6 +1355,7 @@ fn render_row_folder_tree_diff_column(
     is_cursor: bool,
     row_height: f32,
     diff_tool_config: &DiffToolConfig,
+    tool_message: &mut Option<ToolMessage>,
     layout: RowLayout,
     guides: [&[Guide]; 2],
 ) -> (bool, Option<RowAction>) {
@@ -1411,7 +1433,7 @@ fn render_row_folder_tree_diff_column(
             list_rel_path,
             || should_select_row = true,
             || {
-                on_row_item_clicked(
+                *tool_message = on_row_item_clicked(
                     file_system_1_view.as_deref(),
                     file_system_2_view.as_deref(),
                     entry,
@@ -1450,7 +1472,7 @@ fn render_row_folder_tree_diff_column(
             list_rel_path,
             || should_select_row = true,
             || {
-                on_row_item_clicked(
+                *tool_message = on_row_item_clicked(
                     file_system_1_view.as_deref(),
                     file_system_2_view.as_deref(),
                     entry,
@@ -1540,6 +1562,7 @@ fn apply_cursor_request(
     rows: &[VisibleRowTwoFolderDiff],
     request: &CursorRequest,
     diff_tool_config: &DiffToolConfig,
+    tool_message: &mut Option<ToolMessage>,
 ) {
     let Some(entry) = rows.iter().find(|row| row.rel_path == request.rel_path()) else {
         log::error!("cursor request for a row that isn't there: {request:?}");
@@ -1547,7 +1570,7 @@ fn apply_cursor_request(
     };
     match request {
         CursorRequest::Open(_) => {
-            on_row_item_clicked(
+            *tool_message = on_row_item_clicked(
                 file_system_1_view.as_deref(),
                 file_system_2_view.as_deref(),
                 entry,
@@ -1822,13 +1845,14 @@ mod tests {
         two_folder_cursor_rows,
     };
     use crate::ui_egui::roots::{InvalidRoot, Side};
+    use crate::ui_egui::status_line::ToolMessage;
     use crate::ui_egui::tree_compare::pending_pairs;
     use crate::ui_egui::tree_cursor::{CursorRequest, TreeCursor};
     use crate::ui_egui::tree_filter::{DiffFilter, arrange_two_folder_rows};
     use crate::ui_egui::tree_sort::{SortKey, TreeSort, sort_two_folder_rows};
     use zcommon::path::split_path;
     use zcommon::ui_egui::pathbar::PathBarAction;
-    use zhashdiff::external_diff_tool::DiffToolConfig;
+    use zhashdiff::external_diff_tool::{DiffTool, DiffToolConfig};
 
     use std::cell::Cell;
     use std::collections::HashMap;
@@ -2914,7 +2938,14 @@ mod tests {
         assert!(cursor_sees_collapsed(&left, &right), "left side only");
 
         let expand = CursorRequest::Expand("sub".to_string());
-        apply_cursor_request(Some(&mut left), Some(&mut right), &rows, &expand, &config);
+        apply_cursor_request(
+            Some(&mut left),
+            Some(&mut right),
+            &rows,
+            &expand,
+            &config,
+            &mut None,
+        );
         assert!(!left.is_collapsed(left_sub) && !right.is_collapsed(right_sub));
         assert!(!cursor_sees_collapsed(&left, &right));
 
@@ -2922,8 +2953,85 @@ mod tests {
         assert!(cursor_sees_collapsed(&left, &right), "right side only");
 
         let collapse = CursorRequest::Collapse("sub".to_string());
-        apply_cursor_request(Some(&mut left), Some(&mut right), &rows, &collapse, &config);
+        apply_cursor_request(
+            Some(&mut left),
+            Some(&mut right),
+            &rows,
+            &collapse,
+            &config,
+            &mut None,
+        );
         assert!(left.is_collapsed(left_sub) && right.is_collapsed(right_sub));
+    }
+
+    fn missing_tool_config(kinds: Vec<FileKind>, mark_undiffable: bool) -> DiffToolConfig {
+        DiffToolConfig {
+            tools: vec![DiffTool {
+                name: "Missing".to_string(),
+                exe_path: "zhashdiff-test-missing-tool.exe".into(),
+                template: "{left} {right}".to_string(),
+                kinds,
+            }],
+            rules: Vec::new(),
+            default_tool: "Missing".to_string(),
+            mark_undiffable,
+        }
+    }
+
+    fn open_b_txt(config: &DiffToolConfig) -> Option<ToolMessage> {
+        let (left_dir, right_dir) = two_folder_trees();
+        let mut left = load_view(left_dir.path());
+        let mut right = load_view(right_dir.path());
+        let rows = build_counting(&left, &right, &mut PairStates::default(), &Cell::new(0));
+        let mut message = Some(ToolMessage {
+            warning: Some("stale".to_string()),
+            error: None,
+        });
+        let open = CursorRequest::Open("b.txt".to_string());
+        apply_cursor_request(
+            Some(&mut left),
+            Some(&mut right),
+            &rows,
+            &open,
+            config,
+            &mut message,
+        );
+        message
+    }
+
+    #[test]
+    fn a_tool_that_is_not_found_reports_the_places_searched() {
+        let message = open_b_txt(&missing_tool_config(vec![FileKind::Text], true)).unwrap();
+        assert_eq!(message.warning, None);
+        let error = message.error.unwrap();
+        assert!(
+            error.contains("zhashdiff-test-missing-tool.exe not found, searched: "),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn a_missing_default_tool_is_reported() {
+        let config = DiffToolConfig {
+            default_tool: "Nothing".to_string(),
+            ..missing_tool_config(vec![FileKind::Text], false)
+        };
+        let message = open_b_txt(&config).unwrap();
+        assert_eq!(message.warning, None);
+        assert!(message.error.unwrap().contains("\"Nothing\" is missing"));
+    }
+
+    #[test]
+    fn opening_a_marked_row_warns_with_the_tool_and_the_kind() {
+        let message = open_b_txt(&missing_tool_config(vec![FileKind::Image], true)).unwrap();
+        assert_eq!(
+            message.warning.as_deref(),
+            Some("b.txt: opening anyway, Missing can't diff Text files")
+        );
+        assert!(message.error.is_some());
+
+        let unmarked = open_b_txt(&missing_tool_config(vec![FileKind::Image], false)).unwrap();
+        assert_eq!(unmarked.warning, None);
     }
 
     #[test]
@@ -3223,7 +3331,14 @@ mod tests {
                 return visited;
             };
             for request in &expand {
-                apply_cursor_request(Some(&mut *left), Some(&mut *right), rows, request, &config);
+                apply_cursor_request(
+                    Some(&mut *left),
+                    Some(&mut *right),
+                    rows,
+                    request,
+                    &config,
+                    &mut None,
+                );
             }
             let rel_path = moved.rel_path().unwrap().to_owned();
             let drawn = two_folder_cursor_rows(Some(left), Some(right), rows, flat)

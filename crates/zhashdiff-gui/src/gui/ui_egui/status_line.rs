@@ -22,6 +22,12 @@ pub struct RowCounts {
     pub pending: usize,
 }
 
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ToolMessage {
+    pub warning: Option<String>,
+    pub error: Option<String>,
+}
+
 /// Files, plus folders on one side only; a folder on both sides only aggregates its files.
 pub fn count_rows(rows: &[VisibleRowTwoFolderDiff]) -> RowCounts {
     let mut counts = RowCounts::default();
@@ -77,6 +83,20 @@ pub fn ui_status_summary(
                     }
                 }
             }
+        }
+    });
+}
+
+pub fn ui_tool_message(ui: &mut egui::Ui, message: Option<&ToolMessage>) {
+    let Some(message) = message else {
+        return;
+    };
+    ui.horizontal(|ui| {
+        if let Some(warning) = &message.warning {
+            ui.colored_label(ui.visuals().warn_fg_color, warning);
+        }
+        if let Some(error) = &message.error {
+            ui.colored_label(ui.visuals().error_fg_color, error);
         }
     });
 }

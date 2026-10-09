@@ -15,6 +15,7 @@ use crate::ui_egui::{
     fs_tree::{DiffState, FileSystemView, draw_ui_two_folder_tree_with_diff},
     panes::{PathDiffView, ZAppPane},
     roots::{Side, set_root},
+    status_line::ToolMessage,
     tree_cursor::TreeCursor,
     tree_filter::DiffFilter,
     tree_sort::TreeSort,
@@ -25,6 +26,7 @@ pub struct PathDiffPaneCtx<'a, 'b> {
 
     // User Interaction State
     pub diff_tool_config: &'a DiffToolConfig,
+    pub tool_message: &'a mut Option<ToolMessage>,
     pub path_filter: &'a mut PathFilter,
     pub filter_presets: &'a mut FilterPresets,
     pub tree_sort: &'a mut TreeSort,
@@ -196,6 +198,7 @@ impl PathDiffPane {
                     &mut self.open_dir_window_1,
                     &mut self.open_dir_window_2,
                     &ctx.diff_tool_config,
+                    ctx.tool_message,
                     &mut self.cursor,
                     ctx.tree_sort,
                     ctx.keyboard_taken,

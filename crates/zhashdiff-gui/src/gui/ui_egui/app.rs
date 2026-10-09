@@ -26,7 +26,7 @@ use crate::ui_egui::{
     panes::{Pane, PathDiffView, TreeBehavior},
     path_diff_pane::{FilterPresets, PathDiffPane},
     roots::{LaunchArgs, Side, apply_launch_args, clear_root, set_root},
-    status_line::{ScanSummary, ui_status_summary},
+    status_line::{ScanSummary, ToolMessage, ui_status_summary, ui_tool_message},
     tools_window::ToolsWindow,
     tree_compare::{CompareUpdate, TreeCompare, patch_row_states},
     tree_filter::{DiffFilter, arrange_two_folder_rows},
@@ -83,6 +83,8 @@ pub struct AppStateCtx {
     conflict_map_resolved: HashMap<String, PathBuf>,
 
     diff_config: DiffToolConfig,
+    #[serde(skip)]
+    tool_message: Option<ToolMessage>,
 }
 
 impl AppStateCtx {
@@ -754,6 +756,7 @@ impl ZApp {
                     &mut app_ctx.file_system_2_scan,
                 );
                 ui_compare_progress(ui, &mut app_ctx.tree_compare);
+                ui_tool_message(ui, app_ctx.tool_message.as_ref());
             });
         } else if shown {
             egui::TopBottomPanel::bottom("status_line").show(ctx, |ui| {
@@ -766,6 +769,7 @@ impl ZApp {
                     ],
                     app_ctx.tree_compare.compare_time(),
                 );
+                ui_tool_message(ui, app_ctx.tool_message.as_ref());
             });
         }
         egui::CentralPanel::default().show(ctx, |ui| {
@@ -793,6 +797,7 @@ impl ZApp {
                     diff_action_pressed: &mut diff_action_triggered,
 
                     diff_tool_config: &app_ctx.diff_config,
+                    tool_message: &mut app_ctx.tool_message,
                     path_filter: &mut app_ctx.path_filter,
                     filter_presets: &mut app_ctx.filter_presets,
                     tree_sort: &mut app_ctx.tree_sort,
