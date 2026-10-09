@@ -796,7 +796,7 @@ impl ZApp {
                         self.keybindings_window.open = true;
                     }
                     if ui.button("Style").clicked() {
-                        self.style_window.open = true;
+                        self.style_window.open(ui.ctx());
                     }
                 });
 

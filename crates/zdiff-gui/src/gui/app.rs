@@ -587,7 +587,7 @@ impl<'a> ZApp {
                             self.open_viewers_window = true;
                         }
                         if ui.button("Style").clicked() {
-                            self.style_window.open = true;
+                            self.style_window.open(ui.ctx());
                         }
                     });
 

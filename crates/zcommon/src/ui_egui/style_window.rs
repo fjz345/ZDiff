@@ -67,7 +67,7 @@ fn publish(ctx: &egui::Context, style: &Style) {
 
 #[derive(Default)]
 pub struct StyleWindow {
-    pub open: bool,
+    open: bool,
     style: Style,
     path: Option<PathBuf>,
     dirty: bool,
@@ -87,6 +87,14 @@ impl StyleWindow {
         };
         self.dirty = false;
         publish(ctx, &self.style);
+    }
+
+    // Reloads first: the other app may have saved since this one loaded, and a save writes it all.
+    pub fn open(&mut self, ctx: &egui::Context) {
+        if !self.open && !self.dirty {
+            self.load(ctx);
+        }
+        self.open = true;
     }
 
     // Call every frame, open or not: a change is written once the pointer is released.
