@@ -118,6 +118,7 @@ impl Role for FileRole {
                 | FileRole::InsertChangedChars
                 | FileRole::GotoRow
                 | FileRole::Find
+                | FileRole::FindCurrent
                 | FileRole::Occurrence
         )
     }
