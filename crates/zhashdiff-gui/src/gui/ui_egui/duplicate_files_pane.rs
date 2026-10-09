@@ -1804,15 +1804,20 @@ mod tests {
         assert_eq!((keeper, pending_x), (false, false));
         assert_eq!(file(root.join("y.txt")).0, xx_id);
 
+        let same_members = [
+            root.join("a.txt"),
+            root.join("b.txt"),
+            root.join("e.txt"),
+            root.join("sub").join("c.txt"),
+        ];
+        let xx_members = [root.join("y.txt"), root.join("sub").join("x.txt")];
         let first_in_tree = view
             .file_system
             .iter_tree()
             .map(|(_, node, _)| node.as_path().as_ref().to_path_buf())
-            .find(|path| {
-                path.ends_with("a.txt") || path.ends_with("x.txt") || path.ends_with("y.txt")
-            })
+            .find(|path| same_members.contains(path) || xx_members.contains(path))
             .unwrap();
-        let expected = if first_in_tree.ends_with("a.txt") {
+        let expected = if same_members.contains(&first_in_tree) {
             (1, 2)
         } else {
             (2, 1)
