@@ -304,9 +304,11 @@ impl FileProcessor {
                 log::debug!("is_root_depot {:?}", root.is_depot());
                 let mut new_path = root.clone();
                 new_path.append(path.clone());
-                // append keeps the root's kind, which would drop the path's revision.
-                if let (UniversalPath::Local(joined), UniversalPath::Git(_, rev)) =
-                    (&new_path, &path)
+                // append keeps the root's kind and revision; the path's own revision wins.
+                if let (
+                    UniversalPath::Local(joined) | UniversalPath::Git(joined, _),
+                    UniversalPath::Git(_, rev),
+                ) = (&new_path, &path)
                 {
                     new_path = UniversalPath::Git(joined.clone(), rev.clone());
                 }
@@ -797,11 +799,12 @@ mod tests {
     }
 
     #[test]
-    fn git_path_keeps_its_revision_under_a_local_root() {
+    fn git_path_keeps_its_revision_under_a_root() {
         let rev = GitRev::Rev("main".into());
         for (root, path, expected) in [
             ("", r"C:\repo\a.rs", r"C:\repo\a.rs"),
             (r"C:\repo", r"C:\repo\a.rs", r"C:\repo\a.rs"),
+            (r"C:\repo@git:dev", r"C:\repo\a.rs", r"C:\repo\a.rs"),
         ] {
             let mut file = FileProcessor::new();
             file.set_root(UniversalPath::new(root));
