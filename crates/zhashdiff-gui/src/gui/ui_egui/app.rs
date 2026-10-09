@@ -836,6 +836,7 @@ impl ZApp {
                         app_ctx.file_system_2_scan.shown(),
                     ],
                     app_ctx.tree_compare.compare_time(),
+                    app_ctx.tolerance.enabled,
                 );
                 ui_tool_message(ui, app_ctx.tool_message.as_ref());
             });

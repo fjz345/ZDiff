@@ -19,6 +19,7 @@ pub struct RowCounts {
     pub only_in_1: usize,
     pub only_in_2: usize,
     pub same: usize,
+    pub similar: usize,
     pub pending: usize,
 }
 
@@ -36,8 +37,9 @@ pub fn count_rows(rows: &[VisibleRowTwoFolderDiff]) -> RowCounts {
             DiffState::OnlyInFirst(..) => &mut counts.only_in_1,
             DiffState::OnlyInSecond(..) => &mut counts.only_in_2,
             _ if row.is_dir => continue,
-            DiffState::Different(..) | DiffState::Similar(..) => &mut counts.different,
+            DiffState::Different(..) => &mut counts.different,
             DiffState::Same(..) => &mut counts.same,
+            DiffState::Similar(..) => &mut counts.similar,
             DiffState::Pending(..) => &mut counts.pending,
         };
         *count += 1;
@@ -45,20 +47,29 @@ pub fn count_rows(rows: &[VisibleRowTwoFolderDiff]) -> RowCounts {
     counts
 }
 
+fn counts_text(counts: &RowCounts, tolerance_on: bool) -> String {
+    let similar = if tolerance_on {
+        format!(", {} similar", counts.similar)
+    } else {
+        String::new()
+    };
+    format!(
+        "{} different, {} only in 1, {} only in 2, {} same{similar}, {} pending",
+        counts.different, counts.only_in_1, counts.only_in_2, counts.same, counts.pending
+    )
+}
+
 pub fn ui_status_summary(
     ui: &mut egui::Ui,
     rows: Option<&[VisibleRowTwoFolderDiff]>,
     scans: [Option<&ScanSummary>; 2],
     compare_time: Option<Duration>,
+    tolerance_on: bool,
 ) {
     let sides = [Side::Folder1, Side::Folder2];
     ui.horizontal(|ui| {
         if let Some(rows) = rows {
-            let counts = count_rows(rows);
-            ui.label(format!(
-                "{} different, {} only in 1, {} only in 2, {} same, {} pending",
-                counts.different, counts.only_in_1, counts.only_in_2, counts.same, counts.pending
-            ));
+            ui.label(counts_text(&count_rows(rows), tolerance_on));
             ui.separator();
         }
         let mut times: Vec<String> = sides
@@ -103,10 +114,17 @@ pub fn ui_tool_message(ui: &mut egui::Ui, message: Option<&ToolMessage>) {
 
 #[cfg(test)]
 mod tests {
-    use super::{RowCounts, count_rows};
-    use crate::ui_egui::fs_tree::{DiffState, VisibleRowTwoFolderDiff};
+    use std::{collections::HashMap, fs, path::Path, sync::Arc};
+
+    use tempfile::tempdir;
+    use zcommon::kinds::KindTable;
+    use zhashdiff::{comparison::PairState, filter::PathFilter, fs::FileSystemModel};
+
+    use super::{RowCounts, count_rows, counts_text};
+    use crate::ui_egui::fs_tree::{DiffState, FileSystemView, VisibleRowTwoFolderDiff};
     use crate::ui_egui::tree_filter::{DiffFilter, arrange_two_folder_rows};
     use crate::ui_egui::tree_sort::TreeSort;
+    use crate::ui_egui::tree_tolerance::{SizeDelta, Tolerance};
 
     fn row(rel_path: &str, is_dir: bool, diff_state: DiffState) -> VisibleRowTwoFolderDiff {
         VisibleRowTwoFolderDiff {
@@ -156,6 +174,7 @@ mod tests {
                 only_in_1: 2,
                 only_in_2: 2,
                 same: 2,
+                similar: 0,
                 pending: 1,
             }
         );
@@ -170,6 +189,7 @@ mod tests {
                 only_in_1: 2,
                 only_in_2: 2,
                 same: 0,
+                similar: 0,
                 pending: 1,
             }
         );
@@ -184,8 +204,123 @@ mod tests {
                 only_in_1: 1,
                 only_in_2: 1,
                 same: 0,
+                similar: 0,
                 pending: 1,
             }
+        );
+    }
+
+    fn write_files(root: &Path, files: &[(&str, &str)]) {
+        for (rel_path, content) in files {
+            let path = root.join(rel_path);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, content).unwrap();
+        }
+    }
+
+    fn load_view(root: &Path) -> FileSystemView {
+        FileSystemView::new(Arc::new(FileSystemModel::new(root).unwrap()))
+    }
+
+    #[test]
+    fn counts_similar_files_with_tolerance_on_and_none_with_it_off() {
+        let (left_dir, right_dir) = (tempdir().unwrap(), tempdir().unwrap());
+        write_files(
+            left_dir.path(),
+            &[
+                ("same.txt", "same"),
+                ("far.txt", "a"),
+                ("sub/near.txt", "aaaa"),
+                ("sub/near2.txt", "bbbb"),
+                ("left_only.txt", "l"),
+            ],
+        );
+        write_files(
+            right_dir.path(),
+            &[
+                ("same.txt", "same"),
+                ("far.txt", "aaaaaaaa"),
+                ("sub/near.txt", "aaab"),
+                ("sub/near2.txt", "bbbbb"),
+            ],
+        );
+        let left = load_view(left_dir.path());
+        let right = load_view(right_dir.path());
+        let states = HashMap::from([
+            ("same.txt", PairState::Same),
+            ("far.txt", PairState::Different),
+            ("sub/near.txt", PairState::Different),
+            ("sub/near2.txt", PairState::Different),
+        ]);
+        let on = Tolerance {
+            enabled: true,
+            max_size_delta: SizeDelta::Bytes(1),
+            ..Tolerance::default()
+        };
+        let counts = |tolerance: &Tolerance| {
+            count_rows(
+                &FileSystemView::build_two_folder_diff_rows(
+                    Some(&left),
+                    Some(&right),
+                    &PathFilter::default(),
+                    &KindTable::default(),
+                    tolerance,
+                    |rel_path, _| states.get(rel_path).copied(),
+                    |_, _| None,
+                )
+                .unwrap(),
+            )
+        };
+
+        assert_eq!(
+            counts(&on),
+            RowCounts {
+                different: 1,
+                only_in_1: 1,
+                only_in_2: 0,
+                same: 1,
+                similar: 2,
+                pending: 0,
+            }
+        );
+        let off = Tolerance {
+            enabled: false,
+            ..on
+        };
+        assert_eq!(
+            counts(&off),
+            RowCounts {
+                different: 3,
+                only_in_1: 1,
+                only_in_2: 0,
+                same: 1,
+                similar: 0,
+                pending: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn the_similar_count_is_shown_only_with_tolerance_on() {
+        let counts = RowCounts {
+            different: 1,
+            only_in_1: 2,
+            only_in_2: 3,
+            same: 4,
+            similar: 5,
+            pending: 6,
+        };
+        assert_eq!(
+            counts_text(&counts, true),
+            "1 different, 2 only in 1, 3 only in 2, 4 same, 5 similar, 6 pending"
+        );
+        let off = RowCounts {
+            similar: 0,
+            ..counts
+        };
+        assert_eq!(
+            counts_text(&off, false),
+            "1 different, 2 only in 1, 3 only in 2, 4 same, 6 pending"
         );
     }
 }
