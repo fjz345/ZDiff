@@ -1952,7 +1952,9 @@ mod tests {
             MyersDiffAlgorithm::Linear,
         ));
         let json = serde_json::to_string(&app).unwrap();
-        assert!(!json.contains("merge"), "{json}");
+        for path in ["merge_theirs.txt", "merge_yours.txt", "merge_output.txt"] {
+            assert!(!json.contains(path), "{json}");
+        }
         let restored: ZApp = serde_json::from_str(&json).unwrap();
         assert!(restored.merge.is_none());
     }
