@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use crate::{
-    browser::{BrowserAction, FolderBrowser, LocalFolder},
+    browser::{BrowserAction, DepotFolder, FolderBrowser, FolderSource, LocalFolder},
     clamped_cursor::ClampedCursor,
     diff_ctx::{
         BlockToggle, DiffRows, DiffStageTimes, FindHit, MinimalDiffCtx, ScrollSpan, insert_pin,
@@ -1068,17 +1068,14 @@ impl FileDiffPane {
             .enumerate()
         {
             if let Some(folder) = browse[i].take() {
-                if UniversalPath::from(folder.as_str()).is_depot() {
-                    log::debug!("Depot folders can't be browsed yet: {folder}");
-                } else if let Some(browser) = &mut self.browsers[i] {
-                    browser.navigate(&egui_ctx, folder);
-                } else {
-                    self.browsers[i] = Some(FolderBrowser::open(
-                        &egui_ctx,
-                        folder,
-                        Arc::new(LocalFolder),
-                    ));
-                }
+                // Opened anew even when one is open: the side may have switched local <-> depot.
+                let source: Arc<dyn FolderSource> =
+                    if UniversalPath::from(folder.as_str()).is_depot() {
+                        Arc::new(DepotFolder)
+                    } else {
+                        Arc::new(LocalFolder)
+                    };
+                self.browsers[i] = Some(FolderBrowser::open(&egui_ctx, folder, source));
             }
             // The table and its path bars are skipped while no diff is shown.
             let Some(browser) = self.browsers[i]
@@ -2611,6 +2608,18 @@ mod tests {
                 ),
                 [file_path_request(picked, &left, Some(&root)), None]
             );
+        }
+
+        #[test]
+        fn a_picked_depot_file_opens_at_head() {
+            let left = UniversalPath::from("//depot/main/a.rs#3");
+            let right = UniversalPath::from(r"C:\ws\b.rs");
+            for picked in ["//depot/main/a.rs", "//depot/main/c.rs"] {
+                assert_eq!(
+                    browser_pick(ActiveSide::Left, picked, [&left, &right], [None, None]),
+                    [Some(UniversalPath::Depot(picked.into(), None)), None]
+                );
+            }
         }
     }
 

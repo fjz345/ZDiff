@@ -327,6 +327,46 @@ pub fn local_path_of_depot_file(
         .ok_or_else(|| format!("{depot_path} is not mapped to the workspace"))
 }
 
+/// The `key value` fields of each record in tagged output; the value is the rest of the line.
+fn ztag_records(ztag: &str) -> Vec<Vec<(&str, &str)>> {
+    let mut records = Vec::new();
+    let mut fields = Vec::new();
+    for line in ztag.lines().chain([""]) {
+        if let Some(field) = line.strip_prefix("... ") {
+            fields.push(field.split_once(' ').unwrap_or((field, "")));
+        } else if line.trim().is_empty() && !fields.is_empty() {
+            records.push(std::mem::take(&mut fields));
+        }
+    }
+    records
+}
+
+fn ztag_field<'a>(record: &[(&str, &'a str)], key: &str) -> Option<&'a str> {
+    record
+        .iter()
+        .find(|(k, _)| *k == key)
+        .map(|(_, value)| *value)
+}
+
+/// The folders in `p4 -ztag dirs` output.
+pub fn parse_dirs(ztag: &str) -> Vec<String> {
+    ztag_records(ztag)
+        .iter()
+        .filter_map(|record| ztag_field(record, "dir"))
+        .map(str::to_owned)
+        .collect()
+}
+
+/// The files in `p4 -ztag files` output, leaving out those deleted at head.
+pub fn parse_files_at_head(ztag: &str) -> Vec<String> {
+    ztag_records(ztag)
+        .iter()
+        .filter(|record| !matches!(ztag_field(record, "action"), Some("delete" | "move/delete")))
+        .filter_map(|record| ztag_field(record, "depotFile"))
+        .map(str::to_owned)
+        .collect()
+}
+
 /// What a failed command reports: stderr, else stdout, else the exit status.
 fn failure_text(stderr: &[u8], stdout: &[u8], status: impl std::fmt::Display) -> String {
     [stderr, stdout]
@@ -836,6 +876,64 @@ mod tests {
         let p4 = FakeP4::new(|_: &[&str]| panic!("p4 must not run"));
         let local = UniversalPath::Local(PathBuf::from(r"C:\ws\a.txt"));
         assert!(local_path_of_depot_file(&local, &p4).is_err());
+    }
+
+    #[test]
+    fn dirs_output_gives_the_folders_with_spaces() {
+        let ztag = "... dir //depot/main/my src\n\
+                    \n\
+                    ... dir //depot/main/docs\n";
+        assert_eq!(
+            parse_dirs(ztag),
+            ["//depot/main/my src", "//depot/main/docs"]
+        );
+        assert_eq!(
+            parse_dirs(&ztag.replace('\n', "\r\n")),
+            ["//depot/main/my src", "//depot/main/docs"]
+        );
+        assert!(parse_dirs("").is_empty());
+    }
+
+    #[test]
+    fn files_output_leaves_out_files_deleted_at_head() {
+        let record = |path: &str, action: &str| {
+            format!(
+                "... depotFile {path}\n\
+                 ... rev 4\n\
+                 ... change 1234\n\
+                 ... action {action}\n\
+                 ... type text\n\
+                 ... time 1700000000\n\
+                 \n"
+            )
+        };
+        let ztag: String = [
+            ("//depot/main/a b.txt", "edit"),
+            ("//depot/main/gone.txt", "delete"),
+            ("//depot/main/added.txt", "add"),
+            ("//depot/main/moved_away.txt", "move/delete"),
+            ("//depot/main/moved_here.txt", "move/add"),
+            ("//depot/main/branched.txt", "branch"),
+            ("//depot/main/merged.txt", "integrate"),
+        ]
+        .iter()
+        .map(|(path, action)| record(path, action))
+        .collect();
+        let live = [
+            "//depot/main/a b.txt",
+            "//depot/main/added.txt",
+            "//depot/main/moved_here.txt",
+            "//depot/main/branched.txt",
+            "//depot/main/merged.txt",
+        ];
+        assert_eq!(parse_files_at_head(&ztag), live);
+        assert_eq!(parse_files_at_head(&ztag.replace('\n', "\r\n")), live);
+        assert_eq!(
+            parse_files_at_head(ztag.trim_end()),
+            live,
+            "no blank line after the last record"
+        );
+        assert!(parse_files_at_head("").is_empty());
     }
 
     #[test]

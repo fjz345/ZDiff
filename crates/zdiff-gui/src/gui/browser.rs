@@ -5,6 +5,9 @@ use zcommon::{
     path::split_path,
     ui_egui::pathbar::{PathBarAction, path_bar},
 };
+use zdiff::universal_path::UniversalPath;
+
+use crate::p4::{P4Command, P4Runner, parse_dirs, parse_files_at_head};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BrowserEntry {
@@ -37,6 +40,31 @@ impl FolderSource for LocalFolder {
         }
         Ok(entries)
     }
+}
+
+pub struct DepotFolder;
+
+impl FolderSource for DepotFolder {
+    fn list(&self, folder: &str) -> Result<Vec<BrowserEntry>, String> {
+        let p4 = P4Command::new(false).for_file(UniversalPath::Depot(folder.to_owned(), None));
+        depot_listing(folder, &p4)
+    }
+}
+
+fn depot_listing(folder: &str, p4: &impl P4Runner) -> Result<Vec<BrowserEntry>, String> {
+    let children = format!("{}/*", folder.trim_end_matches('/'));
+    let dirs = parse_dirs(&p4.run(&["-ztag", "dirs", &children])?);
+    let files = parse_files_at_head(&p4.run(&["-ztag", "files", &children])?);
+    let entry = |path: String, is_dir: bool| BrowserEntry {
+        name: path.rsplit('/').next().unwrap_or_default().to_owned(),
+        path,
+        is_dir,
+    };
+    Ok(dirs
+        .into_iter()
+        .map(|path| entry(path, true))
+        .chain(files.into_iter().map(|path| entry(path, false)))
+        .collect())
 }
 
 /// Folders first, then files, each by name ignoring case.
@@ -231,8 +259,13 @@ mod tests {
     use std::{fs, sync::Arc};
 
     use eframe::egui;
+    use zdiff::universal_path::UniversalPath;
 
-    use super::{BrowserAction, BrowserEntry, FolderBrowser, LocalFolder, listing, parent_folder};
+    use super::{
+        BrowserAction, BrowserEntry, FolderBrowser, LocalFolder, depot_listing, listing,
+        parent_folder,
+    };
+    use crate::p4::FakeP4;
 
     fn tree() -> tempfile::TempDir {
         let dir = tempfile::tempdir().unwrap();
@@ -276,6 +309,68 @@ mod tests {
         let missing = dir.path().join("missing");
         let error = listing(&LocalFolder, &missing.to_string_lossy()).unwrap_err();
         assert!(error.contains(&*missing.to_string_lossy()), "{error}");
+    }
+
+    fn depot_entry(path: &str, is_dir: bool) -> BrowserEntry {
+        BrowserEntry {
+            name: path.rsplit('/').next().unwrap().to_owned(),
+            path: path.to_owned(),
+            is_dir,
+        }
+    }
+
+    #[test]
+    fn depot_listing_has_the_folders_and_the_files_at_head() {
+        let p4 = FakeP4::new(|args: &[&str]| match args[1] {
+            "dirs" => Ok("... dir //depot/main/src\n\n".to_owned()),
+            "files" => Ok("... depotFile //depot/main/a b.txt\n\
+                           ... rev 2\n\
+                           ... action edit\n\
+                           \n\
+                           ... depotFile //depot/main/gone.txt\n\
+                           ... rev 3\n\
+                           ... action delete\n\
+                           \n"
+            .to_owned()),
+            _ => panic!("unexpected p4 {args:?}"),
+        });
+        assert_eq!(
+            depot_listing("//depot/main", &p4).unwrap(),
+            [
+                depot_entry("//depot/main/src", true),
+                depot_entry("//depot/main/a b.txt", false),
+            ]
+        );
+        assert_eq!(
+            p4.calls(),
+            [
+                ["-ztag", "dirs", "//depot/main/*"],
+                ["-ztag", "files", "//depot/main/*"],
+            ]
+        );
+    }
+
+    #[test]
+    fn an_empty_depot_folder_lists_nothing_and_a_p4_error_is_the_listing_error() {
+        let empty = FakeP4::new(|_: &[&str]| Ok(String::new()));
+        assert_eq!(depot_listing("//depot/main", &empty).unwrap(), []);
+
+        let failing = FakeP4::new(|_: &[&str]| Err("Connect to server failed".to_owned()));
+        let error = depot_listing("//depot/main", &failing).unwrap_err();
+        assert!(error.contains("Connect to server failed"), "{error}");
+    }
+
+    #[test]
+    fn a_picked_depot_file_has_no_revision() {
+        let p4 = FakeP4::new(|args: &[&str]| match args[1] {
+            "files" => Ok("... depotFile //depot/main/a.txt\n... rev 7\n... action edit\n".into()),
+            _ => Ok(String::new()),
+        });
+        let entries = depot_listing("//depot/main", &p4).unwrap();
+        assert_eq!(
+            UniversalPath::from(entries[0].path.as_str()),
+            UniversalPath::Depot("//depot/main/a.txt".into(), None)
+        );
     }
 
     #[test]
