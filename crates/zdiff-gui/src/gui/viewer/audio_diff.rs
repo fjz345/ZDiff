@@ -168,6 +168,10 @@ impl SampleDiffProcessor {
     }
 
     pub fn clear(&mut self) {
+        // Runs every frame while a side isn't decoded.
+        if self.inputs.is_none() && matches!(self.state, DiffState::Empty) {
+            return;
+        }
         self.stop();
         self.inputs = None;
         self.resampled_to = None;
@@ -441,6 +445,14 @@ mod tests {
 
         processor.clear();
         assert_eq!(processor.status_text(), None);
+    }
+
+    #[test]
+    fn dropping_an_empty_difference_changes_nothing() {
+        let mut processor = SampleDiffProcessor::default();
+        processor.update(None);
+        processor.clear();
+        assert_eq!(processor.generation, 0);
     }
 
     #[test]
