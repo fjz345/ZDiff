@@ -16,6 +16,7 @@ use zcommon::ffmpeg::{FfmpegPaths, MediaInfo, StreamKind, frame_at_args, probe, 
 use super::{
     hex::is_same_side,
     image::{self, DecodedImage, ImageDiffProcessor, ImageSide},
+    video_timeline::{self, VideoTimeline},
 };
 use crate::file::LoadedFile;
 
@@ -188,6 +189,7 @@ pub struct VideoFrameProcessor {
     time_secs: f64,
     channel: (mpsc::Sender<JobMessage>, mpsc::Receiver<JobMessage>),
     image: ImageDiffProcessor,
+    timeline: VideoTimeline,
 }
 
 impl Default for VideoFrameProcessor {
@@ -203,6 +205,7 @@ impl Default for VideoFrameProcessor {
             time_secs: 0.0,
             channel: mpsc::channel(),
             image: ImageDiffProcessor::default(),
+            timeline: VideoTimeline::default(),
         }
     }
 }
@@ -231,6 +234,7 @@ impl VideoFrameProcessor {
         self.fetching = [None, None];
         self.frames = [None, None];
         self.time_secs = 0.0;
+        self.timeline.clear();
         // A pending side keeps its shown image; the new pair must not show the old pair's frames.
         self.image
             .set_images([ImageSide::Empty, ImageSide::Empty], usize::MAX);
@@ -278,10 +282,30 @@ impl VideoFrameProcessor {
                 }
             }
         }
+        self.start_timeline();
+        self.timeline.poll();
         self.fetch_wanted();
         let sides = std::array::from_fn(|index| self.image_side(index));
         self.image.set_images(sides, max_texture_side);
         self.image.poll(max_texture_side);
+    }
+
+    fn start_timeline(&mut self) {
+        let (Some(ffmpeg), [Some(left), Some(right)]) =
+            (&self.ffmpeg, [self.track(0), self.track(1)])
+        else {
+            return;
+        };
+        if self.timeline.is_started() {
+            return;
+        }
+        let inputs = self.files.each_ref().map(|file| {
+            let file = file.as_ref().expect("a probed side has a file");
+            local_path(file)
+                .expect("a probed side is local")
+                .to_path_buf()
+        });
+        self.timeline.start(ffmpeg, inputs, [left, right]);
     }
 
     fn fetch_wanted(&mut self) {
@@ -405,6 +429,10 @@ pub fn show(ui: &mut egui::Ui, processor: &mut VideoFrameProcessor, left_width: 
             slider.surrender_focus();
         }
     });
+    if let Some(time) = video_timeline::show(ui, &mut processor.timeline, processor.time_secs, end)
+    {
+        processor.seek(time);
+    }
 
     let height = ui.text_style_height(&TextStyle::Monospace) + 4.0;
     let (_, row) = ui.allocate_space(vec2(ui.available_width(), height));
@@ -655,5 +683,28 @@ mod tests {
 
         processor.request([file("a.mp4"), file("b.mp4")], Some(&ffmpeg));
         assert_eq!(processor.image.status_text(), (String::new(), false));
+    }
+
+    #[test]
+    fn a_new_pair_drops_the_old_pairs_timeline() {
+        let file = |name: &str| {
+            Some(LoadedFile::Binary(Arc::new(crate::file::BinaryFile {
+                path: zdiff::universal_path::UniversalPath::from(name),
+                bytes: vec![0; 4],
+            })))
+        };
+        let ffmpeg = FfmpegPaths {
+            ffmpeg: "missing-ffmpeg".into(),
+            ffprobe: "missing-ffprobe".into(),
+        };
+        let mut processor = VideoFrameProcessor::default();
+        let tracks = [track(25.0, 25), track(25.0, 25)];
+        processor
+            .timeline
+            .start(&ffmpeg, ["a.mp4".into(), "b.mp4".into()], tracks);
+        assert!(processor.timeline.is_started());
+
+        processor.request([file("c.mp4"), file("d.mp4")], Some(&ffmpeg));
+        assert!(!processor.timeline.is_started());
     }
 }

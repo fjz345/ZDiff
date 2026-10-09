@@ -17,6 +17,7 @@ pub mod audio_spectrum;
 pub mod hex;
 pub mod image;
 pub mod video_frames;
+pub mod video_timeline;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
