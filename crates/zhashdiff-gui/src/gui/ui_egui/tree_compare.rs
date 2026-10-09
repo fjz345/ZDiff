@@ -206,6 +206,7 @@ pub struct TreeCompare {
     cache: PairCompareCache,
     job: Option<CompareJob>,
     cancelled: bool,
+    compare_time: Option<Duration>,
 }
 
 impl TreeCompare {
@@ -218,6 +219,7 @@ impl TreeCompare {
             self.states.clear();
             self.job = None;
             self.cancelled = false;
+            self.compare_time = None;
         }
     }
 
@@ -250,7 +252,9 @@ impl TreeCompare {
         now: Instant,
     ) {
         let pairs = pending_pairs(rows, views);
-        self.job = (!self.cancelled && !pairs.is_empty()).then(|| CompareJob::start(pairs, now));
+        let started = self.job.as_ref().map_or(now, |job| job.started);
+        self.job =
+            (!self.cancelled && !pairs.is_empty()).then(|| CompareJob::start(pairs, started));
     }
 
     /// The rows keep their remaining pairs Pending.
@@ -269,6 +273,11 @@ impl TreeCompare {
     pub fn progress(&self) -> Option<(usize, usize)> {
         let job = self.job.as_ref().filter(|_| !self.cancelled)?;
         Some((job.received, job.pairs.len()))
+    }
+
+    /// Of the last compare of the shown trees, finished or cancelled.
+    pub fn compare_time(&self) -> Option<Duration> {
+        self.compare_time
     }
 
     pub fn poll(&mut self, now: Instant) -> CompareUpdate {
@@ -292,10 +301,12 @@ impl TreeCompare {
         }
         let total = job.pairs.len();
         if self.cancelled || disconnected || job.received == total {
+            let elapsed = now.saturating_duration_since(job.started);
+            self.compare_time = Some(elapsed);
             let message = format!(
                 "Compared {} of {total} file pairs in {} ms",
                 job.received,
-                now.saturating_duration_since(job.started).as_millis()
+                elapsed.as_millis()
             );
             if job.received == total {
                 log::info!("{message}");
@@ -341,9 +352,11 @@ fn apply_result(
 #[cfg(test)]
 impl TreeCompare {
     pub fn pause(&mut self, now: Instant) -> (mpsc::Sender<(usize, PairCompare)>, Vec<String>) {
-        let pairs = self.job.take().expect("a running compare").pairs.to_vec();
+        let running = self.job.take().expect("a running compare");
+        let pairs = running.pairs.to_vec();
         let rel_paths = pairs.iter().map(|pair| pair.rel_path.clone()).collect();
-        let (job, sender) = CompareJob::new(pairs, now);
+        let (mut job, sender) = CompareJob::new(pairs, now);
+        job.started = running.started;
         self.job = Some(job);
         (sender, rel_paths)
     }
@@ -607,5 +620,39 @@ mod tests {
         }
         assert_eq!(compare.poll(later), CompareUpdate::Finished);
         assert_eq!(compare.poll(later), CompareUpdate::Idle);
+    }
+
+    #[test]
+    fn the_compare_time_spans_restarts_and_lasts_until_the_trees_change() {
+        let (left_dir, right_dir) = trees();
+        let (left, right) = (load_view(left_dir.path()), load_view(right_dir.path()));
+        let mut compare = TreeCompare::default();
+        let rows = build(&mut compare, &left, &right);
+        let start = Instant::now();
+        compare.start(&rows, [Some(&left), Some(&right)], start);
+        compare.pause(start);
+        assert_eq!(compare.compare_time(), None);
+
+        let restart = start + Duration::from_secs(1);
+        compare.start(&rows, [Some(&left), Some(&right)], restart);
+        let (sender, paths) = compare.pause(restart);
+        for i in 0..paths.len() {
+            let result = PairCompare {
+                state: PairState::Same,
+                error: None,
+            };
+            sender.send((i, result)).unwrap();
+        }
+        let end = start + Duration::from_secs(3);
+        assert_eq!(compare.poll(end), CompareUpdate::Finished);
+        assert_eq!(compare.compare_time(), Some(Duration::from_secs(3)));
+
+        let rows = build(&mut compare, &left, &right);
+        compare.start(&rows, [Some(&left), Some(&right)], end);
+        assert_eq!(compare.compare_time(), Some(Duration::from_secs(3)));
+
+        let right = load_view(right_dir.path());
+        compare.retain_for([Some(&left), Some(&right)]);
+        assert_eq!(compare.compare_time(), None);
     }
 }

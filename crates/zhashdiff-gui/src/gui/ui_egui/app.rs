@@ -26,6 +26,7 @@ use crate::ui_egui::{
     panes::{Pane, PathDiffView, TreeBehavior},
     path_diff_pane::{FilterPresets, PathDiffPane},
     roots::{LaunchArgs, Side, apply_launch_args, clear_root, set_root},
+    status_line::{ScanSummary, ui_status_summary},
     tools_window::ToolsWindow,
     tree_compare::{CompareUpdate, TreeCompare, patch_row_states},
     tree_filter::{DiffFilter, arrange_two_folder_rows},
@@ -210,6 +211,7 @@ impl AppStateCtx {
 pub struct ScanJob {
     root: PathBuf,
     cancel: Arc<AtomicBool>,
+    started: Instant,
     found: Arc<AtomicUsize>,
     result: mpsc::Receiver<Option<io::Result<ScanOutput>>>,
 }
@@ -232,6 +234,7 @@ impl ScanJob {
             .expect("failed to spawn the folder scan thread");
         Self {
             root,
+            started: Instant::now(),
             cancel,
             found,
             result,
@@ -257,6 +260,7 @@ impl Drop for ScanJob {
 pub struct SideScan {
     job: Option<ScanJob>,
     rescan: bool,
+    shown: Option<ScanSummary>,
 }
 
 impl SideScan {
@@ -270,6 +274,11 @@ impl SideScan {
 
     pub fn is_scanning(&self) -> bool {
         self.job.is_some()
+    }
+
+    /// Of the scan the shown view came from.
+    pub fn shown(&self) -> Option<&ScanSummary> {
+        self.shown.as_ref()
     }
 }
 
@@ -373,6 +382,7 @@ pub(crate) fn update_side_scan(
         ScanAction::Clear => {
             scan.job = None;
             scan.rescan = false;
+            scan.shown = None;
             if view.take().is_some() {
                 *rows = None;
             }
@@ -398,9 +408,13 @@ pub(crate) fn update_side_scan(
     let job = scan.job.take().expect("checked above");
     match result {
         Some(Ok(output)) => {
-            for skipped in &output.skipped {
-                log::warn!("Skipped {}: {}", skipped.path.display(), skipped.reason);
+            if !output.skipped.is_empty() {
+                log::warn!("{side}: {} entries skipped", output.skipped.len());
             }
+            scan.shown = Some(ScanSummary {
+                elapsed: job.started.elapsed(),
+                skipped: output.skipped,
+            });
             *view = Some(install_scanned(view.as_ref(), output.model));
             *rows = None;
         }
@@ -719,11 +733,13 @@ impl ZApp {
         // Read before any widget runs: a single-line TextEdit gives up focus on Enter without
         // consuming the key, so a later check would hand that Enter to the tree cursor.
         let keyboard_taken = ctx.wants_keyboard_input();
-        if app_ctx.file_system_1_scan.is_scanning()
+        let working = app_ctx.file_system_1_scan.is_scanning()
             || app_ctx.file_system_2_scan.is_scanning()
-            || app_ctx.tree_compare.is_comparing()
-        {
-            egui::TopBottomPanel::bottom("scan_progress").show(ctx, |ui| {
+            || app_ctx.tree_compare.is_comparing();
+        let shown = app_ctx.file_system_model_1_view.is_some()
+            || app_ctx.file_system_model_2_view.is_some();
+        if working {
+            egui::TopBottomPanel::bottom("status_line").show(ctx, |ui| {
                 ui_scan_progress(
                     ui,
                     Side::Folder1,
@@ -739,6 +755,18 @@ impl ZApp {
                     &mut app_ctx.file_system_2_scan,
                 );
                 ui_compare_progress(ui, &mut app_ctx.tree_compare);
+            });
+        } else if shown {
+            egui::TopBottomPanel::bottom("status_line").show(ctx, |ui| {
+                ui_status_summary(
+                    ui,
+                    app_ctx.two_folder_diff_visible_rows.as_deref(),
+                    [
+                        app_ctx.file_system_1_scan.shown(),
+                        app_ctx.file_system_2_scan.shown(),
+                    ],
+                    app_ctx.tree_compare.compare_time(),
+                );
             });
         }
         egui::CentralPanel::default().show(ctx, |ui| {
