@@ -689,8 +689,7 @@ fn top_panes_ui(
                 ui.painter()
                     .rect_filled(bar, 0.0, ui.visuals().selection.bg_fill);
             }
-            let edited = matches!(resolution, Resolution::Edited(_));
-            if row.first && (kind != ChunkKind::Unchanged || edited) {
+            if row.first && kind != ChunkKind::Unchanged {
                 let strip = egui::Rect::from_min_size(
                     rect.min + egui::vec2(3.0 * pane_w + 4.0, 0.0),
                     egui::vec2(STRIP_WIDTH - 4.0, row_h),
@@ -792,6 +791,32 @@ fn output_ui(
                 }
             };
 
+            // Drawn even when scrolled away, so it keeps focus, and before the rows, so the
+            // toggle's auto id doesn't move with them.
+            let mut left_edit = false;
+            if let (Some(e), Some((range, h))) = (edit.as_mut(), &edit_rows) {
+                let rect = row_rect(range.start as f32 * row_h, *h);
+                toggle_at(ui, rect, e.chunk);
+                let mut box_ui =
+                    ui.new_child(UiBuilder::new().max_rect(rect.with_min_x(rect.min.x + gutter)));
+                let rows = merge::lines(&e.text).len().max(1);
+                let response = box_ui.add(
+                    egui::TextEdit::multiline(&mut e.text)
+                        .id(egui::Id::new("merge_chunk_edit").with(e.chunk))
+                        .code_editor()
+                        .desired_width(f32::INFINITY)
+                        .desired_rows(rows),
+                );
+                if std::mem::take(&mut e.focus) {
+                    response.request_focus();
+                }
+                left_edit = response.lost_focus();
+                if response.rect.height() != e.height {
+                    e.height = response.rect.height();
+                    ui.ctx().request_repaint();
+                }
+            }
+
             let visible = line_at(viewport.min.y)..(line_at(viewport.max.y) + 1).min(n);
             for i in visible {
                 if edit_rows
@@ -831,29 +856,7 @@ fn output_ui(
                     code_language,
                 );
             }
-
-            // Drawn even when scrolled away, so it keeps focus.
-            if let (Some(e), Some((range, h))) = (edit.as_mut(), &edit_rows) {
-                let rect = row_rect(range.start as f32 * row_h, *h);
-                toggle_at(ui, rect, e.chunk);
-                let mut box_ui =
-                    ui.new_child(UiBuilder::new().max_rect(rect.with_min_x(rect.min.x + gutter)));
-                let rows = merge::lines(&e.text).len().max(1);
-                let response = box_ui.add(
-                    egui::TextEdit::multiline(&mut e.text)
-                        .code_editor()
-                        .desired_width(f32::INFINITY)
-                        .desired_rows(rows),
-                );
-                if std::mem::take(&mut e.focus) {
-                    response.request_focus();
-                }
-                events.left_edit = response.lost_focus();
-                if response.rect.height() != e.height {
-                    e.height = response.rect.height();
-                    ui.ctx().request_repaint();
-                }
-            }
+            events.left_edit = left_edit;
         });
     events
 }
@@ -1553,6 +1556,28 @@ mod tests {
 
         doc.edit(1, "E\nF".to_string());
         assert_eq!(doc.output_text(), "1\nE\nF\n3\n");
+    }
+
+    #[test]
+    fn an_edit_may_leave_comments_strings_and_continuations_open() {
+        for text in [
+            "/* comment out\nfoo\n",
+            "s = \"open\nnext\n",
+            "r = r#\"raw\nnext\n",
+            "#define A \\\n",
+            "x \\",
+            "' open\n",
+        ] {
+            let mut doc = doc(Some("1\n2\n3\n"), "1\nT\n3\n", "1\nY\n3\n");
+            doc.edit(1, text.to_string());
+            let expected = format!("1\n{}\n3\n", text.trim_end_matches('\n'));
+            assert_eq!(doc.output_text(), expected);
+            assert_eq!(
+                doc.output_lines.len(),
+                merge::lines(doc.output_text()).len()
+            );
+            assert_eq!(doc.chunk_text(1).trim_end(), text.trim_end(), "{text:?}");
+        }
     }
 
     #[test]
