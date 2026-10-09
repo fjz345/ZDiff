@@ -611,8 +611,14 @@ pub enum TreeMode<'a, 'b> {
     SingleSide {
         pending_deletion: &'a HashSet<PathBuf>,
         column: NodeColumn<'a>,
+        /// Items appended to a row's right-click menu.
+        row_menu: &'a mut RowMenuItems<'a>,
+        /// The caller moved the cursor.
+        scroll_to_cursor: bool,
     },
 }
+
+pub type RowMenuItems<'a> = dyn FnMut(&mut egui::Ui, FsNodeId) + 'a;
 
 pub struct NodeColumn<'a> {
     pub header: &'a str,
@@ -723,7 +729,12 @@ pub fn draw_ui_folder_tree(
         let target = match action {
             FolderAction::NextDiff => cursor.next_diff(&cursor_rows),
             FolderAction::PrevDiff => cursor.prev_diff(&cursor_rows),
-            FolderAction::Refresh | FolderAction::OpenKeybindings | FolderAction::Find => continue,
+            FolderAction::Refresh
+            | FolderAction::OpenKeybindings
+            | FolderAction::Find
+            | FolderAction::KeepThis
+            | FolderAction::NextGroup
+            | FolderAction::PrevGroup => continue,
         };
         let Some((moved, expand)) = target else {
             log::info!("No more diffs");
@@ -758,6 +769,13 @@ pub fn draw_ui_folder_tree(
     let selected_row = drawn_rows
         .iter()
         .position(|&i| cursor.is_at(&cursor_rows[i].rel_path));
+    scroll_to_cursor |= matches!(
+        mode,
+        TreeMode::SingleSide {
+            scroll_to_cursor: true,
+            ..
+        }
+    );
     let scroll_to_row = selected_row.filter(|_| scroll_to_cursor);
 
     let row_count = drawn_rows.len();
@@ -808,12 +826,14 @@ pub fn draw_ui_folder_tree(
     let mut row_action = None;
     let mut chip_event = None;
 
-    let (mut two_folder, pending_deletion, mut node_column) = match mode {
-        TreeMode::TwoFolder(two_folder) => (Some(two_folder), None, None),
+    let (mut two_folder, pending_deletion, mut node_column, mut extra_menu) = match mode {
+        TreeMode::TwoFolder(two_folder) => (Some(two_folder), None, None, None),
         TreeMode::SingleSide {
             pending_deletion,
             column,
-        } => (None, Some(pending_deletion), Some(column)),
+            row_menu,
+            ..
+        } => (None, Some(pending_deletion), Some(column), Some(row_menu)),
     };
     let (find_matcher, match_path, find_chip_query) =
         two_folder
@@ -869,7 +889,14 @@ pub fn draw_ui_folder_tree(
                     paint_guides(ui, guides[side].row(i));
                 }
                 ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
-                let cell = render_side_cell(ui, &row, side, tool_message, layout);
+                let cell = render_side_cell(
+                    ui,
+                    &row,
+                    side,
+                    tool_message,
+                    layout,
+                    extra_menu.as_deref_mut(),
+                );
                 if cell.clicked {
                     clicked_row = Some(entry);
                 }
@@ -1743,6 +1770,7 @@ fn render_side_cell(
     side: usize,
     tool_message: &mut Option<ToolMessage>,
     layout: RowLayout,
+    extra_menu: Option<&mut RowMenuItems<'_>>,
 ) -> SideCell {
     let RowCell {
         views,
@@ -1820,6 +1848,9 @@ fn render_side_cell(
             let paths = nodes.map(|node| node.map(|n| n.as_path()));
             let paths = [0, 1].map(|i| paths[i].as_ref().map(|p| p.as_ref()));
             action = show_row_menu(ui, &menu, paths, menu_side);
+            if let (Some(extra_menu), Some(id)) = (extra_menu, ids[side]) {
+                extra_menu(ui, id);
+            }
         });
     }
     SideCell {

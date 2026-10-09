@@ -115,9 +115,6 @@ pub struct AppStateCtx {
     pub h_scroll_link: HScrollLink,
 
     #[serde(skip)]
-    pub active_conflict_hash: Option<String>,
-
-    #[serde(skip)]
     conflict_map: HashMap<String, Vec<PathBuf>>,
     #[serde(skip)]
     conflict_map_resolved: HashMap<String, PathBuf>,
@@ -973,7 +970,6 @@ impl ZApp {
                     log_buffer: self.log_buffer.clone(),
                     hash_service: &mut app_ctx.hash_service,
 
-                    active_conflict_hash: &mut app_ctx.active_conflict_hash,
                     conflict_map: &mut app_ctx.conflict_map,
                     conflict_map_resolved: &mut app_ctx.conflict_map_resolved,
                     diff_action_pressed: &mut diff_action_triggered,

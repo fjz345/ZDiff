@@ -19,6 +19,9 @@ pub enum FolderAction {
     Refresh,
     OpenKeybindings,
     Find,
+    KeepThis,
+    NextGroup,
+    PrevGroup,
 }
 
 impl Action for FolderAction {
@@ -29,6 +32,9 @@ impl Action for FolderAction {
             Self::Refresh,
             Self::OpenKeybindings,
             Self::Find,
+            Self::KeepThis,
+            Self::NextGroup,
+            Self::PrevGroup,
         ]
     }
 
@@ -39,6 +45,9 @@ impl Action for FolderAction {
             Self::Refresh => "refresh",
             Self::OpenKeybindings => "open_keybindings",
             Self::Find => "find",
+            Self::KeepThis => "keep_this",
+            Self::NextGroup => "next_group",
+            Self::PrevGroup => "prev_group",
         }
     }
 
@@ -49,6 +58,9 @@ impl Action for FolderAction {
             Self::Refresh => "Refresh",
             Self::OpenKeybindings => "Open Keybindings",
             Self::Find => "Find",
+            Self::KeepThis => "Keep this",
+            Self::NextGroup => "Next duplicate group",
+            Self::PrevGroup => "Previous duplicate group",
         }
     }
 
@@ -84,6 +96,18 @@ impl Action for FolderAction {
             }],
             Self::Find => &[Shortcut {
                 key: Key::F,
+                modifiers: CTRL,
+            }],
+            Self::KeepThis => &[Shortcut {
+                key: Key::K,
+                modifiers: CTRL,
+            }],
+            Self::NextGroup => &[Shortcut {
+                key: Key::Num4,
+                modifiers: CTRL,
+            }],
+            Self::PrevGroup => &[Shortcut {
+                key: Key::Num3,
                 modifiers: CTRL,
             }],
         }
@@ -160,7 +184,7 @@ mod tests {
             ),
             press(Key::Num1, CTRL | Modifiers::SHIFT, true, false),
             press(Key::ArrowUp, CTRL, true, false),
-            press(Key::Num3, CTRL, true, false),
+            press(Key::Num9, CTRL, true, false),
             press(Key::Num2, CTRL, false, false),
         ];
 
@@ -189,6 +213,27 @@ mod tests {
             [FolderAction::Refresh]
         );
         assert_eq!(FolderAction::Refresh.defaults()[0].format(), "F5");
+    }
+
+    #[test]
+    fn keep_and_group_jumps_read_ctrl_k_and_ctrl_digits_by_default() {
+        let press = |key| Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: CTRL,
+        };
+        let events = [press(Key::K), press(Key::Num4), press(Key::Num3)];
+
+        assert_eq!(
+            Keymap::<FolderAction>::default().dispatch(&events, false),
+            [
+                FolderAction::KeepThis,
+                FolderAction::NextGroup,
+                FolderAction::PrevGroup
+            ]
+        );
     }
 
     #[test]

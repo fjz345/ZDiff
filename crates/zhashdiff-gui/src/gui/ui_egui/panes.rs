@@ -39,7 +39,6 @@ pub struct TreeBehavior<'a, 'b> {
     pub path_diff_view: &'a mut PathDiffView<'b>,
 
     // Diff Action State
-    pub active_conflict_hash: &'a mut Option<String>,
     pub conflict_map: &'a mut HashMap<String, Vec<PathBuf>>,
     pub conflict_map_resolved: &'a mut HashMap<String, PathBuf>,
     pub diff_action_pressed: &'a mut bool,
@@ -91,10 +90,10 @@ impl<'a, 'b> TreeBehavior<'a, 'b> {
             tool_message: self.tool_message,
             keyboard_taken: self.keyboard_taken,
 
-            active_conflict_hash: self.active_conflict_hash,
             conflict_map: self.conflict_map,
             conflict_map_resolved: self.conflict_map_resolved,
             diff_action_pressed: self.diff_action_pressed,
+            actions: self.actions,
         }
     }
 }
