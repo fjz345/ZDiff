@@ -10,6 +10,7 @@ name = "zcommon"
 default = []
 gui = ["serde", "dep:eframe", "dep:egui_tiles", "dep:egui_extras"]
 serde = ["dep:serde"]
+test-util = []
 
 [dependencies]
 eframe = { version = "0.33.3", default-features = false, features = [
