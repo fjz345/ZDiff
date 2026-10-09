@@ -68,9 +68,9 @@ pub fn merge_request(fields: &[String; 4]) -> Result<MergeRequest, String> {
 }
 
 pub fn check_output(output: &UniversalPath) -> Result<(), String> {
-    match output.is_depot() {
-        true => Err("Output must be a local path".to_string()),
-        false => Ok(()),
+    match output.as_path() {
+        None => Err("Output must be a local path".to_string()),
+        Some(_) => Ok(()),
     }
 }
 

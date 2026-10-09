@@ -2840,5 +2840,14 @@ mod tests {
                 LaunchOutcome::Error("Output must be a local path".to_string())
             );
         }
+
+        #[test]
+        fn merge_into_a_git_revision_output_is_an_error() {
+            let (_, _, outcome) = launch(&["b", "t", "y", r"C:\repo\o.txt@git:main"]);
+            assert_eq!(
+                outcome,
+                LaunchOutcome::Error("Output must be a local path".to_string())
+            );
+        }
     }
 }
