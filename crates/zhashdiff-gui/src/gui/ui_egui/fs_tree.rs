@@ -697,7 +697,7 @@ pub fn draw_ui_two_folder_tree_with_diff(
         let target = match action {
             FolderAction::NextDiff => cursor.next_diff(&cursor_rows),
             FolderAction::PrevDiff => cursor.prev_diff(&cursor_rows),
-            FolderAction::OpenKeybindings => continue,
+            FolderAction::Refresh | FolderAction::OpenKeybindings => continue,
         };
         let Some((moved, expand)) = target else {
             log::info!("No more diffs");

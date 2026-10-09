@@ -16,18 +16,25 @@ const CTRL: Modifiers = Modifiers {
 pub enum FolderAction {
     NextDiff,
     PrevDiff,
+    Refresh,
     OpenKeybindings,
 }
 
 impl Action for FolderAction {
     fn all() -> &'static [Self] {
-        &[Self::NextDiff, Self::PrevDiff, Self::OpenKeybindings]
+        &[
+            Self::NextDiff,
+            Self::PrevDiff,
+            Self::Refresh,
+            Self::OpenKeybindings,
+        ]
     }
 
     fn name(self) -> &'static str {
         match self {
             Self::NextDiff => "next_diff",
             Self::PrevDiff => "prev_diff",
+            Self::Refresh => "refresh",
             Self::OpenKeybindings => "open_keybindings",
         }
     }
@@ -36,6 +43,7 @@ impl Action for FolderAction {
         match self {
             Self::NextDiff => "Next differing file",
             Self::PrevDiff => "Previous differing file",
+            Self::Refresh => "Refresh",
             Self::OpenKeybindings => "Open Keybindings",
         }
     }
@@ -62,6 +70,10 @@ impl Action for FolderAction {
                     modifiers: Modifiers::ALT,
                 },
             ],
+            Self::Refresh => &[Shortcut {
+                key: Key::F5,
+                modifiers: Modifiers::NONE,
+            }],
             Self::OpenKeybindings => &[Shortcut {
                 key: Key::O,
                 modifiers: CTRL,
@@ -153,5 +165,21 @@ mod tests {
                 FolderAction::PrevDiff
             ]
         );
+    }
+
+    #[test]
+    fn f5_refreshes_by_default() {
+        let f5 = Event::Key {
+            key: Key::F5,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: Modifiers::NONE,
+        };
+        assert_eq!(
+            Keymap::<FolderAction>::default().dispatch(&[f5], false),
+            [FolderAction::Refresh]
+        );
+        assert_eq!(FolderAction::Refresh.defaults()[0].format(), "F5");
     }
 }

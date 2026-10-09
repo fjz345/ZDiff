@@ -206,6 +206,15 @@ impl AppStateCtx {
         self.blueprint_detector.pending() > 0
     }
 
+    fn refresh(&mut self) {
+        // A running scan keeps its flag (ScanAction::Keep), so it would scan again when done.
+        for scan in [&mut self.file_system_1_scan, &mut self.file_system_2_scan] {
+            if !scan.is_scanning() {
+                scan.request_rescan();
+            }
+        }
+    }
+
     fn update_scans(&mut self, repaint: &egui::Context) {
         update_side_scan(
             Side::Folder1,
@@ -748,6 +757,17 @@ impl ZApp {
                     }
                 });
             });
+
+            let shown = app_ctx.file_system_model_1_view.is_some()
+                || app_ctx.file_system_model_2_view.is_some();
+            let mut refresh = ui.add_enabled(shown, egui::Button::new("Refresh"));
+            if let Some(shortcut) = app_ctx.keymap.shortcuts(FolderAction::Refresh).first() {
+                refresh = refresh.on_hover_text(shortcut.format());
+            }
+            if refresh.clicked() {
+                app_ctx.refresh();
+                ui.ctx().request_repaint();
+            }
         });
         if self.tools_window.open {
             self.tools_window.show(ui.ctx(), &mut app_ctx.diff_config);
@@ -769,6 +789,10 @@ impl ZApp {
         };
         if actions.contains(&FolderAction::OpenKeybindings) {
             self.keybindings_window.open = true;
+        }
+        if actions.contains(&FolderAction::Refresh) {
+            app_ctx.refresh();
+            ctx.request_repaint();
         }
         let working = app_ctx.file_system_1_scan.is_scanning()
             || app_ctx.file_system_2_scan.is_scanning()
@@ -1761,5 +1785,64 @@ mod tests {
         state.build_two_folder_diff_rows_if_stale();
         state.update_scans(&egui::Context::default());
         assert!(state.two_folder_diff_visible_rows.is_some());
+    }
+
+    #[test]
+    fn refresh_rescans_both_sides_and_keeps_the_collapsed_folders() {
+        let (left, right) = (tempdir().unwrap(), tempdir().unwrap());
+        for root in [left.path(), right.path()] {
+            fs::create_dir(root.join("sub")).unwrap();
+            fs::write(root.join("sub").join("a.txt"), "a").unwrap();
+        }
+        let mut state = loaded(left.path(), right.path());
+        let view_1 = state.file_system_model_1_view.as_mut().unwrap();
+        let sub = view_1
+            .file_system
+            .find_path(left.path().join("sub"))
+            .unwrap();
+        view_1.collapsed.insert(sub, true);
+        let models = [
+            &state.file_system_model_1_view,
+            &state.file_system_model_2_view,
+        ]
+        .map(|view| view.as_ref().unwrap().file_system.clone());
+        for root in [left.path(), right.path()] {
+            fs::write(root.join("0.txt"), "new").unwrap();
+        }
+
+        state.refresh();
+        state.update_scans(&egui::Context::default());
+        assert!(state.file_system_1_scan.is_scanning());
+        assert!(state.file_system_2_scan.is_scanning());
+        finish_scans(&mut state);
+
+        let views = [
+            state.file_system_model_1_view.as_ref().unwrap(),
+            state.file_system_model_2_view.as_ref().unwrap(),
+        ];
+        for ((view, model), root) in views.iter().zip(&models).zip([left.path(), right.path()]) {
+            assert!(!Arc::ptr_eq(&view.file_system, model));
+            assert!(view.file_system.find_path(root.join("0.txt")).is_some());
+        }
+        let sub = |view: &FileSystemView, root: &Path| {
+            view.file_system.find_path(root.join("sub")).unwrap()
+        };
+        assert!(views[0].is_collapsed(sub(views[0], left.path())));
+        assert!(!views[1].is_collapsed(sub(views[1], right.path())));
+    }
+
+    #[test]
+    fn refresh_during_a_scan_does_not_queue_another_scan() {
+        let (left, right) = (tempdir().unwrap(), tempdir().unwrap());
+        let mut state = loaded(left.path(), right.path());
+        state.refresh();
+        state.update_scans(&egui::Context::default());
+        assert!(state.file_system_1_scan.is_scanning());
+
+        state.refresh();
+        finish_scans(&mut state);
+        state.update_scans(&egui::Context::default());
+        assert!(!state.file_system_1_scan.is_scanning());
+        assert!(!state.file_system_2_scan.is_scanning());
     }
 }
