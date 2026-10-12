@@ -3,12 +3,14 @@
 //! is compared pixel by pixel off the UI thread too, for the statistics and the difference map.
 
 use std::{
+    borrow::Cow,
     io::Cursor,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
         mpsc,
     },
+    time::{Duration, Instant},
 };
 
 use eframe::egui::{
@@ -155,11 +157,14 @@ impl std::fmt::Debug for SideState {
     }
 }
 
-/// How the decoded sides are drawn. Kept across pairs, not persisted.
+/// How the decoded sides are drawn. Kept across pairs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum ImageMode {
     #[default]
     SideBySide,
+    /// One side at a time, alternating at the blink interval.
+    Blink,
     /// Both sides dimmed, with the changed pixels of the union canvas drawn over them.
     Difference,
     /// Both sides in one view: the first left of a draggable divider, the second right of it.
@@ -177,11 +182,130 @@ pub enum ImageSampling {
     Linear,
 }
 
-#[derive(Debug, Clone, Default, PartialEq)]
+/// Which channel of each side is shown, before any mode. A single channel is shown as opaque gray.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum ImageChannel {
+    #[default]
+    All,
+    Red,
+    Green,
+    Blue,
+    Alpha,
+    Luminance,
+}
+
+impl ImageChannel {
+    const ALL: [ImageChannel; 6] = [
+        ImageChannel::All,
+        ImageChannel::Red,
+        ImageChannel::Green,
+        ImageChannel::Blue,
+        ImageChannel::Alpha,
+        ImageChannel::Luminance,
+    ];
+
+    fn label(self) -> &'static str {
+        match self {
+            ImageChannel::All => "All",
+            ImageChannel::Red => "R",
+            ImageChannel::Green => "G",
+            ImageChannel::Blue => "B",
+            ImageChannel::Alpha => "A",
+            ImageChannel::Luminance => "Luminance",
+        }
+    }
+}
+
+/// Straight RGBA8 with only `channel` kept, as opaque gray. Luminance is Rec. 709 on the straight
+/// colors.
+pub fn apply_channel(rgba: &[u8], channel: ImageChannel) -> Cow<'_, [u8]> {
+    if channel == ImageChannel::All {
+        return Cow::Borrowed(rgba);
+    }
+    let gray = |pixel: &[u8]| -> u8 {
+        match channel {
+            ImageChannel::All => unreachable!(),
+            ImageChannel::Red => pixel[0],
+            ImageChannel::Green => pixel[1],
+            ImageChannel::Blue => pixel[2],
+            ImageChannel::Alpha => pixel[3],
+            ImageChannel::Luminance => {
+                ((2126 * pixel[0] as u32 + 7152 * pixel[1] as u32 + 722 * pixel[2] as u32 + 5000)
+                    / 10000) as u8
+            }
+        }
+    };
+    Cow::Owned(
+        rgba.chunks_exact(4)
+            .flat_map(|pixel| {
+                let value = gray(pixel);
+                [value, value, value, 255]
+            })
+            .collect(),
+    )
+}
+
+/// Alternates the shown side every interval; while paused only `step` flips it.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Blink {
+    side: usize,
+    paused: bool,
+    flipped_at: Option<Instant>,
+}
+
+impl Blink {
+    pub fn side(&self) -> usize {
+        self.side
+    }
+
+    pub fn paused(&self) -> bool {
+        self.paused
+    }
+
+    pub fn set_paused(&mut self, paused: bool) {
+        self.paused = paused;
+        self.flipped_at = None;
+    }
+
+    pub fn step(&mut self, now: Instant) {
+        self.side ^= 1;
+        self.flipped_at = Some(now);
+    }
+
+    /// Flips when the interval has passed. Returns the time until the next flip, `None` while paused.
+    pub fn tick(&mut self, now: Instant, interval: Duration) -> Option<Duration> {
+        if self.paused {
+            return None;
+        }
+        let flipped_at = *self.flipped_at.get_or_insert(now);
+        if now.duration_since(flipped_at) >= interval {
+            self.step(now);
+            return Some(interval);
+        }
+        Some(interval - now.duration_since(flipped_at))
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(default))]
 pub struct ImageSettings {
     pub sampling: ImageSampling,
+    pub mode: ImageMode,
+    pub channel: ImageChannel,
+    pub blink_ms: u32,
+}
+
+impl Default for ImageSettings {
+    fn default() -> Self {
+        Self {
+            sampling: ImageSampling::default(),
+            mode: ImageMode::default(),
+            channel: ImageChannel::default(),
+            blink_ms: 500,
+        }
+    }
 }
 
 pub fn texture_options(sampling: ImageSampling) -> TextureOptions {
@@ -256,6 +380,7 @@ pub fn stats_text(stats: &PixelStats) -> String {
 /// A finished comparison of the current pair.
 struct DiffMap {
     tolerance: u8,
+    channel: ImageChannel,
     stats: PixelStats,
     /// The union canvas, in image pixels.
     size: Vec2,
@@ -275,7 +400,7 @@ impl std::fmt::Debug for DiffMap {
 }
 
 type DecodeResult = (usize, u64, Result<DecodedImage, String>);
-type CompareResult = (u64, u8, PixelStats, ColorImage);
+type CompareResult = (u64, u8, ImageChannel, PixelStats, ColorImage);
 
 /// Decodes each side on a worker thread when its load changes. A result for an older load of the
 /// side is dropped. Decoding can't be interrupted; a stale decode just runs to its end.
@@ -288,15 +413,17 @@ pub struct ImageDiffProcessor {
     view: ImageView,
     /// Fit once both sides are done decoding, so the second side arriving doesn't move the view.
     fit_pending: bool,
-    mode: ImageMode,
     /// The largest per-channel difference that still counts as unchanged.
     tolerance: u8,
+    /// Mirrors the setting: the comparison and the textures are made from this channel.
+    shown_channel: ImageChannel,
+    blink: Blink,
     /// The swipe divider, as a fraction of the view's width: it stays put while panning.
     swipe: f32,
     /// The second image's opacity in overlay mode.
     opacity: f32,
     /// What the current pair was last sent to compare with; `None` until both sides decode.
-    compared_tolerance: Option<u8>,
+    compared: Option<(u8, ImageChannel)>,
     compare_generation: u64,
     /// Set when the pair or the tolerance changes, so a superseded comparison stops early.
     compare_cancel: Arc<AtomicBool>,
@@ -305,6 +432,7 @@ pub struct ImageDiffProcessor {
     diff_map: Option<DiffMap>,
     /// The sampling the uploaded textures were made with.
     texture_sampling: ImageSampling,
+    texture_channel: ImageChannel,
 }
 
 impl Default for ImageDiffProcessor {
@@ -316,16 +444,18 @@ impl Default for ImageDiffProcessor {
             channel: mpsc::channel(),
             view: ImageView::default(),
             fit_pending: false,
-            mode: ImageMode::default(),
             tolerance: 0,
+            shown_channel: ImageChannel::default(),
+            blink: Blink::default(),
             swipe: 0.5,
             opacity: 0.5,
-            compared_tolerance: None,
+            compared: None,
             compare_generation: 0,
             compare_cancel: Arc::new(AtomicBool::new(false)),
             compare_channel: mpsc::channel(),
             diff_map: None,
             texture_sampling: ImageSampling::default(),
+            texture_channel: ImageChannel::default(),
         }
     }
 }
@@ -365,19 +495,22 @@ impl ImageDiffProcessor {
         self.compare_cancel.store(true, Ordering::Release);
         self.compare_cancel = Arc::new(AtomicBool::new(false));
         self.compare_generation += 1;
-        self.compared_tolerance = None;
+        self.compared = None;
         self.diff_map = None;
     }
 
     /// Takes a finished comparison, and compares the pair again once both sides are decoded or
     /// the tolerance changed.
     fn compare(&mut self) {
-        while let Ok((generation, tolerance, stats, mask)) = self.compare_channel.1.try_recv() {
+        while let Ok((generation, tolerance, channel, stats, mask)) =
+            self.compare_channel.1.try_recv()
+        {
             if generation != self.compare_generation {
                 continue;
             }
             self.diff_map = Some(DiffMap {
                 tolerance,
+                channel,
                 stats,
                 size: vec2(mask.size[0] as f32, mask.size[1] as f32),
                 mask: Arc::new(mask),
@@ -392,24 +525,37 @@ impl ImageDiffProcessor {
         let (Some(first), Some(second)) = (decoded(&self.sides[0]), decoded(&self.sides[1])) else {
             return;
         };
-        if self.compared_tolerance == Some(self.tolerance) {
+        if self.compared == Some((self.tolerance, self.shown_channel)) {
             return;
         }
-        // Keeps the shown map; only a result for this tolerance replaces it.
+        // Keeps the shown map; only a result for this tolerance and channel replaces it.
         let diff_map = self.diff_map.take();
         self.reset_comparison();
         self.diff_map = diff_map;
-        self.compared_tolerance = Some(self.tolerance);
+        self.compared = Some((self.tolerance, self.shown_channel));
 
-        let (tolerance, generation) = (self.tolerance, self.compare_generation);
+        let (tolerance, channel, generation) =
+            (self.tolerance, self.shown_channel, self.compare_generation);
         let (cancel_flag, tx) = (self.compare_cancel.clone(), self.compare_channel.0.clone());
         std::thread::spawn(move || {
-            let Some(diff) = pixel_diff(first.buffer(), second.buffer(), tolerance, &cancel_flag)
-            else {
+            let (first, second) = (first.buffer(), second.buffer());
+            let (first_rgba, second_rgba) = (
+                apply_channel(first.rgba, channel),
+                apply_channel(second.rgba, channel),
+            );
+            let first = RgbaBuffer {
+                rgba: &first_rgba,
+                ..first
+            };
+            let second = RgbaBuffer {
+                rgba: &second_rgba,
+                ..second
+            };
+            let Some(diff) = pixel_diff(first, second, tolerance, &cancel_flag) else {
                 return;
             };
             let mask = mask_image(&diff);
-            let _ = tx.send((generation, tolerance, diff.stats, mask));
+            let _ = tx.send((generation, tolerance, channel, diff.stats, mask));
         });
     }
 
@@ -481,11 +627,15 @@ impl ImageDiffProcessor {
         }
     }
 
-    /// Both sides are decoded and the shown comparison isn't for the current tolerance yet.
+    /// Both sides are decoded and the shown comparison isn't for the current tolerance and channel yet.
     fn comparing(&self) -> bool {
         self.decoded(0).is_some()
             && self.decoded(1).is_some()
-            && self.diff_map.as_ref().map(|map| map.tolerance) != Some(self.tolerance)
+            && self
+                .diff_map
+                .as_ref()
+                .map(|map| (map.tolerance, map.channel))
+                != Some((self.tolerance, self.shown_channel))
     }
 
     fn compare_status(&self) -> String {
@@ -562,22 +712,53 @@ pub fn show(
 ) {
     let mut fit = false;
     let mut actual_size = false;
-    ui.horizontal(|ui| {
+    let mut blink_step = false;
+    ui.horizontal_wrapped(|ui| {
         fit = ui.button("Fit").clicked();
         actual_size = ui.button("1:1").clicked();
         ui.label(format!("{:.0}%", processor.view.zoom * 100.0));
         ui.separator();
-        ui.selectable_value(&mut processor.mode, ImageMode::SideBySide, "Side by side");
-        ui.selectable_value(&mut processor.mode, ImageMode::Difference, "Difference");
-        ui.selectable_value(&mut processor.mode, ImageMode::Swipe, "Swipe")
+        ui.selectable_value(&mut settings.mode, ImageMode::SideBySide, "Side by side");
+        ui.selectable_value(&mut settings.mode, ImageMode::Blink, "Blink")
+            .on_hover_text("Alternate between the two images");
+        ui.selectable_value(&mut settings.mode, ImageMode::Difference, "Difference");
+        ui.selectable_value(&mut settings.mode, ImageMode::Swipe, "Swipe")
             .on_hover_text("Drag the divider to reveal the other image");
-        ui.selectable_value(&mut processor.mode, ImageMode::Overlay, "Overlay");
-        if processor.mode == ImageMode::Overlay {
+        ui.selectable_value(&mut settings.mode, ImageMode::Overlay, "Overlay");
+        if settings.mode == ImageMode::Overlay {
             ui.add(egui::Slider::new(&mut processor.opacity, 0.0..=1.0).text("Opacity"))
                 .on_hover_text("How opaque the right image is over the left one");
         }
+        if settings.mode == ImageMode::Blink {
+            let mut paused = processor.blink.paused();
+            if ui.toggle_value(&mut paused, "Pause").changed() {
+                processor.blink.set_paused(paused);
+            }
+            if ui
+                .button("Step")
+                .on_hover_text("Show the other image (Space)")
+                .clicked()
+            {
+                blink_step = true;
+            }
+            ui.add(
+                egui::DragValue::new(&mut settings.blink_ms)
+                    .range(50..=5000)
+                    .suffix(" ms"),
+            )
+            .on_hover_text("Time each image is shown");
+        }
         ui.add(egui::Slider::new(&mut processor.tolerance, 0..=255).text("Tolerance"))
             .on_hover_text("The largest per-channel difference that still counts as unchanged");
+        egui::ComboBox::from_id_salt("image_channel")
+            .selected_text(format!("Channel: {}", settings.channel.label()))
+            .show_ui(ui, |ui| {
+                for channel in ImageChannel::ALL {
+                    ui.selectable_value(&mut settings.channel, channel, channel.label());
+                }
+            })
+            .response
+            .on_hover_text("Show only one channel, in every mode");
         egui::ComboBox::from_id_salt("image_sampling")
             .selected_text(format!("Sampling: {:?}", settings.sampling))
             .show_ui(ui, |ui| {
@@ -588,6 +769,7 @@ pub fn show(
             .on_hover_text("Nearest keeps single-pixel differences sharp when zoomed out");
         ui.label(processor.compare_status());
     });
+    processor.shown_channel = settings.channel;
     if processor.texture_sampling != settings.sampling {
         processor.texture_sampling = settings.sampling;
         for side in &mut processor.sides {
@@ -599,7 +781,30 @@ pub fn show(
             map.texture = None;
         }
     }
+    if processor.texture_channel != settings.channel {
+        processor.texture_channel = settings.channel;
+        for side in &mut processor.sides {
+            if let SideState::Decoded { texture, .. } = side {
+                *texture = None;
+            }
+        }
+    }
     let options = texture_options(settings.sampling);
+    let blinking = settings.mode == ImageMode::Blink
+        && processor.decoded(0).is_some()
+        && processor.decoded(1).is_some();
+    if blinking {
+        let now = Instant::now();
+        let interval = Duration::from_millis(settings.blink_ms as u64);
+        let space = !ui.ctx().wants_keyboard_input()
+            && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Space));
+        if blink_step || space {
+            processor.blink.step(now);
+        }
+        if let Some(next_flip) = processor.blink.tick(now, interval) {
+            ui.ctx().request_repaint_after(next_flip);
+        }
+    }
     if processor.comparing() {
         // The result arrives from a worker; keep frames coming until it is polled.
         ui.ctx().request_repaint();
@@ -611,8 +816,10 @@ pub fn show(
     let left_right = (area.left() + left_width).min(area.right());
     // Swipe and overlay draw both sides in one view, so until both are decoded the pair is drawn
     // side by side, where a spinner or a failure has its own column.
-    let combined = matches!(processor.mode, ImageMode::Swipe | ImageMode::Overlay)
-        && processor.decoded(0).is_some()
+    let combined = matches!(
+        settings.mode,
+        ImageMode::Blink | ImageMode::Swipe | ImageMode::Overlay
+    ) && processor.decoded(0).is_some()
         && processor.decoded(1).is_some();
     let columns = if combined {
         [area, area]
@@ -669,7 +876,7 @@ pub fn show(
     }
 
     // Registered after the view's drag area, so a drag on the divider moves it instead of panning.
-    let swipe = (combined && processor.mode == ImageMode::Swipe).then(|| {
+    let swipe = (combined && settings.mode == ImageMode::Swipe).then(|| {
         let view_rect = image_rects[0];
         let x = swipe_clips(view_rect, processor.swipe)[0].right();
         let strip = Rect::from_x_y_ranges(x - 4.0..=x + 4.0, view_rect.y_range());
@@ -685,11 +892,11 @@ pub fn show(
         swipe_clips(view_rect, processor.swipe)
     });
     let overlay_opacity =
-        (combined && processor.mode == ImageMode::Overlay).then_some(processor.opacity);
+        (combined && settings.mode == ImageMode::Overlay).then_some(processor.opacity);
 
     let view = processor.view;
     let diff_overlay = match &mut processor.diff_map {
-        Some(map) if processor.mode == ImageMode::Difference => {
+        Some(map) if settings.mode == ImageMode::Difference => {
             if map.texture.is_none() {
                 map.texture = Some(ui.ctx().load_texture(
                     "image_diff_mask",
@@ -706,7 +913,9 @@ pub fn show(
     let diff_color = role_color(ui.ctx(), FileRole::ImageDiff);
     let text_color = ui.visuals().text_color();
     let font = egui::TextStyle::Monospace.resolve(ui.style());
+    let (channel, blink_side) = (settings.channel, processor.blink.side());
     for (index, side) in processor.sides.iter_mut().enumerate() {
+        let hidden = blinking && index != blink_side;
         let painter = ui.painter_at(columns[index]);
         let image_rect = image_rects[index];
         match side {
@@ -734,21 +943,26 @@ pub fn show(
                 } else {
                     (columns[index].min, egui::Align2::LEFT_TOP)
                 };
-                painter.text(
-                    info_pos,
-                    info_align,
-                    format!("{}, {} x {}", image.format, image.width, image.height),
-                    font.clone(),
-                    text_color,
-                );
+                if !hidden {
+                    painter.text(
+                        info_pos,
+                        info_align,
+                        format!("{}, {} x {}", image.format, image.width, image.height),
+                        font.clone(),
+                        text_color,
+                    );
+                }
                 let texture = texture.get_or_insert_with(|| {
                     let pixels = ColorImage::from_rgba_unmultiplied(
                         [image.width as usize, image.height as usize],
-                        &image.rgba,
+                        &apply_channel(&image.rgba, channel),
                     );
                     ui.ctx()
                         .load_texture(format!("image_diff_side_{index}"), pixels, options)
                 });
+                if hidden {
+                    continue;
+                }
                 let drawn = image_screen_rect(
                     view,
                     image_rect.min,
@@ -1204,5 +1418,141 @@ mod tests {
         assert!(decode_image(b"plain text", Some("zpng")).is_err());
         assert!(decode_image(b"plain text", None).is_err());
         assert!(decode_image(b"", Some("png")).is_err());
+    }
+    const PIXELS: [u8; 8] = [10, 20, 30, 40, 255, 0, 0, 255];
+
+    #[test]
+    fn a_channel_filter_keeps_one_channel_as_opaque_gray() {
+        let filtered = |channel| apply_channel(&PIXELS, channel).into_owned();
+        assert_eq!(filtered(ImageChannel::All), PIXELS);
+        assert_eq!(
+            filtered(ImageChannel::Red),
+            [10, 10, 10, 255, 255, 255, 255, 255]
+        );
+        assert_eq!(
+            filtered(ImageChannel::Green),
+            [20, 20, 20, 255, 0, 0, 0, 255]
+        );
+        assert_eq!(
+            filtered(ImageChannel::Blue),
+            [30, 30, 30, 255, 0, 0, 0, 255]
+        );
+        assert_eq!(
+            filtered(ImageChannel::Alpha),
+            [40, 40, 40, 255, 255, 255, 255, 255]
+        );
+        assert_eq!(
+            filtered(ImageChannel::Luminance),
+            [19, 19, 19, 255, 54, 54, 54, 255]
+        );
+    }
+
+    #[test]
+    fn luminance_of_white_and_black_is_exact() {
+        let rgba = [255, 255, 255, 255, 0, 0, 0, 255];
+        let luminance = apply_channel(&rgba, ImageChannel::Luminance);
+        assert_eq!(luminance[0], 255);
+        assert_eq!(luminance[4], 0);
+    }
+
+    #[test]
+    fn the_channel_filter_applies_before_the_comparison() {
+        let first = RgbaImage::from_raw(1, 1, vec![5, 10, 0, 255]).unwrap();
+        let second = RgbaImage::from_raw(1, 1, vec![5, 90, 0, 255]).unwrap();
+        let mut processor = ImageDiffProcessor::default();
+        processor.request(
+            Some(png_file("a.png", &first)),
+            Some(png_file("b.png", &second)),
+        );
+        poll_until(&mut processor, |p| p.diff_map.is_some());
+        assert_eq!(changed(&processor), Some((0, 1, 1)));
+
+        processor.shown_channel = ImageChannel::Red;
+        assert!(processor.comparing());
+        poll_until(&mut processor, |p| !p.comparing());
+        assert_eq!(processor.compare_status(), "No changed pixels");
+
+        processor.shown_channel = ImageChannel::Green;
+        poll_until(&mut processor, |p| !p.comparing());
+        assert_eq!(processor.compare_status(), "1 changed pixel (100.00%)");
+    }
+
+    #[test]
+    fn blink_alternates_each_interval_and_step_flips_at_once() {
+        let (start, interval) = (Instant::now(), Duration::from_millis(500));
+        let mut blink = Blink::default();
+        assert_eq!(blink.tick(start, interval), Some(interval));
+        assert_eq!(blink.side(), 0);
+
+        let almost = start + Duration::from_millis(499);
+        assert_eq!(blink.tick(almost, interval), Some(Duration::from_millis(1)));
+        assert_eq!(blink.side(), 0);
+
+        let due = start + interval;
+        assert_eq!(blink.tick(due, interval), Some(interval));
+        assert_eq!(blink.side(), 1);
+        blink.tick(due + interval, interval);
+        assert_eq!(blink.side(), 0);
+
+        blink.step(due + interval);
+        assert_eq!(blink.side(), 1);
+        blink.tick(due + interval * 2 - Duration::from_millis(1), interval);
+        assert_eq!(blink.side(), 1);
+        blink.tick(due + interval * 2, interval);
+        assert_eq!(blink.side(), 0);
+    }
+
+    #[test]
+    fn a_paused_blink_only_flips_on_step() {
+        let (start, interval) = (Instant::now(), Duration::from_millis(500));
+        let mut blink = Blink::default();
+        blink.set_paused(true);
+        assert_eq!(blink.tick(start + interval * 10, interval), None);
+        assert_eq!(blink.side(), 0);
+        blink.step(start);
+        assert_eq!(blink.side(), 1);
+        assert!(blink.paused());
+
+        blink.set_paused(false);
+        let later = start + interval * 10;
+        blink.tick(later, interval);
+        assert_eq!(blink.side(), 1);
+        blink.tick(later + interval, interval);
+        assert_eq!(blink.side(), 0);
+    }
+
+    #[test]
+    fn blink_settings_default_to_half_a_second_and_all_channels() {
+        let settings = ImageSettings::default();
+        assert_eq!(settings.blink_ms, 500);
+        assert_eq!(settings.channel, ImageChannel::All);
+        assert_eq!(settings.mode, ImageMode::SideBySide);
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn mode_channel_and_blink_interval_are_saved_and_older_saves_load() {
+        let settings = ImageSettings {
+            sampling: ImageSampling::Linear,
+            mode: ImageMode::Blink,
+            channel: ImageChannel::Luminance,
+            blink_ms: 250,
+        };
+        let mut json = serde_json::to_value(&settings).unwrap();
+        let restored: ImageSettings = serde_json::from_value(json.clone()).unwrap();
+        assert_eq!(restored, settings);
+
+        let fields = json.as_object_mut().unwrap();
+        for field in ["mode", "channel", "blink_ms"] {
+            fields.remove(field);
+        }
+        let older: ImageSettings = serde_json::from_value(json).unwrap();
+        assert_eq!(
+            older,
+            ImageSettings {
+                sampling: ImageSampling::Linear,
+                ..ImageSettings::default()
+            }
+        );
     }
 }
