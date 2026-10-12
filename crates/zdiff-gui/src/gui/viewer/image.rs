@@ -1419,6 +1419,7 @@ mod tests {
         assert!(decode_image(b"plain text", None).is_err());
         assert!(decode_image(b"", Some("png")).is_err());
     }
+
     const PIXELS: [u8; 8] = [10, 20, 30, 40, 255, 0, 0, 255];
 
     #[test]
