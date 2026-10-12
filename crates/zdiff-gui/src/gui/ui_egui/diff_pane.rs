@@ -486,13 +486,13 @@ impl FileDiffPane {
                 toggle_button(
                     ui,
                     &mut ctx.diff_options.ignore.whitespace,
-                    egui::RichText::new("W").strong(),
+                    egui::RichText::new("·").strong(),
                     &hint(FileAction::IgnoreWhitespace, "Ignore Whitespace"),
                 );
                 toggle_button(
                     ui,
                     &mut ctx.diff_options.ignore.comments,
-                    egui::RichText::new("C").strong(),
+                    egui::RichText::new("//").monospace().strong(),
                     &hint(FileAction::IgnoreComments, "Ignore Comments"),
                 );
                 ignore_patterns_btn(
@@ -509,7 +509,7 @@ impl FileDiffPane {
                 toggle_button(
                     ui,
                     &mut ctx.diff_options.highlight_rows,
-                    egui::RichText::new("H").strong(),
+                    egui::RichText::new("▬").monospace().strong(),
                     &hint(FileAction::HighlightRows, "Highlight Rows"),
                 );
                 toggle_button(
@@ -535,7 +535,7 @@ impl FileDiffPane {
                 if toggle_button(
                     ui,
                     &mut active,
-                    egui::RichText::new("D").strong(),
+                    egui::RichText::new("±").strong(),
                     &hint(FileAction::DiffOnly, "Diff Only"),
                 ) {
                     ctx.diff_options.diff_only_with_extra_rows = active.then_some(2);
@@ -2722,7 +2722,7 @@ fn ignore_patterns_btn(
     presets: &mut UserPresets,
     tooltip: &str,
 ) {
-    let btn = egui::Button::new(egui::RichText::new("R").strong())
+    let btn = egui::Button::new(egui::RichText::new(".*").monospace().strong())
         .selected(enabled && !patterns.is_empty());
     let response = ui.add_sized(button_size, btn).on_hover_text(tooltip);
     let open_id = response.id.with("ignore_patterns_open");
