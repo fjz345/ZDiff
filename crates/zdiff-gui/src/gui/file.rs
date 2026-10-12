@@ -330,6 +330,9 @@ impl FileProcessor {
     pub fn set_root(&mut self, root: UniversalPath) {
         self.root_path = Some(root);
     }
+    pub fn clear_root(&mut self) {
+        self.root_path = None;
+    }
     pub fn get_root(&mut self) -> Option<UniversalPath> {
         self.root_path.clone()
     }

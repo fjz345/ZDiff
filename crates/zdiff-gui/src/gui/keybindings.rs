@@ -62,6 +62,7 @@ pub enum FileAction {
     Redo,
     /// Target becomes the local file of the source depot file.
     DiffLocalFile,
+    DiffShelfBase,
     SwapSides,
     IgnoreWhitespace,
     IgnoreComments,
@@ -98,6 +99,7 @@ impl Action for FileAction {
             Self::UndoRevert,
             Self::Redo,
             Self::DiffLocalFile,
+            Self::DiffShelfBase,
             Self::SwapSides,
             Self::IgnoreWhitespace,
             Self::IgnoreComments,
@@ -134,6 +136,7 @@ impl Action for FileAction {
             Self::UndoRevert => "undo_revert",
             Self::Redo => "redo_revert",
             Self::DiffLocalFile => "diff_local_file",
+            Self::DiffShelfBase => "diff_shelf_base",
             Self::SwapSides => "swap_sides",
             Self::IgnoreWhitespace => "ignore_whitespace",
             Self::IgnoreComments => "ignore_comments",
@@ -170,6 +173,7 @@ impl Action for FileAction {
             Self::UndoRevert => "Undo Revert",
             Self::Redo => "Redo Revert",
             Self::DiffLocalFile => "Diff Source Against Local File",
+            Self::DiffShelfBase => "Diff Shelved File Against Base",
             Self::SwapSides => "Swap Source/Target",
             Self::IgnoreWhitespace => "Ignore Whitespace",
             Self::IgnoreComments => "Ignore Comments",
@@ -319,6 +323,7 @@ impl Action for FileAction {
                 key: Key::CloseBracket,
                 modifiers: Modifiers::ALT,
             }],
+            Self::DiffShelfBase => &[],
             Self::SaveMerge => &[Shortcut {
                 key: Key::S,
                 modifiers: CTRL,
@@ -940,6 +945,7 @@ mod tests {
                 (FileAction::DiffLocalFile, vec![f_key(17)]),
             ];
             let new_actions = [
+                FileAction::DiffShelfBase,
                 FileAction::SwapSides,
                 FileAction::IgnoreWhitespace,
                 FileAction::IgnoreComments,
