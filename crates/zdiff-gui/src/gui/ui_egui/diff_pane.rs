@@ -1064,10 +1064,13 @@ impl FileDiffPane {
                             let output =
                                 table.show(&mut table_ui, *header_height, header, rows, cell);
                             ui.advance_cursor_after_rect(rect);
-                            let ruler_spans = match (&ctx.hex_view, ctx.diff_ctx) {
-                                (Some(hex_view), _) => Some(hex_view.change_spans),
-                                (None, Some(diff_ctx)) => Some(ruler_spans(ruler_cache, diff_ctx)),
-                                (None, None) => None,
+                            let ruler_spans = match (show_ruler, &ctx.hex_view, ctx.diff_ctx) {
+                                (false, _, _) => None,
+                                (true, Some(hex_view), _) => Some(hex_view.change_spans),
+                                (true, None, Some(diff_ctx)) => {
+                                    Some(ruler_spans(ruler_cache, diff_ctx))
+                                }
+                                (true, None, None) => None,
                             };
                             if show_ruler && let Some(spans) = ruler_spans {
                                 let body = output.body_rect;
