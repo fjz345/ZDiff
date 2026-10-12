@@ -576,7 +576,12 @@ impl FileDiffPane {
         ui.spacing_mut().item_spacing.y = 0.0;
 
         let table_height = ui.available_height();
-        let show_ruler = !other_viewer && !do_not_render_diff && diff_rows_len > 0;
+        let hex_len = ctx.hex_view.as_ref().map_or(0, hex::byte_len);
+        let show_ruler = if ctx.hex_view.is_some() {
+            hex_len > 0
+        } else {
+            !other_viewer && !do_not_render_diff && diff_rows_len > 0
+        };
         let ruler_id = egui::Id::new("file_diff_ruler");
 
         let mut side_rects = [egui::Rect::NOTHING; 2];
@@ -1059,32 +1064,39 @@ impl FileDiffPane {
                             let output =
                                 table.show(&mut table_ui, *header_height, header, rows, cell);
                             ui.advance_cursor_after_rect(rect);
-                            if show_ruler && let Some(diff_ctx) = ctx.diff_ctx {
+                            let ruler_spans = match (&ctx.hex_view, ctx.diff_ctx) {
+                                (Some(hex_view), _) => Some(hex_view.change_spans),
+                                (None, Some(diff_ctx)) => Some(ruler_spans(ruler_cache, diff_ctx)),
+                                (None, None) => None,
+                            };
+                            if show_ruler && let Some(spans) = ruler_spans {
                                 let body = output.body_rect;
                                 let strip = egui::Rect::from_min_max(
                                     egui::pos2(area.max.x, body.top()),
                                     egui::pos2(full_area.max.x, body.bottom()),
                                 );
+                                // The hex strip bins bytes, the table scrolls by 16-byte rows.
+                                let (len, row_unit) = if ctx.hex_view.is_some() {
+                                    (hex_len, hex::HEX_ROW_BYTES)
+                                } else {
+                                    (diff_rows_len, 1)
+                                };
                                 let viewport = (
-                                    row_at(&ruler_rows, output.scroll_offset),
-                                    row_at(&ruler_rows, output.scroll_offset + body.height()),
+                                    row_at(&ruler_rows, output.scroll_offset) * row_unit as f32,
+                                    row_at(&ruler_rows, output.scroll_offset + body.height())
+                                        * row_unit as f32,
                                 );
                                 let colors = RulerColors {
                                     inserted: role_color(ui.ctx(), FileRole::RulerInserted),
                                     deleted: role_color(ui.ctx(), FileRole::RulerDeleted),
                                     changed: role_color(ui.ctx(), FileRole::RulerChanged),
                                 };
-                                let spans = ruler_spans(ruler_cache, diff_ctx);
-                                if let Some(row) = overview::show(
-                                    ui,
-                                    ruler_id,
-                                    strip,
-                                    spans,
-                                    diff_rows_len,
-                                    viewport,
-                                    &colors,
+                                if let Some(pos) = overview::show(
+                                    ui, ruler_id, strip, spans, len, viewport, &colors,
                                 ) {
-                                    ui.data_mut(|d| d.insert_temp(ruler_id.with("scroll_to"), row));
+                                    ui.data_mut(|d| {
+                                        d.insert_temp(ruler_id.with("scroll_to"), pos / row_unit)
+                                    });
                                     ui.ctx().request_repaint();
                                 }
                                 ui.advance_cursor_after_rect(strip);

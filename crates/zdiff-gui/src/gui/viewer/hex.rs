@@ -14,7 +14,14 @@ use eframe::egui::{self, Color32, FontId, text::LayoutJob};
 use zcommon::ui_egui::{style_window::role_color, table::SplitColumn};
 use zdiff::hex::{HexDiff, HexSide, hex_diff};
 
-use crate::{diff_ctx::ScrollSpan, file::LoadedFile, ui_egui::file_role::FileRole};
+use crate::{
+    diff_ctx::ScrollSpan,
+    file::LoadedFile,
+    ui_egui::{
+        file_role::FileRole,
+        overview::{ChangeKind, ChangeSpan},
+    },
+};
 
 pub const HEX_ROW_BYTES: usize = 16;
 
@@ -141,6 +148,28 @@ pub fn hex_row_states(
     states
 }
 
+/// Overview spans over byte offsets: differing ranges are Changed, the size-mismatch tail is
+/// Deleted when only the left side has it and Inserted when only the right does.
+pub fn hex_change_spans(diff: &HexDiff) -> Vec<ChangeSpan> {
+    let span = |range: &Range<usize>, kind| ChangeSpan {
+        start: range.start,
+        end: range.end,
+        kind,
+    };
+    let tail = diff.tail.as_ref().map(|tail| {
+        let kind = match tail.longer {
+            HexSide::First => ChangeKind::Deleted,
+            HexSide::Second => ChangeKind::Inserted,
+        };
+        span(&tail.range, kind)
+    });
+    diff.ranges
+        .iter()
+        .map(|range| span(range, ChangeKind::Changed))
+        .chain(tail)
+        .collect()
+}
+
 /// Runs the comparison for the current pair on a worker thread. A new pair cancels the running
 /// one, and a result for an older pair is dropped.
 #[derive(Debug)]
@@ -148,6 +177,7 @@ pub struct HexDiffProcessor {
     file_1: Option<LoadedFile>,
     file_2: Option<LoadedFile>,
     diff: Option<HexDiff>,
+    change_spans: Vec<ChangeSpan>,
     in_progress: bool,
     generation: u64,
     cancel_flag: Arc<AtomicBool>,
@@ -167,6 +197,7 @@ impl Default for HexDiffProcessor {
             file_1: None,
             file_2: None,
             diff: None,
+            change_spans: Vec::new(),
             in_progress: false,
             generation: 0,
             cancel_flag: Arc::new(AtomicBool::new(false)),
@@ -198,6 +229,7 @@ impl HexDiffProcessor {
         self.cancel_flag = Arc::new(AtomicBool::new(false));
         self.generation += 1;
         self.diff = None;
+        self.change_spans.clear();
         self.in_progress = false;
         self.file_1 = file_1;
         self.file_2 = file_2;
@@ -266,6 +298,7 @@ impl HexDiffProcessor {
     pub fn poll(&mut self) {
         while let Ok((generation, diff)) = self.channel.1.try_recv() {
             if generation == self.generation {
+                self.change_spans = hex_change_spans(&diff);
                 self.diff = Some(diff);
                 self.in_progress = false;
             }
@@ -277,6 +310,7 @@ impl HexDiffProcessor {
             file_1: self.file_1.as_ref(),
             file_2: self.file_2.as_ref(),
             diff: self.diff.as_ref(),
+            change_spans: &self.change_spans,
             computing: self.in_progress,
             highlight: self.highlight.clone(),
         }
@@ -287,6 +321,7 @@ pub struct HexViewCtx<'a> {
     pub file_1: Option<&'a LoadedFile>,
     pub file_2: Option<&'a LoadedFile>,
     pub diff: Option<&'a HexDiff>,
+    pub change_spans: &'a [ChangeSpan],
     pub computing: bool,
     pub highlight: Option<Range<usize>>,
 }
@@ -312,6 +347,11 @@ impl HexViewCtx<'_> {
         }
         text
     }
+}
+
+pub fn byte_len(ctx: &HexViewCtx) -> usize {
+    let len = |file: Option<&LoadedFile>| file.map_or(0, |f| f.bytes().len());
+    len(ctx.file_1).max(len(ctx.file_2))
 }
 
 pub fn row_count(ctx: &HexViewCtx) -> usize {
@@ -477,9 +517,76 @@ mod tests {
     use zdiff::hex::HexTail;
 
     use super::*;
+    use crate::ui_egui::overview::bin_changes;
 
     fn diff(ranges: Vec<Range<usize>>, tail: Option<HexTail>) -> HexDiff {
         HexDiff { ranges, tail }
+    }
+
+    fn byte_span(start: usize, end: usize, kind: ChangeKind) -> ChangeSpan {
+        ChangeSpan { start, end, kind }
+    }
+
+    #[test]
+    fn differing_ranges_are_changed_spans_over_bytes() {
+        let d = diff(vec![3..4, 20..40], None);
+        assert_eq!(
+            hex_change_spans(&d),
+            [
+                byte_span(3, 4, ChangeKind::Changed),
+                byte_span(20, 40, ChangeKind::Changed)
+            ]
+        );
+    }
+
+    #[test]
+    fn tail_on_the_left_is_deleted_and_on_the_right_inserted() {
+        let tail = |longer| {
+            Some(HexTail {
+                longer,
+                range: 50..60,
+            })
+        };
+        assert_eq!(
+            hex_change_spans(&diff(vec![], tail(HexSide::First))),
+            [byte_span(50, 60, ChangeKind::Deleted)]
+        );
+        assert_eq!(
+            hex_change_spans(&diff(vec![10..50], tail(HexSide::Second))),
+            [
+                byte_span(10, 50, ChangeKind::Changed),
+                byte_span(50, 60, ChangeKind::Inserted)
+            ]
+        );
+    }
+
+    #[test]
+    fn identical_bytes_have_no_spans() {
+        assert_eq!(hex_change_spans(&diff(vec![], None)), []);
+    }
+
+    #[test]
+    fn one_differing_byte_in_a_large_file_still_marks_a_bin() {
+        let d = diff(vec![5_000_000..5_000_001], None);
+        let bins = bin_changes(&hex_change_spans(&d), 10_000_000, 100);
+        let marked: Vec<usize> = (0..bins.len()).filter(|i| bins[*i].is_some()).collect();
+        assert_eq!(marked, [50]);
+        assert_eq!(bins[50], Some(ChangeKind::Changed));
+    }
+
+    #[test]
+    fn tail_marks_the_bins_where_the_longer_side_continues() {
+        let d = diff(
+            vec![0..1],
+            Some(HexTail {
+                longer: HexSide::Second,
+                range: 900..1000,
+            }),
+        );
+        let bins = bin_changes(&hex_change_spans(&d), 1000, 10);
+        assert_eq!(bins[0], Some(ChangeKind::Changed));
+        assert_eq!(bins[9], Some(ChangeKind::Inserted));
+        assert!(bins[1..9].iter().all(Option::is_none));
     }
 
     fn span(start: usize, end: usize) -> ScrollSpan {
