@@ -34,6 +34,7 @@ use zcommon::ui_egui::table::{Rows, Split, SplitColumn, SplitTable};
 
 use crate::ui_egui::folder_keymap::FolderAction;
 use crate::ui_egui::roots::{InvalidRoot, Side, set_root};
+use crate::ui_egui::side_revision::{revision_dropdown, split_side, with_revision};
 use crate::ui_egui::status_line::ToolMessage;
 use crate::ui_egui::tools_window::resolve_tool_exe;
 use crate::ui_egui::tree_compare::{PairLikeness, TreeCompare};
@@ -1315,10 +1316,11 @@ struct PathBarError {
 }
 
 fn root_path_bar(ui: &mut egui::Ui, roots: [&mut Option<PathBuf>; 2], side: Side) {
-    let paths = roots
-        .each_ref()
-        .map(|r| r.as_ref().map(|p| p.to_string_lossy().into_owned()));
-    let dim = match &paths {
+    let folders = roots.each_ref().map(|r| {
+        r.as_deref()
+            .map(|p| split_side(p).0.to_string_lossy().into_owned())
+    });
+    let dim = match &folders {
         [Some(a), Some(b)] => common_parent(a, false, b, false),
         _ => 0,
     };
@@ -1326,22 +1328,38 @@ fn root_path_bar(ui: &mut egui::Ui, roots: [&mut Option<PathBuf>; 2], side: Side
         Side::Folder1 => 0,
         Side::Folder2 => 1,
     };
-    let segments = paths[index].as_deref().map(split_path).unwrap_or_default();
+    let mut segments = folders[index]
+        .as_deref()
+        .map(split_path)
+        .unwrap_or_default();
+    // Editing starts from the last segment's path, which must keep the revision.
+    if let (Some(last), Some(root)) = (segments.last_mut(), roots[index].as_deref()) {
+        last.path = root.to_string_lossy().into_owned();
+    }
     // Keyed to the root it was rejected against, so any later root change clears the red.
     let error_id = ui.make_persistent_id(("root_path_bar_error", index));
     let error = ui
         .data(|d| d.get_temp::<PathBarError>(error_id))
         .filter(|e| e.root == *roots[index]);
-    let action = path_bar(
-        ui,
-        ("root_path_bar", index),
-        &segments,
-        dim,
-        |i| i + 1 < segments.len(),
-        error.as_ref().map(|e| e.reason.as_str()),
-        false,
-    );
-    if let Some(action) = action {
+    let (picked, action) = ui
+        .horizontal(|ui| {
+            let picked = revision_dropdown(ui, index, roots[index].as_deref());
+            let action = path_bar(
+                ui,
+                ("root_path_bar", index),
+                &segments,
+                dim,
+                |i| i + 1 < segments.len(),
+                error.as_ref().map(|e| e.reason.as_str()),
+                false,
+            );
+            (picked, action)
+        })
+        .inner;
+    let picked = picked.zip(roots[index].as_deref()).map(|(rev, root)| {
+        PathBarAction::Commit(with_revision(root, rev).to_string_lossy().into_owned())
+    });
+    if let Some(action) = picked.or(action) {
         let root = roots[index].clone();
         match apply_path_bar(roots, side, action) {
             Ok(()) => ui.data_mut(|d| d.remove::<PathBarError>(error_id)),
@@ -1366,7 +1384,9 @@ pub(crate) fn apply_path_bar(
     let path = match action {
         PathBarAction::Segment(i) => {
             let current = root.as_ref().expect("segment clicked on an empty path bar");
-            PathBuf::from(&split_path(&current.to_string_lossy())[i].path)
+            let (folder, rev) = split_side(current);
+            let segment = PathBuf::from(&split_path(&folder.to_string_lossy())[i].path);
+            with_revision(&segment, rev)
         }
         PathBarAction::Commit(text) => PathBuf::from(text.trim().trim_matches('"')),
     };
@@ -4222,6 +4242,28 @@ mod tests {
 
         assert_eq!(root_1, Some(parent));
         assert_eq!(root_2, Some(root));
+    }
+
+    #[test]
+    fn path_bar_segment_on_a_git_root_keeps_the_revision() {
+        let dir = tempdir().unwrap();
+        let text = format!(
+            "{}@git:origin/main",
+            dir.path().join("a").join("b").display()
+        );
+        let mut root_1 = Some(text.into());
+        let mut root_2 = None;
+        let parent_index = split_path(&dir.path().join("a").to_string_lossy()).len() - 1;
+
+        apply_path_bar(
+            [&mut root_1, &mut root_2],
+            Side::Folder1,
+            PathBarAction::Segment(parent_index),
+        )
+        .unwrap();
+
+        let expected = format!("{}@git:origin/main", dir.path().join("a").display());
+        assert_eq!(root_1, Some(expected.into()));
     }
 
     #[test]
