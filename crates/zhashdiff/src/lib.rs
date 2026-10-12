@@ -4,6 +4,7 @@ pub mod external_diff_tool;
 pub mod filter;
 pub mod fs;
 pub mod likeness;
+pub mod revision_pair;
 pub mod scan;
 pub mod uasset;
 pub mod vcs_source;

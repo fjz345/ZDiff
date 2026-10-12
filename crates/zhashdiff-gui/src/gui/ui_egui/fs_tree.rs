@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 use zcommon::{
     find::Matcher,
     kinds::{FileKind, KindTable},
+    vcs::git::GitCommand,
 };
 use zhashdiff::{
     comparison::{FileMeta, PairState},
@@ -23,6 +24,7 @@ use zhashdiff::{
     },
     filter::PathFilter,
     fs::{FileSystemModel, FsNode, FsNodeDepth, FsNodeId, TreeIter},
+    revision_pair::{PairSource, tool_paths},
 };
 
 use zcommon::path::{common_parent, split_path};
@@ -1523,6 +1525,17 @@ fn folder_diff_state(
     aggregate_folder_state(l_id, r_id, descendants)
 }
 
+fn revision_temp_dir() -> PathBuf {
+    static OPENED: AtomicU64 = AtomicU64::new(0);
+    std::env::temp_dir()
+        .join("zhashdiff-revisions")
+        .join(format!(
+            "{}-{}",
+            std::process::id(),
+            OPENED.fetch_add(1, Ordering::Relaxed)
+        ))
+}
+
 fn on_row_item_clicked(
     file_system_1_view: Option<&FileSystemView>,
     file_system_2_view: Option<&FileSystemView>,
@@ -1570,24 +1583,39 @@ fn on_row_item_clicked(
                     return Some(message);
                 }
             };
-            let left = file_system_1_view
-                .unwrap()
-                .file_system
-                .get_node(path1)
-                .unwrap()
-                .as_path()
-                .as_ref()
-                .to_string_lossy()
-                .into_owned();
-            let right = file_system_2_view
-                .unwrap()
-                .file_system
-                .get_node(path2)
-                .unwrap()
-                .as_path()
-                .as_ref()
-                .to_string_lossy()
-                .into_owned();
+            let (left_model, right_model) = (
+                &file_system_1_view.unwrap().file_system,
+                &file_system_2_view.unwrap().file_system,
+            );
+            let (left_node, right_node) = (
+                left_model.get_node(path1).unwrap(),
+                right_model.get_node(path2).unwrap(),
+            );
+            let paths = tool_paths(
+                &GitCommand::default(),
+                diff_tool,
+                [
+                    PairSource {
+                        content: left_model.content(),
+                        path: left_node.as_path().as_ref(),
+                    },
+                    PairSource {
+                        content: right_model.content(),
+                        path: right_node.as_path().as_ref(),
+                    },
+                ],
+                &entry.rel_path,
+                &revision_temp_dir(),
+            );
+            let [left, right] = match paths {
+                Ok(paths) => paths,
+                Err(err) => {
+                    let error = format!("diffing failed: fetching {}: {err}", entry.rel_path);
+                    log::error!("{error}");
+                    message.error = Some(error);
+                    return Some(message);
+                }
+            };
             let (left_name, right_name) = folder_labels(&entry.rel_path);
             let result = open_diff_tool(
                 &exe,
