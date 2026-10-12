@@ -20,6 +20,9 @@ pub enum FileRole {
     HexOnlyHere,
     HexGoto,
     ImageDiff,
+    RulerDeleted,
+    RulerInserted,
+    RulerChanged,
 }
 
 impl Role for FileRole {
@@ -43,6 +46,9 @@ impl Role for FileRole {
             FileRole::HexOnlyHere,
             FileRole::HexGoto,
             FileRole::ImageDiff,
+            FileRole::RulerDeleted,
+            FileRole::RulerInserted,
+            FileRole::RulerChanged,
         ]
     }
 
@@ -66,6 +72,9 @@ impl Role for FileRole {
             FileRole::HexOnlyHere => "file_hex_only_here",
             FileRole::HexGoto => "file_hex_goto",
             FileRole::ImageDiff => "file_image_diff",
+            FileRole::RulerDeleted => "file_ruler_deleted",
+            FileRole::RulerInserted => "file_ruler_inserted",
+            FileRole::RulerChanged => "file_ruler_changed",
         }
     }
 
@@ -89,6 +98,9 @@ impl Role for FileRole {
             FileRole::HexOnlyHere => "Hex bytes on one side only",
             FileRole::HexGoto => "Hex goto highlight",
             FileRole::ImageDiff => "Image difference",
+            FileRole::RulerDeleted => "Ruler deleted",
+            FileRole::RulerInserted => "Ruler inserted",
+            FileRole::RulerChanged => "Ruler changed",
         }
     }
 
@@ -113,6 +125,9 @@ impl Role for FileRole {
             FileRole::HexOnlyHere => Rgba8([70, 209, 70, 110]),
             FileRole::HexGoto => Rgba8([255, 210, 60, 255]),
             FileRole::ImageDiff => Rgba8([255, 0, 255, 255]),
+            FileRole::RulerDeleted => Rgba8([230, 70, 70, 255]),
+            FileRole::RulerInserted => Rgba8([70, 200, 70, 255]),
+            FileRole::RulerChanged => Rgba8([230, 190, 60, 255]),
         }
     }
 
@@ -136,6 +151,9 @@ impl Role for FileRole {
             FileRole::HexOnlyHere => Rgba8([0, 190, 0, 70]),
             FileRole::HexGoto => Rgba8([190, 120, 0, 255]),
             FileRole::ImageDiff => Rgba8([255, 0, 255, 255]),
+            FileRole::RulerDeleted => Rgba8([210, 40, 40, 255]),
+            FileRole::RulerInserted => Rgba8([30, 160, 30, 255]),
+            FileRole::RulerChanged => Rgba8([200, 150, 0, 255]),
         }
     }
 

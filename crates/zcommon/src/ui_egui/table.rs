@@ -64,6 +64,7 @@ pub enum SplitColumn {
     Right,
 }
 
+#[derive(Clone, Copy)]
 pub enum Rows<'a> {
     Uniform { height: f32, count: usize },
     Heights(&'a [f32]),
@@ -78,6 +79,9 @@ struct HScroll<'a> {
 pub struct SplitTableOutput {
     /// Each side's body viewport, below the header.
     pub side_rects: [egui::Rect; 2],
+    /// The body viewport across all three columns, and how far the rows are scrolled up in it.
+    pub body_rect: egui::Rect,
+    pub scroll_offset: f32,
 }
 
 pub struct SplitTable<'a> {
@@ -233,7 +237,7 @@ impl<'a> SplitTable<'a> {
             area.width(),
             (area.height() - bar_height - bar_gap).max(0.0),
         );
-        let body_rect = ui
+        let (body_rect, scroll_offset) = ui
             .allocate_ui(table_size, |ui| {
                 let mut table = TableBuilder::new(ui)
                     .id_salt(id_salt)
@@ -260,7 +264,7 @@ impl<'a> SplitTable<'a> {
                         show_scrolled(ui, offsets[1], |ui| cell(i, SplitColumn::Right, ui))
                     });
                 };
-                table
+                let output = table
                     .header(header_height, |mut row| {
                         for column in [SplitColumn::Left, SplitColumn::Center, SplitColumn::Right] {
                             row.col(|ui| header(column, ui));
@@ -271,8 +275,8 @@ impl<'a> SplitTable<'a> {
                         Rows::Heights(heights) => {
                             body.heterogeneous_rows(heights.iter().copied(), &mut add_row)
                         }
-                    })
-                    .inner_rect
+                    });
+                (output.inner_rect, output.state.offset.y)
             })
             .inner;
         let side_rects = x.map(|x| egui::Rect::from_x_y_ranges(x, body_rect.y_range()));
@@ -311,7 +315,11 @@ impl<'a> SplitTable<'a> {
             }
         }
 
-        SplitTableOutput { side_rects }
+        SplitTableOutput {
+            side_rects,
+            body_rect,
+            scroll_offset,
+        }
     }
 }
 

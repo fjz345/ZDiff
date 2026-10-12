@@ -14,6 +14,7 @@ use crate::{
         active_side::{ActiveSide, ActiveSideState, outline_stroke},
         file_role::FileRole,
         occurrence::{OccurrenceState, RowFind, find_ranges},
+        overview::{self, ChangeSpan, RULER_WIDTH, RulerColors, row_at, row_change_spans},
         panes::ZAppPane,
         revision_dropdown::revision_dropdown,
         side_viewers::{self, SideViewers},
@@ -140,6 +141,8 @@ pub struct FileDiffPane {
     #[serde(skip)]
     row_heights: Option<RowHeights>,
     #[serde(skip)]
+    ruler_spans: Option<RulerSpans>,
+    #[serde(skip)]
     occurrences: OccurrenceState,
     #[serde(skip)]
     pin_input: PinInput,
@@ -168,6 +171,26 @@ struct ContentWidths {
     font_id: egui::FontId,
     pixels_per_point: f32,
     widths: [f32; 2],
+}
+
+/// The overview ruler's change spans, built once per rows.
+struct RulerSpans {
+    // Kept alive so the pointer comparison can't match a new allocation at the same address.
+    rows: Arc<DiffRows>,
+    spans: Vec<ChangeSpan>,
+}
+
+fn ruler_spans<'c>(cache: &'c mut Option<RulerSpans>, diff_ctx: &MinimalDiffCtx) -> &'c [ChangeSpan] {
+    let hit = cache
+        .as_ref()
+        .is_some_and(|cached| Arc::ptr_eq(&cached.rows, &diff_ctx.diff_rows));
+    if !hit {
+        *cache = Some(RulerSpans {
+            rows: diff_ctx.diff_rows.clone(),
+            spans: row_change_spans(&diff_ctx.diff_rows),
+        });
+    }
+    &cache.as_ref().expect("filled above").spans
 }
 
 /// Row heights with wrap on, measured once per rows, font and wrap widths. Dropped while wrap
@@ -239,6 +262,7 @@ impl FileDiffPane {
             active_side: ActiveSideState::default(),
             content_widths: None,
             row_heights: None,
+            ruler_spans: None,
             occurrences: OccurrenceState::default(),
             pin_input: PinInput::default(),
             browsers: [None, None],
@@ -295,6 +319,7 @@ impl FileDiffPane {
             self.row_heights = None;
         }
         let row_heights = &mut self.row_heights;
+        let ruler_cache = &mut self.ruler_spans;
         let occurrences = &mut self.occurrences;
         let pin_input = &mut self.pin_input;
         let split = &mut self.split;
@@ -551,6 +576,8 @@ impl FileDiffPane {
         ui.spacing_mut().item_spacing.y = 0.0;
 
         let table_height = ui.available_height();
+        let show_ruler = !other_viewer && !do_not_render_diff && diff_rows_len > 0;
+        let ruler_id = egui::Id::new("file_diff_ruler");
 
         let mut side_rects = [egui::Rect::NOTHING; 2];
         let mut table_rect = egui::Rect::NOTHING;
@@ -564,7 +591,11 @@ impl FileDiffPane {
                     egui::Frame::default()
                         .fill(role_color(ui.ctx(), FileRole::TableBackground))
                         .show(ui, |ui| {
-                            let area = ui.available_rect_before_wrap();
+                            let full_area = ui.available_rect_before_wrap();
+                            let mut area = full_area;
+                            if show_ruler {
+                                area.max.x -= RULER_WIDTH;
+                            }
                             let button_padding = ui.spacing().button_padding.x;
                             let center = center_layout(
                                 center_layout_cache,
@@ -590,7 +621,10 @@ impl FileDiffPane {
                             // table's columns, outside its scroll area so the wheel zooms.
                             let mut image_left_width = None;
 
-                            if let Some(ScrollSpan { start, maybe_end }) = &ctx.scroll_to_row_span {
+                            let ruler_row = ui.data_mut(|d| d.remove_temp::<usize>(ruler_id.with("scroll_to")));
+                            if let Some(row) = ruler_row {
+                                table = table.scroll_to_row(row, Some(egui::Align::Center));
+                            } else if let Some(ScrollSpan { start, maybe_end }) = &ctx.scroll_to_row_span {
                                 log::trace!("scroll_to_row_span: ({:?}, {:?})", start, maybe_end);
                                 table = table.scroll_to_row(*start, Some(egui::Align::Min));
                             }
@@ -1021,9 +1055,40 @@ impl FileDiffPane {
                                     .max_rect(rect)
                                     .id_salt("file_diff_table_ui"),
                             );
+                            let ruler_rows = rows;
                             let output =
                                 table.show(&mut table_ui, *header_height, header, rows, cell);
                             ui.advance_cursor_after_rect(rect);
+                            if show_ruler && let Some(diff_ctx) = ctx.diff_ctx {
+                                let body = output.body_rect;
+                                let strip = egui::Rect::from_min_max(
+                                    egui::pos2(area.max.x, body.top()),
+                                    egui::pos2(full_area.max.x, body.bottom()),
+                                );
+                                let viewport = (
+                                    row_at(&ruler_rows, output.scroll_offset),
+                                    row_at(&ruler_rows, output.scroll_offset + body.height()),
+                                );
+                                let colors = RulerColors {
+                                    inserted: role_color(ui.ctx(), FileRole::RulerInserted),
+                                    deleted: role_color(ui.ctx(), FileRole::RulerDeleted),
+                                    changed: role_color(ui.ctx(), FileRole::RulerChanged),
+                                };
+                                let spans = ruler_spans(ruler_cache, diff_ctx);
+                                if let Some(row) = overview::show(
+                                    ui,
+                                    ruler_id,
+                                    strip,
+                                    spans,
+                                    diff_rows_len,
+                                    viewport,
+                                    &colors,
+                                ) {
+                                    ui.data_mut(|d| d.insert_temp(ruler_id.with("scroll_to"), row));
+                                    ui.ctx().request_repaint();
+                                }
+                                ui.advance_cursor_after_rect(strip);
+                            }
                             [*ctx.scroll_left, *ctx.scroll_right] = offsets;
                             let measured = header_rects[0].height().max(header_rects[1].height());
                             if measured != *header_height {

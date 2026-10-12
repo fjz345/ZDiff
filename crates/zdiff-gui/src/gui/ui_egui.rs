@@ -4,6 +4,7 @@ pub mod diff_pane;
 pub mod file_role;
 pub mod syntax;
 pub mod occurrence;
+pub mod overview;
 pub mod side_viewers;
 pub mod revision_dropdown;
 #[cfg(test)]
