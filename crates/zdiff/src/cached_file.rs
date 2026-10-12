@@ -1,6 +1,6 @@
 use std::{io, ops::Range, path::Path};
 
-use zcommon::hash::hash_file_mmap;
+use zcommon::hash::{hash_contents, hash_file_mmap};
 
 use crate::{
     lexer::{
@@ -83,26 +83,34 @@ impl<T: RawTokenTrait> CachedFile<T> {
         physical_path: impl AsRef<Path>,
         lexer_mode: u8,
     ) -> io::Result<Self> {
+        let contents = read_file_contents(&physical_path)?;
+        let hash = hash_file_mmap(&physical_path)?;
+        Ok(Self::build(display_path, contents, hash, lexer_mode))
+    }
+
+    pub fn from_contents(display_path: UniversalPath, contents: String, lexer_mode: u8) -> Self {
+        let hash = hash_contents(contents.as_bytes());
+        Self::build(display_path, contents, hash, lexer_mode)
+    }
+
+    fn build(display_path: UniversalPath, contents: String, hash: String, lexer_mode: u8) -> Self {
         let lexer_parse_fn = match lexer_mode {
             LEXER_MODE_GREEDY => |contents: &str| LexerGreedy::new(contents).parse(),
             LEXER_MODE_TOKENIZE => |contents: &str| LexerTokenize::new(contents).parse(),
             LEXER_MODE_NEWLINE => |contents: &str| LexerNewLine::new(contents).parse(),
             _ => |contents: &str| LexerDefault::new(contents).parse(),
         };
-
-        let contents = read_file_contents(&physical_path)?;
-        let hash = hash_file_mmap(&physical_path)?;
         let tokens = lexer_parse_fn(&contents);
         let metadata = FileMetadata::new(&contents);
 
-        Ok(Self {
+        Self {
             path: display_path,
             hash,
             contents,
             tokens,
             metadata,
             lexer_mode,
-        })
+        }
     }
 }
 
@@ -172,5 +180,23 @@ mod tests {
             reconstructed_tokenize,
             "#define hello_there\n\t// Comment\n"
         );
+    }
+
+    #[test]
+    fn from_contents_matches_a_file_read_from_disk() {
+        let temp_file = tempfile::NamedTempFile::new().unwrap();
+        let contents = "one\ntwo words\n";
+        std::fs::write(temp_file.path(), contents).unwrap();
+        let path = UniversalPath::from(temp_file.path().to_path_buf());
+
+        for mode in [LEXER_MODE_GREEDY, LEXER_MODE_NEWLINE, LEXER_MODE_TOKENIZE] {
+            let from_disk =
+                CachedFile::<RawToken>::new(path.clone(), temp_file.path(), mode).unwrap();
+            let from_contents =
+                CachedFile::<RawToken>::from_contents(path.clone(), contents.to_string(), mode);
+            assert_eq!(from_contents, from_disk);
+            assert_eq!(from_contents.tokens.len(), from_disk.tokens.len());
+            assert_eq!(from_contents.contents, from_disk.contents);
+        }
     }
 }

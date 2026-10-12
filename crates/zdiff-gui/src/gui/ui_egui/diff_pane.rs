@@ -28,6 +28,7 @@ use crate::{
         audio::{self, AudioDiffProcessor, AudioSettings},
         audio_meta::{self, AudioMetaProcessor},
         hex::{self, HexViewCtx},
+        hex_strings::{HexMode, HexSettings, hex_mode_ui, line_offset},
         image::{self, ImageDiffProcessor, ImageSettings},
         media_placeholder,
         video_frames::VideoFrameProcessor,
@@ -118,6 +119,10 @@ pub struct FileDiffPaneCtx<'a> {
     pub block_toggle_request: &'a mut Option<(usize, BlockToggle)>,
     /// Set when the pair resolved to the Hex viewer; the table then shows hex rows.
     pub hex_view: Option<HexViewCtx<'a>>,
+    /// Set when the pair resolved to the Hex viewer. In Strings mode the table shows the text diff
+    /// of the extracted strings, with `string_offsets` in the gutter.
+    pub hex_mode: Option<&'a mut HexSettings>,
+    pub string_offsets: [&'a [usize]; 2],
     /// Set when the pair resolved to the Image viewer; the images replace the table rows.
     pub image_view: Option<&'a mut ImageDiffProcessor>,
     pub image_settings: Option<&'a mut ImageSettings>,
@@ -397,10 +402,25 @@ impl FileDiffPane {
             && ctx.image_view.is_none()
             && ctx.media_view.is_none()
             && side_viewers.is_none();
+        let strings = ctx
+            .hex_mode
+            .as_ref()
+            .is_some_and(|settings| settings.mode == HexMode::Strings);
+        let side_gutter = if strings {
+            Gutter::Offset(None)
+        } else {
+            Gutter::Single
+        };
         let unified = match ctx.diff_ctx {
-            Some(diff_ctx) if text_viewer && *ctx.text_mode != TextMode::SideBySide => Some(
-                unified_view(&mut self.unified, &diff_ctx.diff_rows, *ctx.text_mode),
-            ),
+            Some(diff_ctx)
+                if text_viewer && !strings && *ctx.text_mode != TextMode::SideBySide =>
+            {
+                Some(unified_view(
+                    &mut self.unified,
+                    &diff_ctx.diff_rows,
+                    *ctx.text_mode,
+                ))
+            }
             _ => None,
         };
         let single_side = unified.as_ref().and_then(|view| view.mode.single_side());
@@ -419,7 +439,11 @@ impl FileDiffPane {
                 let extra = column_gutter.width() - GUTTER_WIDTH;
                 [if left > 0.0 { left + extra } else { left }, 0.0]
             }
-            (Some(diff_ctx), None) => self.content_widths(ui, &diff_ctx.diff_rows, diff_ctx),
+            (Some(diff_ctx), None) => {
+                let extra = side_gutter.width() - GUTTER_WIDTH;
+                self.content_widths(ui, &diff_ctx.diff_rows, diff_ctx)
+                    .map(|width| if width > 0.0 { width + extra } else { width })
+            }
             (None, _) => [0.0; 2],
         };
 
@@ -448,7 +472,10 @@ impl FileDiffPane {
             ui.with_layout(Layout::left_to_right(egui::Align::Center), |ui| {
                 ui.spacing_mut().item_spacing.x = 4.0;
                 viewer_override_combo(ui, ctx.viewer_override, ctx.viewer_fallback);
-                if text_viewer {
+                if let Some(settings) = ctx.hex_mode.as_deref_mut() {
+                    hex_mode_ui(ui, settings);
+                }
+                if text_viewer && !strings {
                     text_mode_combo(ui, ctx.text_mode);
                 }
             });
@@ -1055,7 +1082,7 @@ impl FileDiffPane {
                                     ),
                                     None => (
                                         ctx.diff_ctx.map(|d| &d.diff_rows),
-                                        side_widths.map(wrap_width),
+                                        side_widths.map(|width| side_gutter.text_width(width)),
                                         diff_rows_len,
                                     ),
                                 };
@@ -1083,7 +1110,7 @@ impl FileDiffPane {
                                     ];
                                     let overlay = ctx
                                         .diff_ctx
-                                        .filter(|_| ctx.phase_overlay)
+                                        .filter(|_| ctx.phase_overlay && !strings)
                                         .and_then(|d| d.phase_trace.as_deref());
                                     let cell = |row_index: usize, column: SplitColumn, ui: &mut egui::Ui| {
                                             if let Some(hex_view) = &ctx.hex_view {
@@ -1193,7 +1220,19 @@ impl FileDiffPane {
                                                         (ActiveSide::Right, &diff_row.right)
                                                     };
                                                     let width = ui.max_rect().width();
-                                                        Self::render_side_row(
+                                                    let gutter = match (strings, content) {
+                                                        (true, LineContent::Code { line_num, .. }) => {
+                                                            let offsets = ctx.string_offsets[side as usize];
+                                                            Gutter::Offset(
+                                                                usize::try_from(*line_num)
+                                                                    .ok()
+                                                                    .and_then(|n| line_offset(offsets, n)),
+                                                            )
+                                                        }
+                                                        (true, _) => Gutter::Offset(None),
+                                                        (false, _) => Gutter::Single,
+                                                    };
+                                                        Self::render_row(
                                                             ui,
                                                             side,
                                                             row_index,
@@ -1219,6 +1258,7 @@ impl FileDiffPane {
                                                             active_side == side,
                                                             ctx.code_language,
                                                             overlay,
+                                                            gutter,
                                                         );
                                                     let pinned = is_pinned(shown_pins, side, content);
                                                     if pinned || overlay.is_some() {
@@ -1239,7 +1279,7 @@ impl FileDiffPane {
                                                     let [expand_slot, toggle_slot, left_slot, symbol_slot, right_slot] =
                                                         center.slots(ui.max_rect(), ui.spacing().interact_size.y);
                                                     let diff_ctx = ctx.diff_ctx;
-                                                    let hunk = diff_ctx.and_then(|d| {
+                                                    let hunk = diff_ctx.filter(|_| !strings).and_then(|d| {
                                                         revert::hunk_starting_at(&d.precomputed_diffs, row_index)
                                                             .map(|hunk| (d, hunk))
                                                     });
@@ -1632,7 +1672,7 @@ impl FileDiffPane {
                     let add_contents = |ui: &mut egui::Ui| {
                         ui.spacing_mut().item_spacing.x = 0.0;
 
-                        let line_number = |ui: &mut egui::Ui, text: String| {
+                        let line_number = |ui: &mut egui::Ui, text: String, width: f32| {
                             let text = egui::RichText::new(text).size(10.0);
                             let text = if accent_line_num {
                                 text.color(role_color(ui.ctx(), FileRole::GotoLineNumber))
@@ -1641,21 +1681,25 @@ impl FileDiffPane {
                                 text.color(role_color(ui.ctx(), FileRole::LineNumber))
                             };
                             ui.add_sized(
-                                [GUTTER_WIDTH, row_h],
+                                [width, row_h],
                                 egui::Label::new(text).selectable(false),
                             );
                         };
                         match gutter {
                             Gutter::Single => {
                                 let line = (*line_num > 0).then(|| line_num.to_string());
-                                line_number(ui, line.unwrap_or_default());
+                                line_number(ui, line.unwrap_or_default(), GUTTER_WIDTH);
+                            }
+                            Gutter::Offset(offset) => {
+                                let shown = offset.map(|o| format!("{o:08X}")).unwrap_or_default();
+                                line_number(ui, shown, OFFSET_GUTTER_WIDTH);
                             }
                             Gutter::Unified { left, right, sign } => {
                                 let shown = |line: Option<usize>| {
                                     line.map(|n| n.to_string()).unwrap_or_default()
                                 };
-                                line_number(ui, shown(left));
-                                line_number(ui, shown(right));
+                                line_number(ui, shown(left), GUTTER_WIDTH);
+                                line_number(ui, shown(right), GUTTER_WIDTH);
                                 let (sign, color) = sign.unwrap_or((' ', egui::Color32::PLACEHOLDER));
                                 ui.add_sized(
                                     [UNIFIED_SIGN_WIDTH, row_h],
@@ -1977,6 +2021,7 @@ fn paint_row_look(
 
 /// Line number column of a code row, and the gap between it and the row text.
 const GUTTER_WIDTH: f32 = 35.0;
+const OFFSET_GUTTER_WIDTH: f32 = 60.0;
 const GUTTER_GAP: f32 = 4.0;
 const CENTER_GAP: f32 = 2.0;
 
@@ -1990,11 +2035,12 @@ fn unified_text_width(cell_width: f32) -> f32 {
     cell_width - unified_gutter_width() - GUTTER_GAP
 }
 
-/// What a row's gutter shows: its own line number, or both files' and the `-`/`+` of the unified
-/// column.
+/// What a row's gutter shows: its own line number, the byte offset of its string (Hex Strings
+/// mode), or both files' line numbers and the `-`/`+` of the unified column.
 #[derive(Clone, Copy)]
 enum Gutter {
     Single,
+    Offset(Option<usize>),
     Unified {
         left: Option<usize>,
         right: Option<usize>,
@@ -2006,6 +2052,7 @@ impl Gutter {
     fn width(self) -> f32 {
         match self {
             Self::Single => GUTTER_WIDTH,
+            Self::Offset(_) => OFFSET_GUTTER_WIDTH,
             Self::Unified { .. } => unified_gutter_width(),
         }
     }
@@ -2013,6 +2060,7 @@ impl Gutter {
     fn text_width(self, cell_width: f32) -> f32 {
         match self {
             Self::Single => wrap_width(cell_width),
+            Self::Offset(_) => cell_width - OFFSET_GUTTER_WIDTH - GUTTER_GAP,
             Self::Unified { .. } => unified_text_width(cell_width),
         }
     }

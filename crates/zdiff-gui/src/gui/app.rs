@@ -58,6 +58,7 @@ use crate::{
         audio_meta::AudioMetaProcessor,
         conflict_count, decode_fallback, ffmpeg_fallback,
         hex::{HexDiffProcessor, parse_hex_offset},
+        hex_strings::{HexMode, HexSettings, HexStrings},
         image::{ImageDiffProcessor, ImageSettings},
         image_decode_fallback, resolve_viewer, ui_extension_map, ui_ffmpeg_setting,
         video_frames::VideoFrameProcessor,
@@ -75,6 +76,13 @@ pub struct AppStateCtx {
     pub diff_processor: DiffProcessor,
     #[cfg_attr(feature = "serde", serde(skip), serde(default))]
     pub hex_processor: HexDiffProcessor,
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub hex_settings: HexSettings,
+    #[cfg_attr(feature = "serde", serde(skip), serde(default))]
+    pub hex_strings: HexStrings,
+    /// Whether the last frame showed the Hex Strings mode.
+    #[cfg_attr(feature = "serde", serde(skip), serde(default))]
+    pub strings_active: bool,
     #[cfg_attr(feature = "serde", serde(skip), serde(default))]
     pub image_processor: ImageDiffProcessor,
     #[cfg_attr(feature = "serde", serde(default))]
@@ -168,6 +176,9 @@ impl Default for AppStateCtx {
             diff_options: Default::default(),
             diff_processor: Default::default(),
             hex_processor: Default::default(),
+            hex_settings: Default::default(),
+            hex_strings: Default::default(),
+            strings_active: false,
             image_processor: Default::default(),
             image_settings: Default::default(),
             audio_processor: Default::default(),
@@ -201,6 +212,14 @@ impl Default for AppStateCtx {
             code_language: "rs".to_string(),
             code_language_custom: "".into(),
         }
+    }
+}
+
+impl AppStateCtx {
+    /// The hex pair is shown as the text diff of its extracted strings.
+    fn strings_view(&self) -> bool {
+        self.viewers == Some(Viewers::Pair(ViewerKind::Hex))
+            && self.hex_settings.mode == HexMode::Strings
     }
 }
 
@@ -891,6 +910,9 @@ impl<'a> ZApp {
                 myers_diff_algorithm,
                 diff_processor,
                 hex_processor,
+                hex_settings,
+                hex_strings,
+                strings_active: _,
                 image_processor,
                 image_settings,
                 audio_processor,
@@ -917,7 +939,10 @@ impl<'a> ZApp {
             };
             let side_shows = |kind| sides.is_some_and(|s| s.contains(&kind));
             let is_hex = pair_kind == Some(ViewerKind::Hex);
-            let goto_hex = is_hex || (side_shows(ViewerKind::Hex) && !side_shows(ViewerKind::Text));
+            let strings_view = is_hex && hex_settings.mode == HexMode::Strings;
+            let hex_bytes = is_hex && !strings_view;
+            let goto_hex =
+                hex_bytes || (side_shows(ViewerKind::Hex) && !side_shows(ViewerKind::Text));
             let is_image = pair_kind == Some(ViewerKind::Image);
             let media_view =
                 pair_kind.filter(|k| matches!(k, ViewerKind::Audio | ViewerKind::Video));
@@ -1005,7 +1030,7 @@ impl<'a> ZApp {
                 .flatten();
             let scroll_to_rows = &if sides.is_some() {
                 None
-            } else if is_hex {
+            } else if hex_bytes {
                 hex_processor.scroll_to_row(diff_processor.conflict_cursor.get())
             } else if is_image || media_view.is_some() {
                 None
@@ -1032,7 +1057,9 @@ impl<'a> ZApp {
             {
                 self.launch_error = None;
             }
-            let diff_ctx = if is_hex || is_image || media_view.is_some() {
+            // Rows of strings from before a changed minimum length would show without offsets.
+            let strings_pending = strings_view && hex_strings.sides().is_none();
+            let diff_ctx = if hex_bytes || strings_pending || is_image || media_view.is_some() {
                 None
             } else {
                 diff_processor.get_minimal_diff_ctx()
@@ -1040,6 +1067,12 @@ impl<'a> ZApp {
             let (diff_ctx, side_text) = match sides {
                 Some(_) => (None, diff_ctx.filter(|_| side_shows(ViewerKind::Text))),
                 None => (diff_ctx, None),
+            };
+            let string_offsets = match hex_strings.sides().filter(|_| strings_view) {
+                Some(sides) => sides
+                    .each_ref()
+                    .map(|s| s.as_ref().map_or(&[][..], |s| &s.offsets[..])),
+                None => [&[][..]; 2],
             };
             let mut block_toggle_request = None;
             let mut behavior = TreeBehavior {
@@ -1097,7 +1130,9 @@ impl<'a> ZApp {
                     code_language,
                     revert_request: &mut None,
                     block_toggle_request: &mut block_toggle_request,
-                    hex_view: is_hex.then(|| hex_processor.view_ctx()),
+                    hex_view: hex_bytes.then(|| hex_processor.view_ctx()),
+                    hex_mode: is_hex.then_some(&mut *hex_settings),
+                    string_offsets,
                     image_view: (is_image || side_shows(ViewerKind::Image))
                         .then_some(image_processor),
                     image_settings: Some(image_settings),
@@ -1644,9 +1679,11 @@ impl eframe::App for ZApp {
                 .as_mut()
                 .expect("State was not valid while processing inputs")
                 .ctx_mut();
-            let text_conflicts = if app_ctx
-                .viewers
-                .is_some_and(|v| v != Viewers::Pair(ViewerKind::Text))
+            let strings_view = app_ctx.strings_view();
+            let text_conflicts = if !strings_view
+                && app_ctx
+                    .viewers
+                    .is_some_and(|v| v != Viewers::Pair(ViewerKind::Text))
             {
                 0
             } else {
@@ -1657,11 +1694,12 @@ impl eframe::App for ZApp {
                     .and_then(|f| Some(f.precomputed_diffs.len()))
                     .unwrap_or_default()
             };
-            let conflict_max = conflict_count(
-                app_ctx.viewers,
-                text_conflicts,
-                app_ctx.hex_processor.nav_count(),
-            );
+            let hex_stops = if strings_view {
+                text_conflicts
+            } else {
+                app_ctx.hex_processor.nav_count()
+            };
+            let conflict_max = conflict_count(app_ctx.viewers, text_conflicts, hex_stops);
             app_ctx.diff_processor.conflict_cursor.set_max(conflict_max);
         }
 
@@ -1786,6 +1824,7 @@ impl eframe::App for ZApp {
                 };
                 state.video_meta.request(video_pair);
                 let [hex_1, hex_2] = files_for(&resolution, ViewerKind::Hex);
+                let hex_files = [hex_1.clone(), hex_2.clone()];
                 // The cursor may hold the text diff's or the previous pair's stop.
                 if state.hex_processor.request(hex_1, hex_2)
                     && state.viewers == Some(Viewers::Pair(ViewerKind::Hex))
@@ -1794,15 +1833,44 @@ impl eframe::App for ZApp {
                 }
                 state.hex_processor.poll();
 
-                let is_text = state.viewers.is_none_or(|v| v.shows(ViewerKind::Text));
+                // The text diff's state is the other mode's (or another pair's) on a switch.
+                let strings_view = state.strings_view();
+                if strings_view != state.strings_active {
+                    state.strings_active = strings_view;
+                    state.diff_processor.cancel_in_progress();
+                    state.diff_processor.in_progress_input = None;
+                    state.diff_processor.reset_ctx();
+                }
+                if strings_view {
+                    state.hex_strings.request(
+                        hex_files,
+                        state.hex_settings.min_string_len,
+                        state.diff_lexer_mode,
+                    );
+                    state.hex_strings.poll();
+                } else {
+                    state.hex_strings.clear();
+                }
+                let strings_files = state
+                    .hex_strings
+                    .sides()
+                    .map(|sides| sides.each_ref().map(|s| s.as_ref().map(|s| s.file.clone())));
+
+                let is_text = if strings_view {
+                    strings_files.is_some()
+                } else {
+                    state.viewers.is_none_or(|v| v.shows(ViewerKind::Text))
+                };
                 let cached = [
                     state.file_1.get_cached_file().clone(),
                     state.file_2.get_cached_file().clone(),
                 ];
                 // A mismatched pair's text side is diffed alone, so its rows are all one side's.
                 // Pins pair lines of both sides, and the cursor may hold another viewer's stop.
-                let ([text_1, text_2], pins) = match state.viewers {
-                    Some(viewers @ Viewers::Sides(_)) => {
+                // The strings of a hex pair are other lines than the pins' files.
+                let ([text_1, text_2], pins) = match (&strings_files, state.viewers) {
+                    (Some(files), _) => (files.clone(), Vec::new()),
+                    (None, Some(viewers @ Viewers::Sides(_))) => {
                         state.diff_processor.conflict_cursor.set(0);
                         (viewers.files_for(ViewerKind::Text, cached), Vec::new())
                     }
@@ -1837,7 +1905,8 @@ impl eframe::App for ZApp {
 
                 if diff_ctx_invalidated
                     && is_text
-                    && (state.file_1.get_cached_file().is_some()
+                    && (strings_files.is_some()
+                        || state.file_1.get_cached_file().is_some()
                         || state.file_2.get_cached_file().is_some())
                 {
                     state.diff_processor.request_update(update_input);
