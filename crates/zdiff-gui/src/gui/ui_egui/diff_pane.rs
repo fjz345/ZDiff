@@ -21,7 +21,7 @@ use crate::{
         side_viewers::{self, SideViewers},
         syntax,
         text_mode::TextMode,
-        unified::{UnifiedKind, UnifiedRow, unified_index_of_row, unified_rows},
+        unified::{UnifiedKind, UnifiedRow, unified_rows, unified_scroll_index},
     },
     viewer::{
         ViewerKind,
@@ -728,13 +728,13 @@ impl FileDiffPane {
                             let ruler_row = ui.data_mut(|d| d.remove_temp::<usize>(ruler_id.with("scroll_to")));
                             if let Some(row) = ruler_row {
                                 table = table.scroll_to_row(row, Some(egui::Align::Center));
-                            } else if let Some(ScrollSpan { start, maybe_end }) = &ctx.scroll_to_row_span {
-                                log::trace!("scroll_to_row_span: ({:?}, {:?})", start, maybe_end);
+                            } else if let Some(span) = ctx.scroll_to_row_span {
+                                log::trace!("scroll_to_row_span: {:?}", span);
                                 let start = match &unified {
                                     Some(view) => {
-                                        unified_index_of_row(&view.meta, *start).unwrap_or(*start)
+                                        unified_scroll_index(&view.meta, span).unwrap_or(span.start)
                                     }
-                                    None => *start,
+                                    None => span.start,
                                 };
                                 table = table.scroll_to_row(start, Some(egui::Align::Min));
                             }

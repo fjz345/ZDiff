@@ -6,6 +6,7 @@ use zdiff::{
 };
 
 use super::active_side::ActiveSide;
+use crate::diff_ctx::ScrollSpan;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum UnifiedKind {
@@ -114,9 +115,28 @@ pub fn unified_index_of_row(unified: &[UnifiedRow], row: usize) -> Option<usize>
         .or_else(|| unified.iter().position(|u| u.row > row))
 }
 
+// A block scrolls to its first unified row; a row with a side (find, goto) to that side's line.
+pub fn unified_scroll_index(unified: &[UnifiedRow], span: &ScrollSpan) -> Option<usize> {
+    if let Some(end) = span.maybe_end {
+        let rows = span.start..=end;
+        return unified
+            .iter()
+            .position(|u| rows.contains(&u.row))
+            .or_else(|| unified_index_of_row(unified, span.start));
+    }
+    span.side
+        .and_then(|side| {
+            unified
+                .iter()
+                .position(|u| u.row == span.start && u.side == side)
+        })
+        .or_else(|| unified_index_of_row(unified, span.start))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::diff_ctx::{precompute_diff_spans, precompute_file_rows};
     use crate::ui_egui::copy_harness::CopyHarness;
     use zdiff::diff_builder::DiffBuilderOptions;
 
@@ -269,5 +289,115 @@ mod tests {
         let rows = rows_of("a\nd\n", "a\nb\nd\n", true);
         let unified = unified_rows(&rows);
         assert_eq!(unified_index_of_row(&unified, 1), Some(1));
+    }
+
+    fn conflict_targets(rows: &[DiffRow]) -> Vec<Option<usize>> {
+        let unified = unified_rows(rows);
+        precompute_diff_spans(rows)
+            .iter()
+            .map(|span| {
+                let rows = span.rows();
+                let scroll = ScrollSpan {
+                    start: *rows.start(),
+                    maybe_end: Some(*rows.end()),
+                    side: None,
+                };
+                unified_scroll_index(&unified, &scroll)
+            })
+            .collect()
+    }
+
+    fn goto(rows: &[DiffRow], side: ActiveSide, line: usize) -> Option<usize> {
+        let lines = |side| {
+            rows.iter()
+                .filter_map(|r| match side {
+                    ActiveSide::Left => line_of(&r.left),
+                    ActiveSide::Right => line_of(&r.right),
+                })
+                .max()
+                .unwrap_or(0)
+        };
+        let (left, right) =
+            precompute_file_rows(rows, lines(ActiveSide::Left), lines(ActiveSide::Right));
+        let line_to_row = match side {
+            ActiveSide::Left => left,
+            ActiveSide::Right => right,
+        };
+        let scroll = ScrollSpan {
+            start: line_to_row[line - 1],
+            maybe_end: None,
+            side: Some(side),
+        };
+        unified_scroll_index(&unified_rows(rows), &scroll)
+    }
+
+    #[test]
+    fn each_conflict_block_scrolls_to_its_first_unified_row() {
+        let rows = rows_of("a\nb\nc\nd\ne\nf\n", "a\nX\nY\nd\ne\nF\n", true);
+        assert_eq!(conflict_targets(&rows), vec![Some(1), Some(7)]);
+    }
+
+    #[test]
+    fn a_conflict_block_without_left_lines_scrolls_to_its_inserted_lines() {
+        for ghost_rows in [true, false] {
+            let rows = rows_of("a\nd\n", "a\nb\nc\nd\n", ghost_rows);
+            assert_eq!(
+                conflict_targets(&rows),
+                vec![Some(1)],
+                "ghost_rows: {ghost_rows}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_conflict_block_after_a_collapsed_row_counts_the_collapsed_row() {
+        let mut rows = rows_of("a\nb\nc\n", "a\nB\nc\n", true);
+        rows.insert(
+            0,
+            DiffRow {
+                left: LineContent::Collapsed,
+                right: LineContent::Collapsed,
+            },
+        );
+        assert_eq!(conflict_targets(&rows), vec![Some(2)]);
+    }
+
+    #[test]
+    fn goto_a_line_on_either_side_of_a_changed_row_lands_on_that_sides_unified_row() {
+        let rows = rows_of("a\nb\nc\nd\n", "a\nX\nY\nd\n", true);
+        assert_eq!(goto(&rows, ActiveSide::Left, 3), Some(2));
+        assert_eq!(goto(&rows, ActiveSide::Right, 3), Some(4));
+        assert_eq!(goto(&rows, ActiveSide::Left, 2), Some(1));
+        assert_eq!(goto(&rows, ActiveSide::Right, 2), Some(3));
+    }
+
+    #[test]
+    fn goto_a_line_of_an_unchanged_row_lands_on_its_one_unified_row() {
+        let rows = rows_of("a\nb\nc\nd\n", "a\nX\nY\nd\n", true);
+        assert_eq!(goto(&rows, ActiveSide::Left, 4), Some(5));
+        assert_eq!(goto(&rows, ActiveSide::Right, 4), Some(5));
+        assert_eq!(goto(&rows, ActiveSide::Right, 1), Some(0));
+    }
+
+    #[test]
+    fn goto_a_line_in_a_one_sided_run_lands_on_that_line() {
+        for ghost_rows in [true, false] {
+            let inserted = rows_of("a\nd\n", "a\nb\nc\nd\n", ghost_rows);
+            assert_eq!(goto(&inserted, ActiveSide::Right, 3), Some(2));
+            let deleted = rows_of("a\nb\nc\nd\n", "a\nd\n", ghost_rows);
+            assert_eq!(goto(&deleted, ActiveSide::Left, 3), Some(2));
+            assert_eq!(goto(&deleted, ActiveSide::Right, 2), Some(3));
+        }
+    }
+
+    #[test]
+    fn a_find_hit_on_a_row_without_a_line_on_its_side_lands_on_the_rows_first_unified_row() {
+        let rows = rows_of("a\nb\nc\n", "a\nc\n", true);
+        let scroll = ScrollSpan {
+            start: 1,
+            maybe_end: None,
+            side: Some(ActiveSide::Right),
+        };
+        assert_eq!(unified_scroll_index(&unified_rows(&rows), &scroll), Some(1));
     }
 }

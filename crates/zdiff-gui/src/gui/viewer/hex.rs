@@ -48,6 +48,7 @@ fn hex_rows_span(bytes: &Range<usize>) -> ScrollSpan {
     ScrollSpan {
         start: hex_row_for_offset(bytes.start),
         maybe_end: Some(hex_row_for_offset(bytes.end - 1)),
+        side: None,
     }
 }
 
@@ -593,6 +594,7 @@ mod tests {
         ScrollSpan {
             start,
             maybe_end: Some(end),
+            side: None,
         }
     }
 

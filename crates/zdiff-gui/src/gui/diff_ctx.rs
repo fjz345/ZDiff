@@ -184,6 +184,7 @@ pub type PrecomputedFileRows = (Vec<usize>, Vec<usize>); // line mapping from Di
 pub struct ScrollSpan {
     pub start: usize,
     pub maybe_end: Option<usize>,
+    pub side: Option<ActiveSide>,
 }
 pub type DiffRows = Vec<DiffRow>; // Span with optional end
 
@@ -1042,7 +1043,10 @@ impl DiffProcessor {
 
         let scroll_to_row = find.or(goto).or(conflict);
 
-        if let Some(ScrollSpan { start, maybe_end }) = &scroll_to_row {
+        if let Some(ScrollSpan {
+            start, maybe_end, ..
+        }) = &scroll_to_row
+        {
             self.highlight_side = (find.is_none() && goto.is_some()).then_some(goto_side);
             self.active_highlights.clear();
             if let Some(end) = maybe_end {
@@ -1069,6 +1073,7 @@ impl DiffProcessor {
         row_for_line(line, line_to_row).map(|start| ScrollSpan {
             start,
             maybe_end: None,
+            side: Some(side),
         })
     }
 
@@ -1081,6 +1086,7 @@ impl DiffProcessor {
                 ret = Some(ScrollSpan {
                     start: conflict_idx_span.start,
                     maybe_end: Some(conflict_idx_span.end),
+                    side: None,
                 });
             } else {
                 ret = None;
@@ -1098,6 +1104,7 @@ impl DiffProcessor {
         self.current_find_hit().map(|hit| ScrollSpan {
             start: hit.row,
             maybe_end: None,
+            side: Some(hit.side),
         })
     }
 
@@ -1272,7 +1279,7 @@ fn row_for_line(line: usize, line_to_row: &[usize]) -> Option<usize> {
     line_to_row.get(line.saturating_sub(1).min(last)).copied()
 }
 
-fn precompute_diff_spans(diff_rows: &[DiffRow]) -> PrecomputedDiffs {
+pub(crate) fn precompute_diff_spans(diff_rows: &[DiffRow]) -> PrecomputedDiffs {
     let has_change = |content: &LineContent| match content {
         LineContent::Code { tokens, .. } => tokens
             .iter()
@@ -1301,7 +1308,7 @@ fn precompute_diff_spans(diff_rows: &[DiffRow]) -> PrecomputedDiffs {
         .collect()
 }
 
-fn precompute_file_rows(
+pub(crate) fn precompute_file_rows(
     diff_rows: &[DiffRow],
     file_1_line_count: usize,
     file_2_line_count: usize,
