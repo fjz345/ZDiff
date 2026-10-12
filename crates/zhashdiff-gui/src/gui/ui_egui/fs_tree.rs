@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use zcommon::{
     find::Matcher,
     kinds::{FileKind, KindTable},
-    vcs::git::GitCommand,
+    vcs::{git::GitCommand, p4::P4Command},
 };
 use zhashdiff::{
     comparison::{FileMeta, PairState},
@@ -1591,8 +1591,10 @@ fn on_row_item_clicked(
                 left_model.get_node(path1).unwrap(),
                 right_model.get_node(path2).unwrap(),
             );
+            let p4 = P4Command::new(false);
             let paths = tool_paths(
                 &GitCommand::default(),
+                &p4,
                 diff_tool,
                 [
                     PairSource {

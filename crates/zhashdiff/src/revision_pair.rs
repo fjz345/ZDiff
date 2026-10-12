@@ -1,13 +1,16 @@
-use std::{fs, io, path::Path};
+use std::{
+    fs, io,
+    path::{Path, PathBuf},
+};
 
 use zcommon::{
     universal_path::{GitRev, UniversalPath},
-    vcs::git::GitRunner,
+    vcs::{git::GitRunner, p4::P4Runner},
 };
 
 use crate::{
     external_diff_tool::DiffTool,
-    vcs_source::{ContentSource, GitContent, read_git_file},
+    vcs_source::{ContentSource, GitContent, depot_node, read_depot_file, read_git_file},
 };
 
 pub struct PairSource<'a> {
@@ -26,6 +29,7 @@ pub fn is_file_diff_tool(tool: &DiffTool) -> bool {
 /// afterwards, the tool opens the files after this returns.
 pub fn tool_paths(
     git: &impl GitRunner,
+    p4: &impl P4Runner,
     tool: &DiffTool,
     sides: [PairSource; 2],
     rel_path: &str,
@@ -40,10 +44,17 @@ pub fn tool_paths(
                 revision_path(content, source.path)?.to_string()
             }
             ContentSource::Git(content) => {
-                let file = rel_path
-                    .split('/')
-                    .fold(temp_dir.join(side_dir), |path, segment| path.join(segment));
-                fetch(git, content, source.path, &file)?;
+                let file = temp_file(temp_dir, side_dir, rel_path);
+                write_file(&file, read_git_file(git, content, source.path)?)?;
+                file.to_string_lossy().into_owned()
+            }
+            ContentSource::Depot(content) if revision_paths => {
+                let (path, revision) = depot_node(content, source.path)?;
+                UniversalPath::Depot(path, Some(revision)).to_string()
+            }
+            ContentSource::Depot(content) => {
+                let file = temp_file(temp_dir, side_dir, rel_path);
+                write_file(&file, read_depot_file(p4, content, source.path)?)?;
                 file.to_string_lossy().into_owned()
             }
         };
@@ -75,8 +86,13 @@ fn revision_path(content: &GitContent, node: &Path) -> io::Result<UniversalPath>
     Ok(UniversalPath::Git(folder.join(rel), rev))
 }
 
-fn fetch(git: &impl GitRunner, content: &GitContent, node: &Path, file: &Path) -> io::Result<()> {
-    let bytes = read_git_file(git, content, node)?;
+fn temp_file(temp_dir: &Path, side_dir: &str, rel_path: &str) -> PathBuf {
+    rel_path
+        .split('/')
+        .fold(temp_dir.join(side_dir), |path, segment| path.join(segment))
+}
+
+fn write_file(file: &Path, bytes: Vec<u8>) -> io::Result<()> {
     if let Some(parent) = file.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -87,8 +103,10 @@ fn fetch(git: &impl GitRunner, content: &GitContent, node: &Path, file: &Path) -
 mod tests {
     use super::*;
     use crate::external_diff_tool::{DiffPair, expand_template, presets};
+    use crate::vcs_source::{DepotContent, DepotRevisions};
+    use std::collections::HashMap;
     use std::path::PathBuf;
-    use zcommon::vcs::git::GitError;
+    use zcommon::vcs::{git::GitError, p4::FakeP4};
 
     const COMMIT: &str = "1111111111111111111111111111111111111111";
 
@@ -99,6 +117,10 @@ mod tests {
             assert_eq!(args[0], "cat-file");
             Ok(format!("blob {}", args.last().unwrap()).into_bytes())
         }
+    }
+
+    fn blob_p4() -> FakeP4<impl Fn(&[&str]) -> Result<String, String>> {
+        FakeP4::new(|args| Err(format!("unexpected p4 call: {args:?}")))
     }
 
     fn git_content(commit: Option<&str>) -> ContentSource {
@@ -131,6 +153,7 @@ mod tests {
     fn open(tool: &DiffTool, left: &ContentSource, temp: &Path) -> io::Result<[String; 2]> {
         tool_paths(
             &BlobGit,
+            &blob_p4(),
             tool,
             [
                 PairSource {
@@ -201,6 +224,7 @@ mod tests {
 
         let paths = tool_paths(
             &BlobGit,
+            &blob_p4(),
             &tool("WinMerge"),
             [
                 side(r"D:\repo\src@git:origin/main\a.txt"),
@@ -223,6 +247,7 @@ mod tests {
         for name in ["zdiff-gui", "WinMerge"] {
             let result = tool_paths(
                 &BlobGit,
+                &blob_p4(),
                 &tool(name),
                 [
                     PairSource {
@@ -241,6 +266,98 @@ mod tests {
         }
     }
 
+    fn depot_content(revisions: DepotRevisions) -> ContentSource {
+        ContentSource::Depot(DepotContent {
+            model_root: PathBuf::from("//depot/proj@50"),
+            depot_folder: "//depot/proj".to_string(),
+            revisions,
+        })
+    }
+
+    fn depot_files() -> DepotRevisions {
+        DepotRevisions::Files(HashMap::from([("sub/a.txt".to_string(), 7)]))
+    }
+
+    fn open_depot(
+        tool: &DiffTool,
+        left: &ContentSource,
+        p4: &impl P4Runner,
+        temp: &Path,
+    ) -> io::Result<[String; 2]> {
+        tool_paths(
+            &BlobGit,
+            p4,
+            tool,
+            [
+                PairSource {
+                    content: left,
+                    path: Path::new("//depot/proj@50/sub/a.txt"),
+                },
+                PairSource {
+                    content: &ContentSource::Disk,
+                    path: Path::new(r"D:\wt\sub\a.txt"),
+                },
+            ],
+            "sub/a.txt",
+            temp,
+        )
+    }
+
+    #[test]
+    fn file_diff_tool_gets_the_depot_path_at_the_listed_revision() {
+        let temp = tempfile::tempdir().unwrap();
+
+        let files = open_depot(
+            &tool("zdiff-gui"),
+            &depot_content(depot_files()),
+            &blob_p4(),
+            temp.path(),
+        )
+        .unwrap();
+        let shelf = open_depot(
+            &tool("zdiff-gui"),
+            &depot_content(DepotRevisions::Shelf(99)),
+            &blob_p4(),
+            temp.path(),
+        )
+        .unwrap();
+
+        assert_eq!(files[0], "//depot/proj/sub/a.txt#7");
+        assert_eq!(shelf[0], "//depot/proj/sub/a.txt@=99");
+        assert_eq!(fs::read_dir(temp.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn other_tools_get_temp_files_printed_from_the_depot() {
+        let temp = tempfile::tempdir().unwrap();
+        let p4 = FakeP4::new(|args| {
+            assert_eq!(args, ["print", "-q", "//depot/proj/sub/a.txt#7"]);
+            Ok("depot content".to_string())
+        });
+
+        let paths = open_depot(
+            &tool("WinMerge"),
+            &depot_content(depot_files()),
+            &p4,
+            temp.path(),
+        )
+        .unwrap();
+
+        let fetched = Path::new(&paths[0]);
+        assert!(fetched.starts_with(temp.path()));
+        assert_eq!(fs::read_to_string(fetched).unwrap(), "depot content");
+    }
+
+    #[test]
+    fn a_depot_node_that_was_not_listed_is_an_error_for_both_kinds_of_tool() {
+        let temp = tempfile::tempdir().unwrap();
+        let content = depot_content(DepotRevisions::Files(HashMap::new()));
+
+        for name in ["zdiff-gui", "WinMerge"] {
+            let result = open_depot(&tool(name), &content, &blob_p4(), temp.path());
+            assert!(result.is_err(), "{name}");
+        }
+    }
     #[test]
     fn the_file_diff_tool_is_told_by_its_executable() {
         assert!(is_file_diff_tool(&tool("zdiff-gui")));

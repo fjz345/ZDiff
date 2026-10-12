@@ -311,12 +311,8 @@ fn rel_under(model_root: &Path, path: &Path) -> io::Result<String> {
         .join("/"))
 }
 
-/// The file of a node of a depot side at the revision it was listed with.
-pub fn read_depot_file(
-    p4: &impl P4Runner,
-    content: &DepotContent,
-    path: &Path,
-) -> io::Result<Vec<u8>> {
+/// The depot path and revision of a node of a depot side, as it was listed.
+pub fn depot_node(content: &DepotContent, path: &Path) -> io::Result<(String, DepotRev)> {
     let rel = rel_under(&content.model_root, path)?;
     let revision = match &content.revisions {
         DepotRevisions::Files(revisions) => {
@@ -330,7 +326,16 @@ pub fn read_depot_file(
         }
         DepotRevisions::Shelf(change) => DepotRev::Shelf(*change),
     };
-    let depot_path = format!("{}/{rel}", content.depot_folder);
+    Ok((format!("{}/{rel}", content.depot_folder), revision))
+}
+
+/// The file of a node of a depot side at the revision it was listed with.
+pub fn read_depot_file(
+    p4: &impl P4Runner,
+    content: &DepotContent,
+    path: &Path,
+) -> io::Result<Vec<u8>> {
+    let (depot_path, revision) = depot_node(content, path)?;
     p4::print_file(p4, &depot_path, &revision.to_string()).map_err(io::Error::other)
 }
 
