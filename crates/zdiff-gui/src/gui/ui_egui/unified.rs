@@ -108,6 +108,41 @@ pub fn unified_rows(rows: &[DiffRow]) -> Vec<UnifiedRow> {
     out
 }
 
+// Changed lines keep the kind of their side so the overview ruler marks them.
+pub fn single_file_rows(rows: &[DiffRow], side: ActiveSide) -> Vec<UnifiedRow> {
+    let changed_kind = match side {
+        ActiveSide::Left => UnifiedKind::Delete,
+        ActiveSide::Right => UnifiedKind::Insert,
+    };
+    rows.iter()
+        .enumerate()
+        .filter_map(|(i, row)| {
+            let content = match side {
+                ActiveSide::Left => &row.left,
+                ActiveSide::Right => &row.right,
+            };
+            let (kind, line) = if matches!(content, LineContent::Collapsed) {
+                (UnifiedKind::Collapsed, None)
+            } else {
+                let line = line_of(content)?;
+                let kind = if row_has_change(row) {
+                    changed_kind
+                } else {
+                    UnifiedKind::Context
+                };
+                (kind, Some(line))
+            };
+            Some(UnifiedRow {
+                kind,
+                row: i,
+                side,
+                left_line: line.filter(|_| side == ActiveSide::Left),
+                right_line: line.filter(|_| side == ActiveSide::Right),
+            })
+        })
+        .collect()
+}
+
 pub fn unified_index_of_row(unified: &[UnifiedRow], row: usize) -> Option<usize> {
     unified
         .iter()
@@ -231,6 +266,84 @@ mod tests {
             summary(&unified_rows(&rows)),
             vec![(Context, Some(1), Some(1)), (Context, Some(2), Some(2))]
         );
+    }
+
+    #[test]
+    fn single_file_shows_only_the_chosen_sides_lines_with_its_own_line_numbers() {
+        let rows = rows_of("a\nb\nc\n", "a\nB\nc\n", true);
+        assert_eq!(
+            summary(&single_file_rows(&rows, ActiveSide::Left)),
+            vec![
+                (Context, Some(1), None),
+                (Delete, Some(2), None),
+                (Context, Some(3), None),
+            ]
+        );
+        assert_eq!(
+            summary(&single_file_rows(&rows, ActiveSide::Right)),
+            vec![
+                (Context, None, Some(1)),
+                (Insert, None, Some(2)),
+                (Context, None, Some(3)),
+            ]
+        );
+    }
+
+    #[test]
+    fn single_file_skips_the_rows_where_the_chosen_side_has_no_line() {
+        for ghost_rows in [true, false] {
+            let rows = rows_of("a\nd\n", "a\nb\nc\nd\n", ghost_rows);
+            assert_eq!(
+                summary(&single_file_rows(&rows, ActiveSide::Left)),
+                vec![(Context, Some(1), None), (Context, Some(2), None)],
+                "ghost_rows: {ghost_rows}"
+            );
+            assert_eq!(
+                summary(&single_file_rows(&rows, ActiveSide::Right)),
+                vec![
+                    (Context, None, Some(1)),
+                    (Insert, None, Some(2)),
+                    (Insert, None, Some(3)),
+                    (Context, None, Some(4)),
+                ],
+                "ghost_rows: {ghost_rows}"
+            );
+        }
+    }
+
+    #[test]
+    fn single_file_keeps_collapsed_rows_and_the_side_by_side_row_indices() {
+        let mut rows = rows_of("a\nb\nc\n", "a\nB\nc\n", true);
+        let collapsed = DiffRow {
+            left: LineContent::Collapsed,
+            right: LineContent::Collapsed,
+        };
+        rows.insert(1, collapsed);
+        let single = single_file_rows(&rows, ActiveSide::Right);
+        assert_eq!(
+            single
+                .iter()
+                .map(|u| (u.kind, u.row, u.side))
+                .collect::<Vec<_>>(),
+            vec![
+                (Context, 0, ActiveSide::Right),
+                (UnifiedKind::Collapsed, 1, ActiveSide::Right),
+                (Insert, 2, ActiveSide::Right),
+                (Context, 3, ActiveSide::Right),
+            ]
+        );
+    }
+
+    #[test]
+    fn single_file_goto_on_the_other_side_lands_on_the_same_row() {
+        let rows = rows_of("a\nb\nc\n", "a\nB\nc\n", true);
+        let single = single_file_rows(&rows, ActiveSide::Left);
+        let span = ScrollSpan {
+            start: 1,
+            maybe_end: None,
+            side: Some(ActiveSide::Right),
+        };
+        assert_eq!(unified_scroll_index(&single, &span), Some(1));
     }
 
     #[test]

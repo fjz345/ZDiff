@@ -21,7 +21,7 @@ use crate::{
         side_viewers::{self, SideViewers},
         syntax,
         text_mode::TextMode,
-        unified::{UnifiedKind, UnifiedRow, unified_rows, unified_scroll_index},
+        unified::{UnifiedKind, UnifiedRow, single_file_rows, unified_rows, unified_scroll_index},
     },
     viewer::{
         ViewerKind,
@@ -168,6 +168,7 @@ pub struct FileDiffPane {
 struct UnifiedView {
     // Kept alive so the pointer comparison can't match a new allocation at the same address.
     source: Arc<DiffRows>,
+    mode: TextMode,
     meta: Vec<UnifiedRow>,
     rows: Arc<DiffRows>,
     ruler: std::sync::OnceLock<Vec<ChangeSpan>>,
@@ -193,13 +194,21 @@ fn unified_change_spans(meta: &[UnifiedRow]) -> Vec<ChangeSpan> {
     spans
 }
 
-fn unified_view(cache: &mut Option<Arc<UnifiedView>>, source: &Arc<DiffRows>) -> Arc<UnifiedView> {
+fn unified_view(
+    cache: &mut Option<Arc<UnifiedView>>,
+    source: &Arc<DiffRows>,
+    mode: TextMode,
+) -> Arc<UnifiedView> {
     if let Some(view) = cache
         && Arc::ptr_eq(&view.source, source)
+        && view.mode == mode
     {
         return view.clone();
     }
-    let meta = unified_rows(source);
+    let meta = match mode.single_side() {
+        Some(side) => single_file_rows(source, side),
+        None => unified_rows(source),
+    };
     let rows = meta
         .iter()
         .map(|u| {
@@ -220,6 +229,7 @@ fn unified_view(cache: &mut Option<Arc<UnifiedView>>, source: &Arc<DiffRows>) ->
         .collect();
     let view = Arc::new(UnifiedView {
         source: source.clone(),
+        mode,
         meta,
         rows: Arc::new(rows),
         ruler: std::sync::OnceLock::new(),
@@ -388,15 +398,25 @@ impl FileDiffPane {
             && ctx.media_view.is_none()
             && side_viewers.is_none();
         let unified = match ctx.diff_ctx {
-            Some(diff_ctx) if text_viewer && *ctx.text_mode == TextMode::Unified => {
-                Some(unified_view(&mut self.unified, &diff_ctx.diff_rows))
-            }
+            Some(diff_ctx) if text_viewer && *ctx.text_mode != TextMode::SideBySide => Some(
+                unified_view(&mut self.unified, &diff_ctx.diff_rows, *ctx.text_mode),
+            ),
             _ => None,
+        };
+        let single_side = unified.as_ref().and_then(|view| view.mode.single_side());
+        let column_gutter = if single_side.is_some() {
+            Gutter::Single
+        } else {
+            Gutter::Unified {
+                left: None,
+                right: None,
+                sign: None,
+            }
         };
         let content_widths = match (ctx.diff_ctx, &unified) {
             (Some(diff_ctx), Some(view)) => {
                 let [left, _] = self.content_widths(ui, &view.rows, diff_ctx);
-                let extra = unified_gutter_width() - GUTTER_WIDTH;
+                let extra = column_gutter.width() - GUTTER_WIDTH;
                 [if left > 0.0 { left + extra } else { left }, 0.0]
             }
             (Some(diff_ctx), None) => self.content_widths(ui, &diff_ctx.diff_rows, diff_ctx),
@@ -640,6 +660,7 @@ impl FileDiffPane {
             source_path.is_some() || side_text,
             target_path.is_some(),
         );
+        let active_side = single_side.unwrap_or(active_side);
         *ctx.active_side = active_side;
 
         let mut waiting_for_diff = false;
@@ -975,9 +996,18 @@ impl FileDiffPane {
                                     }
                                 }
                             };
-                            // One column holds both path bars, side by side.
+                            // Unified: one column holds both path bars, side by side. Single file:
+                            // the chosen side's.
                             let header = |column: SplitColumn, ui: &mut egui::Ui| {
-                                if unified.is_some() {
+                                if let Some(side) = single_side {
+                                    header(
+                                        match side {
+                                            ActiveSide::Left => SplitColumn::Left,
+                                            ActiveSide::Right => SplitColumn::Right,
+                                        },
+                                        ui,
+                                    );
+                                } else if unified.is_some() {
                                     ui.columns(2, |columns| {
                                         header(SplitColumn::Left, &mut columns[0]);
                                         header(SplitColumn::Right, &mut columns[1]);
@@ -1017,7 +1047,7 @@ impl FileDiffPane {
                                 let (measured, text_widths, count) = match &unified {
                                     Some(view) => (
                                         Some(&view.rows),
-                                        [unified_text_width(area.width()), 0.0],
+                                        [column_gutter.text_width(area.width()), 0.0],
                                         view.meta.len(),
                                     ),
                                     None => (
@@ -1070,7 +1100,7 @@ impl FileDiffPane {
                                                         && (context || ctx.highlight_side == Some(u.side));
                                                     let (matcher, hit) = (ctx.find_matcher, ctx.find_hit);
                                                     let mut find = row_find(matcher, hit, u.side, u.row, content);
-                                                    if context && find.current.is_none() {
+                                                    if context && single_side.is_none() && find.current.is_none() {
                                                         find = row_find(matcher, hit, ActiveSide::Right, u.row, &rows[u.row].right);
                                                     }
                                                     let width = ui.max_rect().width();
@@ -1090,14 +1120,18 @@ impl FileDiffPane {
                                                         true,
                                                         ctx.code_language,
                                                         None,
-                                                        Gutter::Unified {
-                                                            left: u.left_line,
-                                                            right: u.right_line,
-                                                            sign: match u.kind {
-                                                                UnifiedKind::Delete => Some(('-', symbol_colors[0])),
-                                                                UnifiedKind::Insert => Some(('+', symbol_colors[1])),
-                                                                UnifiedKind::Context | UnifiedKind::Collapsed => None,
-                                                            },
+                                                        if single_side.is_some() {
+                                                            Gutter::Single
+                                                        } else {
+                                                            Gutter::Unified {
+                                                                left: u.left_line,
+                                                                right: u.right_line,
+                                                                sign: match u.kind {
+                                                                    UnifiedKind::Delete => Some(('-', symbol_colors[0])),
+                                                                    UnifiedKind::Insert => Some(('+', symbol_colors[1])),
+                                                                    UnifiedKind::Context | UnifiedKind::Collapsed => None,
+                                                                },
+                                                            }
                                                         },
                                                     );
                                                     if is_pinned(shown_pins, u.side, content) {

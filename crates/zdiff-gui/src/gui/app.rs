@@ -2560,6 +2560,17 @@ mod tests {
     }
 
     #[test]
+    fn the_chosen_single_file_side_survives_a_restart() {
+        for mode in [TextMode::SingleLeft, TextMode::SingleRight] {
+            let mut ctx = AppStateCtx::default();
+            ctx.text_mode = mode;
+            let json = serde_json::to_string(&ctx).unwrap();
+            let restored: AppStateCtx = serde_json::from_str(&json).unwrap();
+            assert_eq!(restored.text_mode, mode);
+        }
+    }
+
+    #[test]
     fn a_save_without_a_text_mode_loads_side_by_side() {
         let mut json = serde_json::to_value(AppStateCtx::default()).unwrap();
         json.as_object_mut().unwrap().remove("text_mode").unwrap();
