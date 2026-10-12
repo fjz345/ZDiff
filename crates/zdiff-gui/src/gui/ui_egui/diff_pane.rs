@@ -692,6 +692,9 @@ impl FileDiffPane {
         ui.style_mut().override_text_style = Some(egui::TextStyle::Monospace);
         ui.spacing_mut().item_spacing.y = 0.0;
 
+        if let Some(hex_view) = &ctx.hex_view {
+            hex_view.inspector_ui(ui);
+        }
         let table_height = ui.available_height();
         let hex_len = ctx.hex_view.as_ref().map_or(0, hex::byte_len);
         let show_ruler = if ctx.hex_view.is_some() {

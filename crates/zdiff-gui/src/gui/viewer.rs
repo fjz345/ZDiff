@@ -15,6 +15,7 @@ pub mod audio_diff;
 pub mod audio_meta;
 pub mod audio_spectrum;
 pub mod hex;
+pub mod hex_inspector;
 pub mod image;
 pub mod video_frames;
 pub mod video_meta;

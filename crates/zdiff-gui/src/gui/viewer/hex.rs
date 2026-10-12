@@ -2,6 +2,7 @@
 //! 16 bytes (offset, hex, ASCII) per side. Rows are built only for the visible window.
 
 use std::{
+    cell::Cell,
     ops::Range,
     sync::{
         Arc,
@@ -14,6 +15,7 @@ use eframe::egui::{self, Color32, FontId, text::LayoutJob};
 use zcommon::ui_egui::{style_window::role_color, table::SplitColumn};
 use zdiff::hex::{HexDiff, HexSide, hex_diff};
 
+use super::hex_inspector::{Endian, inspector_ui};
 use crate::{
     diff_ctx::ScrollSpan,
     file::LoadedFile,
@@ -41,6 +43,26 @@ pub fn hex_row_count(len_1: usize, len_2: usize) -> usize {
 
 pub fn hex_row_for_offset(offset: usize) -> usize {
     offset / HEX_ROW_BYTES
+}
+
+/// The byte of a row drawn at character `column` of `side_row_job`'s text, in either the hex or the
+/// ASCII part. The separators belong to the byte before them.
+pub fn hex_byte_at_column(column: usize) -> Option<usize> {
+    const HEX_START: usize = 10;
+    const HEX_END: usize = HEX_START + HEX_ROW_BYTES * 3 + 1;
+    const ASCII_START: usize = HEX_END + 1;
+    if (HEX_START..HEX_END).contains(&column) {
+        let rel = column - HEX_START;
+        let half = HEX_ROW_BYTES / 2;
+        Some(if rel < half * 3 + 1 {
+            (rel / 3).min(half - 1)
+        } else {
+            (rel - 1) / 3
+        })
+    } else {
+        let ascii = column.checked_sub(ASCII_START)?;
+        (ascii < HEX_ROW_BYTES).then_some(ascii)
+    }
 }
 
 /// The rows `bytes` (non-empty) covers.
@@ -190,6 +212,9 @@ pub struct HexDiffProcessor {
     last_nav: Option<Range<usize>>,
     /// Bytes of the last goto or stop, drawn on both sides.
     highlight: Option<Range<usize>>,
+    /// A byte clicked this frame, taken as the cursor at the next `scroll_to_row`.
+    cursor_click: Cell<Option<usize>>,
+    endian: Cell<Endian>,
 }
 
 impl Default for HexDiffProcessor {
@@ -206,6 +231,8 @@ impl Default for HexDiffProcessor {
             goto_offset: None,
             last_nav: None,
             highlight: None,
+            cursor_click: Cell::new(None),
+            endian: Cell::new(Endian::default()),
         }
     }
 }
@@ -237,6 +264,7 @@ impl HexDiffProcessor {
         self.goto_offset = None;
         self.last_nav = None;
         self.highlight = None;
+        self.cursor_click.set(None);
 
         if let (Some(file_1), Some(file_2)) = (&self.file_1, &self.file_2) {
             log::info!(
@@ -273,6 +301,11 @@ impl HexDiffProcessor {
         self.goto_offset = Some(offset);
     }
 
+    /// First byte of the last goto, stop or click.
+    pub fn cursor(&self) -> Option<usize> {
+        self.highlight.as_ref().map(|range| range.start)
+    }
+
     pub fn clear_highlight(&mut self) {
         self.goto_offset = None;
         self.highlight = None;
@@ -281,6 +314,9 @@ impl HexDiffProcessor {
     /// The rows to scroll to this frame, from a pending goto or a changed conflict cursor (goto
     /// wins, as in the text viewer), and highlights the target bytes.
     pub fn scroll_to_row(&mut self, conflict_cursor: usize) -> Option<ScrollSpan> {
+        if let Some(offset) = self.cursor_click.take() {
+            self.highlight = Some(offset..offset + 1);
+        }
         let nav = self
             .diff
             .as_ref()
@@ -314,6 +350,9 @@ impl HexDiffProcessor {
             change_spans: &self.change_spans,
             computing: self.in_progress,
             highlight: self.highlight.clone(),
+            cursor: self.cursor(),
+            cursor_click: &self.cursor_click,
+            endian: &self.endian,
         }
     }
 }
@@ -325,9 +364,24 @@ pub struct HexViewCtx<'a> {
     pub change_spans: &'a [ChangeSpan],
     pub computing: bool,
     pub highlight: Option<Range<usize>>,
+    pub cursor: Option<usize>,
+    pub cursor_click: &'a Cell<Option<usize>>,
+    pub endian: &'a Cell<Endian>,
 }
 
 impl HexViewCtx<'_> {
+    pub fn inspector_ui(&self, ui: &mut egui::Ui) {
+        fn bytes(file: Option<&LoadedFile>) -> &[u8] {
+            file.map(|f| f.bytes()).unwrap_or_default()
+        }
+        inspector_ui(
+            ui,
+            self.cursor,
+            [bytes(self.file_1), bytes(self.file_2)],
+            self.endian,
+        );
+    }
+
     pub fn status_text(&self) -> String {
         if self.computing {
             return "Comparing bytes...".to_string();
@@ -370,7 +424,7 @@ pub fn cell(ui: &mut egui::Ui, ctx: &HexViewCtx, row_index: usize, column: Split
     match column {
         SplitColumn::Left => {
             if ctx.file_1.is_some() {
-                side_row_label(ui, bytes_1, &states_1(), row_index, ctx.highlight.as_ref());
+                side_row_label(ui, ctx, bytes_1, &states_1(), row_index);
             }
         }
         SplitColumn::Center => {
@@ -393,7 +447,7 @@ pub fn cell(ui: &mut egui::Ui, ctx: &HexViewCtx, row_index: usize, column: Split
         }
         SplitColumn::Right => {
             if ctx.file_2.is_some() {
-                side_row_label(ui, bytes_2, &states_2(), row_index, ctx.highlight.as_ref());
+                side_row_label(ui, ctx, bytes_2, &states_2(), row_index);
             }
         }
     }
@@ -401,12 +455,13 @@ pub fn cell(ui: &mut egui::Ui, ctx: &HexViewCtx, row_index: usize, column: Split
 
 fn side_row_label(
     ui: &mut egui::Ui,
+    ctx: &HexViewCtx,
     bytes: &[u8],
     states: &[HexByteState; HEX_ROW_BYTES],
     row: usize,
-    highlight: Option<&Range<usize>>,
 ) {
     let font_id = egui::TextStyle::Monospace.resolve(ui.style());
+    let char_width = ui.fonts_mut(|fonts| fonts.glyph_width(&font_id, ' '));
     let colors = HexColors {
         text: ui.style().visuals.text_color(),
         offset: role_color(ui.ctx(), FileRole::LineNumber),
@@ -414,8 +469,27 @@ fn side_row_label(
         only_here: role_color(ui.ctx(), FileRole::HexOnlyHere),
         highlight: role_color(ui.ctx(), FileRole::HexGoto),
     };
-    let job = side_row_job(bytes, states, row, highlight, font_id, &colors);
-    ui.add(egui::Label::new(job).selectable(false).extend());
+    let job = side_row_job(bytes, states, row, ctx.highlight.as_ref(), font_id, &colors);
+    let response = ui.add(
+        egui::Label::new(job)
+            .selectable(false)
+            .extend()
+            .sense(egui::Sense::click()),
+    );
+    if !response.clicked() {
+        return;
+    }
+    let Some(pos) = response.interact_pointer_pos() else {
+        return;
+    };
+    let column = ((pos.x - response.rect.min.x) / char_width).max(0.0) as usize;
+    if let Some(byte) = hex_byte_at_column(column) {
+        let offset = row * HEX_ROW_BYTES + byte;
+        if offset < byte_len(ctx) {
+            ctx.cursor_click.set(Some(offset));
+            ui.ctx().request_repaint();
+        }
+    }
 }
 
 struct HexColors {
@@ -739,5 +813,86 @@ mod tests {
             parse_hex_offset("0", 0),
             Err(HexOffsetError::OutOfRange { len: 0 })
         );
+    }
+
+    #[test]
+    fn columns_map_to_the_byte_drawn_there() {
+        assert_eq!(hex_byte_at_column(0), None);
+        assert_eq!(hex_byte_at_column(9), None);
+        assert_eq!(hex_byte_at_column(10), Some(0));
+        assert_eq!(hex_byte_at_column(11), Some(0));
+        assert_eq!(hex_byte_at_column(13), Some(1));
+        assert_eq!(hex_byte_at_column(31), Some(7));
+        assert_eq!(hex_byte_at_column(32), Some(7));
+        assert_eq!(hex_byte_at_column(35), Some(8));
+        assert_eq!(hex_byte_at_column(56), Some(15));
+        assert_eq!(hex_byte_at_column(57), Some(15));
+        assert_eq!(hex_byte_at_column(58), Some(15));
+        assert_eq!(hex_byte_at_column(59), None);
+        assert_eq!(hex_byte_at_column(60), Some(0));
+        assert_eq!(hex_byte_at_column(75), Some(15));
+        assert_eq!(hex_byte_at_column(76), None);
+    }
+
+    #[test]
+    fn columns_match_the_drawn_row() {
+        let bytes: Vec<u8> = (0..HEX_ROW_BYTES as u8).collect();
+        let states = [HexByteState::Same; HEX_ROW_BYTES];
+        let colors = HexColors {
+            text: Color32::WHITE,
+            offset: Color32::WHITE,
+            different: Color32::WHITE,
+            only_here: Color32::WHITE,
+            highlight: Color32::WHITE,
+        };
+        let job = side_row_job(&bytes, &states, 0, None, FontId::default(), &colors);
+        for (column, ch) in job.text.chars().enumerate() {
+            match hex_byte_at_column(column) {
+                Some(i) if column < 59 => {
+                    let digits = format!("{:02X}", bytes[i]);
+                    assert!(
+                        digits.contains(ch) || ch == ' ',
+                        "column {column} is {ch:?}, byte {i} is {digits}"
+                    );
+                }
+                Some(i) => assert_eq!(ch, if bytes[i] == 0x20 { ' ' } else { '.' }),
+                None => assert!(ch == ' ' || column < 8, "column {column} is {ch:?}"),
+            }
+        }
+        assert_eq!(job.text.chars().count(), 76);
+    }
+
+    #[test]
+    fn goto_and_stops_put_the_cursor_on_their_first_byte() {
+        let mut processor = HexDiffProcessor::default();
+        assert_eq!(processor.cursor(), None);
+        processor.goto(37);
+        processor.scroll_to_row(0);
+        assert_eq!(processor.cursor(), Some(37));
+        processor.clear_highlight();
+        assert_eq!(processor.cursor(), None);
+    }
+
+    #[test]
+    fn a_clicked_byte_moves_the_cursor_without_scrolling() {
+        let mut processor = HexDiffProcessor::default();
+        processor.goto(5);
+        processor.scroll_to_row(0);
+
+        processor.view_ctx().cursor_click.set(Some(40));
+        assert_eq!(processor.scroll_to_row(0), None);
+        assert_eq!(processor.cursor(), Some(40));
+        assert_eq!(processor.highlight, Some(40..41));
+        assert_eq!(processor.view_ctx().cursor, Some(40));
+        assert_eq!(processor.view_ctx().cursor_click.get(), None);
+    }
+
+    #[test]
+    fn a_goto_in_the_same_frame_wins_over_a_click() {
+        let mut processor = HexDiffProcessor::default();
+        processor.view_ctx().cursor_click.set(Some(40));
+        processor.goto(7);
+        assert!(processor.scroll_to_row(0).is_some());
+        assert_eq!(processor.cursor(), Some(7));
     }
 }
