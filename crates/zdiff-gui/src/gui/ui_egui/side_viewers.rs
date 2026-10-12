@@ -8,7 +8,7 @@ use crate::{
         ViewerKind,
         audio::{self, AudioDiffProcessor, AudioSettings},
         hex::{self, HexViewCtx},
-        image::{self, ImageDiffProcessor},
+        image::{self, ImageDiffProcessor, ImageSettings},
         video_frames::{self, VideoFrameProcessor},
     },
 };
@@ -22,6 +22,7 @@ pub struct SideViewers<'a> {
     pub hex: Option<HexViewCtx<'a>>,
     pub hex_scroll: Option<ScrollSpan>,
     pub image: Option<&'a mut ImageDiffProcessor>,
+    pub image_settings: Option<&'a mut ImageSettings>,
     pub audio: Option<(&'a mut AudioDiffProcessor, &'a mut AudioSettings)>,
     pub video: Option<&'a mut VideoFrameProcessor>,
 }
@@ -90,8 +91,11 @@ pub fn show(
                 }
             }
             ViewerKind::Image => {
-                if let Some(processor) = sides.image.as_deref_mut() {
-                    image::show(&mut half, processor, rect.width());
+                if let (Some(processor), Some(settings)) = (
+                    sides.image.as_deref_mut(),
+                    sides.image_settings.as_deref_mut(),
+                ) {
+                    image::show(&mut half, processor, settings, rect.width());
                 }
             }
             ViewerKind::Audio => {
@@ -100,8 +104,11 @@ pub fn show(
                 }
             }
             ViewerKind::Video => {
-                if let Some(processor) = sides.video.as_deref_mut() {
-                    video_frames::show(&mut half, processor, rect.width());
+                if let (Some(processor), Some(settings)) = (
+                    sides.video.as_deref_mut(),
+                    sides.image_settings.as_deref_mut(),
+                ) {
+                    video_frames::show(&mut half, processor, settings, rect.width());
                 }
             }
         }

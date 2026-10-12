@@ -168,6 +168,32 @@ pub enum ImageMode {
     Overlay,
 }
 
+/// How the textures are filtered, zoomed in and out alike.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum ImageSampling {
+    #[default]
+    Nearest,
+    Linear,
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default))]
+pub struct ImageSettings {
+    pub sampling: ImageSampling,
+}
+
+pub fn texture_options(sampling: ImageSampling) -> TextureOptions {
+    match sampling {
+        ImageSampling::Nearest => TextureOptions::NEAREST,
+        ImageSampling::Linear => TextureOptions {
+            mipmap_mode: Some(TextureFilter::Linear),
+            ..TextureOptions::LINEAR
+        },
+    }
+}
+
 /// Where an image of `size` pixels is drawn in a view whose top-left is `origin`. Every image
 /// starts at the same point, so differently sized images stay aligned at their top-left corners.
 pub fn image_screen_rect(view: ImageView, origin: Pos2, size: Vec2) -> Rect {
@@ -233,8 +259,8 @@ struct DiffMap {
     stats: PixelStats,
     /// The union canvas, in image pixels.
     size: Vec2,
-    /// Uploaded (and dropped) on the first frame the difference map is drawn.
-    mask: Option<ColorImage>,
+    /// Uploaded on the first frame the difference map is drawn, and again when the sampling changes.
+    mask: Arc<ColorImage>,
     texture: Option<TextureHandle>,
 }
 
@@ -277,6 +303,8 @@ pub struct ImageDiffProcessor {
     compare_channel: (mpsc::Sender<CompareResult>, mpsc::Receiver<CompareResult>),
     /// Kept while another tolerance is compared, so dragging the slider doesn't blank the map.
     diff_map: Option<DiffMap>,
+    /// The sampling the uploaded textures were made with.
+    texture_sampling: ImageSampling,
 }
 
 impl Default for ImageDiffProcessor {
@@ -297,6 +325,7 @@ impl Default for ImageDiffProcessor {
             compare_cancel: Arc::new(AtomicBool::new(false)),
             compare_channel: mpsc::channel(),
             diff_map: None,
+            texture_sampling: ImageSampling::default(),
         }
     }
 }
@@ -351,7 +380,7 @@ impl ImageDiffProcessor {
                 tolerance,
                 stats,
                 size: vec2(mask.size[0] as f32, mask.size[1] as f32),
-                mask: Some(mask),
+                mask: Arc::new(mask),
                 texture: None,
             });
         }
@@ -525,7 +554,12 @@ pub enum ImageSide {
 /// Both sides, left one `left_width` wide like the table's left column, in the rest of `ui`.
 /// Wheel zooms about the cursor, drag pans, double-click fits; both sides share the view. Swipe
 /// and overlay draw both sides in one view over the whole area.
-pub fn show(ui: &mut egui::Ui, processor: &mut ImageDiffProcessor, left_width: f32) {
+pub fn show(
+    ui: &mut egui::Ui,
+    processor: &mut ImageDiffProcessor,
+    settings: &mut ImageSettings,
+    left_width: f32,
+) {
     let mut fit = false;
     let mut actual_size = false;
     ui.horizontal(|ui| {
@@ -544,8 +578,28 @@ pub fn show(ui: &mut egui::Ui, processor: &mut ImageDiffProcessor, left_width: f
         }
         ui.add(egui::Slider::new(&mut processor.tolerance, 0..=255).text("Tolerance"))
             .on_hover_text("The largest per-channel difference that still counts as unchanged");
+        egui::ComboBox::from_id_salt("image_sampling")
+            .selected_text(format!("Sampling: {:?}", settings.sampling))
+            .show_ui(ui, |ui| {
+                ui.selectable_value(&mut settings.sampling, ImageSampling::Nearest, "Nearest");
+                ui.selectable_value(&mut settings.sampling, ImageSampling::Linear, "Linear");
+            })
+            .response
+            .on_hover_text("Nearest keeps single-pixel differences sharp when zoomed out");
         ui.label(processor.compare_status());
     });
+    if processor.texture_sampling != settings.sampling {
+        processor.texture_sampling = settings.sampling;
+        for side in &mut processor.sides {
+            if let SideState::Decoded { texture, .. } = side {
+                *texture = None;
+            }
+        }
+        if let Some(map) = &mut processor.diff_map {
+            map.texture = None;
+        }
+    }
+    let options = texture_options(settings.sampling);
     if processor.comparing() {
         // The result arrives from a worker; keep frames coming until it is polled.
         ui.ctx().request_repaint();
@@ -636,12 +690,11 @@ pub fn show(ui: &mut egui::Ui, processor: &mut ImageDiffProcessor, left_width: f
     let view = processor.view;
     let diff_overlay = match &mut processor.diff_map {
         Some(map) if processor.mode == ImageMode::Difference => {
-            if let Some(mask) = map.mask.take() {
-                // Nearest without mipmaps: a lone changed pixel must not be averaged away.
+            if map.texture.is_none() {
                 map.texture = Some(ui.ctx().load_texture(
                     "image_diff_mask",
-                    mask,
-                    TextureOptions::NEAREST,
+                    map.mask.clone(),
+                    options,
                 ));
             }
             map.texture
@@ -693,12 +746,6 @@ pub fn show(ui: &mut egui::Ui, processor: &mut ImageDiffProcessor, left_width: f
                         [image.width as usize, image.height as usize],
                         &image.rgba,
                     );
-                    // Nearest when magnified, so zoomed-in pixels stay sharp.
-                    let options = TextureOptions {
-                        magnification: TextureFilter::Nearest,
-                        mipmap_mode: Some(TextureFilter::Linear),
-                        ..TextureOptions::LINEAR
-                    };
                     ui.ctx()
                         .load_texture(format!("image_diff_side_{index}"), pixels, options)
                 });
@@ -794,6 +841,27 @@ mod tests {
 
     fn assert_near(a: Vec2, b: Vec2) {
         assert!((a - b).length() < 1e-3, "{a:?} != {b:?}");
+    }
+
+    #[test]
+    fn nearest_sampling_filters_both_ways_without_mipmaps() {
+        let options = texture_options(ImageSampling::Nearest);
+        assert_eq!(options.magnification, TextureFilter::Nearest);
+        assert_eq!(options.minification, TextureFilter::Nearest);
+        assert_eq!(options.mipmap_mode, None);
+    }
+
+    #[test]
+    fn linear_sampling_filters_both_ways_with_mipmaps() {
+        let options = texture_options(ImageSampling::Linear);
+        assert_eq!(options.magnification, TextureFilter::Linear);
+        assert_eq!(options.minification, TextureFilter::Linear);
+        assert_eq!(options.mipmap_mode, Some(TextureFilter::Linear));
+    }
+
+    #[test]
+    fn sampling_defaults_to_nearest() {
+        assert_eq!(ImageSettings::default().sampling, ImageSampling::Nearest);
     }
 
     #[test]

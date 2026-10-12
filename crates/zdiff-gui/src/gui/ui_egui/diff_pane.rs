@@ -24,7 +24,7 @@ use crate::{
         audio::{self, AudioDiffProcessor, AudioSettings},
         audio_meta::{self, AudioMetaProcessor},
         hex::{self, HexViewCtx},
-        image::{self, ImageDiffProcessor},
+        image::{self, ImageDiffProcessor, ImageSettings},
         media_placeholder,
         video_frames::VideoFrameProcessor,
         video_meta::{self, VideoMetaProcessor},
@@ -115,6 +115,7 @@ pub struct FileDiffPaneCtx<'a> {
     pub hex_view: Option<HexViewCtx<'a>>,
     /// Set when the pair resolved to the Image viewer; the images replace the table rows.
     pub image_view: Option<&'a mut ImageDiffProcessor>,
+    pub image_settings: Option<&'a mut ImageSettings>,
     pub audio_view: Option<(&'a mut AudioDiffProcessor, &'a mut AudioSettings)>,
     pub media_view: Option<ViewerKind>,
     pub audio_meta: Option<&'a mut AudioMetaProcessor>,
@@ -1034,21 +1035,24 @@ impl FileDiffPane {
                             } else if !header_only {
                                 side_rects = output.side_rects;
                             }
-                            if let (Some(image_view), Some(left_width)) =
-                                (ctx.image_view.as_deref_mut(), image_left_width)
-                            {
-                                image::show(ui, image_view, left_width);
+                            if let (Some(image_view), Some(image_cfg), Some(left_width)) = (
+                                ctx.image_view.as_deref_mut(),
+                                ctx.image_settings.as_deref_mut(),
+                                image_left_width,
+                            ) {
+                                image::show(ui, image_view, image_cfg, left_width);
                             }
-                            if let (Some(meta), Some(frames), Some(left_width)) = (
+                            if let (Some(meta), Some(frames), Some(image_cfg), Some(left_width)) = (
                                 ctx.video_meta.as_deref_mut(),
                                 ctx.video_frames.as_deref_mut(),
+                                ctx.image_settings.as_deref_mut(),
                                 image_left_width,
                             ) {
                                 let audio = ctx
                                     .audio_view
                                     .as_mut()
                                     .map(|(processor, settings)| (&mut **processor, &mut **settings));
-                                video_meta::show(ui, meta, frames, left_width, audio);
+                                video_meta::show(ui, meta, frames, image_cfg, left_width, audio);
                             } else if let Some((processor, settings)) = ctx.audio_view.as_mut() {
                                 audio::show(ui, processor, settings);
                             } else if let Some(kind) = ctx.media_view {

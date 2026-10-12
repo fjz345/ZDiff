@@ -57,7 +57,7 @@ use crate::{
         audio_meta::AudioMetaProcessor,
         conflict_count, decode_fallback, ffmpeg_fallback,
         hex::{HexDiffProcessor, parse_hex_offset},
-        image::ImageDiffProcessor,
+        image::{ImageDiffProcessor, ImageSettings},
         image_decode_fallback, resolve_viewer, ui_extension_map, ui_ffmpeg_setting,
         video_frames::VideoFrameProcessor,
         video_meta::{VideoMetaProcessor, VideoTab},
@@ -76,6 +76,8 @@ pub struct AppStateCtx {
     pub hex_processor: HexDiffProcessor,
     #[cfg_attr(feature = "serde", serde(skip), serde(default))]
     pub image_processor: ImageDiffProcessor,
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub image_settings: ImageSettings,
     #[cfg_attr(feature = "serde", serde(skip), serde(default))]
     pub audio_processor: AudioDiffProcessor,
     #[cfg_attr(feature = "serde", serde(default))]
@@ -164,6 +166,7 @@ impl Default for AppStateCtx {
             diff_processor: Default::default(),
             hex_processor: Default::default(),
             image_processor: Default::default(),
+            image_settings: Default::default(),
             audio_processor: Default::default(),
             audio_settings: Default::default(),
             audio_meta: Default::default(),
@@ -884,6 +887,7 @@ impl<'a> ZApp {
                 diff_processor,
                 hex_processor,
                 image_processor,
+                image_settings,
                 audio_processor,
                 audio_settings,
                 audio_meta,
@@ -1090,6 +1094,7 @@ impl<'a> ZApp {
                     hex_view: is_hex.then(|| hex_processor.view_ctx()),
                     image_view: (is_image || side_shows(ViewerKind::Image))
                         .then_some(image_processor),
+                    image_settings: Some(image_settings),
                     audio_view: (media_view == Some(ViewerKind::Audio)
                         || video_audio
                         || side_shows(ViewerKind::Audio))
@@ -1116,6 +1121,7 @@ impl<'a> ZApp {
                     hex: side_shows(ViewerKind::Hex).then(|| hex_processor.view_ctx()),
                     hex_scroll,
                     image: file_diff.image_view.take(),
+                    image_settings: file_diff.image_settings.take(),
                     audio: file_diff.audio_view.take(),
                     video: file_diff.video_frames.take(),
                 });
@@ -2149,6 +2155,7 @@ fn run_diff_against_shelf_base(file_1: &mut FileProcessor, file_2: &mut FileProc
 mod tests {
     use super::*;
     use crate::viewer::audio::AudioMode;
+    use crate::viewer::image::ImageSampling;
     use zdiff::ignore::IgnorePatterns;
 
     #[test]
@@ -2197,6 +2204,19 @@ mod tests {
         json.as_object_mut().unwrap().remove("ffmpeg");
         let older: AppStateCtx = serde_json::from_value(json).unwrap();
         assert_eq!(older.ffmpeg.path, "");
+    }
+
+    #[test]
+    fn the_image_sampling_is_saved_and_older_saves_have_nearest() {
+        let mut ctx = AppStateCtx::default();
+        ctx.image_settings.sampling = ImageSampling::Linear;
+        let mut json = serde_json::to_value(&ctx).unwrap();
+        let restored: AppStateCtx = serde_json::from_value(json.clone()).unwrap();
+        assert_eq!(restored.image_settings.sampling, ImageSampling::Linear);
+
+        json.as_object_mut().unwrap().remove("image_settings");
+        let older: AppStateCtx = serde_json::from_value(json).unwrap();
+        assert_eq!(older.image_settings.sampling, ImageSampling::Nearest);
     }
 
     #[test]

@@ -17,6 +17,7 @@ use super::{
     audio::{self, AudioDiffProcessor, AudioSettings},
     audio_meta::MetaRow,
     hex::is_same_side,
+    image::ImageSettings,
     video_frames::{self, VideoFrameProcessor},
 };
 use crate::file::LoadedFile;
@@ -266,6 +267,7 @@ pub fn show(
     ui: &mut egui::Ui,
     processor: &mut VideoMetaProcessor,
     frames: &mut VideoFrameProcessor,
+    image_settings: &mut ImageSettings,
     left_width: f32,
     audio: Option<(&mut AudioDiffProcessor, &mut AudioSettings)>,
 ) {
@@ -283,7 +285,7 @@ pub fn show(
         }
     });
     match processor.tab {
-        VideoTab::Frames => video_frames::show(ui, frames, left_width),
+        VideoTab::Frames => video_frames::show(ui, frames, image_settings, left_width),
         VideoTab::Audio => match audio_tab(processor.has_audio()) {
             AudioTab::Probing => {
                 ui.label("Probing...");

@@ -15,7 +15,7 @@ use zcommon::ffmpeg::{FfmpegPaths, MediaInfo, StreamKind, frame_at_args, probe, 
 
 use super::{
     hex::is_same_side,
-    image::{self, DecodedImage, ImageDiffProcessor, ImageSide},
+    image::{self, DecodedImage, ImageDiffProcessor, ImageSettings, ImageSide},
     video_timeline::{self, VideoTimeline},
 };
 use crate::file::LoadedFile;
@@ -402,7 +402,12 @@ impl VideoFrameProcessor {
 }
 
 /// The scrubber and per-side readouts above the image viewer, its left column `left_width` wide.
-pub fn show(ui: &mut egui::Ui, processor: &mut VideoFrameProcessor, left_width: f32) {
+pub fn show(
+    ui: &mut egui::Ui,
+    processor: &mut VideoFrameProcessor,
+    image_settings: &mut ImageSettings,
+    left_width: f32,
+) {
     if processor.busy() {
         // Jobs finish on workers; keep frames coming until they are polled.
         ui.ctx().request_repaint();
@@ -452,7 +457,7 @@ pub fn show(ui: &mut egui::Ui, processor: &mut VideoFrameProcessor, left_width: 
         );
     }
 
-    image::show(ui, &mut processor.image, left_width);
+    image::show(ui, &mut processor.image, image_settings, left_width);
 }
 
 #[cfg(test)]
