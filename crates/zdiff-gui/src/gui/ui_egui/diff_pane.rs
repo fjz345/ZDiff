@@ -15,6 +15,7 @@ use crate::{
         file_role::FileRole,
         occurrence::{OccurrenceState, RowFind, find_ranges},
         panes::ZAppPane,
+        revision_dropdown::revision_dropdown,
         side_viewers::{self, SideViewers},
         syntax,
     },
@@ -719,17 +720,25 @@ impl FileDiffPane {
                                     (Some(_), false) => Some(format!("{full_path}\n{reason}")),
                                     (None, false) => Some(reason.to_owned()),
                                 };
-                                let bar = ui.scope(|ui| {
-                                    path_bar(
-                                        ui,
-                                        id_salt,
-                                        &segments,
-                                        dim,
-                                        |i| i + 1 < segments.len(),
-                                        error.as_deref(),
-                                        true,
-                                    )
-                                });
+                                let (picked, bar) = ui
+                                    .horizontal(|ui| {
+                                        let picked = (label.is_none() && !path.is_empty())
+                                            .then(|| revision_dropdown(ui, id_salt, path))
+                                            .flatten();
+                                        let bar = ui.scope(|ui| {
+                                            path_bar(
+                                                ui,
+                                                id_salt,
+                                                &segments,
+                                                dim,
+                                                |i| i + 1 < segments.len(),
+                                                error.as_deref(),
+                                                true,
+                                            )
+                                        });
+                                        (picked, bar)
+                                    })
+                                    .inner;
                                 let rect = bar.response.rect;
                                 if label.is_some() && is_valid && ui.rect_contains_pointer(rect) {
                                     bar.response.show_tooltip_text(&full_path);
@@ -752,7 +761,12 @@ impl FileDiffPane {
                                     Some(PathBarAction::Commit(text)) => {
                                         (file_path_request(&text, path, root), None)
                                     }
-                                    None => (None, None),
+                                    None => (
+                                        picked.and_then(|picked| {
+                                            file_path_request(&picked.to_string(), path, root)
+                                        }),
+                                        None,
+                                    ),
                                 }
                             };
                             let header = |column: SplitColumn, ui: &mut egui::Ui| {

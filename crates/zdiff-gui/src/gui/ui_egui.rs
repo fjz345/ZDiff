@@ -5,6 +5,7 @@ pub mod file_role;
 pub mod syntax;
 pub mod occurrence;
 pub mod side_viewers;
+pub mod revision_dropdown;
 #[cfg(test)]
 pub mod copy_harness;
 pub mod merge_pane;
