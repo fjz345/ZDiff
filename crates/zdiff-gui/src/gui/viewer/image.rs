@@ -167,6 +167,10 @@ pub enum ImageMode {
     Blink,
     /// Both sides dimmed, with the changed pixels of the union canvas drawn over them.
     Difference,
+    /// Both sides dimmed, with each pixel's difference colored by its size.
+    Heatmap,
+    /// Both sides' value counts per channel, overlaid in one plot per channel.
+    Histogram,
     /// Both sides in one view: the first left of a draggable divider, the second right of it.
     Swipe,
     /// Both sides in one view, the second drawn over the first at an adjustable opacity.
@@ -244,6 +248,134 @@ pub fn apply_channel(rgba: &[u8], channel: ImageChannel) -> Cow<'_, [u8]> {
             })
             .collect(),
     )
+}
+
+/// The union canvas of two images, aligned at the top-left corner.
+pub struct HeatMap {
+    pub width: u32,
+    pub height: u32,
+    /// Row-major: the largest per-channel difference of each pixel. Pixels outside either image
+    /// are the full 255.
+    pub magnitude: Vec<u8>,
+}
+
+/// `None` when cancelled.
+pub fn heat_magnitudes(
+    first: RgbaBuffer,
+    second: RgbaBuffer,
+    cancel_flag: &AtomicBool,
+) -> Option<HeatMap> {
+    let (width, height) = (
+        first.width.max(second.width) as usize,
+        first.height.max(second.height) as usize,
+    );
+    let (overlap_width, overlap_height) = (
+        first.width.min(second.width) as usize,
+        first.height.min(second.height) as usize,
+    );
+    let mut magnitude = vec![255; width * height];
+    fn row_bytes<'a>(image: RgbaBuffer<'a>, y: usize, width: usize) -> &'a [u8] {
+        let start = y * image.width as usize * 4;
+        &image.rgba[start..start + width * 4]
+    }
+    for y in 0..overlap_height {
+        if cancel_flag.load(Ordering::Acquire) {
+            return None;
+        }
+        let (a, b) = (
+            row_bytes(first, y, overlap_width),
+            row_bytes(second, y, overlap_width),
+        );
+        let row = &mut magnitude[y * width..y * width + overlap_width];
+        if a == b {
+            row.fill(0);
+        } else {
+            for (value, (a, b)) in row.iter_mut().zip(a.chunks_exact(4).zip(b.chunks_exact(4))) {
+                *value = a
+                    .iter()
+                    .zip(b)
+                    .map(|(a, b)| a.abs_diff(*b))
+                    .max()
+                    .unwrap_or(0);
+            }
+        }
+    }
+    if cancel_flag.load(Ordering::Acquire) {
+        return None;
+    }
+    Some(HeatMap {
+        width: width as u32,
+        height: height as u32,
+        magnitude,
+    })
+}
+
+const HEAT_STOPS: [[u8; 3]; 5] = [
+    [0, 0, 255],
+    [0, 255, 255],
+    [0, 255, 0],
+    [255, 255, 0],
+    [255, 0, 0],
+];
+
+/// Blue at a difference of 1 through cyan, green and yellow to red at 255.
+pub fn heat_ramp(magnitude: u8) -> Color32 {
+    let t = magnitude.saturating_sub(1) as f32 / 254.0 * (HEAT_STOPS.len() - 1) as f32;
+    let segment = (t as usize).min(HEAT_STOPS.len() - 2);
+    let f = t - segment as f32;
+    let [r, g, b] = std::array::from_fn(|c| {
+        let (from, to) = (
+            HEAT_STOPS[segment][c] as f32,
+            HEAT_STOPS[segment + 1][c] as f32,
+        );
+        (from + (to - from) * f).round() as u8
+    });
+    Color32::from_rgb(r, g, b)
+}
+
+/// Transparent for a difference the tolerance accepts, like the changed mask; the ramp is the same
+/// at any tolerance.
+fn heat_color(magnitude: u8, tolerance: u8) -> Color32 {
+    if magnitude <= tolerance {
+        Color32::TRANSPARENT
+    } else {
+        heat_ramp(magnitude)
+    }
+}
+
+fn heat_image(heat: &HeatMap, tolerance: u8) -> ColorImage {
+    let pixels = heat
+        .magnitude
+        .iter()
+        .map(|&magnitude| heat_color(magnitude, tolerance))
+        .collect();
+    ColorImage::new([heat.width as usize, heat.height as usize], pixels)
+}
+
+/// Pixel counts per value of the red, green, blue and alpha channel.
+pub type Histogram = [[u32; 256]; 4];
+
+pub fn histogram(rgba: &[u8]) -> Histogram {
+    let mut bins = [[0; 256]; 4];
+    for pixel in rgba.chunks_exact(4) {
+        for (channel, &value) in pixel.iter().enumerate() {
+            bins[channel][value as usize] += 1;
+        }
+    }
+    bins
+}
+
+/// The histograms drawn for a channel filter: a label and the index into a `Histogram`. A single
+/// channel is gray, so its red channel holds it.
+fn histogram_plots(channel: ImageChannel) -> &'static [(&'static str, usize)] {
+    match channel {
+        ImageChannel::All => &[("R", 0), ("G", 1), ("B", 2), ("A", 3)],
+        ImageChannel::Red => &[("R", 0)],
+        ImageChannel::Green => &[("G", 0)],
+        ImageChannel::Blue => &[("B", 0)],
+        ImageChannel::Alpha => &[("A", 0)],
+        ImageChannel::Luminance => &[("Luminance", 0)],
+    }
 }
 
 /// Alternates the shown side every interval; while paused only `step` flips it.
@@ -387,6 +519,10 @@ struct DiffMap {
     /// Uploaded on the first frame the difference map is drawn, and again when the sampling changes.
     mask: Arc<ColorImage>,
     texture: Option<TextureHandle>,
+    heat: Arc<ColorImage>,
+    heat_texture: Option<TextureHandle>,
+    /// Of the channel-filtered sides.
+    histograms: [Histogram; 2],
 }
 
 impl std::fmt::Debug for DiffMap {
@@ -400,7 +536,15 @@ impl std::fmt::Debug for DiffMap {
 }
 
 type DecodeResult = (usize, u64, Result<DecodedImage, String>);
-type CompareResult = (u64, u8, ImageChannel, PixelStats, ColorImage);
+type CompareResult = (
+    u64,
+    u8,
+    ImageChannel,
+    PixelStats,
+    ColorImage,
+    ColorImage,
+    [Histogram; 2],
+);
 
 /// Decodes each side on a worker thread when its load changes. A result for an older load of the
 /// side is dropped. Decoding can't be interrupted; a stale decode just runs to its end.
@@ -502,7 +646,7 @@ impl ImageDiffProcessor {
     /// Takes a finished comparison, and compares the pair again once both sides are decoded or
     /// the tolerance changed.
     fn compare(&mut self) {
-        while let Ok((generation, tolerance, channel, stats, mask)) =
+        while let Ok((generation, tolerance, channel, stats, mask, heat, histograms)) =
             self.compare_channel.1.try_recv()
         {
             if generation != self.compare_generation {
@@ -515,6 +659,9 @@ impl ImageDiffProcessor {
                 size: vec2(mask.size[0] as f32, mask.size[1] as f32),
                 mask: Arc::new(mask),
                 texture: None,
+                heat: Arc::new(heat),
+                heat_texture: None,
+                histograms,
             });
         }
 
@@ -554,8 +701,20 @@ impl ImageDiffProcessor {
             let Some(diff) = pixel_diff(first, second, tolerance, &cancel_flag) else {
                 return;
             };
+            let Some(heat) = heat_magnitudes(first, second, &cancel_flag) else {
+                return;
+            };
             let mask = mask_image(&diff);
-            let _ = tx.send((generation, tolerance, channel, diff.stats, mask));
+            let histograms = [histogram(first.rgba), histogram(second.rgba)];
+            let _ = tx.send((
+                generation,
+                tolerance,
+                channel,
+                diff.stats,
+                mask,
+                heat_image(&heat, tolerance),
+                histograms,
+            ));
         });
     }
 
@@ -722,6 +881,10 @@ pub fn show(
         ui.selectable_value(&mut settings.mode, ImageMode::Blink, "Blink")
             .on_hover_text("Alternate between the two images");
         ui.selectable_value(&mut settings.mode, ImageMode::Difference, "Difference");
+        ui.selectable_value(&mut settings.mode, ImageMode::Heatmap, "Heatmap")
+            .on_hover_text("Color each pixel by its largest channel difference");
+        ui.selectable_value(&mut settings.mode, ImageMode::Histogram, "Histogram")
+            .on_hover_text("Overlay the value counts of both images, per channel");
         ui.selectable_value(&mut settings.mode, ImageMode::Swipe, "Swipe")
             .on_hover_text("Drag the divider to reveal the other image");
         ui.selectable_value(&mut settings.mode, ImageMode::Overlay, "Overlay");
@@ -779,6 +942,7 @@ pub fn show(
         }
         if let Some(map) = &mut processor.diff_map {
             map.texture = None;
+            map.heat_texture = None;
         }
     }
     if processor.texture_channel != settings.channel {
@@ -843,6 +1007,12 @@ pub fn show(
     let viewport = vec2(viewport_width, image_rects[0].height());
 
     let response = ui.allocate_rect(area, Sense::click_and_drag());
+    if settings.mode == ImageMode::Histogram
+        && let Some(map) = &processor.diff_map
+    {
+        histogram_ui(ui, area, map.channel, &map.histograms);
+        return;
+    }
     let decoding = processor
         .sides
         .iter()
@@ -895,6 +1065,7 @@ pub fn show(
         (combined && settings.mode == ImageMode::Overlay).then_some(processor.opacity);
 
     let view = processor.view;
+    let diff_color = role_color(ui.ctx(), FileRole::ImageDiff);
     let diff_overlay = match &mut processor.diff_map {
         Some(map) if settings.mode == ImageMode::Difference => {
             if map.texture.is_none() {
@@ -906,11 +1077,22 @@ pub fn show(
             }
             map.texture
                 .as_ref()
-                .map(|texture| (texture.id(), map.size, map.stats.bounds.clone()))
+                .map(|texture| (texture.id(), map.size, map.stats.bounds.clone(), diff_color))
+        }
+        Some(map) if settings.mode == ImageMode::Heatmap => {
+            if map.heat_texture.is_none() {
+                map.heat_texture = Some(ui.ctx().load_texture(
+                    "image_diff_heat",
+                    map.heat.clone(),
+                    options,
+                ));
+            }
+            map.heat_texture
+                .as_ref()
+                .map(|texture| (texture.id(), map.size, None, Color32::WHITE))
         }
         _ => None,
     };
-    let diff_color = role_color(ui.ctx(), FileRole::ImageDiff);
     let text_color = ui.visuals().text_color();
     let font = egui::TextStyle::Monospace.resolve(ui.style());
     let (channel, blink_side) = (settings.channel, processor.blink.side());
@@ -986,7 +1168,7 @@ pub fn show(
                     StrokeKind::Outside,
                 );
 
-                if let Some((mask, canvas, bounds)) = &diff_overlay {
+                if let Some((mask, canvas, bounds, color)) = &diff_overlay {
                     // The canvas is aligned top-left like both images, so the map lines up on
                     // either side.
                     let origin = image_rect.min + view.pan;
@@ -994,7 +1176,7 @@ pub fn show(
                         *mask,
                         Rect::from_min_size(origin, *canvas * view.zoom),
                         uv,
-                        diff_color,
+                        *color,
                     );
                     if let Some(bounds) = bounds {
                         let corner = |x: u32, y: u32| origin + vec2(x as f32, y as f32) * view.zoom;
@@ -1019,6 +1201,12 @@ pub fn show(
         }
     }
 
+    if settings.mode == ImageMode::Heatmap
+        && let Some(map) = &processor.diff_map
+    {
+        paint_heat_legend(&ui.painter_at(area), area, map.tolerance, font);
+    }
+
     if let Some([left, _]) = swipe {
         // Dark under light, so the divider shows on any image.
         let painter = ui.painter_at(image_rects[0]);
@@ -1034,6 +1222,156 @@ pub fn show(
             6.0,
             Color32::WHITE,
             Stroke::new(1.0, Color32::from_black_alpha(160)),
+        );
+    }
+}
+
+// Fixed white on black, so the legend reads over any image.
+fn paint_heat_legend(painter: &egui::Painter, area: Rect, tolerance: u8, font: egui::FontId) {
+    const SEGMENTS: usize = 128;
+    const SEGMENT_WIDTH: f32 = 2.0;
+    const BAR_HEIGHT: f32 = 14.0;
+    const PAD: f32 = 6.0;
+    let title = if tolerance == 0 {
+        "Largest channel difference (0 = unchanged)".to_string()
+    } else {
+        format!("Largest channel difference (0 to {tolerance} = unchanged)")
+    };
+    let title = painter.layout_no_wrap(title, font.clone(), Color32::WHITE);
+    let bar_width = SEGMENTS as f32 * SEGMENT_WIDTH;
+    let label_height = painter
+        .layout_no_wrap("255".to_string(), font.clone(), Color32::WHITE)
+        .size()
+        .y;
+    let size = vec2(
+        bar_width.max(title.size().x) + 2.0 * PAD,
+        title.size().y + BAR_HEIGHT + label_height + 4.0 * PAD,
+    );
+    let panel = Rect::from_min_size(area.left_bottom() + vec2(8.0, -8.0 - size.y), size);
+    painter.rect_filled(panel, 3.0, Color32::from_black_alpha(210));
+
+    let mut y = panel.top() + PAD;
+    let title_height = title.size().y;
+    painter.galley(pos2(panel.left() + PAD, y), title, Color32::WHITE);
+    y += title_height + PAD;
+    let bar = Rect::from_min_size(pos2(panel.left() + PAD, y), vec2(bar_width, BAR_HEIGHT));
+    for segment in 0..SEGMENTS {
+        let magnitude = 1 + segment * 254 / (SEGMENTS - 1);
+        let x = bar.left() + segment as f32 * SEGMENT_WIDTH;
+        painter.rect_filled(
+            Rect::from_min_size(pos2(x, bar.top()), vec2(SEGMENT_WIDTH, BAR_HEIGHT)),
+            0.0,
+            heat_ramp(magnitude as u8),
+        );
+    }
+    painter.rect_stroke(
+        bar,
+        0.0,
+        Stroke::new(1.0, Color32::from_gray(160)),
+        StrokeKind::Outside,
+    );
+    let label_y = bar.bottom() + 3.0;
+    for (text, x, align) in [
+        ("1", bar.left(), egui::Align2::LEFT_TOP),
+        ("128", bar.center().x, egui::Align2::CENTER_TOP),
+        ("255", bar.right(), egui::Align2::RIGHT_TOP),
+    ] {
+        painter.text(pos2(x, label_y), align, text, font.clone(), Color32::WHITE);
+    }
+}
+
+// One plot per histogram channel, stacked, each scaled to its own tallest bin across both sides.
+fn histogram_ui(ui: &mut egui::Ui, area: Rect, channel: ImageChannel, histograms: &[Histogram; 2]) {
+    let painter = ui.painter_at(area);
+    let font = egui::TextStyle::Monospace.resolve(ui.style());
+    let text_color = ui.visuals().text_color();
+    let line = ui.text_style_height(&egui::TextStyle::Monospace);
+    let colors = [
+        Color32::from_rgba_unmultiplied(60, 130, 255, 150),
+        Color32::from_rgba_unmultiplied(255, 140, 30, 150),
+    ];
+
+    let inner = area.shrink(8.0);
+    let mut x = inner.left();
+    for (name, color) in ["Left", "Right"].into_iter().zip(colors) {
+        let swatch = Rect::from_min_size(pos2(x, inner.top() + 2.0), Vec2::splat(line - 4.0));
+        painter.rect_filled(swatch, 0.0, color);
+        let label = painter.text(
+            pos2(swatch.right() + 4.0, inner.top()),
+            egui::Align2::LEFT_TOP,
+            name,
+            font.clone(),
+            text_color,
+        );
+        x = label.right() + 12.0;
+    }
+
+    let plots = histogram_plots(channel);
+    let top = inner.top() + line + 8.0;
+    let panel_height = (inner.bottom() - top) / plots.len() as f32;
+    for (n, &(name, index)) in plots.iter().enumerate() {
+        let panel = Rect::from_min_size(
+            pos2(inner.left(), top + n as f32 * panel_height),
+            vec2(inner.width(), panel_height),
+        );
+        let plot = Rect::from_min_max(
+            pos2(panel.left(), panel.top() + line + 2.0),
+            pos2(panel.right(), panel.bottom() - line - 6.0),
+        );
+        let peak = histograms
+            .iter()
+            .flat_map(|histogram| histogram[index])
+            .max()
+            .unwrap_or(0)
+            .max(1);
+        painter.text(
+            panel.left_top(),
+            egui::Align2::LEFT_TOP,
+            format!("{name}  (tallest bin: {peak} px)"),
+            font.clone(),
+            text_color,
+        );
+        if plot.height() <= 0.0 || plot.width() <= 0.0 {
+            continue;
+        }
+        painter.rect_filled(plot, 0.0, ui.visuals().extreme_bg_color);
+        let bin_width = plot.width() / 256.0;
+        for (histogram, color) in histograms.iter().zip(colors) {
+            for (value, &count) in histogram[index].iter().enumerate() {
+                if count == 0 {
+                    continue;
+                }
+                let height = count as f32 / peak as f32 * plot.height();
+                let left = plot.left() + value as f32 * bin_width;
+                painter.rect_filled(
+                    Rect::from_min_max(
+                        pos2(left, plot.bottom() - height),
+                        pos2(left + bin_width, plot.bottom()),
+                    ),
+                    0.0,
+                    color,
+                );
+            }
+        }
+        painter.rect_stroke(
+            plot,
+            0.0,
+            Stroke::new(1.0, Color32::from_gray(80)),
+            StrokeKind::Outside,
+        );
+        painter.text(
+            plot.left_bottom() + vec2(0.0, 3.0),
+            egui::Align2::LEFT_TOP,
+            "0",
+            font.clone(),
+            text_color,
+        );
+        painter.text(
+            plot.right_bottom() + vec2(0.0, 3.0),
+            egui::Align2::RIGHT_TOP,
+            "255",
+            font.clone(),
+            text_color,
         );
     }
 }
@@ -1555,5 +1893,201 @@ mod tests {
                 ..ImageSettings::default()
             }
         );
+    }
+
+    #[test]
+    fn the_heat_ramp_runs_from_blue_to_red() {
+        assert_eq!(heat_ramp(1), Color32::from_rgb(0, 0, 255));
+        assert_eq!(heat_ramp(255), Color32::from_rgb(255, 0, 0));
+        let mid = heat_ramp(128);
+        assert!(mid.g() > 200 && mid.r() < 128 && mid.b() < 128, "{mid:?}");
+        for magnitude in 1..=255 {
+            assert_eq!(heat_ramp(magnitude).a(), 255);
+        }
+    }
+
+    #[test]
+    fn values_up_to_the_tolerance_are_zero_on_the_heatmap() {
+        assert_eq!(heat_color(0, 0), Color32::TRANSPARENT);
+        assert_eq!(heat_color(1, 0), heat_ramp(1));
+        assert_eq!(heat_color(10, 10), Color32::TRANSPARENT);
+        assert_eq!(heat_color(11, 10), heat_ramp(11));
+        assert_eq!(heat_color(255, 254), heat_ramp(255));
+        assert_eq!(heat_color(255, 255), Color32::TRANSPARENT);
+    }
+
+    #[test]
+    fn heat_magnitudes_are_the_largest_channel_difference() {
+        let first = [10, 20, 30, 255, 7, 7, 7, 7];
+        let second = [12, 90, 25, 255, 7, 7, 7, 7];
+        let heat = heat_magnitudes(
+            RgbaBuffer {
+                width: 2,
+                height: 1,
+                rgba: &first,
+            },
+            RgbaBuffer {
+                width: 2,
+                height: 1,
+                rgba: &second,
+            },
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        assert_eq!((heat.width, heat.height), (2, 1));
+        assert_eq!(heat.magnitude, [70, 0]);
+    }
+
+    #[test]
+    fn heat_outside_the_overlap_is_the_full_magnitude() {
+        let one = [1, 1, 1, 255];
+        let two = [1, 1, 1, 255].repeat(2);
+        let heat = heat_magnitudes(
+            RgbaBuffer {
+                width: 1,
+                height: 1,
+                rgba: &one,
+            },
+            RgbaBuffer {
+                width: 2,
+                height: 1,
+                rgba: &two,
+            },
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        assert_eq!(heat.magnitude, [0, 255]);
+        let cancelled = AtomicBool::new(true);
+        assert!(
+            heat_magnitudes(
+                RgbaBuffer {
+                    width: 1,
+                    height: 1,
+                    rgba: &one,
+                },
+                RgbaBuffer {
+                    width: 1,
+                    height: 1,
+                    rgba: &one,
+                },
+                &cancelled,
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn the_heat_image_cuts_at_the_tolerance() {
+        let heat = HeatMap {
+            width: 3,
+            height: 1,
+            magnitude: vec![0, 5, 200],
+        };
+        let image = heat_image(&heat, 5);
+        assert_eq!(image.size, [3, 1]);
+        assert_eq!(
+            image.pixels,
+            vec![Color32::TRANSPARENT, Color32::TRANSPARENT, heat_ramp(200)]
+        );
+    }
+
+    #[test]
+    fn histograms_count_every_pixel_per_channel() {
+        let rgba = [
+            0, 0, 255, 255, //
+            0, 10, 255, 255, //
+            5, 10, 255, 128, //
+            5, 10, 255, 255,
+        ];
+        let histogram = histogram(&rgba);
+        assert_eq!(histogram[0][0], 2);
+        assert_eq!(histogram[0][5], 2);
+        assert_eq!(histogram[1][0], 1);
+        assert_eq!(histogram[1][10], 3);
+        assert_eq!(histogram[2][255], 4);
+        assert_eq!(histogram[3][255], 3);
+        assert_eq!(histogram[3][128], 1);
+        for channel in histogram {
+            assert_eq!(channel.iter().sum::<u32>(), 4);
+        }
+    }
+
+    #[test]
+    fn a_single_channel_filter_leaves_one_histogram() {
+        let plots = |channel| {
+            histogram_plots(channel)
+                .iter()
+                .map(|plot| plot.0)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(plots(ImageChannel::All), ["R", "G", "B", "A"]);
+        for channel in ImageChannel::ALL.into_iter().skip(1) {
+            assert_eq!(plots(channel), [channel.label()]);
+        }
+        let gray = apply_channel(&PIXELS, ImageChannel::Luminance);
+        let histogram = histogram(&gray);
+        assert_eq!(histogram_plots(ImageChannel::Luminance)[0].1, 0);
+        assert_eq!((histogram[0][19], histogram[0][54]), (1, 1));
+    }
+
+    #[test]
+    fn the_channel_filter_applies_before_the_heatmap_and_histograms() {
+        let first = RgbaImage::from_raw(1, 1, vec![5, 10, 0, 255]).unwrap();
+        let second = RgbaImage::from_raw(1, 1, vec![5, 90, 0, 255]).unwrap();
+        let mut processor = ImageDiffProcessor::default();
+        processor.request(
+            Some(png_file("a.png", &first)),
+            Some(png_file("b.png", &second)),
+        );
+        poll_until(&mut processor, |p| p.diff_map.is_some());
+        let map = processor.diff_map.as_ref().unwrap();
+        assert_eq!(map.heat.pixels, vec![heat_ramp(80)]);
+        assert_eq!(map.histograms[0][1][10], 1);
+        assert_eq!(map.histograms[1][1][90], 1);
+
+        processor.shown_channel = ImageChannel::Red;
+        poll_until(&mut processor, |p| !p.comparing());
+        let map = processor.diff_map.as_ref().unwrap();
+        assert_eq!(map.heat.pixels, vec![Color32::TRANSPARENT]);
+        assert_eq!(map.histograms[0][0][5], 1);
+        assert_eq!(map.histograms[1][0][5], 1);
+        assert_eq!(map.histograms[1][1][90], 0);
+
+        processor.shown_channel = ImageChannel::Green;
+        poll_until(&mut processor, |p| !p.comparing());
+        let map = processor.diff_map.as_ref().unwrap();
+        assert_eq!(map.heat.pixels, vec![heat_ramp(80)]);
+        assert_eq!(map.histograms[0][0][10], 1);
+        assert_eq!(map.histograms[1][0][90], 1);
+    }
+
+    #[test]
+    fn the_heatmap_follows_the_tolerance() {
+        let first = RgbaImage::from_raw(1, 1, vec![0, 0, 0, 255]).unwrap();
+        let second = RgbaImage::from_raw(1, 1, vec![30, 0, 0, 255]).unwrap();
+        let mut processor = ImageDiffProcessor::default();
+        processor.request(
+            Some(png_file("a.png", &first)),
+            Some(png_file("b.png", &second)),
+        );
+        poll_until(&mut processor, |p| p.diff_map.is_some());
+        processor.tolerance = 30;
+        poll_until(&mut processor, |p| !p.comparing());
+        let map = processor.diff_map.as_ref().unwrap();
+        assert_eq!(map.heat.pixels, vec![Color32::TRANSPARENT]);
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn heatmap_and_histogram_are_modes_that_are_saved() {
+        for mode in [ImageMode::Heatmap, ImageMode::Histogram] {
+            let settings = ImageSettings {
+                mode,
+                ..ImageSettings::default()
+            };
+            let json = serde_json::to_value(&settings).unwrap();
+            let restored: ImageSettings = serde_json::from_value(json).unwrap();
+            assert_eq!(restored.mode, mode);
+        }
     }
 }
