@@ -39,12 +39,18 @@ impl fmt::Display for InvalidRoot {
 }
 
 /// A `folder@git:<rev>` root is not checked on disk: the folder may exist only at that revision.
+/// A `//depot/folder` root is kept as typed: `metadata` would look it up as a network share and
+/// `absolute` would turn the `//` into `\\`.
 pub fn validate_root(path: &Path) -> Result<PathBuf, InvalidRoot> {
-    if let UniversalPath::Git(local, rev) = UniversalPath::from(path) {
-        // Only the folder goes through `absolute`, which would turn `origin/main` into `origin\main`.
-        let local = std::path::absolute(&local)
-            .map_err(|e| InvalidRoot::Unreadable(path.to_path_buf(), e.to_string()))?;
-        return Ok(PathBuf::from(UniversalPath::Git(local, rev).to_string()));
+    match UniversalPath::from(path) {
+        UniversalPath::Depot(..) => return Ok(path.to_path_buf()),
+        UniversalPath::Git(local, rev) => {
+            // Only the folder goes through `absolute`, which would turn `origin/main` into `origin\main`.
+            let local = std::path::absolute(&local)
+                .map_err(|e| InvalidRoot::Unreadable(path.to_path_buf(), e.to_string()))?;
+            return Ok(PathBuf::from(UniversalPath::Git(local, rev).to_string()));
+        }
+        UniversalPath::Local(_) => {}
     }
     match std::fs::metadata(path) {
         Ok(meta) if meta.is_dir() => std::path::absolute(path)
@@ -191,6 +197,25 @@ mod tests {
         let mut root = None;
         assert_eq!(set_root(&mut root, Side::Folder2, Path::new(&text)), Ok(()));
         assert_eq!(root, Some(PathBuf::from(text)));
+    }
+
+    #[test]
+    fn depot_folders_are_accepted_as_typed() {
+        for text in [
+            "//depot/main",
+            "//depot/main/sub",
+            "//depot/main@1234",
+            "//depot/main@=1234",
+            "//depot",
+        ] {
+            let mut root = None;
+            assert_eq!(
+                set_root(&mut root, Side::Folder1, Path::new(text)),
+                Ok(()),
+                "{text}"
+            );
+            assert_eq!(root, Some(PathBuf::from(text)), "{text}");
+        }
     }
 
     #[test]

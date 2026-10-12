@@ -504,6 +504,22 @@ mod tests {
     }
 
     #[test]
+    fn hashes_of_different_kinds_compare_content_even_when_the_values_are_equal() {
+        let left = CountingReader::with(&[("a", vec![1; 10])]);
+        let right = CountingReader::with(&[("a", vec![2; 10])]);
+        let git = blob("aaaa");
+        let p4 = ContentHash {
+            kind: HashKind::P4Digest,
+            value: "aaaa".into(),
+        };
+        let result =
+            compare_pair_with(&left, &right, &hashed("a", 10, &git), &hashed("a", 10, &p4));
+        assert_eq!(result.state, PairState::Different);
+        assert_eq!(left.reads(), (1, 10));
+        assert_eq!(right.reads(), (1, 10));
+    }
+
+    #[test]
     fn each_side_reads_through_its_own_reader() {
         let left = CountingReader::with(&[("a", vec![1; 10])]);
         let right = CountingReader::with(&[("a", vec![2; 10])]);

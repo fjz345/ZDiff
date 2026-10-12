@@ -12,6 +12,7 @@ use crate::fs::{FileSystemModel, FsNodeId, FsNodeKind};
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum HashKind {
     GitBlob,
+    P4Digest,
 }
 
 /// Only comparable with a hash of the same kind.

@@ -30,3 +30,6 @@ tempfile = "3.25.0"
 # drop), where a multithreaded init fails and trash panics.
 trash = { version = "5.2.9", default-features = false, features = ["coinit_apartmentthreaded"] }
 color-backtrace = { version = "0.7.2", optional = true }
+
+[dev-dependencies]
+zcommon = { path = "../zcommon", features = ["test-util"] }

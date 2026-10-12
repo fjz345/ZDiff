@@ -21,7 +21,8 @@ use zcommon::{
         keymap::Keymap,
         style_window::StyleWindow,
     },
-    vcs::git::GitCommand,
+    universal_path::UniversalPath,
+    vcs::{git::GitCommand, p4::P4Command},
 };
 use zhashdiff::{
     external_diff_tool::DiffToolConfig,
@@ -362,8 +363,10 @@ impl ScanJob {
         std::thread::Builder::new()
             .name("folder scan".into())
             .spawn(move || {
+                let p4 = P4Command::new(false).for_file(UniversalPath::from(thread_root.as_path()));
                 let output = scan_side(
                     &GitCommand::default(),
+                    &p4,
                     &thread_root,
                     &thread_cancel,
                     &thread_found,

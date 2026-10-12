@@ -305,6 +305,8 @@ pub struct P4ShelvedFile {
     pub depot_file: String,
     pub action: String,
     pub base_rev: Option<u32>,
+    pub size: Option<u64>,
+    pub digest: Option<String>,
 }
 
 fn ztag_fields(ztag: &str) -> impl Iterator<Item = (&str, &str)> {
@@ -380,13 +382,15 @@ pub fn parse_fstat_digests(ztag: &str) -> Result<Vec<P4FileDigest>, String> {
 /// `p4 describe` output is one record whose files are numbered fields (`depotFile0`, `rev0`, ...)
 /// after a `desc` that can contain blank lines, so fields are gathered by number, not by record.
 pub fn parse_shelf(ztag: &str) -> Result<Vec<P4ShelvedFile>, String> {
-    let mut files: std::collections::BTreeMap<u32, [Option<&str>; 3]> = Default::default();
+    let mut files: std::collections::BTreeMap<u32, [Option<&str>; 5]> = Default::default();
     for (key, value) in ztag_fields(ztag) {
         let name = key.trim_end_matches(|c: char| c.is_ascii_digit());
         let slot = match name {
             "depotFile" => 0,
             "action" => 1,
             "rev" => 2,
+            "fileSize" => 3,
+            "digest" => 4,
             _ => continue,
         };
         let Ok(index) = key[name.len()..].parse::<u32>() else {
@@ -396,7 +400,7 @@ pub fn parse_shelf(ztag: &str) -> Result<Vec<P4ShelvedFile>, String> {
     }
     files
         .into_iter()
-        .map(|(index, [depot_file, action, rev])| {
+        .map(|(index, [depot_file, action, rev, size, digest])| {
             let depot_file = depot_file.ok_or_else(|| format!("no depotFile{index}"))?;
             let action = action.ok_or_else(|| format!("{depot_file}: no action{index}"))?;
             let rev = rev.ok_or_else(|| format!("{depot_file}: no rev{index}"))?;
@@ -409,6 +413,10 @@ pub fn parse_shelf(ztag: &str) -> Result<Vec<P4ShelvedFile>, String> {
                 depot_file: depot_file.to_owned(),
                 action: action.to_owned(),
                 base_rev,
+                size: size
+                    .map(|size| parse_number(size, "fileSize", depot_file))
+                    .transpose()?,
+                digest: digest.map(str::to_owned),
             })
         })
         .collect()
@@ -1254,13 +1262,19 @@ mod tests {
             depot_file: depot_file.into(),
             action: action.into(),
             base_rev,
+            size: None,
+            digest: None,
         }
     }
 
     #[test]
     fn shelf_output_gives_each_file_with_its_base_revision() {
         let files = vec![
-            shelved("//depot/main/a b.txt", "edit", Some(4)),
+            P4ShelvedFile {
+                size: Some(120),
+                digest: Some("0CC175B9C0F1B6A831C399E269772661".into()),
+                ..shelved("//depot/main/a b.txt", "edit", Some(4))
+            },
             shelved("//depot/main/new.txt", "add", None),
             shelved("//depot/main/old.txt", "delete", Some(7)),
             shelved("//depot/main/moved_here.txt", "move/add", None),
@@ -1287,6 +1301,9 @@ mod tests {
         assert!(err.contains("//depot/main/a.txt"), "{err}");
         let bad_rev = "... depotFile0 //depot/main/a.txt\n... action0 edit\n... rev0 x\n";
         assert!(parse_shelf(bad_rev).is_err());
+        let bad_size =
+            "... depotFile0 //depot/main/a.txt\n... action0 edit\n... rev0 1\n... fileSize0 big\n";
+        assert!(parse_shelf(bad_size).is_err());
         let no_file = "... action0 edit\n... rev0 1\n";
         assert!(parse_shelf(no_file).is_err());
     }

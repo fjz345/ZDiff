@@ -27,6 +27,7 @@ use zhashdiff::external_diff_tool::DiffToolConfig;
 use zhashdiff::filter::PathFilter;
 use zhashdiff::fs::FileSystemModel;
 use zhashdiff::fs::FsNodeId;
+use zhashdiff::vcs_source::ContentSource;
 
 use crate::ui_egui::folder_keymap::FolderAction;
 use crate::ui_egui::fs_tree::CursorRowsCache;
@@ -514,6 +515,10 @@ impl DuplicateFilesPane {
         let Some(view) = ctx.path_diff_view.file_system_1_view.as_ref() else {
             return;
         };
+        // Revision nodes have no file on disk; their paths would be looked up as network shares.
+        if view.file_system.content() != &ContentSource::Disk {
+            return;
+        }
         let model = Arc::downgrade(&view.file_system);
         let requested = self
             .hashed_for
