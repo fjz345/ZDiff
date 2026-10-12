@@ -2736,7 +2736,7 @@ fn ignore_patterns_btn(
 fn text_mode_combo(ui: &mut egui::Ui, text_mode: &mut TextMode) {
     egui::ComboBox::from_id_salt("text_mode")
         .selected_text(text_mode.label())
-        .width(90.0)
+        .width(125.0)
         .show_ui(ui, |ui| {
             for mode in TextMode::ALL {
                 ui.selectable_value(text_mode, mode, mode.label());
