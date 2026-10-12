@@ -15,7 +15,7 @@ use crate::{
         active_side::{ActiveSide, ActiveSideState, outline_stroke},
         file_role::FileRole,
         occurrence::{OccurrenceState, RowFind, find_ranges},
-        overview::{self, ChangeSpan, RULER_WIDTH, RulerColors, row_at, row_change_spans},
+        overview::{self, ChangeKind, ChangeSpan, RULER_WIDTH, RulerColors, row_at, row_change_spans},
         panes::ZAppPane,
         revision_dropdown::revision_dropdown,
         side_viewers::{self, SideViewers},
@@ -170,6 +170,27 @@ struct UnifiedView {
     source: Arc<DiffRows>,
     meta: Vec<UnifiedRow>,
     rows: Arc<DiffRows>,
+    ruler: std::sync::OnceLock<Vec<ChangeSpan>>,
+}
+
+fn unified_change_spans(meta: &[UnifiedRow]) -> Vec<ChangeSpan> {
+    let mut spans: Vec<ChangeSpan> = Vec::new();
+    for (idx, row) in meta.iter().enumerate() {
+        let kind = match row.kind {
+            UnifiedKind::Delete => ChangeKind::Deleted,
+            UnifiedKind::Insert => ChangeKind::Inserted,
+            UnifiedKind::Context | UnifiedKind::Collapsed => continue,
+        };
+        match spans.last_mut() {
+            Some(last) if last.end == idx && last.kind == kind => last.end = idx + 1,
+            _ => spans.push(ChangeSpan {
+                start: idx,
+                end: idx + 1,
+                kind,
+            }),
+        }
+    }
+    spans
 }
 
 fn unified_view(cache: &mut Option<Arc<UnifiedView>>, source: &Arc<DiffRows>) -> Arc<UnifiedView> {
@@ -201,6 +222,7 @@ fn unified_view(cache: &mut Option<Arc<UnifiedView>>, source: &Arc<DiffRows>) ->
         source: source.clone(),
         meta,
         rows: Arc::new(rows),
+        ruler: std::sync::OnceLock::new(),
     });
     *cache = Some(view.clone());
     view
@@ -1239,6 +1261,13 @@ impl FileDiffPane {
                             let ruler_spans = match (show_ruler, &ctx.hex_view, ctx.diff_ctx) {
                                 (false, _, _) => None,
                                 (true, Some(hex_view), _) => Some(hex_view.change_spans),
+                                (true, None, Some(_)) if unified.is_some() => {
+                                    unified.as_ref().map(|view| {
+                                        view.ruler
+                                            .get_or_init(|| unified_change_spans(&view.meta))
+                                            .as_slice()
+                                    })
+                                }
                                 (true, None, Some(diff_ctx)) => {
                                     Some(ruler_spans(ruler_cache, diff_ctx))
                                 }
@@ -1253,6 +1282,8 @@ impl FileDiffPane {
                                 // The hex strip bins bytes, the table scrolls by 16-byte rows.
                                 let (len, row_unit) = if ctx.hex_view.is_some() {
                                     (hex_len, hex::HEX_ROW_BYTES)
+                                } else if let Some(view) = &unified {
+                                    (view.meta.len(), 1)
                                 } else {
                                     (diff_rows_len, 1)
                                 };
