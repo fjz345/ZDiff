@@ -49,6 +49,7 @@ use crate::{
         merge_pane::{self, Closing, MergeNames, MergeRequest, MergeView, OpenMergeForm},
         panes::{Pane, TreeBehavior},
         side_viewers::SideViewers,
+        text_mode::TextMode,
     },
     viewer::{
         FfmpegSetting, LoadedSide, SharedKinds, ViewerKind, ViewerOverride, ViewerResolution,
@@ -140,6 +141,8 @@ pub struct AppStateCtx {
     pub h_scroll_modifier: WheelModifier,
     #[cfg_attr(feature = "serde", serde(default))]
     pub word_wrap: bool,
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub text_mode: TextMode,
 
     #[cfg_attr(feature = "serde", serde(skip))]
     pub goto_open: bool,
@@ -184,6 +187,7 @@ impl Default for AppStateCtx {
             h_scroll_linked: default_h_scroll_linked(),
             h_scroll_modifier: WheelModifier::Shift,
             word_wrap: false,
+            text_mode: Default::default(),
             goto_open: Default::default(),
             find_open: Default::default(),
             goto_input: Default::default(),
@@ -873,6 +877,7 @@ impl<'a> ZApp {
                 h_scroll_linked,
                 h_scroll_modifier,
                 word_wrap,
+                text_mode,
                 diff_options,
                 file_1,
                 file_2,
@@ -1044,6 +1049,7 @@ impl<'a> ZApp {
                     scroll_right: scroll_right,
                     h_scroll_linked,
                     word_wrap,
+                    text_mode,
                     diff_options: diff_options,
                     regex_ignore_presets,
                     scroll_to_row_span: &scroll_to_rows,
@@ -2540,6 +2546,25 @@ mod tests {
         let json = serde_json::to_string(&ctx).unwrap();
         let restored: AppStateCtx = serde_json::from_str(&json).unwrap();
         assert!(restored.word_wrap);
+    }
+
+    #[test]
+    fn text_mode_defaults_to_side_by_side_and_survives_a_restart() {
+        assert_eq!(AppStateCtx::default().text_mode, TextMode::SideBySide);
+
+        let mut ctx = AppStateCtx::default();
+        ctx.text_mode = TextMode::Unified;
+        let json = serde_json::to_string(&ctx).unwrap();
+        let restored: AppStateCtx = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.text_mode, TextMode::Unified);
+    }
+
+    #[test]
+    fn a_save_without_a_text_mode_loads_side_by_side() {
+        let mut json = serde_json::to_value(AppStateCtx::default()).unwrap();
+        json.as_object_mut().unwrap().remove("text_mode").unwrap();
+        let restored: AppStateCtx = serde_json::from_value(json).unwrap();
+        assert_eq!(restored.text_mode, TextMode::SideBySide);
     }
 
     #[test]

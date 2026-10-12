@@ -4,7 +4,8 @@ use crate::{
     browser::{BrowserAction, DepotFolder, FolderBrowser, FolderSource, LocalFolder},
     clamped_cursor::ClampedCursor,
     diff_ctx::{
-        BlockToggle, DiffRows, DiffStageTimes, FindHit, MinimalDiffCtx, ScrollSpan, insert_pin,
+        BlockToggle, DiffRows, DiffStageTimes, FindHit, MinimalDiffCtx, RowBlock, ScrollSpan,
+        insert_pin,
         pin_line_counts,
     },
     file::FileProcessor,
@@ -19,6 +20,8 @@ use crate::{
         revision_dropdown::revision_dropdown,
         side_viewers::{self, SideViewers},
         syntax,
+        text_mode::TextMode,
+        unified::{UnifiedKind, UnifiedRow, unified_index_of_row, unified_rows},
     },
     viewer::{
         ViewerKind,
@@ -89,6 +92,7 @@ pub struct FileDiffPaneCtx<'a> {
     pub h_scroll_linked: &'a mut bool,
     /// Long lines wrap; rows then grow to the taller side.
     pub word_wrap: &'a mut bool,
+    pub text_mode: &'a mut TextMode,
 
     pub code_language: &'a str,
 
@@ -155,6 +159,51 @@ pub struct FileDiffPane {
     header_height: f32,
     #[serde(skip)]
     center_layout: Option<CenterLayoutCache>,
+    #[serde(skip)]
+    unified: Option<Arc<UnifiedView>>,
+}
+
+/// The unified column of one set of side-by-side rows. `rows` holds each unified row's content as
+/// the left side, so the widths and wrapped heights measure it like a one-sided diff.
+struct UnifiedView {
+    // Kept alive so the pointer comparison can't match a new allocation at the same address.
+    source: Arc<DiffRows>,
+    meta: Vec<UnifiedRow>,
+    rows: Arc<DiffRows>,
+}
+
+fn unified_view(cache: &mut Option<Arc<UnifiedView>>, source: &Arc<DiffRows>) -> Arc<UnifiedView> {
+    if let Some(view) = cache
+        && Arc::ptr_eq(&view.source, source)
+    {
+        return view.clone();
+    }
+    let meta = unified_rows(source);
+    let rows = meta
+        .iter()
+        .map(|u| {
+            let row = &source[u.row];
+            let mut left = match u.side {
+                ActiveSide::Left => row.left.clone(),
+                ActiveSide::Right => row.right.clone(),
+            };
+            // Ghosts pad a side with the other side's text; a patch shows only the line's own.
+            if let LineContent::Code { tokens, .. } = &mut left {
+                tokens.retain(|(_, _, is_ghost)| !is_ghost);
+            }
+            DiffRow {
+                left,
+                right: LineContent::Void,
+            }
+        })
+        .collect();
+    let view = Arc::new(UnifiedView {
+        source: source.clone(),
+        meta,
+        rows: Arc::new(rows),
+    });
+    *cache = Some(view.clone());
+    view
 }
 
 #[derive(Default)]
@@ -211,12 +260,13 @@ fn wrapped_heights<'c>(
     cache: &'c mut Option<RowHeights>,
     egui_ctx: &egui::Context,
     font_id: &egui::FontId,
+    rows: &Arc<DiffRows>,
     diff_ctx: &MinimalDiffCtx,
     text_widths: [f32; 2],
 ) -> &'c [f32] {
     let pixels_per_point = egui_ctx.pixels_per_point();
     let hit = cache.as_ref().is_some_and(|cached| {
-        Arc::ptr_eq(&cached.rows, &diff_ctx.diff_rows)
+        Arc::ptr_eq(&cached.rows, rows)
             && cached.font_id == *font_id
             && cached.pixels_per_point == pixels_per_point
             && cached.text_widths == text_widths
@@ -226,14 +276,14 @@ fn wrapped_heights<'c>(
             measure_wrapped_rows(
                 fonts,
                 font_id,
-                &diff_ctx.diff_rows,
+                rows,
                 diff_ctx.input.file_1.as_deref(),
                 diff_ctx.input.file_2.as_deref(),
                 text_widths,
             )
         });
         *cache = Some(RowHeights {
-            rows: diff_ctx.diff_rows.clone(),
+            rows: rows.clone(),
             font_id: font_id.clone(),
             pixels_per_point,
             text_widths,
@@ -269,14 +319,20 @@ impl FileDiffPane {
             split: Split::default(),
             header_height: 0.0,
             center_layout: None,
+            unified: None,
         }
     }
 
-    fn content_widths(&mut self, ui: &egui::Ui, diff_ctx: &MinimalDiffCtx) -> [f32; 2] {
+    fn content_widths(
+        &mut self,
+        ui: &egui::Ui,
+        rows: &Arc<DiffRows>,
+        diff_ctx: &MinimalDiffCtx,
+    ) -> [f32; 2] {
         let font_id = egui::TextStyle::Monospace.resolve(ui.style());
         let pixels_per_point = ui.ctx().pixels_per_point();
         if let Some(cached) = &self.content_widths
-            && Arc::ptr_eq(&cached.rows, &diff_ctx.diff_rows)
+            && Arc::ptr_eq(&cached.rows, rows)
             && cached.font_id == font_id
             && cached.pixels_per_point == pixels_per_point
         {
@@ -284,14 +340,14 @@ impl FileDiffPane {
         }
         let widths = ui.fonts_mut(|fonts| {
             side_content_widths(
-                &diff_ctx.diff_rows,
+                rows,
                 diff_ctx.input.file_1.as_deref(),
                 diff_ctx.input.file_2.as_deref(),
                 |c| fonts.glyph_width(&font_id, c),
             )
         });
         self.content_widths = Some(ContentWidths {
-            rows: diff_ctx.diff_rows.clone(),
+            rows: rows.clone(),
             font_id,
             pixels_per_point,
             widths,
@@ -305,9 +361,24 @@ impl FileDiffPane {
         self.occurrences.begin_frame(ui.ctx());
         let mut side_viewers = ctx.side_viewers.take();
 
-        let content_widths = match ctx.diff_ctx {
-            Some(diff_ctx) => self.content_widths(ui, diff_ctx),
-            None => [0.0; 2],
+        let text_viewer = ctx.hex_view.is_none()
+            && ctx.image_view.is_none()
+            && ctx.media_view.is_none()
+            && side_viewers.is_none();
+        let unified = match ctx.diff_ctx {
+            Some(diff_ctx) if text_viewer && *ctx.text_mode == TextMode::Unified => {
+                Some(unified_view(&mut self.unified, &diff_ctx.diff_rows))
+            }
+            _ => None,
+        };
+        let content_widths = match (ctx.diff_ctx, &unified) {
+            (Some(diff_ctx), Some(view)) => {
+                let [left, _] = self.content_widths(ui, &view.rows, diff_ctx);
+                let extra = unified_gutter_width() - GUTTER_WIDTH;
+                [if left > 0.0 { left + extra } else { left }, 0.0]
+            }
+            (Some(diff_ctx), None) => self.content_widths(ui, &diff_ctx.diff_rows, diff_ctx),
+            (None, _) => [0.0; 2],
         };
 
         log::trace!("=================================================");
@@ -335,6 +406,9 @@ impl FileDiffPane {
             ui.with_layout(Layout::left_to_right(egui::Align::Center), |ui| {
                 ui.spacing_mut().item_spacing.x = 4.0;
                 viewer_override_combo(ui, ctx.viewer_override, ctx.viewer_fallback);
+                if text_viewer {
+                    text_mode_combo(ui, ctx.text_mode);
+                }
             });
             ui.separator();
 
@@ -625,13 +699,22 @@ impl FileDiffPane {
                             // Images are drawn below the header (the path editors), in the
                             // table's columns, outside its scroll area so the wheel zooms.
                             let mut image_left_width = None;
+                            if unified.is_some() {
+                                table = table.single_column();
+                            }
 
                             let ruler_row = ui.data_mut(|d| d.remove_temp::<usize>(ruler_id.with("scroll_to")));
                             if let Some(row) = ruler_row {
                                 table = table.scroll_to_row(row, Some(egui::Align::Center));
                             } else if let Some(ScrollSpan { start, maybe_end }) = &ctx.scroll_to_row_span {
                                 log::trace!("scroll_to_row_span: ({:?}, {:?})", start, maybe_end);
-                                table = table.scroll_to_row(*start, Some(egui::Align::Min));
+                                let start = match &unified {
+                                    Some(view) => {
+                                        unified_index_of_row(&view.meta, *start).unwrap_or(*start)
+                                    }
+                                    None => *start,
+                                };
+                                table = table.scroll_to_row(start, Some(egui::Align::Min));
                             }
 
                             let editable_path_test =
@@ -809,7 +892,7 @@ impl FileDiffPane {
                                     ),
                                 }
                             };
-                            let header = |column: SplitColumn, ui: &mut egui::Ui| {
+                            let mut header = |column: SplitColumn, ui: &mut egui::Ui| {
                                 // Clipped cells truncate text; the path bars lay out as before.
                                 ui.style_mut().wrap_mode = None;
                                 match column {
@@ -870,11 +953,25 @@ impl FileDiffPane {
                                     }
                                 }
                             };
+                            // One column holds both path bars, side by side.
+                            let header = |column: SplitColumn, ui: &mut egui::Ui| {
+                                if unified.is_some() {
+                                    ui.columns(2, |columns| {
+                                        header(SplitColumn::Left, &mut columns[0]);
+                                        header(SplitColumn::Right, &mut columns[1]);
+                                    });
+                                } else {
+                                    header(column, ui);
+                                }
+                            };
                             let header_only = ctx.image_view.is_some()
                                 || ctx.media_view.is_some()
                                 || side_viewers.is_some()
                                 || do_not_render_diff;
-                            let mut offsets = [*ctx.scroll_left, *ctx.scroll_right];
+                            let mut offsets = [
+                                *ctx.scroll_left,
+                                if unified.is_some() { 0.0 } else { *ctx.scroll_right },
+                            ];
                             // Wrapped text fits its column, so nothing scrolls sideways. Hex rows
                             // have a fixed width, images pan.
                             if !(wrap || header_only || ctx.hex_view.is_some()) {
@@ -895,17 +992,30 @@ impl FileDiffPane {
                                     count: 0,
                                 }
                             } else {
-                                let heights = match ctx.diff_ctx {
-                                    Some(diff_ctx) if wrap => Some(wrapped_heights(
+                                let (measured, text_widths, count) = match &unified {
+                                    Some(view) => (
+                                        Some(&view.rows),
+                                        [unified_text_width(area.width()), 0.0],
+                                        view.meta.len(),
+                                    ),
+                                    None => (
+                                        ctx.diff_ctx.map(|d| &d.diff_rows),
+                                        side_widths.map(wrap_width),
+                                        diff_rows_len,
+                                    ),
+                                };
+                                let heights = match (ctx.diff_ctx, measured) {
+                                    (Some(diff_ctx), Some(rows)) if wrap => Some(wrapped_heights(
                                         row_heights,
                                         &egui_ctx,
                                         &mono_font,
+                                        rows,
                                         diff_ctx,
-                                        side_widths.map(wrap_width),
+                                        text_widths,
                                     )),
                                     _ => None,
                                 };
-                                text_rows(heights, row_height, diff_rows_len)
+                                text_rows(heights, row_height, count)
                             };
 
                                     // Once per frame, not per row: a temp side gets no revert buttons.
@@ -923,6 +1033,82 @@ impl FileDiffPane {
                                     let cell = |row_index: usize, column: SplitColumn, ui: &mut egui::Ui| {
                                             if let Some(hex_view) = &ctx.hex_view {
                                                 hex::cell(ui, hex_view, row_index, column);
+                                                return;
+                                            }
+                                            if let (Some(view), Some(rows)) = (&unified, diff_rows) {
+                                                if column == SplitColumn::Left {
+                                                    let u = view.meta[row_index];
+                                                    let content = &view.rows[row_index].left;
+                                                    let context = u.kind == UnifiedKind::Context;
+                                                    let marked = ctx.active_highlights.contains(&u.row);
+                                                    let lit = marked
+                                                        && (context
+                                                            || ctx.highlight_side.is_none_or(|s| s == u.side));
+                                                    let accent = marked
+                                                        && (context || ctx.highlight_side == Some(u.side));
+                                                    let (matcher, hit) = (ctx.find_matcher, ctx.find_hit);
+                                                    let mut find = row_find(matcher, hit, u.side, u.row, content);
+                                                    if context && find.current.is_none() {
+                                                        find = row_find(matcher, hit, ActiveSide::Right, u.row, &rows[u.row].right);
+                                                    }
+                                                    let width = ui.max_rect().width();
+                                                    Self::render_row(
+                                                        ui,
+                                                        u.side,
+                                                        row_index,
+                                                        occurrences,
+                                                        ctx.diff_ctx.map(|f| f.input.file_1.clone()).unwrap_or_default(),
+                                                        ctx.diff_ctx.map(|f| f.input.file_2.clone()).unwrap_or_default(),
+                                                        content,
+                                                        width,
+                                                        wrap,
+                                                        lit,
+                                                        accent,
+                                                        find,
+                                                        true,
+                                                        ctx.code_language,
+                                                        None,
+                                                        Gutter::Unified {
+                                                            left: u.left_line,
+                                                            right: u.right_line,
+                                                            sign: match u.kind {
+                                                                UnifiedKind::Delete => Some(('-', symbol_colors[0])),
+                                                                UnifiedKind::Insert => Some(('+', symbol_colors[1])),
+                                                                UnifiedKind::Context | UnifiedKind::Collapsed => None,
+                                                            },
+                                                        },
+                                                    );
+                                                    if is_pinned(shown_pins, u.side, content) {
+                                                        let cell_ui = ui.new_child(
+                                                            UiBuilder::new().max_rect(unscrolled_cell(ui)),
+                                                        );
+                                                        paint_pin_marker(&cell_ui);
+                                                    }
+                                                    let block = ctx.diff_ctx.and_then(|d| {
+                                                        d.row_blocks
+                                                            .binary_search_by_key(&u.row, |b| b.rows.start)
+                                                            .ok()
+                                                            .map(|i| &d.row_blocks[i])
+                                                    });
+                                                    if let Some(block) = block
+                                                        && matches!(u.kind, UnifiedKind::Context | UnifiedKind::Collapsed)
+                                                    {
+                                                        let cell = unscrolled_cell(ui);
+                                                        let strip = egui::Rect::from_min_size(
+                                                            egui::pos2(cell.right() - center.width(), cell.top()),
+                                                            egui::vec2(center.width(), cell.height()),
+                                                        );
+                                                        let [expand_slot, toggle_slot, ..] =
+                                                            center.slots(strip, ui.spacing().interact_size.y);
+                                                        let mut buttons = ui.new_child(UiBuilder::new().max_rect(cell));
+                                                        block_toggle_buttons(
+                                                            &mut buttons,
+                                                            block,
+                                                            [expand_slot, toggle_slot],
+                                                            &mut *ctx.block_toggle_request,
+                                                        );
+                                                    }
+                                                }
                                                 return;
                                             }
                                             if let Some(rows) = diff_rows {
@@ -1016,21 +1202,7 @@ impl FileDiffPane {
                                                             .map(|i| &d.row_blocks[i])
                                                     });
                                                     if let Some(block) = block {
-                                                        let mut toggle_button = |slot: egui::Rect, label: &str, hover: &str, toggle: BlockToggle| {
-                                                            if ui.put(slot, egui::Button::new(label)).on_hover_text(hover).clicked() {
-                                                                *ctx.block_toggle_request = Some((block.key, toggle));
-                                                            }
-                                                        };
-                                                        if !block.expanded {
-                                                            toggle_button(expand_slot, "+", "Expand the collapsed rows", BlockToggle::Expand);
-                                                        }
-                                                        // Only on a fully collapsed block: once rows are revealed, the
-                                                        // scope expansion has been done or wouldn't add anything.
-                                                        if !block.expanded && block.rows.len() == 1 {
-                                                            toggle_button(toggle_slot, "{", "Expand up to the line opening the scope of the change below", BlockToggle::ExpandToScope);
-                                                        } else {
-                                                            toggle_button(toggle_slot, "-", "Collapse these rows again", BlockToggle::Collapse);
-                                                        }
+                                                        block_toggle_buttons(ui, block, [expand_slot, toggle_slot], &mut *ctx.block_toggle_request);
                                                     }
                                                     revert_button(ui, left_slot, RevertTarget::Left, "<", "Replace this hunk in the left file with the right side");
                                                     if let Some((symbol, color)) = row_symbol(diff_row, symbol_colors) {
@@ -1104,7 +1276,10 @@ impl FileDiffPane {
                                 }
                                 ui.advance_cursor_after_rect(strip);
                             }
-                            [*ctx.scroll_left, *ctx.scroll_right] = offsets;
+                            *ctx.scroll_left = offsets[0];
+                            if unified.is_none() {
+                                *ctx.scroll_right = offsets[1];
+                            }
                             let measured = header_rects[0].height().max(header_rects[1].height());
                             if measured != *header_height {
                                 *header_height = measured;
@@ -1324,6 +1499,44 @@ impl FileDiffPane {
         code_language: &str,
         trace: Option<&PhaseTrace>,
     ) {
+        Self::render_row(
+            ui,
+            side,
+            row_index,
+            occurrences,
+            file_source,
+            file_target,
+            content,
+            width,
+            wrap,
+            is_highlighted,
+            accent_line_num,
+            find,
+            selectable,
+            code_language,
+            trace,
+            Gutter::Single,
+        );
+    }
+
+    fn render_row<T: RawTokenTrait>(
+        ui: &mut egui::Ui,
+        side: ActiveSide,
+        row_index: usize,
+        occurrences: &mut OccurrenceState,
+        file_source: Option<Arc<CachedFile<T>>>,
+        file_target: Option<Arc<CachedFile<T>>>,
+        content: &LineContent,
+        width: f32,
+        wrap: bool,
+        is_highlighted: bool,
+        accent_line_num: bool,
+        find: RowFind,
+        selectable: bool,
+        code_language: &str,
+        trace: Option<&PhaseTrace>,
+        gutter: Gutter,
+    ) {
         let row_h = ui.text_style_height(&egui::TextStyle::Monospace);
         // Wrapped rows fill their cell, which is as tall as the row's taller side.
         let cell_h = if wrap {
@@ -1351,24 +1564,38 @@ impl FileDiffPane {
                     let add_contents = |ui: &mut egui::Ui| {
                         ui.spacing_mut().item_spacing.x = 0.0;
 
-                        let line_num_str = if *line_num > 0 {
-                            line_num.to_string()
-                        } else {
-                            String::new()
+                        let line_number = |ui: &mut egui::Ui, text: String| {
+                            let text = egui::RichText::new(text).size(10.0);
+                            let text = if accent_line_num {
+                                text.color(role_color(ui.ctx(), FileRole::GotoLineNumber))
+                                    .strong()
+                            } else {
+                                text.color(role_color(ui.ctx(), FileRole::LineNumber))
+                            };
+                            ui.add_sized(
+                                [GUTTER_WIDTH, row_h],
+                                egui::Label::new(text).selectable(false),
+                            );
                         };
-
-                        let line_num_text = egui::RichText::new(&line_num_str).size(10.0);
-                        let line_num_text = if accent_line_num {
-                            line_num_text
-                                .color(role_color(ui.ctx(), FileRole::GotoLineNumber))
-                                .strong()
-                        } else {
-                            line_num_text.color(role_color(ui.ctx(), FileRole::LineNumber))
-                        };
-                        ui.add_sized(
-                            [GUTTER_WIDTH, row_h],
-                            egui::Label::new(line_num_text).selectable(false),
-                        );
+                        match gutter {
+                            Gutter::Single => {
+                                let line = (*line_num > 0).then(|| line_num.to_string());
+                                line_number(ui, line.unwrap_or_default());
+                            }
+                            Gutter::Unified { left, right, sign } => {
+                                let shown = |line: Option<usize>| {
+                                    line.map(|n| n.to_string()).unwrap_or_default()
+                                };
+                                line_number(ui, shown(left));
+                                line_number(ui, shown(right));
+                                let (sign, color) = sign.unwrap_or((' ', egui::Color32::PLACEHOLDER));
+                                ui.add_sized(
+                                    [UNIFIED_SIGN_WIDTH, row_h],
+                                    egui::Label::new(egui::RichText::new(sign).color(color))
+                                        .selectable(false),
+                                );
+                            }
+                        }
 
                         ui.add_space(GUTTER_GAP);
 
@@ -1414,7 +1641,7 @@ impl FileDiffPane {
 
                         let font_id = egui::TextStyle::Monospace.resolve(ui.style());
                         let wrap_at = if wrap {
-                            wrap_width(width)
+                            gutter.text_width(width)
                         } else {
                             f32::INFINITY
                         };
@@ -1578,7 +1805,7 @@ impl FileDiffPane {
                         ui.spacing_mut().item_spacing.x = 0.0;
 
                         ui.add_sized(
-                            [GUTTER_WIDTH, row_h],
+                            [gutter.width(), row_h],
                             egui::Label::new(
                             egui::RichText::new("|") // Mid-line ellipsis fits a gutter better than "-"
                             .color(egui::Color32::from_gray(100))
@@ -1684,6 +1911,86 @@ fn paint_row_look(
 const GUTTER_WIDTH: f32 = 35.0;
 const GUTTER_GAP: f32 = 4.0;
 const CENTER_GAP: f32 = 2.0;
+
+const UNIFIED_SIGN_WIDTH: f32 = 14.0;
+
+fn unified_gutter_width() -> f32 {
+    2.0 * GUTTER_WIDTH + UNIFIED_SIGN_WIDTH
+}
+
+fn unified_text_width(cell_width: f32) -> f32 {
+    cell_width - unified_gutter_width() - GUTTER_GAP
+}
+
+/// What a row's gutter shows: its own line number, or both files' and the `-`/`+` of the unified
+/// column.
+#[derive(Clone, Copy)]
+enum Gutter {
+    Single,
+    Unified {
+        left: Option<usize>,
+        right: Option<usize>,
+        sign: Option<(char, egui::Color32)>,
+    },
+}
+
+impl Gutter {
+    fn width(self) -> f32 {
+        match self {
+            Self::Single => GUTTER_WIDTH,
+            Self::Unified { .. } => unified_gutter_width(),
+        }
+    }
+
+    fn text_width(self, cell_width: f32) -> f32 {
+        match self {
+            Self::Single => wrap_width(cell_width),
+            Self::Unified { .. } => unified_text_width(cell_width),
+        }
+    }
+}
+
+fn block_toggle_buttons(
+    ui: &mut egui::Ui,
+    block: &RowBlock,
+    [expand_slot, toggle_slot]: [egui::Rect; 2],
+    request: &mut Option<(usize, BlockToggle)>,
+) {
+    let mut toggle_button = |slot: egui::Rect, label: &str, hover: &str, toggle: BlockToggle| {
+        if ui
+            .put(slot, egui::Button::new(label))
+            .on_hover_text(hover)
+            .clicked()
+        {
+            *request = Some((block.key, toggle));
+        }
+    };
+    if !block.expanded {
+        toggle_button(
+            expand_slot,
+            "+",
+            "Expand the collapsed rows",
+            BlockToggle::Expand,
+        );
+    }
+    // Only on a fully collapsed block: once rows are revealed, the scope expansion has been done
+    // or wouldn't add anything.
+    if !block.expanded && block.rows.len() == 1 {
+        toggle_button(
+            toggle_slot,
+            "{",
+            "Expand up to the line opening the scope of the change below",
+            BlockToggle::ExpandToScope,
+        );
+    } else {
+        toggle_button(
+            toggle_slot,
+            "-",
+            "Collapse these rows again",
+            BlockToggle::Collapse,
+        );
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct CenterLayout {
@@ -2361,6 +2668,19 @@ fn ignore_patterns_btn(
 
 /// Auto / Text / Hex for the current pair. A warning sign carries the fallback reason when the
 /// pair is shown in another viewer than it asked for.
+fn text_mode_combo(ui: &mut egui::Ui, text_mode: &mut TextMode) {
+    egui::ComboBox::from_id_salt("text_mode")
+        .selected_text(text_mode.label())
+        .width(90.0)
+        .show_ui(ui, |ui| {
+            for mode in TextMode::ALL {
+                ui.selectable_value(text_mode, mode, mode.label());
+            }
+        })
+        .response
+        .on_hover_text("How the text diff is laid out");
+}
+
 fn viewer_override_combo(
     ui: &mut egui::Ui,
     viewer_override: &mut Option<ViewerKind>,

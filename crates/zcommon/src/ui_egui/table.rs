@@ -92,6 +92,7 @@ pub struct SplitTable<'a> {
     scroll_to_row: Option<(usize, Option<egui::Align>)>,
     striped: bool,
     selected_row: Option<usize>,
+    single: bool,
 }
 
 impl<'a> SplitTable<'a> {
@@ -104,7 +105,15 @@ impl<'a> SplitTable<'a> {
             scroll_to_row: None,
             striped: false,
             selected_row: None,
+            single: false,
         }
+    }
+
+    /// One column over the full width: no center, no right side, no split. Cells and the header
+    /// are asked for `SplitColumn::Left` only, and the right side rect is empty.
+    pub fn single_column(mut self) -> Self {
+        self.single = true;
+        self
     }
 
     /// Fixed; measured by the app from the widest center content, not per frame.
@@ -160,6 +169,7 @@ impl<'a> SplitTable<'a> {
             scroll_to_row,
             striped,
             selected_row,
+            single,
         } = self;
         let spacing = ui.spacing().item_spacing.x;
         let area = ui.available_rect_before_wrap();
@@ -172,24 +182,37 @@ impl<'a> SplitTable<'a> {
             ]
         };
 
-        let x = side_x(split.widths(shared));
-        let strip_rect = egui::Rect::from_x_y_ranges(x[0].max..=x[1].min, area.y_range());
-        // Registered before the cells, so the center's buttons are on top and keep their clicks.
-        let strip = ui.interact(
-            strip_rect,
-            ui.id().with((id_salt, "split_strip")),
-            egui::Sense::click_and_drag(),
-        );
-        if strip.hovered() || strip.dragged() {
-            ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+        if single {
+            // Linking would scroll a right side that has no content.
+            if let Some(hs) = &mut h_scroll {
+                hs.linked = false;
+            }
+        } else {
+            let x = side_x(split.widths(shared));
+            let strip_rect = egui::Rect::from_x_y_ranges(x[0].max..=x[1].min, area.y_range());
+            // Registered before the cells, so the center's buttons are on top and keep their clicks.
+            let strip = ui.interact(
+                strip_rect,
+                ui.id().with((id_salt, "split_strip")),
+                egui::Sense::click_and_drag(),
+            );
+            if strip.hovered() || strip.dragged() {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+            }
+            if strip.double_clicked() {
+                split.reset();
+            } else if strip.dragged() {
+                split.drag(strip.drag_delta().x, shared);
+            }
         }
-        if strip.double_clicked() {
-            split.reset();
-        } else if strip.dragged() {
-            split.drag(strip.drag_delta().x, shared);
-        }
-        let widths = split.widths(shared);
-        let x = side_x(widths);
+        let (widths, x) = if single {
+            let whole = egui::Rangef::new(area.min.x, area.max.x);
+            let none = egui::Rangef::new(area.max.x, area.max.x);
+            ([area.width(), 0.0], [whole, none])
+        } else {
+            let widths = split.widths(shared);
+            (widths, side_x(widths))
+        };
 
         let max = h_scroll.as_ref().map(|hs| {
             [
@@ -247,9 +270,12 @@ impl<'a> SplitTable<'a> {
                     .drag_to_scroll(false)
                     .auto_shrink([false, false])
                     .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-                    .column(Column::exact(widths[0]).clip(true))
-                    .column(Column::exact(center_width).clip(true))
-                    .column(Column::exact(widths[1]).clip(true));
+                    .column(Column::exact(widths[0]).clip(true));
+                if !single {
+                    table = table
+                        .column(Column::exact(center_width).clip(true))
+                        .column(Column::exact(widths[1]).clip(true));
+                }
                 if let Some((row, align)) = scroll_to_row {
                     table = table.scroll_to_row(row, align);
                 }
@@ -259,6 +285,9 @@ impl<'a> SplitTable<'a> {
                     row.col(|ui| {
                         show_scrolled(ui, offsets[0], |ui| cell(i, SplitColumn::Left, ui))
                     });
+                    if single {
+                        return;
+                    }
                     row.col(|ui| cell(i, SplitColumn::Center, ui));
                     row.col(|ui| {
                         show_scrolled(ui, offsets[1], |ui| cell(i, SplitColumn::Right, ui))
@@ -266,7 +295,12 @@ impl<'a> SplitTable<'a> {
                 };
                 let output = table
                     .header(header_height, |mut row| {
-                        for column in [SplitColumn::Left, SplitColumn::Center, SplitColumn::Right] {
+                        let columns: &[SplitColumn] = if single {
+                            &[SplitColumn::Left]
+                        } else {
+                            &[SplitColumn::Left, SplitColumn::Center, SplitColumn::Right]
+                        };
+                        for &column in columns {
                             row.col(|ui| header(column, ui));
                         }
                     })
@@ -484,5 +518,43 @@ mod tests {
     fn the_table_fills_its_area_exactly_with_scroll_bars() {
         let (area, used) = area_and_used_height(10_000.0);
         assert_eq!(used, area);
+    }
+
+    #[test]
+    fn a_single_column_table_asks_for_the_left_cell_only_over_the_whole_width() {
+        let ctx = egui::Context::default();
+        let mut split = Split::default();
+        let mut offsets = [0.0; 2];
+        let mut columns = Vec::new();
+        let mut header_columns = Vec::new();
+        let mut output = None;
+        let mut area_width = 0.0;
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                area_width = ui.available_width();
+                output = Some(
+                    SplitTable::new("table", &mut split)
+                        .single_column()
+                        .h_scroll(&mut offsets, true, [10_000.0; 2])
+                        .show(
+                            ui,
+                            20.0,
+                            |column, _| header_columns.push(column),
+                            Rows::Uniform {
+                                height: 16.0,
+                                count: 3,
+                            },
+                            |_, column, _| columns.push(column),
+                        ),
+                );
+            });
+        });
+        let output = output.unwrap();
+        assert_eq!(header_columns, [SplitColumn::Left]);
+        assert!(!columns.is_empty());
+        assert!(columns.iter().all(|&column| column == SplitColumn::Left));
+        assert_eq!(output.side_rects[0].width(), area_width);
+        assert!(!output.side_rects[1].is_positive());
+        assert_eq!(offsets[1], 0.0);
     }
 }
