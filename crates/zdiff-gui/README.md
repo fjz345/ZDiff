@@ -20,7 +20,7 @@ GUI for zdiff crate
     - Diff Options
         + Ignore whitespace
         + Highlight rows that differ: switches the diff marks on/off; its dropdown picks changed scopes, lines, tokens and/or characters
-        + Diff phases (Options): Scope, Line (default), Token and Character. Each runs only where the coarser one found a change; with none on, the lines just sit side by side
+        + Diff phases (Options): Scope, Line and Token (both default), Character. Each runs only where the coarser one found a change; with none on, the lines just sit side by side
         + Inline ghost tokens
         + Diff only
     - Occurrence highlight: selecting text in a row highlights its other occurrences in the visible rows, on both sides

@@ -160,13 +160,13 @@ mod tests {
     }
 
     #[test]
-    fn the_diff_defaults_to_the_line_phase_only() {
+    fn the_diff_defaults_to_line_and_token() {
         assert_eq!(
             DiffBuilderOptions::default().phases,
             DiffPhases {
                 scope: false,
                 line: true,
-                token: false,
+                token: true,
                 character: false,
             }
         );

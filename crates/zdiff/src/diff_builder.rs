@@ -74,7 +74,7 @@ pub struct DiffBuilderOptions {
     pub mark_chars: bool,
     pub ghost_rows: bool,
     pub diff_only_with_extra_rows: Option<usize>,
-    #[cfg_attr(feature = "serde", serde(default = "line_phase"))]
+    #[cfg_attr(feature = "serde", serde(default))]
     pub phases: DiffPhases,
 }
 impl Default for DiffBuilderOptions {
@@ -88,7 +88,7 @@ impl Default for DiffBuilderOptions {
             mark_chars: false,
             ghost_rows: true,
             diff_only_with_extra_rows: None,
-            phases: line_phase(),
+            phases: DiffPhases::default(),
         }
     }
 }
@@ -96,14 +96,6 @@ impl Default for DiffBuilderOptions {
 #[cfg(feature = "serde")]
 fn default_true() -> bool {
     true
-}
-
-/// Not `DiffPhases::default()`: the view defaults to whole lines, other callers to tokens too.
-fn line_phase() -> DiffPhases {
-    DiffPhases {
-        token: false,
-        ..DiffPhases::default()
-    }
 }
 
 impl DiffBuilderOptions {

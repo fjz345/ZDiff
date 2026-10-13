@@ -1983,10 +1983,8 @@ mod tests {
                 load(&write_source(&dir.path().join("a2.rs"), 1000, 2)),
             );
             let mut processor = DiffProcessor::default();
-            let mut current = input(&a.0, &a.1);
-            current.options.phases.token = true;
 
-            open(&mut processor, &current);
+            open(&mut processor, &input(&a.0, &a.1));
             let times = settle(&mut processor)
                 .expect("diff never completed")
                 .stage_times;
@@ -2145,22 +2143,23 @@ mod tests {
                 let mut processor = DiffProcessor::default();
                 let mut current = input(&a.0, &a.1);
                 open(&mut processor, &current);
-                let line_only = settle(&mut processor).expect("first diff never completed");
+                let line_and_token = settle(&mut processor).expect("first diff never completed");
 
-                current.options.phases.token = true;
+                current.options.phases.token = false;
                 open(&mut processor, &current);
                 assert!(
                     processor.ctx.myers_inflight_input.is_some(),
                     "a phase change must recompute the diff stage"
                 );
-                let line_and_token = settle(&mut processor).expect("phase toggle never completed");
+                let line_only = settle(&mut processor).expect("phase toggle never completed");
                 assert!(
-                    line_and_token.input == current,
+                    line_only.input == current,
                     "diff shows {:?}",
-                    line_and_token.input
+                    line_only.input
                 );
-                assert_ne!(line_and_token.num_add_deletes, line_only.num_add_deletes);
+                assert_ne!(line_only.num_add_deletes, line_and_token.num_add_deletes);
 
+                current.options.phases.token = true;
                 current.options.phases.line = false;
                 open(&mut processor, &current);
                 let token_only = settle(&mut processor).expect("phase toggle never completed");
@@ -2177,6 +2176,7 @@ mod tests {
                 let dir = tempfile::tempdir().unwrap();
                 let mut current = digit_pair(dir.path());
                 current.options.phases.line = false;
+                current.options.phases.token = false;
                 let mut processor = DiffProcessor::default();
                 open(&mut processor, &current);
                 let ctx = settle(&mut processor).expect("diff never completed");
@@ -2211,7 +2211,6 @@ mod tests {
             fn the_character_phase_marks_changed_chars_in_the_rows_only_while_on() {
                 let dir = tempfile::tempdir().unwrap();
                 let mut current = digit_pair(dir.path());
-                current.options.phases.token = true;
                 let mut processor = DiffProcessor::default();
                 open(&mut processor, &current);
                 let off = settle(&mut processor).expect("diff never completed");
@@ -2232,7 +2231,6 @@ mod tests {
             fn the_phase_trace_is_collected_only_while_requested() {
                 let dir = tempfile::tempdir().unwrap();
                 let mut current = digit_pair(dir.path());
-                current.options.phases.token = true;
                 current.options.phases.character = true;
                 let mut processor = DiffProcessor::default();
                 open(&mut processor, &current);
