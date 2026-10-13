@@ -48,7 +48,7 @@ pub fn pick_revision(
                 RevisionPick::Stream(target) => {
                     let current = stream_of(file, streams)
                         .ok_or_else(|| format!("{file} is in none of the listed streams"))?;
-                    let rest = &file[current.stream.len()..];
+                    let rest = &file[trimmed_stream(current).len()..];
                     let rev = rev.filter(|rev| matches!(rev, DepotRev::Change(_)));
                     return Ok(UniversalPath::Depot(format!("{target}{rest}"), rev));
                 }
@@ -78,15 +78,18 @@ fn parse_depot_rev(text: &str) -> Result<DepotRev, String> {
     }
 }
 
+fn trimmed_stream(s: &P4Stream) -> &str {
+    s.stream.trim_end_matches('/')
+}
+
 fn stream_of<'a>(file: &str, streams: &'a [P4Stream]) -> Option<&'a P4Stream> {
     streams
         .iter()
         .filter(|s| {
-            let stream = s.stream.trim_end_matches('/');
-            file.strip_prefix(stream)
+            file.strip_prefix(trimmed_stream(s))
                 .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
         })
-        .max_by_key(|s| s.stream.len())
+        .max_by_key(|s| trimmed_stream(s).len())
 }
 
 pub fn revision_label(path: &UniversalPath) -> String {
@@ -471,6 +474,46 @@ mod tests {
         assert_eq!(
             pick("//stream/main/a.txt@=77", to_dev()).unwrap(),
             "//stream/dev/a.txt"
+        );
+    }
+
+    fn pick_in(path: &str, listed: &[&str], to: &str) -> Result<String, String> {
+        let listed: Vec<P4Stream> = listed.iter().map(|s| stream(s)).collect();
+        pick_revision(
+            &UniversalPath::from(path),
+            &RevisionPick::Stream(to.into()),
+            &listed,
+        )
+        .map(|p| p.to_string())
+    }
+
+    #[test]
+    fn a_stream_listed_with_a_trailing_slash_keeps_the_separator_when_switching() {
+        assert_eq!(
+            pick_in(
+                "//stream/main/src/a.txt",
+                &["//stream/main/"],
+                "//stream/dev"
+            )
+            .unwrap(),
+            "//stream/dev/src/a.txt"
+        );
+    }
+
+    #[test]
+    fn a_stream_switch_with_multibyte_characters_after_the_stream_does_not_panic() {
+        assert_eq!(
+            pick_in(
+                "//stream/main/é/ü.txt",
+                &["//stream/main//"],
+                "//stream/dev"
+            )
+            .unwrap(),
+            "//stream/dev/é/ü.txt"
+        );
+        assert_eq!(
+            pick_in("//stream/main", &["//stream/main/"], "//stream/dev").unwrap(),
+            "//stream/dev"
         );
     }
 
