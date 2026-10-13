@@ -15,7 +15,6 @@ use serde::{Deserialize, Serialize};
 use zcommon::{
     find::Matcher,
     kinds::{FileKind, KindTable},
-    vcs::{git::GitCommand, p4::P4Command},
 };
 use zhashdiff::{
     comparison::{FileMeta, PairState},
@@ -24,7 +23,6 @@ use zhashdiff::{
     },
     filter::PathFilter,
     fs::{FileSystemModel, FsNode, FsNodeDepth, FsNodeId, TreeIter},
-    revision_pair::{PairSource, tool_paths},
 };
 
 use zcommon::path::{common_parent, split_path};
@@ -35,6 +33,7 @@ use zcommon::ui_egui::style_window::role_color;
 use zcommon::ui_egui::table::{Rows, Split, SplitColumn, SplitTable};
 
 use crate::ui_egui::folder_keymap::FolderAction;
+use crate::ui_egui::revision_open::{self, RevisionOpen, is_revision};
 use crate::ui_egui::roots::{InvalidRoot, Side, set_root};
 use crate::ui_egui::side_revision::{revision_dropdown, split_side, with_revision};
 use crate::ui_egui::status_line::ToolMessage;
@@ -1523,17 +1522,6 @@ fn folder_diff_state(
     aggregate_folder_state(l_id, r_id, descendants)
 }
 
-fn revision_temp_dir() -> PathBuf {
-    static OPENED: AtomicU64 = AtomicU64::new(0);
-    std::env::temp_dir()
-        .join("zhashdiff-revisions")
-        .join(format!(
-            "{}-{}",
-            std::process::id(),
-            OPENED.fetch_add(1, Ordering::Relaxed)
-        ))
-}
-
 fn on_row_item_clicked(
     file_system_1_view: Option<&FileSystemView>,
     file_system_2_view: Option<&FileSystemView>,
@@ -1589,33 +1577,24 @@ fn on_row_item_clicked(
                 left_model.get_node(path1).unwrap(),
                 right_model.get_node(path2).unwrap(),
             );
-            let p4 = P4Command::new(false);
-            let paths = tool_paths(
-                &GitCommand::default(),
-                &p4,
-                diff_tool,
-                [
-                    PairSource {
-                        content: left_model.content(),
-                        path: left_node.as_path().as_ref(),
-                    },
-                    PairSource {
-                        content: right_model.content(),
-                        path: right_node.as_path().as_ref(),
-                    },
-                ],
-                &entry.rel_path,
-                &revision_temp_dir(),
-            );
-            let [left, right] = match paths {
-                Ok(paths) => paths,
-                Err(err) => {
-                    let error = format!("diffing failed: fetching {}: {err}", entry.rel_path);
-                    log::error!("{error}");
-                    message.error = Some(error);
-                    return Some(message);
-                }
+            let side = |model: &FileSystemModel, node: &FsNode| {
+                let path = node.as_path();
+                let path: &Path = path.as_ref();
+                (model.content().clone(), path.to_path_buf())
             };
+            let sides = [side(left_model, left_node), side(right_model, right_node)];
+            if sides.iter().any(|(content, _)| is_revision(content)) {
+                message.status = Some(format!("Fetching {}...", entry.rel_path));
+                revision_open::spawn(RevisionOpen {
+                    tool: diff_tool.clone(),
+                    exe,
+                    sides,
+                    rel_path: entry.rel_path.clone(),
+                    warning: message.warning.clone(),
+                });
+                return Some(message);
+            }
+            let [left, right] = sides.map(|(_, path)| path.to_string_lossy().into_owned());
             let (left_name, right_name) = folder_labels(&entry.rel_path);
             let result = open_diff_tool(
                 &exe,
@@ -3807,6 +3786,7 @@ mod tests {
         let mut left = load_view(left_dir.path());
         let rows = single_rows(&left, &PathFilter::default());
         let mut message = Some(ToolMessage {
+            status: None,
             warning: Some("stale".to_string()),
             error: None,
         });
@@ -3843,6 +3823,7 @@ mod tests {
         let mut right = load_view(right_dir.path());
         let rows = build_counting(&left, &right, &mut PairStates::default(), &Cell::new(0));
         let mut message = Some(ToolMessage {
+            status: None,
             warning: Some("stale".to_string()),
             error: None,
         });

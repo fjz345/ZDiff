@@ -42,6 +42,7 @@ use crate::ui_egui::{
     },
     panes::{Pane, PathDiffView, TreeBehavior},
     path_diff_pane::{FilterPresets, PathDiffPane},
+    revision_open,
     roots::{LaunchArgs, Side, apply_launch_args, clear_root, set_root},
     status_line::{ScanSummary, ToolMessage, ui_status_summary, ui_tool_message},
     tools_window::ToolsWindow,
@@ -1182,6 +1183,10 @@ impl eframe::App for ZApp {
         }
     }
 
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        revision_open::remove_all();
+    }
+
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         let mut app_state = self
             .state
@@ -1233,6 +1238,13 @@ impl eframe::App for ZApp {
                     ctx.request_repaint_after(SCAN_PROGRESS_INTERVAL);
                 }
                 if state.poll_blueprint_detector() {
+                    ctx.request_repaint_after(Duration::from_millis(100));
+                }
+                let fetching = revision_open::is_fetching();
+                if let Some(outcome) = revision_open::take_outcome() {
+                    state.tool_message = (outcome != ToolMessage::default()).then_some(outcome);
+                }
+                if fetching {
                     ctx.request_repaint_after(Duration::from_millis(100));
                 }
 

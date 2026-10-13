@@ -4,7 +4,7 @@ use std::io;
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
 use std::path::{Component, Path, PathBuf};
-use std::process::Command;
+use std::process::{Child, Command};
 use zcommon::kinds::{FileKind, KindTable, normalize_extension};
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -616,7 +616,7 @@ pub fn find_on_path(name: &Path) -> Option<PathBuf> {
 }
 
 #[cfg(target_os = "windows")]
-pub fn open_diff_tool_windows(exe: &Path, tool: &DiffTool, pair: &DiffPair) -> io::Result<()> {
+pub fn open_diff_tool_windows(exe: &Path, tool: &DiffTool, pair: &DiffPair) -> io::Result<Child> {
     let args = expand_template(&tool.template, pair)
         .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?;
     let mut cmd = Command::new(exe);
@@ -624,29 +624,26 @@ pub fn open_diff_tool_windows(exe: &Path, tool: &DiffTool, pair: &DiffPair) -> i
     cmd.raw_arg(args);
 
     log::info!("Opening diff tool {:?}", cmd);
-    cmd.spawn()?;
-
-    Ok(())
+    cmd.spawn()
 }
 #[cfg(target_os = "macos")]
-pub fn open_diff_tool_macos(exe: &Path, tool: &DiffTool, pair: &DiffPair) -> io::Result<()> {
+pub fn open_diff_tool_macos(exe: &Path, tool: &DiffTool, pair: &DiffPair) -> io::Result<Child> {
     todo!();
     let mut cmd = Command::new(exe);
 
     log::info!("Opening diff tool {:?}", cmd);
-    cmd.spawn()?;
-
-    Ok(())
+    cmd.spawn()
 }
 
-pub fn open_diff_tool(exe: &Path, tool: &DiffTool, pair: &DiffPair) -> io::Result<()> {
+pub fn open_diff_tool(exe: &Path, tool: &DiffTool, pair: &DiffPair) -> io::Result<Child> {
     #[cfg(target_os = "windows")]
-    open_diff_tool_windows(exe, tool, pair)?;
+    return open_diff_tool_windows(exe, tool, pair);
 
     #[cfg(target_os = "macos")]
-    open_diff_tool_macos(exe, tool, pair)?;
+    return open_diff_tool_macos(exe, tool, pair);
 
-    Ok(())
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    Err(io::Error::from(io::ErrorKind::Unsupported))
 }
 
 #[cfg(test)]

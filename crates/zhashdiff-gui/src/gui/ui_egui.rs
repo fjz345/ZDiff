@@ -4,6 +4,7 @@ pub mod folder_keymap;
 pub mod fs_tree;
 pub mod panes;
 pub mod path_diff_pane;
+pub mod revision_open;
 pub mod roots;
 pub mod side_revision;
 pub mod status_line;

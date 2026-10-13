@@ -25,9 +25,25 @@ pub fn is_file_diff_tool(tool: &DiffTool) -> bool {
 }
 
 /// The file diff gets `path@git:<commit>` for a revision side, which it reads itself; any other
-/// tool gets the blob written under `temp_dir/{left,right}/<rel_path>`. Nothing is removed
-/// afterwards, the tool opens the files after this returns.
+/// tool gets the blob written under `temp_dir/{left,right}/<rel_path>`. On success the files stay
+/// for the tool to open and the caller removes them with `remove_temp_dir`; on error `temp_dir`
+/// is already gone.
 pub fn tool_paths(
+    git: &impl GitRunner,
+    p4: &impl P4Runner,
+    tool: &DiffTool,
+    sides: [PairSource; 2],
+    rel_path: &str,
+    temp_dir: &Path,
+) -> io::Result<[String; 2]> {
+    let paths = fetch_paths(git, p4, tool, sides, rel_path, temp_dir);
+    if paths.is_err() {
+        remove_temp_dir(temp_dir);
+    }
+    paths
+}
+
+fn fetch_paths(
     git: &impl GitRunner,
     p4: &impl P4Runner,
     tool: &DiffTool,
@@ -60,6 +76,15 @@ pub fn tool_paths(
         };
     }
     Ok(paths)
+}
+
+pub fn remove_temp_dir(dir: &Path) {
+    match fs::remove_dir_all(dir) {
+        Err(err) if err.kind() != io::ErrorKind::NotFound => {
+            log::warn!("removing {}: {err}", dir.display());
+        }
+        _ => {}
+    }
 }
 
 fn revision_path(content: &GitContent, node: &Path) -> io::Result<UniversalPath> {
@@ -106,7 +131,10 @@ mod tests {
     use crate::vcs_source::{DepotContent, DepotRevisions};
     use std::collections::HashMap;
     use std::path::PathBuf;
-    use zcommon::vcs::{git::GitError, p4::FakeP4};
+    use zcommon::vcs::{
+        git::{GitError, GitErrorKind},
+        p4::FakeP4,
+    };
 
     const COMMIT: &str = "1111111111111111111111111111111111111111";
 
@@ -358,6 +386,60 @@ mod tests {
             assert!(result.is_err(), "{name}");
         }
     }
+    #[test]
+    fn removing_the_temp_dir_deletes_the_fetched_files() {
+        let root = tempfile::tempdir().unwrap();
+        let temp = root.path().join("opened");
+        open(&tool("WinMerge"), &git_content(Some(COMMIT)), &temp).unwrap();
+        assert!(temp.is_dir());
+
+        remove_temp_dir(&temp);
+
+        assert!(!temp.exists());
+        remove_temp_dir(&temp);
+    }
+
+    #[test]
+    fn a_failed_fetch_reports_the_error_and_leaves_no_directory() {
+        struct FailsSecond(std::cell::Cell<u32>);
+
+        impl GitRunner for FailsSecond {
+            fn run(&self, _cwd: &Path, _args: &[&str]) -> Result<Vec<u8>, GitError> {
+                self.0.set(self.0.get() + 1);
+                match self.0.get() {
+                    1 => Ok(b"first".to_vec()),
+                    _ => Err(GitError {
+                        command: "cat-file".to_string(),
+                        kind: GitErrorKind::Failed {
+                            status: "1".to_string(),
+                            stderr: "no such blob".to_string(),
+                        },
+                    }),
+                }
+            }
+        }
+
+        let root = tempfile::tempdir().unwrap();
+        let temp = root.path().join("opened");
+        let content = git_content(Some(COMMIT));
+        let side = || PairSource {
+            content: &content,
+            path: Path::new(r"D:\repo\src@git:origin/main\a.txt"),
+        };
+
+        let result = tool_paths(
+            &FailsSecond(Default::default()),
+            &blob_p4(),
+            &tool("WinMerge"),
+            [side(), side()],
+            "a.txt",
+            &temp,
+        );
+
+        assert!(result.unwrap_err().to_string().contains("no such blob"));
+        assert!(!temp.exists());
+    }
+
     #[test]
     fn the_file_diff_tool_is_told_by_its_executable() {
         assert!(is_file_diff_tool(&tool("zdiff-gui")));

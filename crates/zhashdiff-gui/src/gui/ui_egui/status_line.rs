@@ -25,6 +25,7 @@ pub struct RowCounts {
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ToolMessage {
+    pub status: Option<String>,
     pub warning: Option<String>,
     pub error: Option<String>,
 }
@@ -103,6 +104,9 @@ pub fn ui_tool_message(ui: &mut egui::Ui, message: Option<&ToolMessage>) {
         return;
     };
     ui.horizontal(|ui| {
+        if let Some(status) = &message.status {
+            ui.label(status);
+        }
         if let Some(warning) = &message.warning {
             ui.colored_label(ui.visuals().warn_fg_color, warning);
         }
