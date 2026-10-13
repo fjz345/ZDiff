@@ -367,6 +367,44 @@ fn view_root(view: Option<&FileSystemView>) -> Option<PathBuf> {
     view.map(|view| view.file_system.get_root().as_path().as_ref().to_path_buf())
 }
 
+fn non_disk_root_message(sides: [Option<(&Path, &ContentSource)>; 2]) -> Option<String> {
+    let described: Vec<_> = sides
+        .into_iter()
+        .enumerate()
+        .filter_map(|(index, side)| {
+            let (root, content) = side?;
+            let kind = match content {
+                ContentSource::Disk => return None,
+                ContentSource::Git(_) => "a git revision",
+                ContentSource::Depot(_) => "a depot path",
+            };
+            Some(format!(
+                "Folder {} ({}) is {kind}",
+                index + 1,
+                root.display()
+            ))
+        })
+        .collect();
+    (!described.is_empty()).then(|| {
+        format!(
+            "No duplicates are searched: {}. Duplicates are found by hashing files on disk.",
+            described.join("; ")
+        )
+    })
+}
+
+fn non_disk_root_message_of(path_diff_view: &PathDiffView) -> Option<String> {
+    let views = [
+        path_diff_view.file_system_1_view.as_ref(),
+        path_diff_view.file_system_2_view.as_ref(),
+    ];
+    let roots = views.map(|view| view_root(view));
+    non_disk_root_message([0, 1].map(|side| {
+        let root = roots[side].as_deref()?;
+        Some((root, views[side]?.file_system.content()))
+    }))
+}
+
 /// The group's keeper, if it has one that is a member of the group.
 fn keeper_of<'a>(
     paths: &[PathBuf],
@@ -516,7 +554,7 @@ impl DuplicateFilesPane {
             return;
         };
         // Revision nodes have no file on disk; their paths would be looked up as network shares.
-        if view.file_system.content() != &ContentSource::Disk {
+        if non_disk_root_message_of(ctx.path_diff_view).is_some() {
             return;
         }
         let model = Arc::downgrade(&view.file_system);
@@ -890,6 +928,10 @@ impl DuplicateFilesPane {
 
         ui.separator();
 
+        if let Some(message) = non_disk_root_message_of(ctx.path_diff_view) {
+            ui.colored_label(ui.visuals().warn_fg_color, message);
+        }
+
         if let Some(view) = ctx.path_diff_view.file_system_1_view.as_ref() {
             self.tree_rows(
                 view,
@@ -1122,6 +1164,7 @@ mod tests {
     use tempfile::{TempDir, tempdir};
     use zcommon::hash::hash_file_mmap;
     use zhashdiff::filter::PatternList;
+    use zhashdiff::vcs_source::{DepotContent, DepotRevisions, GitContent};
 
     /// Owns everything a `DuplicateFilesPaneCtx` borrows.
     struct PaneState {
@@ -1673,6 +1716,65 @@ mod tests {
         pane.cursor = TreeCursor::at("a.txt");
         pane.forget_cursor_of_other_root(None);
         assert_eq!(pane.cursor, TreeCursor::default());
+    }
+
+    fn git_content(model_root: &str) -> ContentSource {
+        ContentSource::Git(GitContent {
+            model_root: PathBuf::from(model_root),
+            repo_root: PathBuf::from("repo"),
+            dir: String::new(),
+            commit: Some("abc".into()),
+        })
+    }
+
+    fn depot_content(model_root: &str) -> ContentSource {
+        ContentSource::Depot(DepotContent {
+            model_root: PathBuf::from(model_root),
+            depot_folder: "//depot/main".into(),
+            revisions: DepotRevisions::Shelf(7),
+        })
+    }
+
+    #[test]
+    fn a_non_disk_root_on_either_side_yields_a_message_naming_it() {
+        let disk = ContentSource::Disk;
+        let git = git_content("repo@git:abc");
+        let depot = depot_content("//depot/main");
+        let disk_root = Path::new("C:/disk");
+
+        assert_eq!(
+            non_disk_root_message([Some((disk_root, &disk)), Some((disk_root, &disk))]),
+            None
+        );
+        assert_eq!(
+            non_disk_root_message([Some((disk_root, &disk)), None]),
+            None
+        );
+        assert_eq!(non_disk_root_message([None, None]), None);
+
+        let message =
+            non_disk_root_message([Some((Path::new("repo@git:abc"), &git)), None]).unwrap();
+        assert!(message.contains("Folder 1"), "{message}");
+        assert!(message.contains("repo@git:abc"), "{message}");
+
+        let message = non_disk_root_message([
+            Some((disk_root, &disk)),
+            Some((Path::new("//depot/main"), &depot)),
+        ])
+        .unwrap();
+        assert!(message.contains("Folder 2"), "{message}");
+        assert!(message.contains("//depot/main"), "{message}");
+        assert!(!message.contains("Folder 1"), "{message}");
+
+        let message = non_disk_root_message([
+            Some((Path::new("repo@git:abc"), &git)),
+            Some((Path::new("//depot/main"), &depot)),
+        ])
+        .unwrap();
+        assert!(
+            message.contains("Folder 1") && message.contains("Folder 2"),
+            "{message}"
+        );
     }
 
     fn requested(state: &PaneState) -> Vec<PathBuf> {
