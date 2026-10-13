@@ -15,7 +15,10 @@ use crate::{
         active_side::{ActiveSide, ActiveSideState, outline_stroke},
         file_role::FileRole,
         occurrence::{OccurrenceState, RowFind, find_ranges},
-        overview::{self, ChangeKind, ChangeSpan, RULER_WIDTH, RulerColors, row_at, row_change_spans},
+        overview::{
+            self, BinCache, ChangeKind, ChangeSpan, RULER_WIDTH, RulerColors, row_at,
+            row_change_spans, row_tops,
+        },
         panes::ZAppPane,
         revision_dropdown::revision_dropdown,
         side_viewers::{self, SideViewers},
@@ -154,6 +157,8 @@ pub struct FileDiffPane {
     #[serde(skip)]
     ruler_spans: Option<RulerSpans>,
     #[serde(skip)]
+    ruler_bins: BinCache,
+    #[serde(skip)]
     occurrences: OccurrenceState,
     #[serde(skip)]
     pin_input: PinInput,
@@ -290,6 +295,7 @@ struct RowHeights {
     pixels_per_point: f32,
     text_widths: [f32; 2],
     heights: Vec<f32>,
+    tops: Vec<f32>,
 }
 
 /// The cached wrapped row heights, measured again when the rows, font or `text_widths` changed.
@@ -302,7 +308,7 @@ fn wrapped_heights<'c>(
     rows: &Arc<DiffRows>,
     diff_ctx: &MinimalDiffCtx,
     text_widths: [f32; 2],
-) -> &'c [f32] {
+) -> &'c RowHeights {
     let pixels_per_point = egui_ctx.pixels_per_point();
     let hit = cache.as_ref().is_some_and(|cached| {
         Arc::ptr_eq(&cached.rows, rows)
@@ -326,10 +332,11 @@ fn wrapped_heights<'c>(
             font_id: font_id.clone(),
             pixels_per_point,
             text_widths,
+            tops: row_tops(&heights),
             heights,
         });
     }
-    &cache.as_ref().expect("filled above").heights
+    cache.as_ref().expect("filled above")
 }
 
 /// The text rows' rects of the last drawn frame, taken by the app's raw input hook, which runs
@@ -352,6 +359,7 @@ impl FileDiffPane {
             content_widths: None,
             row_heights: None,
             ruler_spans: None,
+            ruler_bins: BinCache::default(),
             occurrences: OccurrenceState::default(),
             pin_input: PinInput::default(),
             browsers: [None, None],
@@ -459,6 +467,7 @@ impl FileDiffPane {
         }
         let row_heights = &mut self.row_heights;
         let ruler_cache = &mut self.ruler_spans;
+        let ruler_bins = &mut self.ruler_bins;
         let occurrences = &mut self.occurrences;
         let pin_input = &mut self.pin_input;
         let split = &mut self.split;
@@ -1074,6 +1083,7 @@ impl FileDiffPane {
                                     content_widths,
                                 );
                             }
+                            let mut ruler_tops: &[f32] = &[];
                             let rows = if let Some(hex_view) = &ctx.hex_view {
                                 Rows::Uniform {
                                     height: row_height,
@@ -1098,14 +1108,18 @@ impl FileDiffPane {
                                     ),
                                 };
                                 let heights = match (ctx.diff_ctx, measured) {
-                                    (Some(diff_ctx), Some(rows)) if wrap => Some(wrapped_heights(
-                                        row_heights,
-                                        &egui_ctx,
-                                        &mono_font,
-                                        rows,
-                                        diff_ctx,
-                                        text_widths,
-                                    )),
+                                    (Some(diff_ctx), Some(rows)) if wrap => {
+                                        let cached = wrapped_heights(
+                                            row_heights,
+                                            &egui_ctx,
+                                            &mono_font,
+                                            rows,
+                                            diff_ctx,
+                                            text_widths,
+                                        );
+                                        ruler_tops = &cached.tops;
+                                        Some(cached.heights.as_slice())
+                                    }
                                     _ => None,
                                 };
                                 text_rows(heights, row_height, count)
@@ -1376,9 +1390,13 @@ impl FileDiffPane {
                                     (diff_rows_len, 1)
                                 };
                                 let viewport = (
-                                    row_at(&ruler_rows, output.scroll_offset) * row_unit as f32,
-                                    row_at(&ruler_rows, output.scroll_offset + body.height())
+                                    row_at(&ruler_rows, ruler_tops, output.scroll_offset)
                                         * row_unit as f32,
+                                    row_at(
+                                        &ruler_rows,
+                                        ruler_tops,
+                                        output.scroll_offset + body.height(),
+                                    ) * row_unit as f32,
                                 );
                                 let colors = RulerColors {
                                     inserted: role_color(ui.ctx(), FileRole::RulerInserted),
@@ -1386,7 +1404,7 @@ impl FileDiffPane {
                                     changed: role_color(ui.ctx(), FileRole::RulerChanged),
                                 };
                                 if let Some(pos) = overview::show(
-                                    ui, ruler_id, strip, spans, len, viewport, &colors,
+                                    ui, ruler_id, strip, spans, ruler_bins, len, viewport, &colors,
                                 ) {
                                     ui.data_mut(|d| {
                                         d.insert_temp(ruler_id.with("scroll_to"), pos / row_unit)

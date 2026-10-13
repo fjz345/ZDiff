@@ -71,9 +71,23 @@ pub fn row_change_spans(rows: &[DiffRow]) -> Vec<ChangeSpan> {
     spans
 }
 
+/// The running sum of `heights` for `row_at`: `heights.len() + 1` entries, the first 0, each the
+/// bottom of the row before it.
+pub fn row_tops(heights: &[f32]) -> Vec<f32> {
+    let mut tops = Vec::with_capacity(heights.len() + 1);
+    let mut top = 0.0;
+    tops.push(top);
+    for height in heights {
+        top += height;
+        tops.push(top);
+    }
+    tops
+}
+
 /// The row position (whole part is the row, fraction how far into it) at pixel `y` below the
-/// first row's top. Clamped to `0..=row count`.
-pub fn row_at(rows: &Rows<'_>, y: f32) -> f32 {
+/// first row's top. Clamped to `0..=row count`. `tops` is `row_tops` of the `Heights`; unused for
+/// `Uniform`.
+pub fn row_at(rows: &Rows<'_>, tops: &[f32], y: f32) -> f32 {
     match rows {
         Rows::Uniform { height, count } => {
             if *height > 0.0 {
@@ -83,20 +97,50 @@ pub fn row_at(rows: &Rows<'_>, y: f32) -> f32 {
             }
         }
         Rows::Heights(heights) => {
-            let mut top = 0.0;
-            for (idx, height) in heights.iter().enumerate() {
-                if y < top + height {
-                    let into = if *height > 0.0 {
-                        (y - top) / height
-                    } else {
-                        0.0
-                    };
-                    return idx as f32 + into.max(0.0);
-                }
-                top += height;
-            }
-            heights.len() as f32
+            assert_eq!(
+                tops.len(),
+                heights.len() + 1,
+                "tops is not row_tops(heights)"
+            );
+            let idx = tops[1..].partition_point(|bottom| *bottom <= y);
+            let Some(height) = heights.get(idx) else {
+                return heights.len() as f32;
+            };
+            let into = if *height > 0.0 {
+                (y - tops[idx]) / height
+            } else {
+                0.0
+            };
+            idx as f32 + into.max(0.0)
         }
+    }
+}
+
+/// `bin_changes` kept until the spans, the length or the bin count change.
+#[derive(Default)]
+pub struct BinCache {
+    spans: Vec<ChangeSpan>,
+    len: usize,
+    bins: Vec<Option<ChangeKind>>,
+    built: bool,
+    #[cfg(test)]
+    builds: usize,
+}
+
+impl BinCache {
+    pub fn get(&mut self, spans: &[ChangeSpan], len: usize, bins: usize) -> &[Option<ChangeKind>] {
+        if !(self.built && self.len == len && self.bins.len() == bins && self.spans == spans) {
+            self.spans.clear();
+            self.spans.extend_from_slice(spans);
+            self.len = len;
+            self.bins = bin_changes(spans, len, bins);
+            self.built = true;
+            #[cfg(test)]
+            {
+                self.builds += 1;
+            }
+        }
+        &self.bins
     }
 }
 
@@ -130,6 +174,7 @@ pub fn show(
     id: egui::Id,
     rect: egui::Rect,
     spans: &[ChangeSpan],
+    bin_cache: &mut BinCache,
     len: usize,
     viewport: (f32, f32),
     colors: &RulerColors,
@@ -138,7 +183,7 @@ pub fn show(
     let painter = ui.painter_at(rect);
     painter.rect_filled(rect, 0.0, ui.visuals().extreme_bg_color);
 
-    let bins = bin_changes(spans, len, rect.height().floor() as usize);
+    let bins = bin_cache.get(spans, len, rect.height().floor() as usize);
     let mut bin = 0;
     while bin < bins.len() {
         let Some(kind) = bins[bin] else {
@@ -293,26 +338,98 @@ mod tests {
         assert!(spans_of("a\nb\n", "a\nb\n").is_empty());
     }
 
+    fn linear_row_at(heights: &[f32], y: f32) -> f32 {
+        let mut top = 0.0;
+        for (idx, height) in heights.iter().enumerate() {
+            if y < top + height {
+                let into = if *height > 0.0 {
+                    (y - top) / height
+                } else {
+                    0.0
+                };
+                return idx as f32 + into.max(0.0);
+            }
+            top += height;
+        }
+        heights.len() as f32
+    }
+
     #[test]
     fn uniform_rows_map_pixels_to_rows() {
         let rows = Rows::Uniform {
             height: 10.0,
             count: 5,
         };
-        assert_eq!(row_at(&rows, 0.0), 0.0);
-        assert_eq!(row_at(&rows, 25.0), 2.5);
-        assert_eq!(row_at(&rows, 999.0), 5.0);
-        assert_eq!(row_at(&rows, -4.0), 0.0);
+        assert_eq!(row_at(&rows, &[], 0.0), 0.0);
+        assert_eq!(row_at(&rows, &[], 25.0), 2.5);
+        assert_eq!(row_at(&rows, &[], 999.0), 5.0);
+        assert_eq!(row_at(&rows, &[], -4.0), 0.0);
     }
 
     #[test]
     fn tall_rows_map_pixels_to_rows_by_their_own_height() {
         let heights = [10.0, 30.0, 10.0];
         let rows = Rows::Heights(&heights);
-        assert_eq!(row_at(&rows, 5.0), 0.5);
-        assert_eq!(row_at(&rows, 25.0), 1.5);
-        assert_eq!(row_at(&rows, 45.0), 2.5);
-        assert_eq!(row_at(&rows, 500.0), 3.0);
+        let tops = row_tops(&heights);
+        assert_eq!(row_at(&rows, &tops, 5.0), 0.5);
+        assert_eq!(row_at(&rows, &tops, 25.0), 1.5);
+        assert_eq!(row_at(&rows, &tops, 45.0), 2.5);
+        assert_eq!(row_at(&rows, &tops, 500.0), 3.0);
+    }
+
+    #[test]
+    fn wrapped_row_at_agrees_with_the_linear_scan() {
+        let mut seed = 0x2545_f491_4f6c_dd1d_u64;
+        let mut next = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed >> 11) as f32 / (1u64 << 53) as f32
+        };
+        for _ in 0..200 {
+            let count = (next() * 40.0) as usize;
+            let heights: Vec<f32> = (0..count)
+                .map(|_| {
+                    if next() < 0.1 {
+                        0.0
+                    } else {
+                        1.0 + next() * 60.0
+                    }
+                })
+                .collect();
+            let tops = row_tops(&heights);
+            let total = heights.iter().sum::<f32>();
+            let rows = Rows::Heights(&heights);
+            for _ in 0..50 {
+                let y = (next() * 1.2 - 0.1) * total;
+                assert_eq!(row_at(&rows, &tops, y), linear_row_at(&heights, y), "y {y}");
+            }
+            for &top in &tops {
+                assert_eq!(row_at(&rows, &tops, top), linear_row_at(&heights, top));
+            }
+        }
+    }
+
+    #[test]
+    fn unchanged_spans_and_bin_count_reuse_the_cached_bins() {
+        let spans = [span(1, 2, ChangeKind::Deleted)];
+        let mut cache = BinCache::default();
+        assert_eq!(cache.get(&spans, 4, 8), bin_changes(&spans, 4, 8));
+        assert_eq!(cache.builds, 1);
+        cache.get(&spans, 4, 8);
+        assert_eq!(cache.builds, 1);
+    }
+
+    #[test]
+    fn changed_spans_length_or_bin_count_rebuild_the_bins() {
+        let spans = [span(1, 2, ChangeKind::Deleted)];
+        let other = [span(1, 2, ChangeKind::Inserted)];
+        let mut cache = BinCache::default();
+        cache.get(&spans, 4, 8);
+        assert_eq!(cache.get(&other, 4, 8), bin_changes(&other, 4, 8));
+        assert_eq!(cache.get(&other, 5, 8), bin_changes(&other, 5, 8));
+        assert_eq!(cache.get(&other, 5, 4), bin_changes(&other, 5, 4));
+        assert_eq!(cache.builds, 4);
     }
 
     #[test]
