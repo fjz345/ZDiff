@@ -9,6 +9,7 @@ pub enum LanguageIcon {
 const BADGE_CPP: egui::Color32 = egui::Color32::from_rgb(0x00, 0x59, 0x9c);
 const BADGE_JS: egui::Color32 = egui::Color32::from_rgb(0xb5, 0x9a, 0x00);
 const BADGE_JSON: egui::Color32 = egui::Color32::from_rgb(0x5a, 0x5a, 0x5a);
+const BADGE_XML: egui::Color32 = egui::Color32::from_rgb(0x00, 0x7a, 0x5a);
 const BADGE_MD: egui::Color32 = egui::Color32::from_rgb(0x3a, 0x7a, 0xb0);
 const BADGE_CUSTOM: egui::Color32 = egui::Color32::from_rgb(0x7a, 0x4a, 0x9a);
 const BADGE_RS: egui::Color32 = egui::Color32::from_rgb(0xb7, 0x41, 0x0e);
@@ -28,6 +29,7 @@ pub fn language_icon(code: &str, renders: impl Fn(&str) -> bool) -> LanguageIcon
         "cpp" => LanguageIcon::Badge("C++", BADGE_CPP),
         "js" => LanguageIcon::Badge("JS", BADGE_JS),
         "json" => LanguageIcon::Badge("{}", BADGE_JSON),
+        "xml" => LanguageIcon::Badge("<>", BADGE_XML),
         "md" => LanguageIcon::Badge("MD", BADGE_MD),
         _ => LanguageIcon::Badge("…", BADGE_CUSTOM),
     }
@@ -89,6 +91,7 @@ mod tests {
             assert_eq!(text("cpp"), "C++");
             assert_eq!(text("js"), "JS");
             assert_eq!(text("json"), "{}");
+            assert_eq!(text("xml"), "<>");
             assert_eq!(text("md"), "MD");
             assert_eq!(text("go"), "…");
             assert_eq!(text(""), "…");

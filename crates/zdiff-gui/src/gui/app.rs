@@ -50,6 +50,7 @@ use crate::{
         merge_pane::{self, Closing, MergeNames, MergeRequest, MergeView, OpenMergeForm},
         panes::{Pane, TreeBehavior},
         side_viewers::SideViewers,
+        syntax::DetectedLanguage,
         text_mode::TextMode,
     },
     viewer::{
@@ -129,8 +130,12 @@ pub struct AppStateCtx {
     pub diff_options: DiffBuilderOptions,
 
     pub myers_diff_algorithm: MyersDiffAlgorithm,
-    pub code_language: String,
+    // A new key, so saves pinned to the old "rs" default load as Auto.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub code_language_override: Option<String>,
     pub code_language_custom: String,
+    #[cfg_attr(feature = "serde", serde(skip), serde(default))]
+    pub detected_languages: [DetectedLanguage; 2],
 
     // ### Keybindings
     pub keybindings: Keybindings,
@@ -210,8 +215,9 @@ impl Default for AppStateCtx {
             p4_profiles: Default::default(),
             regex_ignore_presets: Default::default(),
             myers_diff_algorithm: Default::default(),
-            code_language: "rs".to_string(),
+            code_language_override: None,
             code_language_custom: "".into(),
+            detected_languages: Default::default(),
         }
     }
 }
@@ -537,8 +543,9 @@ impl<'a> ZApp {
         ffmpeg: &mut FfmpegSetting,
         myers_diff_algorithm: &mut MyersDiffAlgorithm,
         diff_phases: &mut DiffPhases,
-        code_language: &mut String,
+        code_language_override: &mut Option<String>,
         code_language_custom: &mut String,
+        detected_languages: [Option<&str>; 2],
         h_scroll_modifier: &mut WheelModifier,
     ) {
         ui.horizontal(|ui| {
@@ -610,17 +617,38 @@ impl<'a> ZApp {
                             let icon_for = |code: &str| {
                                 language_icon(code, |emoji| emoji_renders(&ctx, emoji))
                             };
+                            let auto_label = match detected_languages {
+                                [Some(a), Some(b)] if a != b => format!("Auto ({a} / {b})"),
+                                [Some(a), _] | [_, Some(a)] => format!("Auto ({a})"),
+                                [None, None] => "Auto (plain text)".to_string(),
+                            };
+                            if ui
+                                .radio(code_language_override.is_none(), auto_label)
+                                .clicked()
+                            {
+                                *code_language_override = None;
+                            }
+                            ui.separator();
                             for (code, label) in [
                                 ("rs", "Rust (.rs)"),
                                 ("py", "Python (.py)"),
                                 ("cpp", "C++ (.cpp)"),
                                 ("js", "JavaScript (.js)"),
                                 ("json", "JSON (.json)"),
+                                ("xml", "XML (.xml)"),
                                 ("md", "Markdown (.md)"),
                             ] {
                                 ui.horizontal(|ui| {
                                     show_language_icon(ui, icon_for(code));
-                                    ui.radio_value(code_language, code.to_string(), label);
+                                    if ui
+                                        .radio(
+                                            code_language_override.as_deref() == Some(code),
+                                            label,
+                                        )
+                                        .clicked()
+                                    {
+                                        *code_language_override = Some(code.to_string());
+                                    }
                                 });
                             }
                             ui.separator();
@@ -628,23 +656,28 @@ impl<'a> ZApp {
                                 show_language_icon(ui, icon_for(""));
                                 if ui
                                     .radio(
-                                        code_language == code_language_custom
+                                        code_language_override.as_deref()
+                                            == Some(code_language_custom.as_str())
                                             && !code_language_custom.is_empty(),
                                         "Use Custom",
                                     )
                                     .clicked()
                                 {
-                                    *code_language = code_language_custom.trim().to_string();
+                                    *code_language_override =
+                                        Some(code_language_custom.trim().to_string());
                                 }
                                 let text_edit = egui::TextEdit::singleline(code_language_custom)
                                     .hint_text("Custom (e.g. go, html)");
                                 let res = ui.add(text_edit);
                                 if res.changed() && !code_language_custom.is_empty() {
-                                    *code_language = code_language_custom.trim().to_string();
+                                    *code_language_override =
+                                        Some(code_language_custom.trim().to_string());
                                 }
                             });
                         });
-                        *code_language = code_language.trim_matches('.').to_string();
+                        if let Some(code) = code_language_override {
+                            *code = code.trim_matches('.').to_string();
+                        }
                         ui.menu_button("Horizontal Scroll Wheel", |ui| {
                             ui.radio_value(h_scroll_modifier, WheelModifier::Shift, "Shift+Wheel");
                             ui.radio_value(h_scroll_modifier, WheelModifier::Ctrl, "Ctrl+Wheel");
@@ -940,11 +973,16 @@ impl<'a> ZApp {
                 legacy_extension_map: _,
                 revert_history,
                 toggle_all,
-                code_language,
+                code_language_override,
                 code_language_custom,
+                detected_languages,
                 p4_profiles,
                 regex_ignore_presets,
             } = app_ctx;
+            let detected = [
+                detected_languages[0].get(file_1.get_cached_file().as_deref()),
+                detected_languages[1].get(file_2.get_cached_file().as_deref()),
+            ];
             let pair_kind = viewers.and_then(Viewers::pair);
             let sides = match *viewers {
                 Some(Viewers::Sides(sides)) => Some(sides),
@@ -976,10 +1014,15 @@ impl<'a> ZApp {
                 ffmpeg,
                 myers_diff_algorithm,
                 &mut diff_options.phases,
-                code_language,
+                code_language_override,
                 code_language_custom,
+                detected,
                 h_scroll_modifier,
             );
+            let code_language = match code_language_override.as_deref() {
+                Some(code) => [code; 2],
+                None => detected.map(|language| language.unwrap_or("")),
+            };
 
             ui.separator();
 
@@ -1198,7 +1241,7 @@ impl<'a> ZApp {
                 Layout::left_to_right(egui::Align::Min),
                 |ui| match &mut self.merge {
                     Some(merge) => {
-                        let closed = merge.ui(ui, behavior.ctx_file_diff.code_language);
+                        let closed = merge.ui(ui, code_language_override.as_deref());
                         close_merge = close_merge.or(closed);
                     }
                     None => self.tree.ui(&mut behavior, ui),

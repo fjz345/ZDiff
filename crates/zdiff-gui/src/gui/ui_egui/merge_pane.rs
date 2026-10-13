@@ -23,6 +23,7 @@ use crate::{
         active_side::ActiveSide,
         diff_pane::FileDiffPane,
         occurrence::{OccurrenceState, RowFind},
+        syntax::detect_language,
     },
 };
 
@@ -321,6 +322,7 @@ pub struct MergeDoc {
     labels: MergeFileLabels,
     /// Theirs, base, yours: the top panes' order.
     lines: [Vec<Range<usize>>; 3],
+    languages: [Option<&'static str>; 3],
     changed: [Vec<bool>; 3],
     merge: Merge,
     rows: Vec<MergeRow>,
@@ -357,7 +359,10 @@ impl MergeDoc {
             [Some(&*theirs), base.as_deref(), Some(&*yours)],
             &lines,
         );
+        let languages = [Some(&theirs), base.as_ref(), Some(&yours)]
+            .map(|file| file.and_then(|f| detect_language(&f.path, &f.contents)));
         let mut doc = Self {
+            languages,
             rows: aligned_rows(&chunks),
             merge: Merge::new(chunks),
             output: Arc::new(text_file(UniversalPath::new(""), String::new())),
@@ -646,7 +651,7 @@ fn top_panes_ui(
     doc: &MergeDoc,
     editing: Option<usize>,
     occurrences: &mut [OccurrenceState; 3],
-    code_language: &str,
+    code_language: [&str; 3],
     scroll_to_row: Option<usize>,
 ) -> Option<ChunkClick> {
     let row_h = ui.text_style_height(&egui::TextStyle::Monospace);
@@ -718,7 +723,7 @@ fn top_panes_ui(
                     &mut occurrences[pane],
                     files[pane].cloned(),
                     &content,
-                    code_language,
+                    code_language[pane],
                 );
             }
             if doc.current == Some(row.chunk) {
@@ -1262,7 +1267,7 @@ impl MergeView {
     }
 
     /// `Some` once the view is done and closes.
-    pub fn ui(&mut self, ui: &mut egui::Ui, code_language: &str) -> Option<Closing> {
+    pub fn ui(&mut self, ui: &mut egui::Ui, language_override: Option<&str>) -> Option<Closing> {
         let status = self.poll();
         let scroll_to_row = self.scroll_to_row.take();
         let mut close = None;
@@ -1320,6 +1325,9 @@ impl MergeView {
         let Some(doc) = &self.doc else {
             return close;
         };
+        let language =
+            |detected: Option<&'static str>| language_override.or(detected).unwrap_or("");
+        let [theirs, _, yours] = doc.languages;
         let output = egui::TopBottomPanel::bottom("merge_output")
             .resizable(true)
             .default_height(ui.available_height() / 3.0)
@@ -1330,7 +1338,7 @@ impl MergeView {
                     doc,
                     &mut self.edit,
                     &mut self.output_occurrences,
-                    code_language,
+                    language(yours.or(theirs)),
                 )
             })
             .inner;
@@ -1342,7 +1350,7 @@ impl MergeView {
                     doc,
                     editing,
                     &mut self.top_occurrences,
-                    code_language,
+                    doc.languages.map(language),
                     scroll_to_row,
                 )
             })

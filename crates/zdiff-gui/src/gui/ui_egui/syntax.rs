@@ -11,6 +11,9 @@ use syntect::{
     util::LinesWithEndings,
 };
 use zcommon::style::{Rgba8, SyntaxCategory, SyntaxColors};
+use zdiff::{cached_file::CachedFile, lexer::RawToken, universal_path::UniversalPath};
+
+use crate::viewer::path_extension;
 
 // The more specific punctuation selectors keep quotes and comment markers out of Punctuation.
 pub fn scopes(category: SyntaxCategory) -> Option<&'static str> {
@@ -63,6 +66,46 @@ pub fn syntect_theme(colors: &SyntaxColors) -> Theme {
 fn syntaxes() -> &'static SyntaxSet {
     static SYNTAXES: OnceLock<SyntaxSet> = OnceLock::new();
     SYNTAXES.get_or_init(SyntaxSet::load_defaults_newlines)
+}
+
+pub fn detect_language(path: &UniversalPath, contents: &str) -> Option<&'static str> {
+    let syntaxes = syntaxes();
+    let plain = syntaxes.find_syntax_plain_text();
+    let by_extension = path_extension(path)
+        .and_then(|extension| match extension.as_str() {
+            // C, C++ and Objective-C all claim `h`; syntect picks the last loaded (Objective-C).
+            "h" => syntaxes.find_syntax_by_name("C++"),
+            _ => syntaxes.find_syntax_by_extension(&extension),
+        })
+        .filter(|syntax| syntax.name != plain.name);
+    let first_line = contents.trim_start_matches('\u{feff}').lines().next();
+    by_extension
+        .or_else(|| first_line.and_then(|line| syntaxes.find_syntax_by_first_line(line)))
+        .map(|syntax| syntax.name.as_str())
+}
+
+#[derive(Debug, Default)]
+pub struct DetectedLanguage {
+    file: Option<(UniversalPath, String)>,
+    language: Option<&'static str>,
+}
+
+impl DetectedLanguage {
+    pub fn get(&mut self, file: Option<&CachedFile<RawToken>>) -> Option<&'static str> {
+        let Some(file) = file else {
+            *self = Self::default();
+            return None;
+        };
+        if self
+            .file
+            .as_ref()
+            .is_none_or(|(path, hash)| *path != file.path || *hash != file.hash)
+        {
+            self.file = Some((file.path.clone(), file.hash.clone()));
+            self.language = detect_language(&file.path, &file.contents);
+        }
+        self.language
+    }
 }
 
 pub fn layout_job(
@@ -163,6 +206,7 @@ fn color32(Rgba8([r, g, b, _]): Rgba8) -> Color32 {
 mod tests {
 
     use syntect::{highlighting::Highlighter as SyntectHighlighter, parsing::Scope};
+    use zdiff::universal_path::DepotRev;
 
     use super::*;
 
@@ -326,6 +370,81 @@ mod tests {
         assert!(job.sections.iter().all(|s| s.format.font_id == font_id));
         let covered: usize = job.sections.iter().map(|s| s.byte_range.len()).sum();
         assert_eq!(covered, code.len());
+    }
+
+    fn detect(path: &str, contents: &str) -> Option<&'static str> {
+        detect_language(&UniversalPath::from(path), contents)
+    }
+
+    #[test]
+    fn the_extension_picks_the_language() {
+        assert_eq!(detect(r"C:\src\main.rs", ""), Some("Rust"));
+        assert_eq!(detect(r"C:\src\MAIN.RS", ""), Some("Rust"));
+        assert_eq!(detect(r"C:\src\a.xml", ""), Some("XML"));
+        assert_eq!(detect(r"C:\src\a.py", ""), Some("Python"));
+        assert_eq!(detect(r"C:\src\a.h", ""), Some("C++"));
+        assert_eq!(detect(r"C:\src\a.hpp", ""), Some("C++"));
+        assert_eq!(detect(r"C:\src\a.cpp", ""), Some("C++"));
+        assert_eq!(
+            detect_language(
+                &UniversalPath::Depot("//depot/a.b/lib.rs".into(), Some(DepotRev::Rev(5))),
+                ""
+            ),
+            Some("Rust")
+        );
+    }
+
+    #[test]
+    fn the_extension_beats_the_contents() {
+        assert_eq!(
+            detect("a.rs", "<?xml version=\"1.0\"?>\n<a/>"),
+            Some("Rust")
+        );
+    }
+
+    #[test]
+    fn without_a_known_extension_the_contents_are_sniffed() {
+        let xml = "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<root/>\n";
+        assert_eq!(detect("data", xml), Some("XML"));
+        assert_eq!(detect("data.zzz", xml), Some("XML"));
+        assert_eq!(detect("data.txt", xml), Some("XML"));
+        assert_eq!(detect("data", &format!("\u{feff}{xml}")), Some("XML"));
+        assert_eq!(
+            detect("tool", "#!/usr/bin/env python\nprint(1)\n"),
+            Some("Python")
+        );
+    }
+
+    #[test]
+    fn nothing_recognizable_is_no_language() {
+        assert_eq!(detect("notes.zzz", "just some words\n"), None);
+        assert_eq!(detect("notes.txt", "just some words\n"), None);
+        assert_eq!(detect("", ""), None);
+    }
+
+    #[test]
+    fn xml_code_is_colored() {
+        let colors = distinct_colors();
+        let theme = syntect_theme(&colors);
+        let code = "<a href=\"x\"><!-- c --></a>";
+        let job = layout_job(&FontId::monospace(12.0), &theme, &colors, code, "xml");
+        let color_at = |needle: &str| {
+            let start = code.find(needle).unwrap();
+            job.sections
+                .iter()
+                .find(|s| s.byte_range.contains(&start))
+                .unwrap()
+                .format
+                .color
+        };
+        assert_eq!(
+            color_at("\"x\""),
+            color32(colors.get(SyntaxCategory::String))
+        );
+        assert_eq!(
+            color_at("<!--"),
+            color32(colors.get(SyntaxCategory::Comment))
+        );
     }
 
     #[test]

@@ -101,7 +101,7 @@ pub struct FileDiffPaneCtx<'a> {
     pub toggle_all_request: &'a mut bool,
     pub text_mode: &'a mut TextMode,
 
-    pub code_language: &'a str,
+    pub code_language: [&'a str; 2],
 
     pub scroll_to_row_span: &'a Option<ScrollSpan>,
     pub active_highlights: &'a Vec<usize>,
@@ -1206,7 +1206,7 @@ impl FileDiffPane {
                                                         accent,
                                                         find,
                                                         true,
-                                                        ctx.code_language,
+                                                        ctx.code_language[u.side as usize],
                                                         None,
                                                         if single_side.is_some() {
                                                             Gutter::Single
@@ -1315,7 +1315,7 @@ impl FileDiffPane {
                                                                 content,
                                                             ),
                                                             active_side == side,
-                                                            ctx.code_language,
+                                                            ctx.code_language[side as usize],
                                                             overlay,
                                                             gutter,
                                                             row_marks(side, content),
@@ -1498,8 +1498,13 @@ impl FileDiffPane {
                             if let Some(sides) = side_viewers.as_mut() {
                                 let text = sides.text;
                                 let (find_matcher, find_hit) = (ctx.find_matcher, ctx.find_hit);
+                                let text_side = sides
+                                    .kinds
+                                    .iter()
+                                    .position(|kind| *kind == ViewerKind::Text)
+                                    .unwrap_or(0);
                                 let (highlights, code_language) =
-                                    (ctx.active_highlights, ctx.code_language);
+                                    (ctx.active_highlights, ctx.code_language[text_side]);
                                 side_viewers::show(ui, sides, output.side_rects, |ui, row| {
                                     let Some(text) = text else {
                                         return;
