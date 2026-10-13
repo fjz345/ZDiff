@@ -509,26 +509,41 @@ pub fn stats_text(stats: &PixelStats) -> String {
     }
 }
 
-/// A finished comparison of the current pair.
-struct DiffMap {
+/// What a comparison was made with; the heatmap and histograms are only made in their modes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CompareKey {
     tolerance: u8,
     channel: ImageChannel,
+    heat: bool,
+    histograms: bool,
+}
+
+impl CompareKey {
+    fn covers(&self, wanted: &CompareKey) -> bool {
+        self.tolerance == wanted.tolerance
+            && self.channel == wanted.channel
+            && (self.heat || !wanted.heat)
+            && (self.histograms || !wanted.histograms)
+    }
+}
+
+/// A finished comparison of the current pair.
+struct DiffMap {
+    key: CompareKey,
     stats: PixelStats,
     /// The union canvas, in image pixels.
     size: Vec2,
-    /// Uploaded on the first frame the difference map is drawn, and again when the sampling changes.
-    mask: Arc<ColorImage>,
+    /// Moved into its texture on the first frame the difference map is drawn.
+    mask: Option<ColorImage>,
     texture: Option<TextureHandle>,
-    heat: Arc<ColorImage>,
+    heat: Option<ColorImage>,
     heat_texture: Option<TextureHandle>,
-    /// Of the channel-filtered sides.
-    histograms: [Histogram; 2],
 }
 
 impl std::fmt::Debug for DiffMap {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("DiffMap")
-            .field("tolerance", &self.tolerance)
+            .field("tolerance", &self.key.tolerance)
             .field("stats", &self.stats)
             .field("uploaded", &self.texture.is_some())
             .finish()
@@ -538,12 +553,11 @@ impl std::fmt::Debug for DiffMap {
 type DecodeResult = (usize, u64, Result<DecodedImage, String>);
 type CompareResult = (
     u64,
-    u8,
-    ImageChannel,
+    CompareKey,
     PixelStats,
     ColorImage,
-    ColorImage,
-    [Histogram; 2],
+    Option<ColorImage>,
+    Option<[Histogram; 2]>,
 );
 
 /// Decodes each side on a worker thread when its load changes. A result for an older load of the
@@ -561,19 +575,24 @@ pub struct ImageDiffProcessor {
     tolerance: u8,
     /// Mirrors the setting: the comparison and the textures are made from this channel.
     shown_channel: ImageChannel,
+    /// Mirrors the setting: only the heatmap and histogram modes make their data.
+    shown_mode: ImageMode,
     blink: Blink,
     /// The swipe divider, as a fraction of the view's width: it stays put while panning.
     swipe: f32,
     /// The second image's opacity in overlay mode.
     opacity: f32,
     /// What the current pair was last sent to compare with; `None` until both sides decode.
-    compared: Option<(u8, ImageChannel)>,
+    compared: Option<CompareKey>,
     compare_generation: u64,
     /// Set when the pair or the tolerance changes, so a superseded comparison stops early.
     compare_cancel: Arc<AtomicBool>,
     compare_channel: (mpsc::Sender<CompareResult>, mpsc::Receiver<CompareResult>),
     /// Kept while another tolerance is compared, so dragging the slider doesn't blank the map.
     diff_map: Option<DiffMap>,
+    /// Of the channel-filtered sides. Independent of the tolerance, so it is kept across comparisons
+    /// of the same pair.
+    histograms: Option<(ImageChannel, Arc<[Histogram; 2]>)>,
     /// The sampling the uploaded textures were made with.
     texture_sampling: ImageSampling,
     texture_channel: ImageChannel,
@@ -590,6 +609,7 @@ impl Default for ImageDiffProcessor {
             fit_pending: false,
             tolerance: 0,
             shown_channel: ImageChannel::default(),
+            shown_mode: ImageMode::default(),
             blink: Blink::default(),
             swipe: 0.5,
             opacity: 0.5,
@@ -598,6 +618,7 @@ impl Default for ImageDiffProcessor {
             compare_cancel: Arc::new(AtomicBool::new(false)),
             compare_channel: mpsc::channel(),
             diff_map: None,
+            histograms: None,
             texture_sampling: ImageSampling::default(),
             texture_channel: ImageChannel::default(),
         }
@@ -641,27 +662,38 @@ impl ImageDiffProcessor {
         self.compare_generation += 1;
         self.compared = None;
         self.diff_map = None;
+        self.histograms = None;
+    }
+
+    fn wanted(&self) -> CompareKey {
+        CompareKey {
+            tolerance: self.tolerance,
+            channel: self.shown_channel,
+            heat: self.shown_mode == ImageMode::Heatmap,
+            histograms: self.shown_mode == ImageMode::Histogram,
+        }
     }
 
     /// Takes a finished comparison, and compares the pair again once both sides are decoded or
     /// the tolerance changed.
     fn compare(&mut self) {
-        while let Ok((generation, tolerance, channel, stats, mask, heat, histograms)) =
+        while let Ok((generation, key, stats, mask, heat, histograms)) =
             self.compare_channel.1.try_recv()
         {
             if generation != self.compare_generation {
                 continue;
             }
+            if let Some(histograms) = histograms {
+                self.histograms = Some((key.channel, Arc::new(histograms)));
+            }
             self.diff_map = Some(DiffMap {
-                tolerance,
-                channel,
+                key,
                 stats,
                 size: vec2(mask.size[0] as f32, mask.size[1] as f32),
-                mask: Arc::new(mask),
+                mask: Some(mask),
                 texture: None,
-                heat: Arc::new(heat),
+                heat,
                 heat_texture: None,
-                histograms,
             });
         }
 
@@ -672,17 +704,27 @@ impl ImageDiffProcessor {
         let (Some(first), Some(second)) = (decoded(&self.sides[0]), decoded(&self.sides[1])) else {
             return;
         };
-        if self.compared == Some((self.tolerance, self.shown_channel)) {
+        let wanted = self.wanted();
+        if self
+            .compared
+            .is_some_and(|compared| compared.covers(&wanted))
+        {
             return;
         }
         // Keeps the shown map; only a result for this tolerance and channel replaces it.
-        let diff_map = self.diff_map.take();
+        let (diff_map, histograms) = (self.diff_map.take(), self.histograms.take());
         self.reset_comparison();
         self.diff_map = diff_map;
-        self.compared = Some((self.tolerance, self.shown_channel));
+        self.histograms = histograms;
+        self.compared = Some(wanted);
 
-        let (tolerance, channel, generation) =
-            (self.tolerance, self.shown_channel, self.compare_generation);
+        let generation = self.compare_generation;
+        let (tolerance, channel) = (wanted.tolerance, wanted.channel);
+        let make_histograms = wanted.histograms
+            && !self
+                .histograms
+                .as_ref()
+                .is_some_and(|(cached, _)| *cached == channel);
         let (cancel_flag, tx) = (self.compare_cancel.clone(), self.compare_channel.0.clone());
         std::thread::spawn(move || {
             let (first, second) = (first.buffer(), second.buffer());
@@ -701,20 +743,18 @@ impl ImageDiffProcessor {
             let Some(diff) = pixel_diff(first, second, tolerance, &cancel_flag) else {
                 return;
             };
-            let Some(heat) = heat_magnitudes(first, second, &cancel_flag) else {
-                return;
+            let heat = if wanted.heat {
+                let Some(heat) = heat_magnitudes(first, second, &cancel_flag) else {
+                    return;
+                };
+                Some(heat_image(&heat, tolerance))
+            } else {
+                None
             };
             let mask = mask_image(&diff);
-            let histograms = [histogram(first.rgba), histogram(second.rgba)];
-            let _ = tx.send((
-                generation,
-                tolerance,
-                channel,
-                diff.stats,
-                mask,
-                heat_image(&heat, tolerance),
-                histograms,
-            ));
+            let histograms =
+                make_histograms.then(|| [histogram(first.rgba), histogram(second.rgba)]);
+            let _ = tx.send((generation, wanted, diff.stats, mask, heat, histograms));
         });
     }
 
@@ -790,11 +830,10 @@ impl ImageDiffProcessor {
     fn comparing(&self) -> bool {
         self.decoded(0).is_some()
             && self.decoded(1).is_some()
-            && self
+            && !self
                 .diff_map
                 .as_ref()
-                .map(|map| (map.tolerance, map.channel))
-                != Some((self.tolerance, self.shown_channel))
+                .is_some_and(|map| map.key.covers(&self.wanted()))
     }
 
     fn compare_status(&self) -> String {
@@ -933,6 +972,7 @@ pub fn show(
         ui.label(processor.compare_status());
     });
     processor.shown_channel = settings.channel;
+    processor.shown_mode = settings.mode;
     if processor.texture_sampling != settings.sampling {
         processor.texture_sampling = settings.sampling;
         for side in &mut processor.sides {
@@ -940,10 +980,8 @@ pub fn show(
                 *texture = None;
             }
         }
-        if let Some(map) = &mut processor.diff_map {
-            map.texture = None;
-            map.heat_texture = None;
-        }
+        // The map's images are gone once uploaded; compare again to upload with the new sampling.
+        processor.compared = None;
     }
     if processor.texture_channel != settings.channel {
         processor.texture_channel = settings.channel;
@@ -1008,9 +1046,9 @@ pub fn show(
 
     let response = ui.allocate_rect(area, Sense::click_and_drag());
     if settings.mode == ImageMode::Histogram
-        && let Some(map) = &processor.diff_map
+        && let Some((channel, histograms)) = &processor.histograms
     {
-        histogram_ui(ui, area, map.channel, &map.histograms);
+        histogram_ui(ui, area, *channel, histograms);
         return;
     }
     let decoding = processor
@@ -1068,24 +1106,20 @@ pub fn show(
     let diff_color = role_color(ui.ctx(), FileRole::ImageDiff);
     let diff_overlay = match &mut processor.diff_map {
         Some(map) if settings.mode == ImageMode::Difference => {
-            if map.texture.is_none() {
-                map.texture = Some(ui.ctx().load_texture(
-                    "image_diff_mask",
-                    map.mask.clone(),
-                    options,
-                ));
+            if map.texture.is_none()
+                && let Some(mask) = map.mask.take()
+            {
+                map.texture = Some(ui.ctx().load_texture("image_diff_mask", mask, options));
             }
             map.texture
                 .as_ref()
                 .map(|texture| (texture.id(), map.size, map.stats.bounds.clone(), diff_color))
         }
         Some(map) if settings.mode == ImageMode::Heatmap => {
-            if map.heat_texture.is_none() {
-                map.heat_texture = Some(ui.ctx().load_texture(
-                    "image_diff_heat",
-                    map.heat.clone(),
-                    options,
-                ));
+            if map.heat_texture.is_none()
+                && let Some(heat) = map.heat.take()
+            {
+                map.heat_texture = Some(ui.ctx().load_texture("image_diff_heat", heat, options));
             }
             map.heat_texture
                 .as_ref()
@@ -1204,7 +1238,7 @@ pub fn show(
     if settings.mode == ImageMode::Heatmap
         && let Some(map) = &processor.diff_map
     {
-        paint_heat_legend(&ui.painter_at(area), area, map.tolerance, font);
+        paint_heat_legend(&ui.painter_at(area), area, map.key.tolerance, font);
     }
 
     if let Some([left, _]) = swipe {
@@ -1537,7 +1571,7 @@ mod tests {
 
     fn changed(processor: &ImageDiffProcessor) -> Option<(u8, u64, u64)> {
         let map = processor.diff_map.as_ref()?;
-        Some((map.tolerance, map.stats.changed, map.stats.total))
+        Some((map.key.tolerance, map.stats.changed, map.stats.total))
     }
 
     #[test]
@@ -2039,26 +2073,106 @@ mod tests {
             Some(png_file("a.png", &first)),
             Some(png_file("b.png", &second)),
         );
+        processor.shown_mode = ImageMode::Heatmap;
         poll_until(&mut processor, |p| p.diff_map.is_some());
-        let map = processor.diff_map.as_ref().unwrap();
-        assert_eq!(map.heat.pixels, vec![heat_ramp(80)]);
-        assert_eq!(map.histograms[0][1][10], 1);
-        assert_eq!(map.histograms[1][1][90], 1);
+        assert_eq!(heat_pixels(&processor), vec![heat_ramp(80)]);
 
         processor.shown_channel = ImageChannel::Red;
         poll_until(&mut processor, |p| !p.comparing());
-        let map = processor.diff_map.as_ref().unwrap();
-        assert_eq!(map.heat.pixels, vec![Color32::TRANSPARENT]);
-        assert_eq!(map.histograms[0][0][5], 1);
-        assert_eq!(map.histograms[1][0][5], 1);
-        assert_eq!(map.histograms[1][1][90], 0);
+        assert_eq!(heat_pixels(&processor), vec![Color32::TRANSPARENT]);
 
         processor.shown_channel = ImageChannel::Green;
         poll_until(&mut processor, |p| !p.comparing());
+        assert_eq!(heat_pixels(&processor), vec![heat_ramp(80)]);
+
+        processor.shown_mode = ImageMode::Histogram;
+        poll_until(&mut processor, |p| !p.comparing());
+        let histograms = &processor.histograms.as_ref().unwrap().1;
+        assert_eq!(histograms[0][0][10], 1);
+        assert_eq!(histograms[1][0][90], 1);
+
+        processor.shown_channel = ImageChannel::Red;
+        poll_until(&mut processor, |p| !p.comparing());
+        let histograms = &processor.histograms.as_ref().unwrap().1;
+        assert_eq!(histograms[0][0][5], 1);
+        assert_eq!(histograms[1][0][5], 1);
+        assert_eq!(histograms[1][1][90], 0);
+
+        processor.shown_channel = ImageChannel::All;
+        poll_until(&mut processor, |p| !p.comparing());
+        let histograms = &processor.histograms.as_ref().unwrap().1;
+        assert_eq!(histograms[0][1][10], 1);
+        assert_eq!(histograms[1][1][90], 1);
+    }
+
+    fn heat_pixels(processor: &ImageDiffProcessor) -> Vec<Color32> {
         let map = processor.diff_map.as_ref().unwrap();
-        assert_eq!(map.heat.pixels, vec![heat_ramp(80)]);
-        assert_eq!(map.histograms[0][0][10], 1);
-        assert_eq!(map.histograms[1][0][90], 1);
+        map.heat.as_ref().unwrap().pixels.clone()
+    }
+
+    fn red_pair_processor(mode: ImageMode) -> ImageDiffProcessor {
+        let first = RgbaImage::from_raw(1, 1, vec![0, 0, 0, 255]).unwrap();
+        let second = RgbaImage::from_raw(1, 1, vec![30, 0, 0, 255]).unwrap();
+        let mut processor = ImageDiffProcessor::default();
+        processor.shown_mode = mode;
+        processor.request(
+            Some(png_file("a.png", &first)),
+            Some(png_file("b.png", &second)),
+        );
+        poll_until(&mut processor, |p| p.diff_map.is_some());
+        processor
+    }
+
+    #[test]
+    fn the_heatmap_and_histograms_are_only_made_in_their_modes() {
+        let mut processor = red_pair_processor(ImageMode::SideBySide);
+        assert!(processor.diff_map.as_ref().unwrap().heat.is_none());
+        assert!(processor.histograms.is_none());
+
+        processor.tolerance = 5;
+        poll_until(&mut processor, |p| !p.comparing());
+        assert!(processor.diff_map.as_ref().unwrap().heat.is_none());
+        assert!(processor.histograms.is_none());
+
+        processor.shown_mode = ImageMode::Heatmap;
+        assert!(processor.comparing());
+        poll_until(&mut processor, |p| !p.comparing());
+        assert!(processor.diff_map.as_ref().unwrap().heat.is_some());
+        assert!(processor.histograms.is_none());
+
+        processor.shown_mode = ImageMode::Histogram;
+        assert!(processor.comparing());
+        poll_until(&mut processor, |p| !p.comparing());
+        assert!(processor.histograms.is_some());
+    }
+
+    #[test]
+    fn a_tolerance_change_recomputes_no_histogram() {
+        let mut processor = red_pair_processor(ImageMode::Histogram);
+        poll_until(&mut processor, |p| !p.comparing());
+        let cached = processor.histograms.as_ref().unwrap().1.clone();
+
+        processor.tolerance = 10;
+        assert!(processor.comparing());
+        poll_until(&mut processor, |p| !p.comparing());
+        assert_eq!(changed(&processor), Some((10, 1, 1)));
+        assert!(Arc::ptr_eq(
+            &cached,
+            &processor.histograms.as_ref().unwrap().1
+        ));
+    }
+
+    #[test]
+    fn a_channel_change_makes_the_histograms_again() {
+        let mut processor = red_pair_processor(ImageMode::Histogram);
+        poll_until(&mut processor, |p| !p.comparing());
+        let cached = processor.histograms.as_ref().unwrap().1.clone();
+
+        processor.shown_channel = ImageChannel::Red;
+        poll_until(&mut processor, |p| !p.comparing());
+        let (channel, histograms) = processor.histograms.as_ref().unwrap();
+        assert_eq!(*channel, ImageChannel::Red);
+        assert!(!Arc::ptr_eq(&cached, histograms));
     }
 
     #[test]
@@ -2066,6 +2180,7 @@ mod tests {
         let first = RgbaImage::from_raw(1, 1, vec![0, 0, 0, 255]).unwrap();
         let second = RgbaImage::from_raw(1, 1, vec![30, 0, 0, 255]).unwrap();
         let mut processor = ImageDiffProcessor::default();
+        processor.shown_mode = ImageMode::Heatmap;
         processor.request(
             Some(png_file("a.png", &first)),
             Some(png_file("b.png", &second)),
@@ -2073,8 +2188,7 @@ mod tests {
         poll_until(&mut processor, |p| p.diff_map.is_some());
         processor.tolerance = 30;
         poll_until(&mut processor, |p| !p.comparing());
-        let map = processor.diff_map.as_ref().unwrap();
-        assert_eq!(map.heat.pixels, vec![Color32::TRANSPARENT]);
+        assert_eq!(heat_pixels(&processor), vec![Color32::TRANSPARENT]);
     }
 
     #[cfg(feature = "serde")]
