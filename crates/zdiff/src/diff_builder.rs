@@ -83,8 +83,9 @@ impl Default for DiffBuilderOptions {
 impl DiffBuilderOptions {
     pub fn need_invalidation(old: &Self, new: &Self) -> bool {
         old.ghost_rows != new.ghost_rows
-            || old.highlight_rows != new.highlight_rows
             || old.ignore != new.ignore
+            || old.diff_only_with_extra_rows != new.diff_only_with_extra_rows
+            || old.phases != new.phases
     }
 }
 
@@ -270,8 +271,11 @@ impl<'a, 'b, T: RawTokenTrait> DiffBuilder<'a, 'b, T> {
         };
 
         let left = if flush_left {
-            let active = self.left.active_diff && self.options.highlight_rows;
-            let bg = if active { RowBg::Delete } else { RowBg::None };
+            let bg = if self.left.active_diff {
+                RowBg::Delete
+            } else {
+                RowBg::None
+            };
             let content = self.left.flush(left_num, bg);
             self.left.active_diff = false;
             content
@@ -280,8 +284,11 @@ impl<'a, 'b, T: RawTokenTrait> DiffBuilder<'a, 'b, T> {
         };
 
         let right = if flush_right {
-            let active = self.right.active_diff && self.options.highlight_rows;
-            let bg = if active { RowBg::Insert } else { RowBg::None };
+            let bg = if self.right.active_diff {
+                RowBg::Insert
+            } else {
+                RowBg::None
+            };
             let content = self.right.flush(right_num, bg);
             self.right.active_diff = false;
             content
@@ -692,7 +699,7 @@ mod tests {
         }
 
         #[test]
-        fn changed_lines_get_their_sides_background_only_with_row_highlighting() {
+        fn changed_lines_carry_their_change_kind_with_or_without_row_highlighting() {
             let s1 = "same\nold\nsame\n";
             let s2 = "same\nnew\nsame\n";
             let bg = |content: &LineContent| match content {
@@ -712,14 +719,37 @@ mod tests {
                         .iter()
                         .map(|r| (bg(&r.left), bg(&r.right)))
                         .collect();
-                    let changed = match highlight_rows {
-                        true => (RowBg::Delete, RowBg::Insert),
-                        false => (RowBg::None, RowBg::None),
-                    };
+                    let changed = (RowBg::Delete, RowBg::Insert);
                     let none = (RowBg::None, RowBg::None);
-                    assert_eq!(rows, [none, changed, none], "{algorithm:?}");
+                    assert_eq!(
+                        rows,
+                        [none, changed, none],
+                        "{algorithm:?} highlight_rows: {highlight_rows}"
+                    );
                 }
             }
+        }
+
+        #[test]
+        fn only_highlight_rows_changing_needs_no_row_rebuild() {
+            let base = DiffBuilderOptions::default();
+            let highlight = DiffBuilderOptions {
+                highlight_rows: !base.highlight_rows,
+                ..base.clone()
+            };
+            assert!(!DiffBuilderOptions::need_invalidation(&base, &highlight));
+
+            let ghost = DiffBuilderOptions {
+                ghost_rows: !base.ghost_rows,
+                ..base.clone()
+            };
+            assert!(DiffBuilderOptions::need_invalidation(&base, &ghost));
+
+            let diff_only = DiffBuilderOptions {
+                diff_only_with_extra_rows: Some(2),
+                ..base.clone()
+            };
+            assert!(DiffBuilderOptions::need_invalidation(&base, &diff_only));
         }
 
         #[test]

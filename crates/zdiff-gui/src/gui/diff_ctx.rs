@@ -268,12 +268,20 @@ pub struct DiffIRInput {
     pub myers_path: MyersPath,
     pub char_ranges: Arc<CharRanges>,
 }
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct DiffRowsInput {
     pub file_1: Option<Arc<CachedFile<RawToken>>>,
     pub file_2: Option<Arc<CachedFile<RawToken>>>,
     pub diff_ir: Arc<DiffIR>,
     pub diff_options: DiffBuilderOptions,
+}
+impl PartialEq for DiffRowsInput {
+    fn eq(&self, other: &Self) -> bool {
+        self.file_1 == other.file_1
+            && self.file_2 == other.file_2
+            && self.diff_ir == other.diff_ir
+            && !DiffBuilderOptions::need_invalidation(&self.diff_options, &other.diff_options)
+    }
 }
 #[derive(Debug)]
 pub struct MyersCtx {
@@ -2009,10 +2017,10 @@ mod tests {
             current.options.highlight_rows = !current.options.highlight_rows;
             open(&mut processor, &current);
             assert!(processor.ctx.myers_inflight_input.is_none());
-            assert!(processor.ctx.diff_rows_inflight_input.is_some());
+            assert!(processor.ctx.diff_rows_inflight_input.is_none());
             let after = settle(&mut processor).expect("highlight toggle never completed");
-            assert_eq!(after.stage_times.line_diff, times.line_diff);
-            assert_eq!(after.stage_times.token_diff, times.token_diff);
+            assert_eq!(after.stage_times, times);
+            assert!(after.input == current);
 
             current.options.ignore.whitespace = !current.options.ignore.whitespace;
             open(&mut processor, &current);

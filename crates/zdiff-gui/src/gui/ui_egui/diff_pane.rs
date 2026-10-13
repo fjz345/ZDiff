@@ -1127,6 +1127,7 @@ impl FileDiffPane {
 
                                     // Once per frame, not per row: a temp side gets no revert buttons.
                                     let temp_root = std::env::temp_dir();
+                                    let highlight_rows = ctx.diff_options.highlight_rows;
                                     let shown_pins = ctx.diff_ctx.map_or(&[][..], shown_pins);
                                     let symbol_colors = [
                                         role_color(&egui_ctx, SharedRole::DeleteText),
@@ -1188,6 +1189,7 @@ impl FileDiffPane {
                                                                 },
                                                             }
                                                         },
+                                                        highlight_rows,
                                                     );
                                                     if is_pinned(shown_pins, u.side, content) {
                                                         let cell_ui = ui.new_child(
@@ -1284,6 +1286,7 @@ impl FileDiffPane {
                                                             ctx.code_language,
                                                             overlay,
                                                             gutter,
+                                                            highlight_rows,
                                                         );
                                                     let pinned = is_pinned(shown_pins, side, content);
                                                     if pinned || overlay.is_some() {
@@ -1653,6 +1656,7 @@ impl FileDiffPane {
             code_language,
             trace,
             Gutter::Single,
+            true,
         );
     }
 
@@ -1673,6 +1677,7 @@ impl FileDiffPane {
         code_language: &str,
         trace: Option<&PhaseTrace>,
         gutter: Gutter,
+        highlight_rows: bool,
     ) {
         let row_h = ui.text_style_height(&egui::TextStyle::Monospace);
         // Wrapped rows fill their cell, which is as tall as the row's taller side.
@@ -1861,6 +1866,9 @@ impl FileDiffPane {
 
                         let bg = match bg {
                             RowBg::None => egui::Color32::TRANSPARENT,
+                            RowBg::Delete | RowBg::Insert if !highlight_rows => {
+                                egui::Color32::TRANSPARENT
+                            }
                             RowBg::Delete => role_color(ui.ctx(), SharedRole::DeleteBackground),
                             RowBg::Insert => role_color(ui.ctx(), SharedRole::InsertBackground),
                             RowBg::Custom(zdiff::diff_builder::Color32([r, g, b, a])) => {
