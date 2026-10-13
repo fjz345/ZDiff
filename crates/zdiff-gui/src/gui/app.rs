@@ -34,6 +34,7 @@ use crate::{
     diff_phases::diff_phases_menu,
     file::{FileProcessor, LoadedFile},
     keybindings::{FileAction, Keybindings, QuickDiffPaths, first_shortcut_text, ui_keybindings},
+    language_icon::{emoji_renders, language_icon, show_language_icon},
     p4::{
         P4Command, P4Profiles, P4Runner, list_shelf, local_path_of_depot_file, set_p4_slot_profile,
         ui_p4_profiles, update_p4_profiles,
@@ -565,6 +566,7 @@ impl<'a> ZApp {
                         }
                         if ui.button("Open Merge...").clicked() {
                             self.open_merge_form.open = true;
+                            ui.close();
                         }
                         if menu_item(ui, "Swap Source/Target", keybindings, FileAction::SwapSides)
                             .clicked()
@@ -614,14 +616,26 @@ impl<'a> ZApp {
                             ui.radio_value(lexer_mode, LEXER_MODE_NEWLINE, "LexerNewLine");
                         });
                         ui.menu_button("Code Language", |ui| {
-                            ui.radio_value(code_language, "rs".to_string(), "Rust (.rs)");
-                            ui.radio_value(code_language, "py".to_string(), "Python (.py)");
-                            ui.radio_value(code_language, "cpp".to_string(), "C++ (.cpp)");
-                            ui.radio_value(code_language, "js".to_string(), "JavaScript (.js)");
-                            ui.radio_value(code_language, "json".to_string(), "JSON (.json)");
-                            ui.radio_value(code_language, "md".to_string(), "Markdown (.md)");
+                            let ctx = ui.ctx().clone();
+                            let icon_for = |code: &str| {
+                                language_icon(code, |emoji| emoji_renders(&ctx, emoji))
+                            };
+                            for (code, label) in [
+                                ("rs", "Rust (.rs)"),
+                                ("py", "Python (.py)"),
+                                ("cpp", "C++ (.cpp)"),
+                                ("js", "JavaScript (.js)"),
+                                ("json", "JSON (.json)"),
+                                ("md", "Markdown (.md)"),
+                            ] {
+                                ui.horizontal(|ui| {
+                                    show_language_icon(ui, icon_for(code));
+                                    ui.radio_value(code_language, code.to_string(), label);
+                                });
+                            }
                             ui.separator();
                             ui.horizontal(|ui| {
+                                show_language_icon(ui, icon_for(""));
                                 if ui
                                     .radio(
                                         code_language == code_language_custom
@@ -662,9 +676,11 @@ impl<'a> ZApp {
                         }
                         if ui.button("File Viewers").clicked() {
                             self.open_viewers_window = true;
+                            ui.close();
                         }
                         if ui.button("Style").clicked() {
                             self.style_window.open(ui.ctx());
+                            ui.close();
                         }
                     });
 
@@ -673,6 +689,7 @@ impl<'a> ZApp {
                             file_1.set_path(UniversalPath::default());
                             file_2.set_path(UniversalPath::default());
                             diff_processor.reset_ctx();
+                            ui.close();
                         }
                         if menu_item(
                             ui,
@@ -697,6 +714,7 @@ impl<'a> ZApp {
                         }
                         if ui.button("Phase Trace").clicked() {
                             self.open_phase_trace_window = true;
+                            ui.close();
                         }
                         ui.checkbox(&mut self.phase_overlay, "Phase Overlay");
                         #[cfg(debug_assertions)]
@@ -709,6 +727,7 @@ impl<'a> ZApp {
                                             p1: &str,
                                             p2: &str| {
                                 if ui.button(label).clicked() {
+                                    ui.close();
                                     let base = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
                                     let (p1, p2) = (base.join(p1), base.join(p2));
                                     if let Some(missing) =
@@ -2039,7 +2058,11 @@ fn menu_item(
     if let Some(text) = first_shortcut_text(&keybindings.keymap, action) {
         button = button.shortcut_text(text);
     }
-    ui.add(button)
+    let response = ui.add(button);
+    if response.clicked() {
+        ui.close();
+    }
+    response
 }
 
 fn toggle_all_options(

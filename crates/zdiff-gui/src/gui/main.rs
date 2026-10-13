@@ -16,6 +16,7 @@ mod cli;
 mod clamped_cursor;
 mod diff_ctx;
 mod diff_phases;
+mod language_icon;
 mod file;
 mod keybindings;
 mod p4;
