@@ -1358,9 +1358,7 @@ fn root_path_bar(ui: &mut egui::Ui, roots: [&mut Option<PathBuf>; 2], side: Side
             (picked, action)
         })
         .inner;
-    let picked = picked.zip(roots[index].as_deref()).map(|(rev, root)| {
-        PathBarAction::Commit(with_revision(root, rev).to_string_lossy().into_owned())
-    });
+    let picked = picked.map(|root| PathBarAction::Commit(root.to_string_lossy().into_owned()));
     if let Some(action) = picked.or(action) {
         let root = roots[index].clone();
         match apply_path_bar(roots, side, action) {
