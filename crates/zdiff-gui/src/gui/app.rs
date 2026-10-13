@@ -2534,7 +2534,10 @@ mod tests {
             .remove("phases")
             .unwrap();
         let restored: AppStateCtx = serde_json::from_value(json).unwrap();
-        assert_eq!(restored.diff_options.phases, DiffPhases::default());
+        assert_eq!(
+            restored.diff_options.phases,
+            DiffBuilderOptions::default().phases
+        );
         assert!(restored.diff_options.ignore.whitespace);
     }
 

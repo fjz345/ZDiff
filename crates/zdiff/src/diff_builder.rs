@@ -74,7 +74,7 @@ pub struct DiffBuilderOptions {
     pub mark_chars: bool,
     pub ghost_rows: bool,
     pub diff_only_with_extra_rows: Option<usize>,
-    #[cfg_attr(feature = "serde", serde(default))]
+    #[cfg_attr(feature = "serde", serde(default = "line_phase"))]
     pub phases: DiffPhases,
 }
 impl Default for DiffBuilderOptions {
@@ -88,7 +88,7 @@ impl Default for DiffBuilderOptions {
             mark_chars: false,
             ghost_rows: true,
             diff_only_with_extra_rows: None,
-            phases: DiffPhases::default(),
+            phases: line_phase(),
         }
     }
 }
@@ -96,6 +96,14 @@ impl Default for DiffBuilderOptions {
 #[cfg(feature = "serde")]
 fn default_true() -> bool {
     true
+}
+
+/// Not `DiffPhases::default()`: the view defaults to whole lines, other callers to tokens too.
+fn line_phase() -> DiffPhases {
+    DiffPhases {
+        token: false,
+        ..DiffPhases::default()
+    }
 }
 
 impl DiffBuilderOptions {
@@ -365,6 +373,20 @@ pub fn build_diff_rows<'a, T: RawTokenTrait>(
         text_target,
     );
     diff_ir = diff_ir_hide_ignored(diff_ir, &ignore);
+    // No phase ran, so the lines merely sit side by side: nothing is a change.
+    let unaligned;
+    let options = if options.phases.all_off() {
+        for entry in &mut diff_ir.entries {
+            entry.hide_in_diff = true;
+        }
+        unaligned = DiffBuilderOptions {
+            ghost_rows: false,
+            ..options.clone()
+        };
+        &unaligned
+    } else {
+        options
+    };
 
     // Rows are built in independent chunks in parallel. The stage is dominated by allocating and
     // first touching each row's token Vec, which scales to about 8 threads on the Windows heap

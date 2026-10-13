@@ -109,7 +109,7 @@ fn whitespace_only_changes_stay_hidden_with_every_valid_phase_set() {
         ..Default::default()
     };
     let sets = valid_phase_sets();
-    assert_eq!(sets.len(), 10);
+    assert_eq!(sets.len(), 12);
     for algorithm in ALGORITHMS {
         for &phases in &sets {
             let plain = rows(algorithm, s1, s2, &IgnoreOptions::default(), phases);
@@ -117,7 +117,7 @@ fn whitespace_only_changes_stay_hidden_with_every_valid_phase_set() {
                 .iter()
                 .map(|row| visible_ops(&row.left) + visible_ops(&row.right))
                 .sum();
-            assert!(plain_ops > 0, "{algorithm:?} {phases:?}");
+            assert_eq!(plain_ops > 0, !phases.all_off(), "{algorithm:?} {phases:?}");
             let plain_chars: usize = plain
                 .iter()
                 .map(|row| changed_chars(&row.left) + changed_chars(&row.right))
@@ -175,9 +175,9 @@ fn scope_line_and_token_phases_return_none_promptly_when_cancelled() {
     let (t1, t2) = (lex(&s1), lex(&s2));
     let sets: Vec<DiffPhases> = valid_phase_sets()
         .into_iter()
-        .filter(|phases| !phases.character)
+        .filter(|phases| !phases.character && !phases.all_off())
         .collect();
-    assert_eq!(sets.len(), 6);
+    assert_eq!(sets.len(), 7);
     for algorithm in ALGORITHMS {
         for &phases in &sets {
             let run = |cancel_after: usize| {

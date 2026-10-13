@@ -49,7 +49,11 @@ impl Default for DiffPhases {
 
 impl DiffPhases {
     pub fn is_valid(self) -> bool {
-        (self.line || self.token) && (self.token || !self.character)
+        self.token || !self.character
+    }
+
+    pub fn all_off(self) -> bool {
+        !(self.scope || self.line || self.token || self.character)
     }
 }
 
@@ -226,8 +230,11 @@ where
 {
     assert!(
         phases.is_valid(),
-        "invalid diff phases {phases:?}: Line or Token must be on, and Character needs Token"
+        "invalid diff phases {phases:?}: Character needs Token"
     );
+    if phases.all_off() {
+        return Some(line_pairs_path(source, target, &cmp));
+    }
     if pins.is_empty() {
         return phases_path(
             algorithm,
@@ -338,6 +345,12 @@ where
             trace,
         );
     }
+    if !phases.line && !phases.token {
+        return Some(
+            key_aligned_path(source, target, cmp, ignore)
+                .unwrap_or_else(|| line_pairs_path(source, target, cmp)),
+        );
+    }
     let hunks = if phases.line {
         let start = trace.map(|_| Instant::now());
         let hunks = line_diff(algorithm, source, target, cmp, ignore, cancel_flag.clone())?;
@@ -368,26 +381,79 @@ where
         }
         Some(path)
     } else {
-        hunks_to_path(
-            source,
-            target,
-            &hunks,
-            cmp,
-            ignore,
-            &cancel_flag,
-            |s, t| match (s.last(), t.last()) {
-                (Some(a), Some(b))
-                    if pinned && a.as_ref().kind == TokenKind::Newline && cmp(a, b) =>
-                {
-                    // The rows end a line at a deleted line break, which would split the pair.
-                    let mut path = replace_path(s.len() - 1, t.len() - 1);
-                    path.push((s.len() as i32, t.len() as i32));
-                    Some(path)
-                }
-                _ => Some(replace_path(s.len(), t.len())),
-            },
-        )
+        hunks_to_path(source, target, &hunks, cmp, ignore, &cancel_flag, |s, t| {
+            Some(line_pairs_path(s, t, cmp))
+        })
     }
+}
+
+/// When the tokens that aren't ignored are equal in order: those paired, the ignored ones changed.
+fn key_aligned_path<T, F>(
+    source: &[T],
+    target: &[T],
+    cmp: &F,
+    ignore: &IgnoreMask,
+) -> Option<MyersPath>
+where
+    T: RawTokenTrait,
+    F: Fn(&T, &T) -> bool,
+{
+    assert_mask_fits(ignore, source, target);
+    let ignored = |mask: &[bool], i: usize| mask.get(i).copied().unwrap_or(false);
+    let mut path = Vec::with_capacity(source.len() + target.len() + 1);
+    path.push((0, 0));
+    let (mut x, mut y) = (0, 0);
+    loop {
+        while x < source.len() && ignored(&ignore.source, x) {
+            x += 1;
+            path.push((x as i32, y as i32));
+        }
+        while y < target.len() && ignored(&ignore.target, y) {
+            y += 1;
+            path.push((x as i32, y as i32));
+        }
+        match (source.get(x), target.get(y)) {
+            (None, None) => return Some(path),
+            (Some(a), Some(b)) if cmp(a, b) => {
+                (x, y) = (x + 1, y + 1);
+                path.push((x as i32, y as i32));
+            }
+            _ => return None,
+        }
+    }
+}
+
+/// Line k of `source` beside line k of `target`, each pair changed whole; the lines one side has
+/// beyond the other are deleted or inserted. A pair's equal line breaks stay Equal: the rows end
+/// a line at a deleted line break, which would split the pair.
+fn line_pairs_path<T, F>(source: &[T], target: &[T], cmp: &F) -> MyersPath
+where
+    T: RawTokenTrait,
+    F: Fn(&T, &T) -> bool,
+{
+    let (source_lines, target_lines) = (split_lines(source), split_lines(target));
+    let mut path = Vec::with_capacity(source.len() + target.len() + 1);
+    path.push((0, 0));
+    let (mut x, mut y) = (0, 0);
+    let change_to = |path: &mut MyersPath, x: &mut usize, y: &mut usize, to: (usize, usize)| {
+        let deletes = (*x + 1..=to.0).map(|i| (i as i32, *y as i32));
+        path.extend(deletes);
+        let inserts = (*y + 1..=to.1).map(|j| (to.0 as i32, j as i32));
+        path.extend(inserts);
+        (*x, *y) = to;
+    };
+    for (s, t) in source_lines.iter().zip(&target_lines) {
+        let (a, b) = (&source[s.end - 1], &target[t.end - 1]);
+        if a.as_ref().kind == TokenKind::Newline && cmp(a, b) {
+            change_to(&mut path, &mut x, &mut y, (s.end - 1, t.end - 1));
+            (x, y) = (s.end, t.end);
+            path.push((x as i32, y as i32));
+        } else {
+            change_to(&mut path, &mut x, &mut y, (s.end, t.end));
+        }
+    }
+    change_to(&mut path, &mut x, &mut y, (source.len(), target.len()));
+    path
 }
 
 /// A run of non-equal lines, as token ranges. Either range may be empty (pure insert/delete).
@@ -2392,15 +2458,12 @@ mod tests {
                     (
                         "fn f() {\n    let a = 1;\n    let b = 2;\n}\n",
                         "fn f() {\n    let a = 7;\n    let b = 2;\n}\n",
-                        ("    let a = 1;\n", "    let a = 7;\n"),
+                        ("    let a = 1;", "    let a = 7;"),
                     ),
                     (
                         "keep\nlet a = 1;\nlet b = 2;\nend",
                         "keep\nlet a = 10;\nnew();\nlet b = 20;\nend",
-                        (
-                            "let a = 1;\nlet b = 2;\n",
-                            "let a = 10;\nnew();\nlet b = 20;\n",
-                        ),
+                        ("let a = 1;let b = 2;", "let a = 10;new();let b = 20;\n"),
                     ),
                     ("a\nold\nb\n", "a\nb\n", ("old\n", "")),
                     ("", "x\n", ("", "x\n")),
@@ -2452,8 +2515,10 @@ mod tests {
             }
 
             #[test]
-            fn phase_set_needs_line_or_token_and_character_needs_token() {
+            fn character_needs_token() {
                 for valid in [
+                    phases(false, false, false, false),
+                    phases(true, false, false, false),
                     phases(false, true, false, false),
                     phases(false, false, true, false),
                     phases(false, true, true, false),
@@ -2464,26 +2529,12 @@ mod tests {
                     assert!(valid.is_valid(), "{valid:?}");
                 }
                 for invalid in [
-                    phases(false, false, false, false),
-                    phases(true, false, false, false),
                     phases(false, false, false, true),
                     phases(false, true, false, true),
                     phases(true, true, false, true),
                 ] {
                     assert!(!invalid.is_valid(), "{invalid:?}");
                 }
-            }
-
-            #[test]
-            #[should_panic(expected = "invalid diff phases")]
-            fn driver_rejects_no_line_and_no_token() {
-                path(
-                    MyersDiffAlgorithm::Linear,
-                    "a\n",
-                    "b\n",
-                    phases(true, false, false, false),
-                    &[],
-                );
             }
 
             #[test]
@@ -2989,7 +3040,7 @@ mod tests {
 
             use super::*;
             use crate::{
-                diff_builder::{DiffBuilderOptions, build_diff_rows},
+                diff_builder::{DiffBuilderOptions, LineContent, RowBg, build_diff_rows},
                 diff_ir::DiffIR,
                 ignore::IgnoreOptions,
                 lexer::{Lexer, RawToken},
@@ -3162,6 +3213,75 @@ mod tests {
                         h.assert_row(2, 2, 3, "  x = 1;\n", "x  =  1;\n");
                         h.assert_row(3, 3, -1, "b\n", "VOID");
                         assert_eq!(h.rows().len(), 4, "{algorithm:?} {phases:?}");
+                    }
+                }
+            }
+
+            #[test]
+            fn line_only_puts_a_changed_line_beside_its_counterpart() {
+                let s1 = "a\nlet x = 1;\nb\n";
+                let s2 = "a\nlet x = 2;\nnew\nb\n";
+                for algorithm in ALGORITHMS {
+                    let h = rows(algorithm, s1, s2, LINE_ONLY, &[]);
+                    h.assert_row(0, 1, 1, "a\n", "a\n");
+                    h.assert_row(1, 2, 2, "let x = 1;\n", "let x = 2;\n");
+                    h.assert_row(2, -1, 3, "VOID", "new\n");
+                    h.assert_row(3, 3, 4, "b\n", "b\n");
+                    assert_eq!(h.rows().len(), 4, "{algorithm:?}");
+                }
+            }
+
+            #[test]
+            fn no_phases_put_line_k_beside_line_k_unmarked() {
+                let (s1, s2) = ("a\nb\n", "x\ny\nz\n");
+                let none = DiffPhases {
+                    scope: false,
+                    line: false,
+                    token: false,
+                    character: false,
+                };
+                for algorithm in ALGORITHMS {
+                    let path = path(algorithm, s1, s2, &IgnoreOptions::default(), none, &[]);
+                    let options = DiffBuilderOptions {
+                        phases: none,
+                        ghost_rows: true,
+                        ..options()
+                    };
+                    let h = DiffTestHarness::new(s1, s2, path, options, 8);
+                    h.assert_row(0, 1, 1, "a\n", "x\n");
+                    h.assert_row(1, 2, 2, "b\n", "y\n");
+                    h.assert_row(2, -1, 3, "VOID", "z\n");
+                    assert_eq!(h.rows().len(), 3, "{algorithm:?}");
+                    for row in h.rows() {
+                        for side in [&row.left, &row.right] {
+                            if let LineContent::Code { tokens, bg, .. } = side {
+                                assert_eq!(*bg, RowBg::None, "{algorithm:?} {row:?}");
+                                assert!(tokens.iter().all(|(_, _, ghost)| !ghost), "{row:?}");
+                            }
+                        }
+                    }
+                }
+            }
+
+            #[test]
+            fn scope_on_top_of_line_shows_what_line_alone_shows() {
+                let s1 = "fn a() {\n    x();\n}\nfn b() {\n    y();\n    keep();\n}\nfn c() {\n    z();\n}\n";
+                let s2 = "fn a() {\n    x();\n}\nfn renamed() {\n    y();\n    keep();\n}\nfn c() {\n    w();\n}\n";
+                let with_token = DiffPhases {
+                    token: true,
+                    ..LINE_ONLY
+                };
+                for algorithm in ALGORITHMS {
+                    for phases in [LINE_ONLY, with_token] {
+                        let scoped = DiffPhases {
+                            scope: true,
+                            ..phases
+                        };
+                        assert_eq!(
+                            format!("{:?}", rows(algorithm, s1, s2, scoped, &[]).rows()),
+                            format!("{:?}", rows(algorithm, s1, s2, phases, &[]).rows()),
+                            "{algorithm:?} {phases:?}"
+                        );
                     }
                 }
             }

@@ -3,21 +3,36 @@ use std::ops::Range;
 use eframe::egui;
 use zdiff::{diff_builder::DiffBuilderOptions, myers::DiffPhases};
 
-/// The token phase always runs; the character phase runs for the character mark.
-pub fn run_phases(options: &DiffBuilderOptions) -> DiffPhases {
-    DiffPhases {
-        token: true,
-        character: options.mark_chars,
-        ..options.phases
-    }
+const CHARACTER_NEEDS_TOKEN: &str = "Character needs Token";
+
+/// (label, flag, reason the toggle is disabled).
+pub fn phase_toggles(
+    phases: &mut DiffPhases,
+) -> [(&'static str, &mut bool, Option<&'static str>); 4] {
+    let DiffPhases {
+        scope,
+        line,
+        token,
+        character,
+    } = phases;
+    let token_disabled = (*token && *character).then_some(CHARACTER_NEEDS_TOKEN);
+    let character_disabled = (!*token).then_some(CHARACTER_NEEDS_TOKEN);
+    [
+        ("Scope", scope, None),
+        ("Line", line, None),
+        ("Token", token, token_disabled),
+        ("Character", character, character_disabled),
+    ]
 }
 
 pub fn diff_phases_menu(ui: &mut egui::Ui, phases: &mut DiffPhases) {
     ui.menu_button("Diff phases", |ui| {
-        ui.checkbox(&mut phases.scope, "Scope")
-            .on_hover_text("Skip unchanged scopes before the token diff");
-        ui.checkbox(&mut phases.line, "Line")
-            .on_hover_text("Skip unchanged lines before the token diff");
+        for (label, on, disabled) in phase_toggles(phases) {
+            let response = ui.add_enabled(disabled.is_none(), egui::Checkbox::new(on, label));
+            if let Some(reason) = disabled {
+                response.on_disabled_hover_text(reason);
+            }
+        }
     });
 }
 
@@ -145,15 +160,37 @@ mod tests {
     }
 
     #[test]
-    fn the_defaults_are_line_and_token() {
+    fn the_diff_defaults_to_the_line_phase_only() {
         assert_eq!(
-            DiffPhases::default(),
+            DiffBuilderOptions::default().phases,
             DiffPhases {
                 scope: false,
                 line: true,
-                token: true,
+                token: false,
                 character: false,
             }
         );
+    }
+
+    #[test]
+    fn enabled_toggles_keep_a_valid_set_valid_and_disabled_ones_would_break_it() {
+        let all_sets = (0..16u8).map(|bits| DiffPhases {
+            scope: bits & 1 != 0,
+            line: bits & 2 != 0,
+            token: bits & 4 != 0,
+            character: bits & 8 != 0,
+        });
+        for phases in all_sets.filter(|p| p.is_valid()) {
+            for i in 0..4 {
+                let mut flipped = phases;
+                let (label, on, disabled) = phase_toggles(&mut flipped).into_iter().nth(i).unwrap();
+                *on = !*on;
+                assert_eq!(
+                    flipped.is_valid(),
+                    disabled.is_none(),
+                    "{label} from {phases:?} (disabled: {disabled:?})"
+                );
+            }
+        }
     }
 }

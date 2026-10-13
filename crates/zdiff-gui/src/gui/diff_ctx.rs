@@ -27,9 +27,7 @@ use zdiff::{
     trace::PhaseTrace,
 };
 
-use crate::{
-    clamped_cursor::ClampedCursor, diff_phases::run_phases, scope, ui_egui::active_side::ActiveSide,
-};
+use crate::{clamped_cursor::ClampedCursor, scope, ui_egui::active_side::ActiveSide};
 
 #[derive(Debug, Default, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -241,8 +239,8 @@ impl From<UpdateDiffRowsInput> for MyersCtxInput {
             file_1: input.file_1,
             file_2: input.file_2,
             algo: input.myers_diff_algorithm,
-            phases: run_phases(&input.options),
             ignore: input.options.ignore,
+            phases: input.options.phases,
             pins: input.pins,
             collect_trace: input.collect_trace,
         }
@@ -256,7 +254,7 @@ impl From<&UpdateDiffRowsInput> for MyersCtxInput {
             file_2: input.file_2.clone(),
             algo: input.myers_diff_algorithm,
             ignore: input.options.ignore.clone(),
-            phases: run_phases(&input.options),
+            phases: input.options.phases,
             pins: input.pins.clone(),
             collect_trace: input.collect_trace,
         }
@@ -676,7 +674,11 @@ impl DiffCtx {
                         Some((path, char_ranges, line_elapsed, token_elapsed))
                     });
                     if let Some((path, char_ranges, line_elapsed, token_elapsed)) = result {
-                        let num_add_delete = myers_count_add_deletes(&path);
+                        let num_add_delete = if phases.all_off() {
+                            Default::default()
+                        } else {
+                            myers_count_add_deletes(&path)
+                        };
                         let _ = tx.send(Some(MyersCtx {
                             input,
                             num_add_delete,
@@ -1981,8 +1983,10 @@ mod tests {
                 load(&write_source(&dir.path().join("a2.rs"), 1000, 2)),
             );
             let mut processor = DiffProcessor::default();
+            let mut current = input(&a.0, &a.1);
+            current.options.phases.token = true;
 
-            open(&mut processor, &input(&a.0, &a.1));
+            open(&mut processor, &current);
             let times = settle(&mut processor)
                 .expect("diff never completed")
                 .stage_times;
@@ -2106,8 +2110,6 @@ mod tests {
         }
 
         mod phases {
-            use zdiff::myers::DiffPhases;
-
             use super::*;
 
             fn changed_chars(ctx: &MinimalDiffCtx) -> Vec<Range<usize>> {
@@ -2143,39 +2145,48 @@ mod tests {
                 let mut processor = DiffProcessor::default();
                 let mut current = input(&a.0, &a.1);
                 open(&mut processor, &current);
-                settle(&mut processor).expect("first diff never completed");
+                let line_only = settle(&mut processor).expect("first diff never completed");
 
-                current.options.phases.line = false;
+                current.options.phases.token = true;
                 open(&mut processor, &current);
                 assert!(
                     processor.ctx.myers_inflight_input.is_some(),
                     "a phase change must recompute the diff stage"
                 );
+                let line_and_token = settle(&mut processor).expect("phase toggle never completed");
+                assert!(
+                    line_and_token.input == current,
+                    "diff shows {:?}",
+                    line_and_token.input
+                );
+                assert_ne!(line_and_token.num_add_deletes, line_only.num_add_deletes);
+
+                current.options.phases.line = false;
+                open(&mut processor, &current);
                 let token_only = settle(&mut processor).expect("phase toggle never completed");
                 assert!(
                     token_only.input == current,
                     "diff shows {:?}",
                     token_only.input
                 );
+                assert_ne!(token_only.num_add_deletes, line_only.num_add_deletes);
             }
 
             #[test]
-            fn the_token_phase_always_runs() {
+            fn no_phases_show_no_diff() {
                 let dir = tempfile::tempdir().unwrap();
-                let current = digit_pair(dir.path());
+                let mut current = digit_pair(dir.path());
+                current.options.phases.line = false;
                 let mut processor = DiffProcessor::default();
                 open(&mut processor, &current);
-                let with_token = settle(&mut processor).expect("diff never completed");
-
-                let mut without_token = digit_pair(dir.path());
-                without_token.options.phases = DiffPhases {
-                    token: false,
-                    ..DiffPhases::default()
-                };
-                let mut processor = DiffProcessor::default();
-                open(&mut processor, &without_token);
                 let ctx = settle(&mut processor).expect("diff never completed");
-                assert_eq!(ctx.num_add_deletes, with_token.num_add_deletes);
+                assert!(
+                    ctx.precomputed_diffs.is_empty(),
+                    "{:?}",
+                    ctx.precomputed_diffs
+                );
+                assert_eq!(ctx.diff_rows.len(), 1);
+                assert_eq!(ctx.num_add_deletes, Default::default());
             }
 
             #[test]
@@ -2197,21 +2208,21 @@ mod tests {
             }
 
             #[test]
-            fn the_character_mark_runs_the_character_phase_only_while_on() {
+            fn the_character_phase_marks_changed_chars_in_the_rows_only_while_on() {
                 let dir = tempfile::tempdir().unwrap();
                 let mut current = digit_pair(dir.path());
-                current.options.phases.character = true;
+                current.options.phases.token = true;
                 let mut processor = DiffProcessor::default();
                 open(&mut processor, &current);
                 let off = settle(&mut processor).expect("diff never completed");
                 assert_eq!(changed_chars(&off), Vec::<Range<usize>>::new());
 
-                current.options.mark_chars = true;
+                current.options.phases.character = true;
                 open(&mut processor, &current);
                 let on = settle(&mut processor).expect("character toggle never completed");
                 assert_eq!(changed_chars(&on), vec![13..14, 13..14]);
 
-                current.options.mark_chars = false;
+                current.options.phases.character = false;
                 open(&mut processor, &current);
                 let off_again = settle(&mut processor).expect("character toggle never completed");
                 assert_eq!(changed_chars(&off_again), Vec::<Range<usize>>::new());
@@ -2221,7 +2232,8 @@ mod tests {
             fn the_phase_trace_is_collected_only_while_requested() {
                 let dir = tempfile::tempdir().unwrap();
                 let mut current = digit_pair(dir.path());
-                current.options.mark_chars = true;
+                current.options.phases.token = true;
+                current.options.phases.character = true;
                 let mut processor = DiffProcessor::default();
                 open(&mut processor, &current);
                 let off = settle(&mut processor).expect("diff never completed");

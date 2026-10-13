@@ -311,7 +311,7 @@ mod tests {
                 vec![(0..3, 0..3), (8..11, 5..8)],
                 "{algorithm:?}"
             );
-            let hunks = vec![(1..2, 1..2), (7..8, 4..5), (9..10, 6..7)];
+            let hunks = vec![(1..2, 1..2), (4..8, 4..5), (9..10, 6..7)];
             assert_eq!(lines(&trace.line_hunks), hunks, "{algorithm:?}");
             let token_spans: Vec<_> = trace.token_hunks.iter().map(|h| h.span.clone()).collect();
             assert_eq!(token_spans, trace.line_hunks, "{algorithm:?}");

@@ -8,7 +8,7 @@ use crate::{
         insert_pin,
         pin_line_counts,
     },
-    diff_phases::{Marks, diff_marks_checkboxes, in_scopes, run_phases},
+    diff_phases::{Marks, diff_marks_checkboxes, in_scopes},
     file::FileProcessor,
     keybindings::{FileAction, with_shortcut},
     revert::{self, RevertRequest, RevertTarget},
@@ -1145,7 +1145,7 @@ impl FileDiffPane {
                                     let temp_root = std::env::temp_dir();
                                     let text_diff = ctx.diff_ctx.filter(|_| !strings);
                                     let character_phase =
-                                        text_diff.is_some_and(|d| run_phases(&d.input.options).character);
+                                        text_diff.is_some_and(|d| d.input.options.phases.character);
                                     let marks = Marks::new(ctx.diff_options, character_phase);
                                     let changed_scopes = text_diff.map(|d| &*d.changed_scopes);
                                     let row_marks = |side: ActiveSide, content: &LineContent| {

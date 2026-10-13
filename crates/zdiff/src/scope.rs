@@ -20,8 +20,9 @@ use crate::{
 
 /// Scope phase: pairs the top-level scopes of both sides by Myers over their header lines (under
 /// the ignore mask). Paired scopes and the text between scopes go to the next phases; unpaired
-/// scopes are deleted or inserted whole. No scopes on either side, or unbalanced braces on
-/// either, leave the whole stretch to the next phases.
+/// scopes too, unless Scope is the finest phase, when they are deleted or inserted whole. No
+/// scopes on either side, or unbalanced braces on either, leave the whole stretch to the next
+/// phases.
 pub(crate) fn scope_path<T, F>(
     algorithm: MyersDiffAlgorithm,
     source: &[T],
@@ -126,10 +127,15 @@ where
                 (source_scopes.len(), target_scopes.len()),
             ),
         };
-        let unpaired = (
-            &source_scopes[next_scope.0..scope_end.0],
-            &target_scopes[next_scope.1..scope_end.1],
-        );
+        // A finer phase diffs unpaired scopes with the text around them, so Scope only culls.
+        let unpaired = if next.line || next.token {
+            (&[][..], &[][..])
+        } else {
+            (
+                &source_scopes[next_scope.0..scope_end.0],
+                &target_scopes[next_scope.1..scope_end.1],
+            )
+        };
         between_scopes(
             &mut path,
             source,
@@ -357,7 +363,7 @@ mod tests {
     use crate::{
         ignore::IgnoreOptions,
         lexer::{Lexer, RawToken},
-        myers::{Pin, Step, myers_diff_path, path_steps},
+        myers::{Pin, Step, myers_diff_path, myers_diff_path_traced, path_steps},
     };
 
     const ALGORITHMS: [MyersDiffAlgorithm; 3] = [
@@ -637,12 +643,33 @@ mod tests {
         for algorithm in ALGORITHMS {
             for phases in SCOPE_PHASES {
                 for (ignore, pairs) in [(&IgnoreOptions::default(), false), (&whitespace, true)] {
-                    let path = diff(algorithm, &source, &target, ignore, phases, &[], false);
-                    let ops = line_ops(&source, &target, &path.unwrap());
+                    let (ts, tt) = (lex(&source), lex(&target));
+                    let cmp = |a: &RawToken, b: &RawToken| {
+                        a.kind == b.kind && source[a.span.clone()] == target[b.span.clone()]
+                    };
+                    let mut trace = PhaseTrace::default();
+                    myers_diff_path_traced(
+                        algorithm,
+                        &ts,
+                        &tt,
+                        &source,
+                        &target,
+                        cmp,
+                        &ignore.mask(&ts, &source, &tt, &target),
+                        phases,
+                        &[],
+                        Arc::default(),
+                        Some(&mut trace),
+                    )
+                    .expect("not cancelled");
+                    let paired = trace
+                        .scope_pairs
+                        .iter()
+                        .any(|pair| (pair.source_lines.start, pair.target_lines.start) == header);
                     assert_eq!(
-                        ops.equal.contains(&header),
-                        pairs,
-                        "{algorithm:?} {phases:?} {ignore:?}: {ops:?}"
+                        paired, pairs,
+                        "{algorithm:?} {phases:?} {ignore:?}: {:?}",
+                        trace.scope_pairs
                     );
                 }
             }
