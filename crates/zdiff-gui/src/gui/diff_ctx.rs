@@ -188,6 +188,13 @@ pub struct ScrollSpan {
 }
 pub type DiffRows = Vec<DiffRow>; // Span with optional end
 
+#[derive(Debug, PartialEq, Clone, Copy)]
+enum HighlightSource {
+    Conflict,
+    Find,
+    Goto,
+}
+
 /// The rows a `Collapsed` row stands for, kept so the block can be expanded without
 /// recomputing the diff.
 #[derive(Debug)]
@@ -872,6 +879,7 @@ pub struct DiffProcessor {
     pub active_highlights: Vec<usize>,
     /// `None`: both sides.
     pub highlight_side: Option<ActiveSide>,
+    highlight_source: Option<HighlightSource>,
     /// Session only: kept across recomputes of the same paths, cleared when a path changes.
     pins: Vec<Pin>,
     /// Sides of the last request. Not reset with the ctx, which a revert or refresh rebuilds.
@@ -894,6 +902,7 @@ impl Default for DiffProcessor {
             conflict_cursor: ClampedCursor::default(),
             active_highlights: Vec::new(),
             highlight_side: None,
+            highlight_source: None,
             pins: Vec::new(),
             pin_paths: Default::default(),
             in_progress_input: None,
@@ -920,6 +929,7 @@ impl DiffProcessor {
         self.goto_line_number = None;
         self.active_highlights.clear();
         self.highlight_side = None;
+        self.highlight_source = None;
         self.last_conflict_scroll_to_row = None;
         self.last_find_scroll_to_row = None;
         self.expansion = None;
@@ -1015,6 +1025,7 @@ impl DiffProcessor {
         self.goto_line_number = None;
         self.active_highlights.clear();
         self.highlight_side = None;
+        self.highlight_source = None;
     }
 
     pub fn current_find_hit(&self) -> Option<FindHit> {
@@ -1048,12 +1059,24 @@ impl DiffProcessor {
         }) = &scroll_to_row
         {
             self.highlight_side = (find.is_none() && goto.is_some()).then_some(goto_side);
+            self.highlight_source = Some(if find.is_some() {
+                HighlightSource::Find
+            } else if goto.is_some() {
+                HighlightSource::Goto
+            } else {
+                HighlightSource::Conflict
+            });
             self.active_highlights.clear();
             if let Some(end) = maybe_end {
                 self.active_highlights.extend(*start..=*end);
             } else {
                 self.active_highlights.push(*start);
             }
+        } else if self.conflict_cursor.get() == 0
+            && self.highlight_source == Some(HighlightSource::Conflict)
+        {
+            self.active_highlights.clear();
+            self.highlight_source = None;
         }
 
         scroll_to_row
@@ -2690,6 +2713,55 @@ mod tests {
                 processor.update_find(plain_find("bar", true, &ctx));
                 assert_eq!(processor.get_scroll_to_row().map(|s| s.start), Some(1));
                 assert_eq!(processor.highlight_side, None);
+            }
+
+            #[test]
+            fn stepping_the_conflict_cursor_to_zero_clears_its_highlight() {
+                let dir = tempfile::tempdir().unwrap();
+                let (mut processor, ctx) = foo_pair(dir.path());
+                processor
+                    .conflict_cursor
+                    .set_max(ctx.precomputed_diffs.len());
+                processor.conflict_cursor.set(1);
+
+                assert!(processor.get_scroll_to_row().is_some());
+                assert!(!processor.active_highlights.is_empty());
+
+                processor.conflict_cursor.set(0);
+                assert_eq!(processor.get_scroll_to_row(), None);
+                assert!(processor.active_highlights.is_empty());
+            }
+
+            #[test]
+            fn a_find_highlight_stays_at_conflict_zero() {
+                let dir = tempfile::tempdir().unwrap();
+                let (mut processor, ctx) = foo_pair(dir.path());
+                processor
+                    .conflict_cursor
+                    .set_max(ctx.precomputed_diffs.len());
+                processor.update_find(plain_find("bar", true, &ctx));
+
+                assert_eq!(processor.get_scroll_to_row().map(|s| s.start), Some(1));
+                assert_eq!(processor.conflict_cursor.get(), 0);
+                assert_eq!(processor.get_scroll_to_row(), None);
+                assert_eq!(processor.active_highlights, [1]);
+            }
+
+            #[test]
+            fn a_goto_highlight_stays_at_conflict_zero() {
+                let dir = tempfile::tempdir().unwrap();
+                let (mut processor, ctx) = foo_pair(dir.path());
+                processor
+                    .conflict_cursor
+                    .set_max(ctx.precomputed_diffs.len());
+                processor.active_side = Right;
+                processor.update_goto(Some(2));
+
+                assert_eq!(processor.get_scroll_to_row().map(|s| s.start), Some(1));
+                assert_eq!(processor.conflict_cursor.get(), 0);
+                assert_eq!(processor.get_scroll_to_row(), None);
+                assert_eq!(processor.active_highlights, [1]);
+                assert_eq!(processor.highlight_side, Some(Right));
             }
 
             fn regex(text: &str, case_sensitive: bool) -> FindQuery {
