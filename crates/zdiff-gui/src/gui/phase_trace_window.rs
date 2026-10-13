@@ -97,10 +97,10 @@ pub fn ui_phase_trace(ui: &mut egui::Ui, trace: Option<&PhaseTrace>) {
         };
         table(
             ui,
-            "Scope pairs",
+            "Scope hunks",
             SPAN_HEADER,
-            trace.scope_pairs.len(),
-            |i| spans(&trace.scope_pairs, i),
+            trace.scope_hunks.len(),
+            |i| spans(&trace.scope_hunks, i),
         );
         table(ui, "Line hunks", SPAN_HEADER, trace.line_hunks.len(), |i| {
             spans(&trace.line_hunks, i)

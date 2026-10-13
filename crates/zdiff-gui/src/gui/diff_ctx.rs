@@ -13,6 +13,7 @@ use zcommon::find::{FindError, FindQuery, Matcher};
 use zdiff::universal_path::UniversalPath;
 use zdiff::{
     cached_file::CachedFile,
+    change_count::{ChangeUnit, count_changes},
     char_diff::{CharRanges, character_diff_traced},
     diff_builder::{DiffBuilderOptions, DiffRow, LineContent, RowBg, build_diff_rows},
     diff_ir::{DiffIR, DiffOp},
@@ -285,6 +286,7 @@ pub struct MyersCtx {
     input: MyersCtxInput,
 
     num_add_delete: MyersNumAddDelete,
+    change_unit: Option<ChangeUnit>,
     path: MyersPath,
     char_ranges: Arc<CharRanges>,
     ignored_pins: Option<PinError>,
@@ -337,6 +339,8 @@ pub struct MinimalDiffCtx {
     pub input: UpdateDiffRowsInput,
 
     pub num_add_deletes: MyersNumAddDelete,
+    /// The unit `num_add_deletes` counts in; `None` with every phase off.
+    pub change_unit: Option<ChangeUnit>,
     /// Why the input's pins don't fit its files; the diff then ran without them.
     pub ignored_pins: Option<PinError>,
     /// Only when the input's `collect_trace` is set.
@@ -674,14 +678,22 @@ impl DiffCtx {
                         Some((path, char_ranges, line_elapsed, token_elapsed))
                     });
                     if let Some((path, char_ranges, line_elapsed, token_elapsed)) = result {
-                        let num_add_delete = if phases.all_off() {
-                            Default::default()
-                        } else {
-                            myers_count_add_deletes(&path)
-                        };
+                        let change_unit = ChangeUnit::finest(phases);
+                        let num_add_delete = change_unit.map_or_else(Default::default, |unit| {
+                            count_changes(
+                                unit,
+                                &path,
+                                t1,
+                                t2,
+                                &c1.contents,
+                                &c2.contents,
+                                &char_ranges,
+                            )
+                        });
                         let _ = tx.send(Some(MyersCtx {
                             input,
                             num_add_delete,
+                            change_unit,
                             path,
                             char_ranges: Arc::new(char_ranges),
                             ignored_pins,
@@ -836,6 +848,7 @@ impl DiffCtx {
     ) -> Option<MinimalDiffCtx> {
         let myers_ctx = self.request_myers(cancel_flag.clone())?;
         let num_add_deletes = myers_ctx.num_add_delete;
+        let change_unit = myers_ctx.change_unit;
         let ignored_pins = myers_ctx.ignored_pins.clone();
         let phase_trace = myers_ctx.phase_trace.clone();
         let (line_elapsed, token_elapsed) = (myers_ctx.line_elapsed, myers_ctx.token_elapsed);
@@ -870,6 +883,7 @@ impl DiffCtx {
             debug_file_2_path: self.debug_file_2_path.clone(),
             input: self.update_diff_rows_input.clone(),
             num_add_deletes,
+            change_unit,
             ignored_pins,
             phase_trace,
             stage_times,
@@ -1488,6 +1502,7 @@ fn update_diff_rows_minimal_diff_ctx(
         debug_file_2_path: c2.path.clone(),
         input: input.clone(),
         num_add_deletes: myers_count_add_deletes(&myers_path),
+        change_unit: Some(ChangeUnit::Token),
         ignored_pins: None,
         phase_trace: None,
         stage_times,
@@ -2157,7 +2172,9 @@ mod tests {
                     "diff shows {:?}",
                     line_only.input
                 );
-                assert_ne!(line_only.num_add_deletes, line_and_token.num_add_deletes);
+                assert_ne!(line_only.diff_ir, line_and_token.diff_ir);
+                assert_eq!(line_and_token.change_unit, Some(ChangeUnit::Token));
+                assert_eq!(line_only.change_unit, Some(ChangeUnit::Line));
 
                 current.options.phases.token = true;
                 current.options.phases.line = false;
@@ -2168,7 +2185,8 @@ mod tests {
                     "diff shows {:?}",
                     token_only.input
                 );
-                assert_ne!(token_only.num_add_deletes, line_only.num_add_deletes);
+                assert_ne!(token_only.diff_ir, line_only.diff_ir);
+                assert_eq!(token_only.change_unit, Some(ChangeUnit::Token));
             }
 
             #[test]
@@ -2187,6 +2205,7 @@ mod tests {
                 );
                 assert_eq!(ctx.diff_rows.len(), 1);
                 assert_eq!(ctx.num_add_deletes, Default::default());
+                assert_eq!(ctx.change_unit, None);
             }
 
             #[test]

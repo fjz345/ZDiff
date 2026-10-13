@@ -58,6 +58,7 @@ use zcommon::{
 };
 use zdiff::{
     cached_file::CachedFile,
+    change_count::ChangeUnit,
     diff_builder::{DiffBuilderOptions, DiffRow, IsDimmed, IsGhost, LineContent, RowBg},
     diff_ir::{DiffOp, DiffResult},
     ignore::IgnorePatterns,
@@ -567,27 +568,22 @@ impl FileDiffPane {
                     egui::RichText::new("±").strong(),
                     &hint(FileAction::DiffOnly, "Diff Only"),
                 ) {
-                    ctx.diff_options.diff_only_with_extra_rows = active.then_some(2);
+                    ctx.diff_options.diff_only_with_extra_rows =
+                        active.then_some(DEFAULT_CONTEXT_ROWS);
                 }
                 match &mut ctx.diff_options.diff_only_with_extra_rows {
                     Some(diff_rows_num) => {
-                        if ui
-                            .button("<")
-                            .on_hover_text(action_hint(FileAction::FewerContextRows))
-                            .clicked()
-                        {
-                            *diff_rows_num = diff_rows_num.saturating_sub(1);
-                        }
-                        if ui
-                            .button(format!("{}", diff_rows_num.to_string(),))
-                            .clicked()
-                        {}
-                        if ui
-                            .button(">")
-                            .on_hover_text(action_hint(FileAction::MoreContextRows))
-                            .clicked()
-                        {
-                            *diff_rows_num = (*diff_rows_num + 1).min(99);
+                        match stepper(
+                            ui,
+                            diff_rows_num.to_string(),
+                            &action_hint(FileAction::FewerContextRows),
+                            &action_hint(FileAction::MoreContextRows),
+                            &format!("Reset to {DEFAULT_CONTEXT_ROWS} context rows"),
+                        ) {
+                            Some(Step::Dec) => *diff_rows_num = diff_rows_num.saturating_sub(1),
+                            Some(Step::Inc) => *diff_rows_num = (*diff_rows_num + 1).min(99),
+                            Some(Step::Reset) => *diff_rows_num = DEFAULT_CONTEXT_ROWS,
+                            None => {}
                         }
                     }
                     None => {}
@@ -597,53 +593,41 @@ impl FileDiffPane {
 
             ui.with_layout(Layout::left_to_right(egui::Align::Center), |ui| {
                 ui.spacing_mut().item_spacing.x = 4.0;
-                if ui
-                    .button("<")
-                    .on_hover_text(action_hint(FileAction::PrevConflict))
-                    .clicked()
-                {
-                    ctx.conflict_cursor.dec();
-                }
-                if ui
-                    .button(format!(
+                match stepper(
+                    ui,
+                    format!(
                         "{}/{}",
-                        ctx.conflict_cursor.get().to_string(),
-                        ctx.conflict_cursor.get_max().to_string()
-                    ))
-                    .clicked()
-                {}
-                if ui
-                    .button(">")
-                    .on_hover_text(action_hint(FileAction::NextConflict))
-                    .clicked()
-                {
-                    ctx.conflict_cursor.inc();
+                        ctx.conflict_cursor.get(),
+                        ctx.conflict_cursor.get_max()
+                    ),
+                    &action_hint(FileAction::PrevConflict),
+                    &action_hint(FileAction::NextConflict),
+                    "Clear conflict selection",
+                ) {
+                    Some(Step::Dec) => ctx.conflict_cursor.dec(),
+                    Some(Step::Inc) => ctx.conflict_cursor.inc(),
+                    Some(Step::Reset) => ctx.conflict_cursor.set(0),
+                    None => {}
                 }
             });
             ui.with_layout(Layout::left_to_right(egui::Align::Center), |ui| {
                 ui.spacing_mut().item_spacing.x = 4.0;
-                if ui
-                    .button("<")
-                    .on_hover_text(action_hint(FileAction::PrevFind))
-                    .clicked()
-                {
-                    ctx.find_cursor.dec();
-                }
                 let find_k = if ctx.find_count == 0 {
                     0
                 } else {
                     ctx.find_cursor.get() + 1
                 };
-                if ui
-                    .button(format!("{find_k} of {}", ctx.find_count))
-                    .clicked()
-                {}
-                if ui
-                    .button(">")
-                    .on_hover_text(action_hint(FileAction::NextFind))
-                    .clicked()
-                {
-                    ctx.find_cursor.inc();
+                match stepper(
+                    ui,
+                    format!("{find_k} of {}", ctx.find_count),
+                    &action_hint(FileAction::PrevFind),
+                    &action_hint(FileAction::NextFind),
+                    "Go to first match",
+                ) {
+                    Some(Step::Dec) => ctx.find_cursor.dec(),
+                    Some(Step::Inc) => ctx.find_cursor.inc(),
+                    Some(Step::Reset) => ctx.find_cursor.set(0),
+                    None => {}
                 }
             });
             ui.with_layout(Layout::left_to_right(egui::Align::Center), |ui| {
@@ -653,8 +637,11 @@ impl FileDiffPane {
             // No diff ctx while a diff is in flight, so a partial time is never shown.
             if let Some(diff_ctx) = ctx.diff_ctx {
                 ui.with_layout(Layout::right_to_left(egui::Align::Center), |ui| {
-                    let (label, tooltip) =
-                        diff_status_text(diff_ctx.num_add_deletes, &diff_ctx.stage_times);
+                    let (label, tooltip) = diff_status_text(
+                        diff_ctx.num_add_deletes,
+                        diff_ctx.change_unit,
+                        &diff_ctx.stage_times,
+                    );
                     let label = diff_status_job(
                         &label,
                         diff_ctx.num_add_deletes,
@@ -2056,6 +2043,38 @@ impl FileDiffPane {
     }
 }
 
+const DEFAULT_CONTEXT_ROWS: usize = 2;
+
+enum Step {
+    Dec,
+    Inc,
+    Reset,
+}
+
+fn stepper(
+    ui: &mut egui::Ui,
+    value: String,
+    dec_hint: &str,
+    inc_hint: &str,
+    reset_hint: &str,
+) -> Option<Step> {
+    let reset_click = |r: &egui::Response| r.secondary_clicked() || r.middle_clicked();
+    let dec = ui.button("<").on_hover_text(dec_hint);
+    let mid = ui
+        .button(value)
+        .on_hover_text(format!("{reset_hint}\n(click, or right/middle-click any arrow)"));
+    let inc = ui.button(">").on_hover_text(inc_hint);
+    if mid.clicked() || reset_click(&dec) || reset_click(&mid) || reset_click(&inc) {
+        Some(Step::Reset)
+    } else if dec.clicked() {
+        Some(Step::Dec)
+    } else if inc.clicked() {
+        Some(Step::Inc)
+    } else {
+        None
+    }
+}
+
 const STRIPE_SPACING: f32 = 8.0;
 const STRIPE_WIDTH: f32 = 1.5;
 
@@ -2340,7 +2359,7 @@ const TOKEN_DELETE_OUTLINE: egui::Color32 = egui::Color32::from_rgb(255, 90, 90)
 const TOKEN_INSERT_OUTLINE: egui::Color32 = egui::Color32::from_rgb(90, 230, 90);
 const CHAR_UNDERLINE: egui::Color32 = egui::Color32::from_rgb(0, 220, 255);
 
-/// Scope pairs are numbered like the Phase Trace window's table.
+/// Scope hunks are numbered like the Phase Trace window's table.
 fn paint_trace_gutter(ui: &egui::Ui, trace: &PhaseTrace, side: ActiveSide, content: &LineContent) {
     let LineContent::Code { line_num, .. } = content else {
         return;
@@ -2366,7 +2385,7 @@ fn paint_trace_gutter(ui: &egui::Ui, trace: &PhaseTrace, side: ActiveSide, conte
         painter.rect_filled(bar, 0.0, LINE_HUNK_BAR);
     }
     let x = rect.left() + GUTTER_WIDTH;
-    for (i, pair) in trace.scope_pairs.iter().enumerate() {
+    for (i, pair) in trace.scope_hunks.iter().enumerate() {
         let lines = lines(pair);
         if !lines.contains(&line) {
             continue;
@@ -2930,11 +2949,13 @@ fn viewer_override_combo(
 /// shared status line.
 fn diff_status_text(
     num_add_deletes: MyersNumAddDelete,
+    unit: Option<ChangeUnit>,
     times: &DiffStageTimes,
 ) -> (String, String) {
     let (adds, deletes) = num_add_deletes;
+    let unit = unit.map_or(String::new(), |unit| format!(" {}", unit.label()));
     (
-        format!("+{adds}/-{deletes}  {:.1?}", times.total()),
+        format!("+{adds}/-{deletes}{unit}  {:.1?}", times.total()),
         format!(
             "Line diff: {:.1?}\nToken diff: {:.1?}\nIR: {:.1?}\nRows: {:.1?}",
             times.line_diff, times.token_diff, times.diff_ir, times.diff_rows
@@ -3602,6 +3623,7 @@ mod tests {
     use eframe::egui;
     use zcommon::ui_egui::table::{Split, SplitColumn, SplitTable};
     use zdiff::{
+        change_count::ChangeUnit,
         diff_builder::{DiffBuilderOptions, DiffRow, LineContent, RowBg},
         diff_ir::{DiffOp, DiffResult},
         ignore::{IgnoreOptions, IgnorePatterns},
@@ -4108,13 +4130,18 @@ mod tests {
             diff_rows: Duration::from_millis(2),
         };
 
-        let (label, tooltip) = diff_status_text((7, 3), &times);
+        let (label, tooltip) = diff_status_text((7, 3), Some(ChangeUnit::Line), &times);
 
-        assert_eq!(label, "+7/-3  15.8ms");
+        assert_eq!(label, "+7/-3 lines  15.8ms");
         assert_eq!(
             tooltip,
             "Line diff: 12.3ms\nToken diff: 1.0ms\nIR: 500.0µs\nRows: 2.0ms"
         );
+        assert_eq!(
+            diff_status_text((2, 1), Some(ChangeUnit::Scope), &times).0,
+            "+2/-1 scopes  15.8ms"
+        );
+        assert_eq!(diff_status_text((0, 0), None, &times).0, "+0/-0  15.8ms");
     }
 
     #[test]

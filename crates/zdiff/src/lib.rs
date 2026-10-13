@@ -1,6 +1,7 @@
 use std::path::Path;
 
 pub mod cached_file;
+pub mod change_count;
 pub mod char_diff;
 pub mod diff_builder;
 pub mod diff_ir;

@@ -47,7 +47,7 @@ pub struct PhaseTimes {
 /// What each phase produced, in file coordinates. Times add up over all stretches and scopes.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct PhaseTrace {
-    pub scope_pairs: Vec<TraceSpan>,
+    pub scope_hunks: Vec<TraceSpan>,
     pub line_hunks: Vec<TraceSpan>,
     pub token_hunks: Vec<TokenHunk>,
     pub char_pairs: Vec<CharPair>,
@@ -55,7 +55,7 @@ pub struct PhaseTrace {
 }
 
 pub(crate) struct TraceMark {
-    scope_pairs: usize,
+    scope_hunks: usize,
     line_hunks: usize,
     token_hunks: usize,
 }
@@ -63,7 +63,7 @@ pub(crate) struct TraceMark {
 impl PhaseTrace {
     pub(crate) fn mark(&self) -> TraceMark {
         TraceMark {
-            scope_pairs: self.scope_pairs.len(),
+            scope_hunks: self.scope_hunks.len(),
             line_hunks: self.line_hunks.len(),
             token_hunks: self.token_hunks.len(),
         }
@@ -84,7 +84,7 @@ impl PhaseTrace {
                 f(r.start)..f(r.end - 1) + 1
             }
         };
-        let spans = self.scope_pairs[mark.scope_pairs..]
+        let spans = self.scope_hunks[mark.scope_hunks..]
             .iter_mut()
             .chain(&mut self.line_hunks[mark.line_hunks..])
             .chain(
@@ -109,7 +109,7 @@ impl PhaseTrace {
             }
         };
         let spans = self
-            .scope_pairs
+            .scope_hunks
             .iter_mut()
             .chain(&mut self.line_hunks)
             .chain(self.token_hunks.iter_mut().map(|h| &mut h.span));
@@ -307,8 +307,8 @@ mod tests {
             run(algorithm, SOURCE, TARGET, ALL, &[], Some(&mut trace));
 
             assert_eq!(
-                lines(&trace.scope_pairs),
-                vec![(0..3, 0..3), (8..11, 5..8)],
+                lines(&trace.scope_hunks),
+                vec![(0..11, 0..8)],
                 "{algorithm:?}"
             );
             let hunks = vec![(1..2, 1..2), (4..8, 4..5), (9..10, 6..7)];
@@ -358,7 +358,7 @@ mod tests {
             &[],
         );
         assert!(!line_only.line_hunks.is_empty());
-        assert!(line_only.scope_pairs.is_empty());
+        assert!(line_only.scope_hunks.is_empty());
         assert!(line_only.token_hunks.is_empty());
         assert!(line_only.char_pairs.is_empty());
         assert_eq!(

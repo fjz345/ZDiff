@@ -1419,6 +1419,11 @@ impl<'a> ZApp {
                         .and_then(|f| Some(f.num_add_deletes))
                         .unwrap_or_default()
                         .1;
+                    let unit = app_ctx
+                        .diff_processor
+                        .get_minimal_diff_ctx()
+                        .and_then(|f| f.change_unit)
+                        .map_or(String::new(), |unit| format!(" {}", unit.label()));
                     let counts = if sides.is_some() {
                         "types differ".to_string()
                     } else if is_hex {
@@ -1428,7 +1433,7 @@ impl<'a> ZApp {
                     } else if let Some(kind) = media_view {
                         kind.name().to_lowercase()
                     } else {
-                        format!("+{}/-{}", total_adds, total_deletes)
+                        format!("+{}/-{}{}", total_adds, total_deletes, unit)
                     };
                     ctx.send_viewport_cmd(egui::ViewportCommand::Title(format!(
                         "zdiff [{}] - {}, {}",

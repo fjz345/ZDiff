@@ -12,17 +12,15 @@ use crate::{
     ignore::IgnoreMask,
     lexer::{RawTokenTrait, TokenKind},
     myers::{
-        DiffPhases, MyersDiffAlgorithm, MyersPath, Step, path_steps, phases_path, raw_diff_path,
-        slice_mask, split_lines,
+        DiffPhases, LineHunk, MyersDiffAlgorithm, MyersPath, Step, hunks_to_path, line_pairs_path,
+        lines_equal, path_steps, phases_path, raw_diff_path, slice_mask, split_lines,
     },
     trace::{PhaseTrace, add_time, run_local, span},
 };
 
-/// Scope phase: pairs the top-level scopes of both sides by Myers over their header lines (under
-/// the ignore mask). Paired scopes and the text between scopes go to the next phases; unpaired
-/// scopes too, unless Scope is the finest phase, when they are deleted or inserted whole. No
-/// scopes on either side, or unbalanced braces on either, leave the whole stretch to the next
-/// phases.
+/// Scope phase: Myers over units, each a top-level scope or the text between two scopes. Two
+/// units are equal when all their lines are equal under the line key. The finer phases run only
+/// inside the hunks of unequal units; with Scope the finest, a hunk's lines are changed whole.
 pub(crate) fn scope_path<T, F>(
     algorithm: MyersDiffAlgorithm,
     source: &[T],
@@ -43,242 +41,125 @@ where
         return None;
     }
     let start = trace.map(|_| Instant::now());
-    let next = DiffPhases {
-        scope: false,
-        ..phases
+    let (source_units, target_units) = (
+        scope_units(source, source_text),
+        scope_units(target, target_text),
+    );
+    let (source_lines, target_lines) = (split_lines(source), split_lines(target));
+    let unit_eq = |a: &Range<usize>, b: &Range<usize>| {
+        let (a, b) = (lines_in(&source_lines, a), lines_in(&target_lines, b));
+        a.len() == b.len()
+            && a.iter()
+                .zip(b)
+                .all(|(a, b)| lines_equal(source, target, a, b, cmp, ignore))
     };
-    let next_path = |s: &[T], t: &[T], ignore: &IgnoreMask| {
-        phases_path(
-            algorithm,
-            s,
-            t,
-            source_text,
-            target_text,
-            cmp,
-            ignore,
-            next,
-            false,
-            cancel_flag.clone(),
-            trace,
-        )
-    };
-    let (Some(source_scopes), Some(target_scopes)) = (
-        find_scopes(source, source_text),
-        find_scopes(target, target_text),
-    ) else {
-        add_time(trace, start, |times| &mut times.scope);
-        return next_path(source, target, ignore);
-    };
-    if source_scopes.is_empty() && target_scopes.is_empty() {
-        add_time(trace, start, |times| &mut times.scope);
-        return next_path(source, target, ignore);
-    }
-
-    let key_eq = |a: &Range<usize>, b: &Range<usize>| {
-        let mut a_key = header(source, a).filter(|&i| !ignore.source.get(i).is_some_and(|&f| f));
-        let mut b_key = header(target, b).filter(|&i| !ignore.target.get(i).is_some_and(|&f| f));
-        loop {
-            match (a_key.next(), b_key.next()) {
-                (None, None) => return true,
-                (Some(i), Some(j)) if cmp(&source[i], &target[j]) => {}
-                _ => return false,
-            }
-        }
-    };
-    let scope_pairs = raw_diff_path(
+    let unit_path = raw_diff_path(
         algorithm,
-        &source_scopes,
-        &target_scopes,
-        key_eq,
+        &source_units,
+        &target_units,
+        unit_eq,
         cancel_flag.clone(),
     )?;
     if cancel_flag.load(Ordering::Relaxed) {
         return None;
     }
-    let mut pairs = Vec::new();
-    let (mut i, mut j) = (0, 0);
-    for step in path_steps(&scope_pairs) {
-        match step {
-            Step::Equal => {
-                pairs.push((i, j));
-                (i, j) = (i + 1, j + 1);
-            }
-            Step::Delete => i += 1,
-            Step::Insert => j += 1,
-        }
-    }
+    let hunks = unit_hunks(&unit_path, &source_units, &target_units, source, target);
     add_time(trace, start, |times| &mut times.scope);
     if let Some(trace) = trace {
-        let spans = pairs
+        let spans = hunks
             .iter()
-            .map(|&(i, j)| span(source_scopes[i].clone(), target_scopes[j].clone()));
-        trace.borrow_mut().scope_pairs.extend(spans);
+            .map(|h| span(h.source.clone(), h.target.clone()));
+        trace.borrow_mut().scope_hunks.extend(spans);
     }
 
-    let mut path = Vec::with_capacity(source.len() + target.len() + 1);
-    path.push((0, 0));
-    let (mut from, mut next_scope) = ((0, 0), (0, 0));
-    let ends = pairs.into_iter().map(Some).chain([None]);
-    for pair in ends {
-        let (to, scope_end) = match pair {
-            Some((i, j)) => ((source_scopes[i].start, target_scopes[j].start), (i, j)),
-            None => (
-                (source.len(), target.len()),
-                (source_scopes.len(), target_scopes.len()),
-            ),
-        };
-        // A finer phase diffs unpaired scopes with the text around them, so Scope only culls.
-        let unpaired = if next.line || next.token {
-            (&[][..], &[][..])
-        } else {
-            (
-                &source_scopes[next_scope.0..scope_end.0],
-                &target_scopes[next_scope.1..scope_end.1],
-            )
-        };
-        between_scopes(
-            &mut path,
-            source,
-            target,
-            from..to,
-            unpaired,
-            ignore,
-            &next_path,
-            trace,
-        )?;
-        if let Some((i, j)) = pair {
-            let (s, t) = (source_scopes[i].clone(), target_scopes[j].clone());
-            let mask = slice_mask(ignore, s.clone(), t.clone());
-            let local = run_local(
-                trace,
-                |x| s.start + x,
-                |y| t.start + y,
-                || next_path(&source[s.clone()], &target[t.clone()], &mask),
-            )?;
-            extend_offset(&mut path, &local, (s.start, t.start));
-            (from, next_scope) = ((s.end, t.end), (i + 1, j + 1));
+    let next = DiffPhases {
+        scope: false,
+        ..phases
+    };
+    hunks_to_path(source, target, &hunks, cmp, ignore, &cancel_flag, |hunk| {
+        let (s, t) = (hunk.source.clone(), hunk.target.clone());
+        if !next.line && !next.token {
+            return Some(line_pairs_path(&source[s], &target[t], cmp));
         }
-    }
-    Some(path)
-}
-
-/// The tokens between two paired scopes (or a file end). Unpaired scopes are deleted or inserted
-/// whole; the rest of both sides goes to the next phase as one range.
-fn between_scopes<T, N>(
-    path: &mut MyersPath,
-    source: &[T],
-    target: &[T],
-    range: Range<(usize, usize)>,
-    (source_unpaired, target_unpaired): (&[Range<usize>], &[Range<usize>]),
-    ignore: &IgnoreMask,
-    next_path: &N,
-    trace: Option<&RefCell<PhaseTrace>>,
-) -> Option<()>
-where
-    T: RawTokenTrait,
-    N: Fn(&[T], &[T], &IgnoreMask) -> Option<MyersPath>,
-{
-    let (s, t) = (range.start.0..range.end.0, range.start.1..range.end.1);
-    if source_unpaired.is_empty() && target_unpaired.is_empty() {
-        let mask = slice_mask(ignore, s.clone(), t.clone());
-        let local = run_local(
+        run_local(
             trace,
             |x| s.start + x,
             |y| t.start + y,
-            || next_path(&source[s.clone()], &target[t.clone()], &mask),
-        )?;
-        extend_offset(path, &local, (s.start, t.start));
-        return Some(());
-    }
-    let (source_rest, target_rest) = (
-        outside(s.clone(), source_unpaired),
-        outside(t.clone(), target_unpaired),
-    );
-    let gather = |tokens: &[T], indices: &[usize]| -> Vec<T> {
-        indices.iter().map(|&i| tokens[i].clone()).collect()
-    };
-    let mask = if ignore.is_empty() {
-        IgnoreMask::default()
-    } else {
-        IgnoreMask {
-            source: source_rest.iter().map(|&i| ignore.source[i]).collect(),
-            target: target_rest.iter().map(|&i| ignore.target[i]).collect(),
-            ..Default::default()
-        }
-    };
-    let local = run_local(
-        trace,
-        |x| source_rest.get(x).copied().unwrap_or(s.end),
-        |y| target_rest.get(y).copied().unwrap_or(t.end),
-        || {
-            next_path(
-                &gather(source, &source_rest),
-                &gather(target, &target_rest),
-                &mask,
-            )
-        },
-    )?;
-
-    let (mut x, mut y) = (s.start, t.start);
-    let delete_to = |path: &mut MyersPath, x: &mut usize, y: usize, to: usize| {
-        while *x < to {
-            *x += 1;
-            path.push((*x as i32, y as i32));
-        }
-    };
-    let insert_to = |path: &mut MyersPath, x: usize, y: &mut usize, to: usize| {
-        while *y < to {
-            *y += 1;
-            path.push((x as i32, *y as i32));
-        }
-    };
-    let (mut gx, mut gy) = (0, 0);
-    for step in path_steps(&local) {
-        if step != Step::Insert {
-            delete_to(path, &mut x, y, source_rest[gx]);
-        }
-        if step != Step::Delete {
-            insert_to(path, x, &mut y, target_rest[gy]);
-        }
-        if step != Step::Insert {
-            (x, gx) = (x + 1, gx + 1);
-        }
-        if step != Step::Delete {
-            (y, gy) = (y + 1, gy + 1);
-        }
-        path.push((x as i32, y as i32));
-    }
-    delete_to(path, &mut x, y, s.end);
-    insert_to(path, x, &mut y, t.end);
-    Some(())
+            || {
+                phases_path(
+                    algorithm,
+                    &source[s.clone()],
+                    &target[t.clone()],
+                    source_text,
+                    target_text,
+                    cmp,
+                    &slice_mask(ignore, s.clone(), t.clone()),
+                    next,
+                    false,
+                    cancel_flag.clone(),
+                    trace,
+                )
+            },
+        )
+    })
 }
 
-/// A scope's first line, which is its key.
-fn header<T: RawTokenTrait>(tokens: &[T], scope: &Range<usize>) -> Range<usize> {
-    let line_break = tokens[scope.clone()]
-        .iter()
-        .position(|t| t.as_ref().kind == TokenKind::Newline);
-    scope.start..line_break.map_or(scope.end, |i| scope.start + i + 1)
+/// The runs of unequal units in `path` (over the units), as token ranges.
+fn unit_hunks<T>(
+    path: &[(i32, i32)],
+    source_units: &[Range<usize>],
+    target_units: &[Range<usize>],
+    source: &[T],
+    target: &[T],
+) -> Vec<LineHunk> {
+    let token_start =
+        |units: &[Range<usize>], i: usize, len: usize| units.get(i).map_or(len, |u| u.start);
+    let mut hunks = Vec::new();
+    let (mut x, mut y) = (0, 0);
+    let mut open: Option<(usize, usize)> = None;
+    for step in path_steps(path).into_iter().chain([Step::Equal]) {
+        if step != Step::Equal {
+            open.get_or_insert((x, y));
+        } else if let Some((x0, y0)) = open.take() {
+            hunks.push(LineHunk {
+                source: token_start(source_units, x0, source.len())
+                    ..token_start(source_units, x, source.len()),
+                target: token_start(target_units, y0, target.len())
+                    ..token_start(target_units, y, target.len()),
+            });
+        }
+        match step {
+            Step::Equal => (x, y) = (x + 1, y + 1),
+            Step::Delete => x += 1,
+            Step::Insert => y += 1,
+        }
+    }
+    hunks
 }
 
-/// The indices of `range` outside the sorted, disjoint `scopes`.
-fn outside(range: Range<usize>, scopes: &[Range<usize>]) -> Vec<usize> {
-    let mut indices = Vec::with_capacity(range.len());
-    let mut start = range.start;
-    for scope in scopes {
-        indices.extend(start..scope.start);
+/// The lines (token ranges) inside `unit`, which starts and ends on line boundaries.
+fn lines_in<'a>(lines: &'a [Range<usize>], unit: &Range<usize>) -> &'a [Range<usize>] {
+    let first = lines.partition_point(|l| l.start < unit.start);
+    let end = lines.partition_point(|l| l.end <= unit.end);
+    &lines[first..end]
+}
+
+/// The top-level scopes and the stretches of text between them, covering every token in order.
+/// Without scopes, or with unbalanced braces, the whole range is one unit.
+pub(crate) fn scope_units<T: RawTokenTrait>(tokens: &[T], text: &str) -> Vec<Range<usize>> {
+    let mut units = Vec::new();
+    let mut start = 0;
+    for scope in find_scopes(tokens, text).unwrap_or_default() {
+        if start < scope.start {
+            units.push(start..scope.start);
+        }
         start = scope.end;
+        units.push(scope);
     }
-    indices.extend(start..range.end);
-    indices
-}
-
-fn extend_offset(path: &mut MyersPath, local: &[(i32, i32)], (x, y): (usize, usize)) {
-    path.extend(
-        local[1..]
-            .iter()
-            .map(|&(lx, ly)| (x as i32 + lx, y as i32 + ly)),
-    );
+    if start < tokens.len() {
+        units.push(start..tokens.len());
+    }
+    units
 }
 
 /// Top-level `{}` scopes as token ranges widened to whole lines, in order; scopes sharing a line
@@ -364,6 +245,7 @@ mod tests {
         ignore::IgnoreOptions,
         lexer::{Lexer, RawToken},
         myers::{Pin, Step, myers_diff_path, myers_diff_path_traced, path_steps},
+        trace::token_hunk,
     };
 
     const ALGORITHMS: [MyersDiffAlgorithm; 3] = [
@@ -393,7 +275,23 @@ mod tests {
         },
     ];
 
+    const SCOPE_ONLY: DiffPhases = DiffPhases {
+        scope: true,
+        line: false,
+        token: false,
+        character: false,
+    };
+
+    const ALL_SCOPE_SETS: [DiffPhases; 4] = [
+        SCOPE_PHASES[0],
+        SCOPE_PHASES[1],
+        SCOPE_PHASES[2],
+        SCOPE_ONLY,
+    ];
+
     const A: &str = "fn a() {\n    s1();\n    s2();\n    s3();\n    s4();\n    s5();\n    s6();\n    s7();\n    s8();\n    s9();\n}\n";
+    const B: &str = "fn b() {\n    one();\n    two();\n}\n";
+    const B2: &str = "fn b() {\n    one();\n    deux();\n}\n";
     const C: &str = "fn c() {\n    three();\n}\n";
     const C2: &str = "fn c() {\n    tres();\n}\n";
 
@@ -469,46 +367,37 @@ mod tests {
         start..start + part.matches('\n').count()
     }
 
-    /// `moved` is wholly deleted and wholly inserted, and each of `paired` pairs its header lines.
-    fn assert_scopes_pair(source: &str, target: &str, moved: &str, paired: &[(&str, &str)]) {
-        let (moved_source, moved_target) = (lines_of(source, moved), lines_of(target, moved));
-        for algorithm in ALGORITHMS {
-            for phases in SCOPE_PHASES {
-                let ignore = IgnoreOptions::default();
-                let path = diff(algorithm, source, target, &ignore, phases, &[], false).unwrap();
-                let ops = line_ops(source, target, &path);
-                let context = format!("{algorithm:?} {phases:?}: {ops:?}");
-                for (s, t) in paired {
-                    let header = (lines_of(source, s).start, lines_of(target, t).start);
-                    assert!(ops.equal.contains(&header), "{context}");
-                }
-                assert!(
-                    ops.equal
-                        .iter()
-                        .all(|(s, t)| !moved_source.contains(s) && !moved_target.contains(t)),
-                    "{context}"
-                );
-                assert!(
-                    moved_source.clone().all(|l| ops.deleted.contains(&l)),
-                    "{context}"
-                );
-                assert!(
-                    moved_target.clone().all(|l| ops.inserted.contains(&l)),
-                    "{context}"
-                );
-            }
-        }
+    fn traced(
+        algorithm: MyersDiffAlgorithm,
+        source: &str,
+        target: &str,
+        ignore: &IgnoreOptions,
+        phases: DiffPhases,
+    ) -> (MyersPath, PhaseTrace) {
+        let (ts, tt) = (lex(source), lex(target));
+        let cmp = |a: &RawToken, b: &RawToken| {
+            a.kind == b.kind && source[a.span.clone()] == target[b.span.clone()]
+        };
+        let mut trace = PhaseTrace::default();
+        let path = myers_diff_path_traced(
+            algorithm,
+            &ts,
+            &tt,
+            source,
+            target,
+            cmp,
+            &ignore.mask(&ts, source, &tt, target),
+            phases,
+            &[],
+            Arc::default(),
+            Some(&mut trace),
+        )
+        .expect("not cancelled");
+        (path, trace)
     }
 
-    fn assert_plain_diff_does_not_pair(source: &str, target: &str, s: &str, t: &str) {
-        let header = (lines_of(source, s).start, lines_of(target, t).start);
-        for algorithm in ALGORITHMS {
-            let ignore = IgnoreOptions::default();
-            let phases = DiffPhases::default();
-            let path = diff(algorithm, source, target, &ignore, phases, &[], false).unwrap();
-            let ops = line_ops(source, target, &path);
-            assert!(!ops.equal.contains(&header), "{algorithm:?}: {ops:?}");
-        }
+    fn lines_set(lines: Range<usize>) -> BTreeSet<usize> {
+        lines.collect()
     }
 
     fn assert_same_as_without_scope(source: &str, target: &str, pins: &[Pin]) {
@@ -529,176 +418,209 @@ mod tests {
     }
 
     #[test]
-    fn reordered_functions_pair_by_header() {
-        let (b, b2) = (
-            "fn b() {\n    one();\n    two();\n}\n",
-            "fn b() {\n    uno();\n    dos();\n}\n",
-        );
-        let source = format!("{A}\n{b}\n{C}");
-        let target = format!("{b2}\n{C2}\n{A}");
-        assert_plain_diff_does_not_pair(&source, &target, b, b2);
-        assert_scopes_pair(&source, &target, A, &[(b, b2), (C, C2)]);
-    }
-
-    #[test]
-    fn braces_in_strings_and_comments_do_not_break_pairing() {
-        let (b, b2) = (
-            "fn b() {\n    s = \"}\";\n    two();\n}\n",
-            "fn b() {\n    s = \"}\";\n    dos();\n}\n",
-        );
-        let (c, c2) = (
-            "fn c() {\n    // {\n    three();\n}\n",
-            "fn c() {\n    // {\n    tres();\n}\n",
-        );
-        let source = format!("{A}\n{b}\n{c}");
-        let target = format!("{b2}\n{c2}\n{A}");
-        assert_plain_diff_does_not_pair(&source, &target, b, b2);
-        assert_scopes_pair(&source, &target, A, &[(b, b2), (c, c2)]);
-    }
-
-    #[test]
-    fn an_added_function_is_a_whole_insert() {
-        let added = "fn b() {\n    x();\n    y();\n}\n";
-        let (a, a2) = (
-            "fn a() {\n    x();\n    y();\n}\n",
-            "fn a() {\n    z();\n}\n",
-        );
-        let target = format!("{added}\n{a2}");
-        let added_lines = lines_of(&target, added);
+    fn an_unchanged_scope_stays_equal_and_a_changed_one_gets_the_finer_phase() {
+        let source = format!("{A}{B}");
+        let target = format!("{A}{B2}");
+        let ignore = IgnoreOptions::default();
         for algorithm in ALGORITHMS {
-            let ignore = IgnoreOptions::default();
             let path = diff(
                 algorithm,
-                a,
+                &source,
                 &target,
                 &ignore,
-                DiffPhases::default(),
+                SCOPE_PHASES[0],
                 &[],
                 false,
             );
-            let ops = line_ops(a, &target, &path.unwrap());
-            assert!(
-                ops.equal.iter().any(|(_, t)| added_lines.contains(t)),
-                "{algorithm:?}: {ops:?}"
+            let ops = line_ops(&source, &target, &path.unwrap());
+            assert_eq!(
+                ops.deleted,
+                lines_set(lines_of(&source, "    two();\n")),
+                "{algorithm:?}"
+            );
+            assert_eq!(
+                ops.inserted,
+                lines_set(lines_of(&target, "    deux();\n")),
+                "{algorithm:?}"
             );
         }
+    }
+
+    #[test]
+    fn scope_alone_changes_a_changed_scope_whole() {
+        let source = format!("{A}top();\n{B}");
+        let target = format!("{A}top();\n{B2}");
+        let ignore = IgnoreOptions::default();
         for algorithm in ALGORITHMS {
-            for phases in SCOPE_PHASES {
-                let ignore = IgnoreOptions::default();
-                let path = diff(algorithm, a, &target, &ignore, phases, &[], false).unwrap();
-                let ops = line_ops(a, &target, &path);
+            let path = diff(algorithm, &source, &target, &ignore, SCOPE_ONLY, &[], false);
+            let ops = line_ops(&source, &target, &path.unwrap());
+            assert_eq!(
+                ops.deleted,
+                lines_set(lines_of(&source, B)),
+                "{algorithm:?}"
+            );
+            assert_eq!(
+                ops.inserted,
+                lines_set(lines_of(&target, B2)),
+                "{algorithm:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn scope_alone_changes_only_the_text_between_scopes_that_changed() {
+        let source = format!("{A}top();\n{B}");
+        let target = format!("{A}bottom();\n{B}");
+        let ignore = IgnoreOptions::default();
+        for algorithm in ALGORITHMS {
+            let path = diff(algorithm, &source, &target, &ignore, SCOPE_ONLY, &[], false);
+            let ops = line_ops(&source, &target, &path.unwrap());
+            assert_eq!(
+                ops.deleted,
+                lines_set(lines_of(&source, "top();\n")),
+                "{algorithm:?}"
+            );
+            assert_eq!(
+                ops.inserted,
+                lines_set(lines_of(&target, "bottom();\n")),
+                "{algorithm:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_added_function_next_to_an_unchanged_one_is_a_whole_insert() {
+        let target = format!("{B}{A}");
+        let ignore = IgnoreOptions::default();
+        for algorithm in ALGORITHMS {
+            for phases in ALL_SCOPE_SETS {
+                let path = diff(algorithm, A, &target, &ignore, phases, &[], false);
+                let ops = line_ops(A, &target, &path.unwrap());
                 let context = format!("{algorithm:?} {phases:?}: {ops:?}");
-                assert!(
-                    ops.equal.contains(&(0, lines_of(&target, a2).start)),
-                    "{context}"
-                );
-                assert!(
-                    ops.equal.iter().all(|(_, t)| !added_lines.contains(t)),
-                    "{context}"
-                );
-                assert!(
-                    added_lines.clone().all(|l| ops.inserted.contains(&l)),
-                    "{context}"
-                );
+                assert!(ops.deleted.is_empty(), "{context}");
+                assert_eq!(ops.inserted, lines_set(lines_of(&target, B)), "{context}");
             }
         }
     }
 
     #[test]
-    fn text_between_scopes_pairs_across_an_unpaired_scope() {
-        let source = format!("{A}top();\nfn b() {{\n}}\n{C}end();\n");
-        let target = format!("top();\nfn b() {{\n}}\n{C2}\n{A}end();\n");
-        let pair = |part| (lines_of(&source, part).start, lines_of(&target, part).start);
-        let (top, end) = (pair("top"), pair("end"));
+    fn braces_in_strings_and_comments_do_not_split_a_scope() {
+        let b = "fn b() {\n    s = \"}\";\n    // {\n    two();\n}\n";
+        let b2 = "fn b() {\n    s = \"}\";\n    // {\n    deux();\n}\n";
+        let source = format!("{A}{b}");
+        let target = format!("{A}{b2}");
+        let ignore = IgnoreOptions::default();
         for algorithm in ALGORITHMS {
-            for phases in SCOPE_PHASES {
-                let ignore = IgnoreOptions::default();
-                let path = diff(algorithm, &source, &target, &ignore, phases, &[], false);
-                let ops = line_ops(&source, &target, &path.unwrap());
-                let context = format!("{algorithm:?} {phases:?}: {ops:?}");
-                assert!(ops.equal.contains(&top), "{context}");
-                assert!(ops.equal.contains(&end), "{context}");
-                assert!(
-                    lines_of(&source, A).all(|l| ops.deleted.contains(&l)),
-                    "{context}"
-                );
-                assert!(
-                    lines_of(&target, A).all(|l| ops.inserted.contains(&l)),
-                    "{context}"
-                );
-            }
+            let path = diff(algorithm, &source, &target, &ignore, SCOPE_ONLY, &[], false);
+            let ops = line_ops(&source, &target, &path.unwrap());
+            assert_eq!(
+                ops.deleted,
+                lines_set(lines_of(&source, b)),
+                "{algorithm:?}"
+            );
+            assert_eq!(
+                ops.inserted,
+                lines_set(lines_of(&target, b2)),
+                "{algorithm:?}"
+            );
         }
     }
 
     #[test]
-    fn scope_keys_honor_the_ignore_options() {
-        let (b, b2) = ("fn b() {\n    one();\n}\n", "fn  b()   {\n    uno();\n}\n");
-        let source = format!("{A}\n{b}\n{C}");
-        let target = format!("{b2}\n{C2}\n{A}");
-        let header = (lines_of(&source, b).start, lines_of(&target, b2).start);
+    fn a_scope_that_differs_only_in_ignored_whitespace_is_unchanged() {
+        let source = format!("{A}{B}");
+        let target = format!("{A}fn  b()   {{\n    one();\n      two();\n}}\n");
         let whitespace = IgnoreOptions {
             whitespace: true,
             ..Default::default()
         };
         for algorithm in ALGORITHMS {
-            for phases in SCOPE_PHASES {
-                for (ignore, pairs) in [(&IgnoreOptions::default(), false), (&whitespace, true)] {
-                    let (ts, tt) = (lex(&source), lex(&target));
-                    let cmp = |a: &RawToken, b: &RawToken| {
-                        a.kind == b.kind && source[a.span.clone()] == target[b.span.clone()]
-                    };
-                    let mut trace = PhaseTrace::default();
-                    myers_diff_path_traced(
-                        algorithm,
-                        &ts,
-                        &tt,
-                        &source,
-                        &target,
-                        cmp,
-                        &ignore.mask(&ts, &source, &tt, &target),
-                        phases,
-                        &[],
-                        Arc::default(),
-                        Some(&mut trace),
-                    )
-                    .expect("not cancelled");
-                    let paired = trace
-                        .scope_pairs
-                        .iter()
-                        .any(|pair| (pair.source_lines.start, pair.target_lines.start) == header);
-                    assert_eq!(
-                        paired, pairs,
-                        "{algorithm:?} {phases:?} {ignore:?}: {:?}",
-                        trace.scope_pairs
-                    );
+            for phases in ALL_SCOPE_SETS {
+                let (_, trace) = traced(algorithm, &source, &target, &whitespace, phases);
+                assert!(
+                    trace.scope_hunks.is_empty(),
+                    "{algorithm:?} {phases:?}: {:?}",
+                    trace.scope_hunks
+                );
+                let (_, trace) = traced(
+                    algorithm,
+                    &source,
+                    &target,
+                    &IgnoreOptions::default(),
+                    phases,
+                );
+                assert_eq!(trace.scope_hunks.len(), 1, "{algorithm:?} {phases:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn finer_phases_only_change_tokens_inside_the_scope_hunks() {
+        let pairs = [
+            (format!("{A}{B}"), format!("{A}{B2}")),
+            (
+                format!("{A}top();\n{B}{C}"),
+                format!("bottom();\n{A}{B2}{C2}"),
+            ),
+            (format!("{A}{B}{C}"), format!("{C}{A}{B2}")),
+            ("a\nb\n".to_string(), "a\nc\n".to_string()),
+        ];
+        for algorithm in ALGORITHMS {
+            for phases in ALL_SCOPE_SETS {
+                for (source, target) in &pairs {
+                    let ignore = IgnoreOptions::default();
+                    let (path, trace) = traced(algorithm, source, target, &ignore, phases);
+                    let context = format!("{algorithm:?} {phases:?} {:?}", trace.scope_hunks);
+                    for hunk in &trace.scope_hunks {
+                        token_hunk(&path, hunk.source.clone(), hunk.target.clone());
+                    }
+                    let (mut x, mut y) = (0, 0);
+                    for step in path_steps(&path) {
+                        match step {
+                            Step::Equal => (x, y) = (x + 1, y + 1),
+                            Step::Delete => {
+                                let inside =
+                                    trace.scope_hunks.iter().any(|h| h.source.contains(&x));
+                                assert!(inside, "deleted token {x} outside: {context}");
+                                x += 1;
+                            }
+                            Step::Insert => {
+                                let inside =
+                                    trace.scope_hunks.iter().any(|h| h.target.contains(&y));
+                                assert!(inside, "inserted token {y} outside: {context}");
+                                y += 1;
+                            }
+                        }
+                    }
                 }
             }
         }
     }
 
     #[test]
-    fn scopes_pair_inside_the_stretches_between_pins() {
-        let (b, b2) = (
-            "fn b() {\n    one();\n    two();\n}\n",
-            "fn b() {\n    uno();\n    dos();\n}\n",
-        );
-        let source = format!("{A}\n{b}\n{C}end\n");
-        let target = format!("{b2}\n{C2}\n{A}end\n");
+    fn scope_runs_inside_the_stretches_between_pins() {
+        let source = format!("{A}{B}end\n");
+        let target = format!("{A}{B2}end\n");
         let pins = [Pin {
             source: source.matches('\n').count() - 1,
             target: target.matches('\n').count() - 1,
         }];
-        let header = (lines_of(&source, b).start, lines_of(&target, b2).start);
+        let ignore = IgnoreOptions::default();
         for algorithm in ALGORITHMS {
-            for phases in SCOPE_PHASES {
-                let ignore = IgnoreOptions::default();
-                let path = diff(algorithm, &source, &target, &ignore, phases, &pins, false);
-                let ops = line_ops(&source, &target, &path.unwrap());
-                assert!(
-                    ops.equal.contains(&header),
-                    "{algorithm:?} {phases:?}: {ops:?}"
-                );
-            }
+            let path = diff(
+                algorithm, &source, &target, &ignore, SCOPE_ONLY, &pins, false,
+            );
+            let ops = line_ops(&source, &target, &path.unwrap());
+            assert_eq!(
+                ops.deleted,
+                lines_set(lines_of(&source, B)),
+                "{algorithm:?}"
+            );
+            assert_eq!(
+                ops.inserted,
+                lines_set(lines_of(&target, B2)),
+                "{algorithm:?}"
+            );
         }
     }
 

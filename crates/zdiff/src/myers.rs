@@ -381,8 +381,12 @@ where
         }
         Some(path)
     } else {
-        hunks_to_path(source, target, &hunks, cmp, ignore, &cancel_flag, |s, t| {
-            Some(line_pairs_path(s, t, cmp))
+        hunks_to_path(source, target, &hunks, cmp, ignore, &cancel_flag, |hunk| {
+            Some(line_pairs_path(
+                &source[hunk.source.clone()],
+                &target[hunk.target.clone()],
+                cmp,
+            ))
         })
     }
 }
@@ -426,7 +430,7 @@ where
 /// Line k of `source` beside line k of `target`, each pair changed whole; the lines one side has
 /// beyond the other are deleted or inserted. A pair's equal line breaks stay Equal: the rows end
 /// a line at a deleted line break, which would split the pair.
-fn line_pairs_path<T, F>(source: &[T], target: &[T], cmp: &F) -> MyersPath
+pub(crate) fn line_pairs_path<T, F>(source: &[T], target: &[T], cmp: &F) -> MyersPath
 where
     T: RawTokenTrait,
     F: Fn(&T, &T) -> bool,
@@ -486,25 +490,8 @@ where
     }
 
     let (source_lines, target_lines) = (split_lines(source), split_lines(target));
-    let line_eq = |a: &Range<usize>, b: &Range<usize>| {
-        if ignore.is_empty() {
-            return a.len() == b.len()
-                && source[a.clone()]
-                    .iter()
-                    .zip(&target[b.clone()])
-                    .all(|(a, b)| cmp(a, b));
-        }
-        // The line key: the tokens that aren't ignored.
-        let mut a_key = a.clone().filter(|&i| !ignore.source[i]);
-        let mut b_key = b.clone().filter(|&i| !ignore.target[i]);
-        loop {
-            match (a_key.next(), b_key.next()) {
-                (None, None) => return true,
-                (Some(i), Some(j)) if cmp(&source[i], &target[j]) => {}
-                _ => return false,
-            }
-        }
-    };
+    let line_eq =
+        |a: &Range<usize>, b: &Range<usize>| lines_equal(source, target, a, b, &cmp, ignore);
     let path = raw_diff_path(
         algorithm,
         &source_lines,
@@ -544,6 +531,37 @@ where
     Some(hunks)
 }
 
+/// Line `a` of `source` and line `b` of `target` (token ranges) are equal under the line key:
+/// their tokens that aren't ignored, pairwise equal under `cmp`.
+pub(crate) fn lines_equal<T, F>(
+    source: &[T],
+    target: &[T],
+    a: &Range<usize>,
+    b: &Range<usize>,
+    cmp: &F,
+    ignore: &IgnoreMask,
+) -> bool
+where
+    F: Fn(&T, &T) -> bool,
+{
+    if ignore.is_empty() {
+        return a.len() == b.len()
+            && source[a.clone()]
+                .iter()
+                .zip(&target[b.clone()])
+                .all(|(a, b)| cmp(a, b));
+    }
+    let mut a_key = a.clone().filter(|&i| !ignore.source[i]);
+    let mut b_key = b.clone().filter(|&i| !ignore.target[i]);
+    loop {
+        match (a_key.next(), b_key.next()) {
+            (None, None) => return true,
+            (Some(i), Some(j)) if cmp(&source[i], &target[j]) => {}
+            _ => return false,
+        }
+    }
+}
+
 /// Token phase: Myers over each hunk's tokens, Equal for every token outside the hunks.
 /// Returns a unit-step path over the whole files.
 pub fn token_diff<T, F>(
@@ -559,7 +577,8 @@ where
     T: RawTokenTrait,
     F: Fn(&T, &T) -> bool + Sync,
 {
-    hunks_to_path(source, target, hunks, &cmp, ignore, &cancel_flag, |s, t| {
+    hunks_to_path(source, target, hunks, &cmp, ignore, &cancel_flag, |hunk| {
+        let (s, t) = (&source[hunk.source.clone()], &target[hunk.target.clone()]);
         if s.is_empty() || t.is_empty() {
             return Some(replace_path(s.len(), t.len()));
         }
@@ -573,7 +592,7 @@ where
 }
 
 /// Concatenates each hunk's local path, offset to the hunk, with the equal lines between hunks.
-fn hunks_to_path<T, F, H>(
+pub(crate) fn hunks_to_path<T, F, H>(
     source: &[T],
     target: &[T],
     hunks: &[LineHunk],
@@ -585,7 +604,7 @@ fn hunks_to_path<T, F, H>(
 where
     T: RawTokenTrait,
     F: Fn(&T, &T) -> bool,
-    H: FnMut(&[T], &[T]) -> Option<MyersPath>,
+    H: FnMut(&LineHunk) -> Option<MyersPath>,
 {
     if cancel_flag.load(Ordering::Relaxed) {
         return None;
@@ -603,7 +622,7 @@ where
         push_equal_lines(&mut path, source, target, (x, y), to, cmp, ignore);
         (x, y) = to;
 
-        let local = hunk_path(&source[hunk.source.clone()], &target[hunk.target.clone()])?;
+        let local = hunk_path(hunk)?;
         path.extend(
             local[1..]
                 .iter()
