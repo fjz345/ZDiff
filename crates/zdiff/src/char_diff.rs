@@ -31,7 +31,8 @@ pub fn ranges_in_span<'a>(ranges: &'a [Range<usize>], span: &Range<usize>) -> &'
 
 /// Character phase, run by the caller on the path from `myers_diff_path` as it needs the texts.
 /// In each run of edits the n-th deleted token pairs with the n-th inserted one; same-kind pairs
-/// get their characters diffed. Ignored tokens and line breaks are skipped. None when cancelled.
+/// get their characters diffed and other edited tokens are changed whole. Ignored tokens and line
+/// breaks are skipped. None when cancelled.
 pub fn character_diff<T: RawTokenTrait>(
     algorithm: MyersDiffAlgorithm,
     path: &[(i32, i32)],
@@ -87,13 +88,39 @@ pub fn character_diff_traced<T: RawTokenTrait>(
             }
             Step::Equal => (x, y) = (x + 1, y + 1),
         }
-        for (&i, &j) in deleted.iter().zip(&inserted) {
+        let shown_source = |i: usize| {
+            let s = source[i].as_ref();
+            s.kind != TokenKind::Newline
+                && !s.span.is_empty()
+                && (ignore.is_empty() || !ignore.source[i])
+        };
+        let shown_target = |j: usize| {
+            let t = target[j].as_ref();
+            t.kind != TokenKind::Newline
+                && !t.span.is_empty()
+                && (ignore.is_empty() || !ignore.target[j])
+        };
+        for n in 0..deleted.len().max(inserted.len()) {
+            let (i, j) = (deleted.get(n).copied(), inserted.get(n).copied());
+            let (i, j) = match (i, j) {
+                (Some(i), Some(j))
+                    if source[i].as_ref().kind == target[j].as_ref().kind
+                        && shown_source(i)
+                        && shown_target(j) =>
+                {
+                    (i, j)
+                }
+                _ => {
+                    if let Some(i) = i.filter(|&i| shown_source(i)) {
+                        ranges.source.push(source[i].as_ref().span.clone());
+                    }
+                    if let Some(j) = j.filter(|&j| shown_target(j)) {
+                        ranges.target.push(target[j].as_ref().span.clone());
+                    }
+                    continue;
+                }
+            };
             let (s, t) = (source[i].as_ref(), target[j].as_ref());
-            let ignored = !ignore.is_empty() && (ignore.source[i] || ignore.target[j]);
-            let empty = s.span.is_empty() || t.span.is_empty();
-            if s.kind != t.kind || s.kind == TokenKind::Newline || ignored || empty {
-                continue;
-            }
             let (s_text, t_text) = (&source_text[s.span.clone()], &target_text[t.span.clone()]);
             let (s_changed, t_changed) =
                 changed_chars(algorithm, s_text, t_text, cancel_flag.clone())?;
@@ -175,7 +202,7 @@ mod tests {
         diff_builder::{DiffBuilderOptions, LineContent, build_diff_rows},
         diff_ir::DiffIR,
         ignore::IgnoreOptions,
-        lexer::{LexerDefault, RawToken},
+        lexer::{Lexer, RawToken},
         myers::{DiffPhases, myers_diff_path},
     };
 
@@ -185,7 +212,7 @@ mod tests {
     type RowChanges = (Vec<Range<usize>>, Vec<Range<usize>>);
 
     fn lex(s: &str) -> Vec<RawToken> {
-        LexerDefault::<RawToken>::new(s).collect()
+        Lexer::new(s).collect()
     }
 
     fn path(
@@ -283,9 +310,27 @@ mod tests {
     }
 
     #[test]
-    fn tokens_of_different_kinds_are_not_diffed() {
+    fn tokens_of_different_kinds_are_changed_whole() {
         let ranges = diff("x = 12;\n", "x = a2;\n", &IgnoreOptions::default(), false);
-        assert_eq!(ranges.unwrap(), CharRanges::default());
+        assert_eq!(
+            ranges.unwrap(),
+            CharRanges {
+                source: vec![4..6],
+                target: vec![4..6],
+            }
+        );
+    }
+
+    #[test]
+    fn unpaired_edited_tokens_are_changed_whole() {
+        let ranges = diff("x;\n", "x+y;\n", &IgnoreOptions::default(), false);
+        assert_eq!(
+            ranges.unwrap(),
+            CharRanges {
+                source: vec![],
+                target: vec![1..2, 2..3],
+            }
+        );
     }
 
     #[test]
@@ -297,6 +342,8 @@ mod tests {
             comments: true,
             ..Default::default()
         };
+        assert_eq!(diff(s1, s2, &ignore, false).unwrap(), CharRanges::default());
+        let (s1, s2) = ("a\n", "a // x\n");
         assert_eq!(diff(s1, s2, &ignore, false).unwrap(), CharRanges::default());
     }
 

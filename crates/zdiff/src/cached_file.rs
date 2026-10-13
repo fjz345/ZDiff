@@ -3,10 +3,7 @@ use std::{io, ops::Range, path::Path};
 use zcommon::hash::{hash_contents, hash_file_mmap};
 
 use crate::{
-    lexer::{
-        LEXER_MODE_GREEDY, LEXER_MODE_NEWLINE, LEXER_MODE_TOKENIZE, LexerDefault, LexerGreedy,
-        LexerNewLine, LexerTokenize, RawTokenTrait,
-    },
+    lexer::{Lexer, RawTokenTrait},
     read_file_contents,
     universal_path::UniversalPath,
 };
@@ -48,15 +45,11 @@ pub struct CachedFile<T: RawTokenTrait> {
     pub contents: String,
     pub tokens: Vec<T>,
     pub metadata: FileMetadata,
-    pub lexer_mode: u8,
 }
 
 impl<T: RawTokenTrait> PartialEq for CachedFile<T> {
     fn eq(&self, other: &Self) -> bool {
-        self.path == other.path
-            && self.lexer_mode == other.lexer_mode
-            && self.hash == other.hash
-            && self.metadata == other.metadata
+        self.path == other.path && self.hash == other.hash && self.metadata == other.metadata
     }
 }
 
@@ -78,29 +71,19 @@ impl<T: RawTokenTrait> CachedFile<T> {
 }
 
 impl<T: RawTokenTrait> CachedFile<T> {
-    pub fn new(
-        display_path: UniversalPath,
-        physical_path: impl AsRef<Path>,
-        lexer_mode: u8,
-    ) -> io::Result<Self> {
+    pub fn new(display_path: UniversalPath, physical_path: impl AsRef<Path>) -> io::Result<Self> {
         let contents = read_file_contents(&physical_path)?;
         let hash = hash_file_mmap(&physical_path)?;
-        Ok(Self::build(display_path, contents, hash, lexer_mode))
+        Ok(Self::build(display_path, contents, hash))
     }
 
-    pub fn from_contents(display_path: UniversalPath, contents: String, lexer_mode: u8) -> Self {
+    pub fn from_contents(display_path: UniversalPath, contents: String) -> Self {
         let hash = hash_contents(contents.as_bytes());
-        Self::build(display_path, contents, hash, lexer_mode)
+        Self::build(display_path, contents, hash)
     }
 
-    fn build(display_path: UniversalPath, contents: String, hash: String, lexer_mode: u8) -> Self {
-        let lexer_parse_fn = match lexer_mode {
-            LEXER_MODE_GREEDY => |contents: &str| LexerGreedy::new(contents).parse(),
-            LEXER_MODE_TOKENIZE => |contents: &str| LexerTokenize::new(contents).parse(),
-            LEXER_MODE_NEWLINE => |contents: &str| LexerNewLine::new(contents).parse(),
-            _ => |contents: &str| LexerDefault::new(contents).parse(),
-        };
-        let tokens = lexer_parse_fn(&contents);
+    fn build(display_path: UniversalPath, contents: String, hash: String) -> Self {
+        let tokens = Lexer::new(&contents).map(T::from).collect();
         let metadata = FileMetadata::new(&contents);
 
         Self {
@@ -109,7 +92,6 @@ impl<T: RawTokenTrait> CachedFile<T> {
             contents,
             tokens,
             metadata,
-            lexer_mode,
         }
     }
 }
@@ -117,7 +99,7 @@ impl<T: RawTokenTrait> CachedFile<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lexer::{LEXER_MODE_GREEDY, RawToken};
+    use crate::lexer::RawToken;
 
     #[test]
     fn test_cached_file_reconstruct_token_modification() {
@@ -128,56 +110,25 @@ mod tests {
 
         let display_path_1 = UniversalPath::from(temp_file_1.path().to_path_buf());
         let physical_path_1 = temp_file_1.path().to_path_buf();
-        let cached_file_greedy = CachedFile::<RawToken>::new(
-            display_path_1.clone(),
-            physical_path_1.clone(),
-            LEXER_MODE_GREEDY,
-        )
-        .expect("failed to create CachedFile");
-        let cached_file_newline = CachedFile::<RawToken>::new(
-            display_path_1.clone(),
-            physical_path_1.clone(),
-            LEXER_MODE_NEWLINE,
-        )
-        .expect("failed to create CachedFile");
-        let cached_file_tokenize = CachedFile::<RawToken>::new(
-            display_path_1.clone(),
-            physical_path_1.clone(),
-            LEXER_MODE_TOKENIZE,
-        )
-        .expect("failed to create CachedFile");
+        let cached_file = CachedFile::<RawToken>::new(display_path_1, physical_path_1)
+            .expect("failed to create CachedFile");
 
-        let tokens_unmodified = cached_file_greedy.tokens.clone();
-        let mut tokens_greedy = cached_file_greedy.tokens.clone();
-        let mut tokens_newline = cached_file_newline.tokens.clone();
-        let mut tokens_tokenize = cached_file_tokenize.tokens.clone();
-
-        tokens_greedy.remove(0);
-        tokens_newline.remove(0);
-        tokens_tokenize.remove(0);
+        let tokens_unmodified = cached_file.tokens.clone();
+        let mut tokens_modified = cached_file.tokens.clone();
+        tokens_modified.remove(0);
 
         let reconstructed_unmodified = tokens_unmodified
             .iter()
-            .map(|t| cached_file_greedy.read_content_span(t.span.clone()))
+            .map(|t| cached_file.read_content_span(t.span.clone()))
             .collect::<String>();
-        let reconstructed_greedy = tokens_greedy
+        let reconstructed_modified = tokens_modified
             .iter()
-            .map(|t| cached_file_greedy.read_content_span(t.span.clone()))
-            .collect::<String>();
-        let reconstructed_newline = tokens_newline
-            .iter()
-            .map(|t| cached_file_newline.read_content_span(t.span.clone()))
-            .collect::<String>();
-        let reconstructed_tokenize = tokens_tokenize
-            .iter()
-            .map(|t| cached_file_tokenize.read_content_span(t.span.clone()))
+            .map(|t| cached_file.read_content_span(t.span.clone()))
             .collect::<String>();
 
         assert_eq!(reconstructed_unmodified, s1);
-        assert_eq!(reconstructed_greedy, "#define hello_there\n\t// Comment\n");
-        assert_eq!(reconstructed_newline, "\n\t// Comment\n");
         assert_eq!(
-            reconstructed_tokenize,
+            reconstructed_modified,
             "#define hello_there\n\t// Comment\n"
         );
     }
@@ -189,14 +140,10 @@ mod tests {
         std::fs::write(temp_file.path(), contents).unwrap();
         let path = UniversalPath::from(temp_file.path().to_path_buf());
 
-        for mode in [LEXER_MODE_GREEDY, LEXER_MODE_NEWLINE, LEXER_MODE_TOKENIZE] {
-            let from_disk =
-                CachedFile::<RawToken>::new(path.clone(), temp_file.path(), mode).unwrap();
-            let from_contents =
-                CachedFile::<RawToken>::from_contents(path.clone(), contents.to_string(), mode);
-            assert_eq!(from_contents, from_disk);
-            assert_eq!(from_contents.tokens.len(), from_disk.tokens.len());
-            assert_eq!(from_contents.contents, from_disk.contents);
-        }
+        let from_disk = CachedFile::<RawToken>::new(path.clone(), temp_file.path()).unwrap();
+        let from_contents = CachedFile::<RawToken>::from_contents(path, contents.to_string());
+        assert_eq!(from_contents, from_disk);
+        assert_eq!(from_contents.tokens.len(), from_disk.tokens.len());
+        assert_eq!(from_contents.contents, from_disk.contents);
     }
 }

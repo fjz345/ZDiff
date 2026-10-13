@@ -1965,7 +1965,7 @@ mod tests {
         use super::*;
         use crate::{
             ignore::IgnoreOptions,
-            lexer::{LexerDefault, RawToken},
+            lexer::{Lexer, RawToken},
         };
 
         const ALGORITHMS: [MyersDiffAlgorithm; 3] = [
@@ -1986,7 +1986,7 @@ mod tests {
         type Script = Vec<(Op, Option<usize>, Option<usize>)>;
 
         fn lex(text: &str) -> Vec<RawToken> {
-            LexerDefault::<RawToken>::new(text).parse()
+            Lexer::new(text).parse()
         }
 
         fn line_of(text: &str, token: &RawToken) -> usize {
@@ -2992,7 +2992,7 @@ mod tests {
                 diff_builder::{DiffBuilderOptions, build_diff_rows},
                 diff_ir::DiffIR,
                 ignore::IgnoreOptions,
-                lexer::{LexerDefault, RawToken},
+                lexer::{Lexer, RawToken},
                 test_harness::DiffTestHarness,
             };
 
@@ -3025,7 +3025,7 @@ mod tests {
             ];
 
             fn lex(text: &str) -> Vec<RawToken> {
-                LexerDefault::<RawToken>::new(text).collect()
+                Lexer::new(text).collect()
             }
 
             fn path(

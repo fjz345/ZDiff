@@ -62,7 +62,16 @@ pub enum LineContent {
 pub struct DiffBuilderOptions {
     #[cfg_attr(feature = "serde", serde(flatten))]
     pub ignore: IgnoreOptions,
+    /// Master switch of the `mark_*` diff marks.
     pub highlight_rows: bool,
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub mark_scopes: bool,
+    #[cfg_attr(feature = "serde", serde(default = "default_true"))]
+    pub mark_lines: bool,
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub mark_tokens: bool,
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub mark_chars: bool,
     pub ghost_rows: bool,
     pub diff_only_with_extra_rows: Option<usize>,
     #[cfg_attr(feature = "serde", serde(default))]
@@ -73,11 +82,20 @@ impl Default for DiffBuilderOptions {
         Self {
             ignore: IgnoreOptions::default(),
             highlight_rows: true,
+            mark_scopes: false,
+            mark_lines: true,
+            mark_tokens: false,
+            mark_chars: false,
             ghost_rows: true,
             diff_only_with_extra_rows: None,
             phases: DiffPhases::default(),
         }
     }
+}
+
+#[cfg(feature = "serde")]
+fn default_true() -> bool {
+    true
 }
 
 impl DiffBuilderOptions {
@@ -508,7 +526,7 @@ mod tests {
         use super::*;
         use crate::{
             ignore::IgnorePatterns,
-            lexer::{LexerDefault, RawToken},
+            lexer::{Lexer, RawToken},
             myers::{DiffPhases, MyersDiffAlgorithm, myers_diff_path},
         };
 
@@ -518,7 +536,7 @@ mod tests {
         const S2: &str = "fn f() {\n    let a = 2; // new\n\n    added();\n    b();\n}\nx\nz\ny\n";
 
         fn lex(s: &str) -> Vec<RawToken> {
-            LexerDefault::<RawToken>::new(s).collect()
+            Lexer::new(s).collect()
         }
 
         fn diff_ir(t1: &[RawToken], t2: &[RawToken], options: &DiffBuilderOptions) -> DiffIR {
@@ -645,7 +663,7 @@ mod tests {
         use super::*;
         use crate::{
             ignore::IgnorePatterns,
-            lexer::{LexerDefault, RawToken},
+            lexer::{Lexer, RawToken},
             myers::{DiffPhases, MyersDiffAlgorithm, myers_diff_path},
             test_harness::DiffTestHarness,
         };
@@ -677,8 +695,8 @@ mod tests {
             s2: &'a str,
             options: DiffBuilderOptions,
         ) -> DiffTestHarness<'a> {
-            let t1: Vec<RawToken> = LexerDefault::<RawToken>::new(s1).collect();
-            let t2: Vec<RawToken> = LexerDefault::<RawToken>::new(s2).collect();
+            let t1: Vec<RawToken> = Lexer::new(s1).collect();
+            let t2: Vec<RawToken> = Lexer::new(s2).collect();
             let cmp = |a: &RawToken, b: &RawToken| {
                 a.kind == b.kind && s1[a.span.clone()] == s2[b.span.clone()]
             };
@@ -738,6 +756,14 @@ mod tests {
                 ..base.clone()
             };
             assert!(!DiffBuilderOptions::need_invalidation(&base, &highlight));
+            let marks = DiffBuilderOptions {
+                mark_scopes: !base.mark_scopes,
+                mark_lines: !base.mark_lines,
+                mark_tokens: !base.mark_tokens,
+                mark_chars: !base.mark_chars,
+                ..base.clone()
+            };
+            assert!(!DiffBuilderOptions::need_invalidation(&base, &marks));
 
             let ghost = DiffBuilderOptions {
                 ghost_rows: !base.ghost_rows,
@@ -868,10 +894,8 @@ mod tests {
         fn lines_differing_only_in_matched_text_form_no_diff_span_and_are_dimmed() {
             let s1 = "[12:00:01] start\nkeep(1);\n[12:00:02] done\n";
             let s2 = "[12:00:05] start\nkeep(1);\n[12:00:09] done\n";
-            let (t1, t2): (Vec<RawToken>, Vec<RawToken>) = (
-                LexerDefault::<RawToken>::new(s1).collect(),
-                LexerDefault::<RawToken>::new(s2).collect(),
-            );
+            let (t1, t2): (Vec<RawToken>, Vec<RawToken>) =
+                (Lexer::new(s1).collect(), Lexer::new(s2).collect());
             let has_visible_change = |content: &LineContent| match content {
                 LineContent::Code { tokens, .. } => tokens.iter().any(|(res, _, _)| {
                     !res.hide_in_diff && !matches!(res.operation, DiffOp::Equal(_))
@@ -954,7 +978,7 @@ mod integration_tests {
     use super::*;
     use crate::cached_file::CachedFile;
     use crate::diff_ir::DiffIR;
-    use crate::lexer::{LEXER_MODE_DEFAULT, RawToken};
+    use crate::lexer::RawToken;
     use crate::myers::{
         myers_backtrack, myers_diff_linear, myers_diff_linear_mt, myers_diff_trace,
     };
@@ -972,8 +996,8 @@ mod integration_tests {
         File::create(&p1).unwrap().write_all(s1.as_bytes()).unwrap();
         File::create(&p2).unwrap().write_all(s2.as_bytes()).unwrap();
 
-        let f1 = CachedFile::<RawToken>::new(p1.clone().into(), p1, LEXER_MODE_DEFAULT).unwrap();
-        let f2 = CachedFile::<RawToken>::new(p2.clone().into(), p2, LEXER_MODE_DEFAULT).unwrap();
+        let f1 = CachedFile::<RawToken>::new(p1.clone().into(), p1).unwrap();
+        let f2 = CachedFile::<RawToken>::new(p2.clone().into(), p2).unwrap();
 
         let cmp = |t1: &RawToken, t2: &RawToken| {
             f1.contents[t1.as_ref().span.clone()] == f2.contents[t2.as_ref().span.clone()]

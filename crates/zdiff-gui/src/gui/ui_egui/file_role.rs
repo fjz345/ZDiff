@@ -7,6 +7,10 @@ pub enum FileRole {
     DimmedText,
     DeleteChangedChars,
     InsertChangedChars,
+    DeleteChangedTokens,
+    InsertChangedTokens,
+    DeleteChangedScope,
+    InsertChangedScope,
     GotoLineNumber,
     GotoRow,
     Find,
@@ -33,6 +37,10 @@ impl Role for FileRole {
             FileRole::DimmedText,
             FileRole::DeleteChangedChars,
             FileRole::InsertChangedChars,
+            FileRole::DeleteChangedTokens,
+            FileRole::InsertChangedTokens,
+            FileRole::DeleteChangedScope,
+            FileRole::InsertChangedScope,
             FileRole::GotoLineNumber,
             FileRole::GotoRow,
             FileRole::Find,
@@ -59,6 +67,10 @@ impl Role for FileRole {
             FileRole::DimmedText => "file_dimmed_text",
             FileRole::DeleteChangedChars => "file_delete_changed_chars",
             FileRole::InsertChangedChars => "file_insert_changed_chars",
+            FileRole::DeleteChangedTokens => "file_delete_changed_tokens",
+            FileRole::InsertChangedTokens => "file_insert_changed_tokens",
+            FileRole::DeleteChangedScope => "file_delete_changed_scope",
+            FileRole::InsertChangedScope => "file_insert_changed_scope",
             FileRole::GotoLineNumber => "file_goto_line_number",
             FileRole::GotoRow => "file_goto_row",
             FileRole::Find => "file_find",
@@ -85,6 +97,10 @@ impl Role for FileRole {
             FileRole::DimmedText => "Ignored text",
             FileRole::DeleteChangedChars => "Delete changed chars",
             FileRole::InsertChangedChars => "Insert changed chars",
+            FileRole::DeleteChangedTokens => "Delete changed tokens",
+            FileRole::InsertChangedTokens => "Insert changed tokens",
+            FileRole::DeleteChangedScope => "Delete changed scope",
+            FileRole::InsertChangedScope => "Insert changed scope",
             FileRole::GotoLineNumber => "Goto line number",
             FileRole::GotoRow => "Goto row",
             FileRole::Find => "Find match",
@@ -111,6 +127,10 @@ impl Role for FileRole {
             FileRole::DimmedText => Rgba8([128, 128, 128, 110]),
             FileRole::DeleteChangedChars => Rgba8([255, 0, 0, 80]),
             FileRole::InsertChangedChars => Rgba8([0, 255, 0, 70]),
+            FileRole::DeleteChangedTokens => Rgba8([255, 0, 0, 45]),
+            FileRole::InsertChangedTokens => Rgba8([0, 255, 0, 40]),
+            FileRole::DeleteChangedScope => Rgba8([255, 0, 0, 10]),
+            FileRole::InsertChangedScope => Rgba8([0, 255, 0, 10]),
             FileRole::GotoLineNumber => Rgba8([255, 210, 0, 255]),
             FileRole::GotoRow => Rgba8([255, 255, 0, 40]),
             FileRole::Find => Rgba8([164, 120, 0, 140]),
@@ -138,6 +158,10 @@ impl Role for FileRole {
             FileRole::DimmedText => Rgba8([120, 120, 120, 130]),
             FileRole::DeleteChangedChars => Rgba8([255, 0, 0, 60]),
             FileRole::InsertChangedChars => Rgba8([0, 190, 0, 60]),
+            FileRole::DeleteChangedTokens => Rgba8([255, 0, 0, 35]),
+            FileRole::InsertChangedTokens => Rgba8([0, 190, 0, 35]),
+            FileRole::DeleteChangedScope => Rgba8([255, 0, 0, 12]),
+            FileRole::InsertChangedScope => Rgba8([0, 190, 0, 12]),
             FileRole::GotoLineNumber => Rgba8([190, 120, 0, 255]),
             FileRole::GotoRow => Rgba8([255, 200, 0, 60]),
             FileRole::Find => Rgba8([255, 190, 0, 110]),
@@ -164,6 +188,10 @@ impl Role for FileRole {
                 | FileRole::DimmedText
                 | FileRole::DeleteChangedChars
                 | FileRole::InsertChangedChars
+                | FileRole::DeleteChangedTokens
+                | FileRole::InsertChangedTokens
+                | FileRole::DeleteChangedScope
+                | FileRole::InsertChangedScope
                 | FileRole::GotoRow
                 | FileRole::Find
                 | FileRole::FindCurrent

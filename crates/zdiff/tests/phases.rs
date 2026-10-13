@@ -8,7 +8,7 @@ use zdiff::{
     diff_builder::{DiffBuilderOptions, DiffRow, LineContent, build_diff_rows},
     diff_ir::{DiffIR, DiffOp},
     ignore::{IgnoreMask, IgnoreOptions},
-    lexer::{LexerDefault, RawToken},
+    lexer::{Lexer, RawToken},
     myers::{DiffPhases, MyersDiffAlgorithm, MyersPath, myers_diff_path},
 };
 
@@ -31,7 +31,7 @@ fn valid_phase_sets() -> Vec<DiffPhases> {
 }
 
 fn lex(text: &str) -> Vec<RawToken> {
-    LexerDefault::<RawToken>::new(text).collect()
+    Lexer::new(text).collect()
 }
 
 fn path(

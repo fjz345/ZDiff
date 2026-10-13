@@ -486,12 +486,7 @@ mod tests {
     };
 
     use zcommon::hash::hash_file_mmap;
-    use zdiff::{
-        diff_builder::DiffBuilderOptions,
-        lexer::{LEXER_MODE_DEFAULT, LEXER_MODE_GREEDY, LEXER_MODE_NEWLINE, LEXER_MODE_TOKENIZE},
-        myers::Pin,
-        universal_path::UniversalPath,
-    };
+    use zdiff::{diff_builder::DiffBuilderOptions, myers::Pin, universal_path::UniversalPath};
 
     use super::*;
     use crate::diff_ctx::{DiffProcessor, UpdateDiffRowsInput};
@@ -503,12 +498,8 @@ mod tests {
         Path::new("")
     }
 
-    fn cached(
-        display: UniversalPath,
-        physical: &Path,
-        lexer_mode: u8,
-    ) -> Arc<CachedFile<RawToken>> {
-        Arc::new(CachedFile::new(display, physical, lexer_mode).unwrap())
+    fn cached(display: UniversalPath, physical: &Path) -> Arc<CachedFile<RawToken>> {
+        Arc::new(CachedFile::new(display, physical).unwrap())
     }
 
     fn diff_files(
@@ -558,7 +549,6 @@ mod tests {
         left: PathBuf,
         right: PathBuf,
         options: DiffBuilderOptions,
-        lexer_mode: u8,
         pins: Vec<Pin>,
     }
 
@@ -577,23 +567,14 @@ mod tests {
                 left: l,
                 right: r,
                 options,
-                lexer_mode: LEXER_MODE_DEFAULT,
                 pins: Vec::new(),
             }
         }
 
         fn diff(&self) -> MinimalDiffCtx {
             diff_pinned_files(
-                cached(
-                    UniversalPath::from(self.left.clone()),
-                    &self.left,
-                    self.lexer_mode,
-                ),
-                cached(
-                    UniversalPath::from(self.right.clone()),
-                    &self.right,
-                    self.lexer_mode,
-                ),
+                cached(UniversalPath::from(self.left.clone()), &self.left),
+                cached(UniversalPath::from(self.right.clone()), &self.right),
                 self.options.clone(),
                 self.pins.clone(),
             )
@@ -737,12 +718,8 @@ mod tests {
         right: &str,
         target: RevertTarget,
         options: DiffBuilderOptions,
-        lexer_mode: u8,
     ) {
-        let pair = Pair {
-            lexer_mode,
-            ..Pair::with_options(left, right, options)
-        };
+        let pair = Pair::with_options(left, right, options);
         let other = match target {
             Left => right,
             Right => left,
@@ -772,18 +749,15 @@ mod tests {
     fn reverting_every_hunk_makes_the_target_equal_the_other_file() {
         let left = "first\r\nshared 1\r\nfn a() { 1 }\r\nshared 2\r\ngone 1\r\ngone 2\r\nshared 3\r\n\ttail x";
         let right = "shared 1\r\nfn a() { 2 }\r\nfn b() {}\r\nshared 2\r\nshared 3\r\n\tadded\r\n\ttail y\n";
-        // Byte ranges come from token spans, so every lexer mode must tile the file.
-        for lexer_mode in [LEXER_MODE_GREEDY, LEXER_MODE_TOKENIZE, LEXER_MODE_NEWLINE] {
-            for ghost_rows in [true, false] {
-                for diff_only in [None, Some(0), Some(2)] {
-                    let options = DiffBuilderOptions {
-                        ghost_rows,
-                        diff_only_with_extra_rows: diff_only,
-                        ..Default::default()
-                    };
-                    revert_until_equal(left, right, Left, options.clone(), lexer_mode);
-                    revert_until_equal(left, right, Right, options, lexer_mode);
-                }
+        for ghost_rows in [true, false] {
+            for diff_only in [None, Some(0), Some(2)] {
+                let options = DiffBuilderOptions {
+                    ghost_rows,
+                    diff_only_with_extra_rows: diff_only,
+                    ..Default::default()
+                };
+                revert_until_equal(left, right, Left, options.clone());
+                revert_until_equal(left, right, Right, options);
             }
         }
     }
@@ -793,8 +767,8 @@ mod tests {
         let left = "a\nold 1\nold 2\nb\nc\n";
         let right = "a\nnew 1 x\nnew 2 y\nnew 3\nb\ninserted\nc\n";
         let options = DiffBuilderOptions::default();
-        revert_until_equal(left, right, Left, options.clone(), LEXER_MODE_DEFAULT);
-        revert_until_equal(left, right, Right, options, LEXER_MODE_DEFAULT);
+        revert_until_equal(left, right, Left, options.clone());
+        revert_until_equal(left, right, Right, options);
     }
 
     #[test]
@@ -816,16 +790,8 @@ mod tests {
     #[test]
     fn depot_target_is_refused_and_the_local_side_still_reverts() {
         let pair = Pair::new("a\nb\n", "a\nB\n");
-        let depot = cached(
-            UniversalPath::new("//depot/main/left.txt#3"),
-            &pair.left,
-            LEXER_MODE_DEFAULT,
-        );
-        let local = cached(
-            UniversalPath::from(pair.right.clone()),
-            &pair.right,
-            LEXER_MODE_DEFAULT,
-        );
+        let depot = cached(UniversalPath::new("//depot/main/left.txt#3"), &pair.left);
+        let local = cached(UniversalPath::from(pair.right.clone()), &pair.right);
         let ctx = diff_files(depot, local, DiffBuilderOptions::default());
 
         assert_eq!(
@@ -865,12 +831,8 @@ mod tests {
     fn git_revision_target_is_refused_and_the_working_tree_side_still_reverts() {
         let pair = Pair::new("a\nb\n", "a\nB\n");
         let at_main = UniversalPath::new(format!("{}@git:main", pair.right.display()));
-        let left = cached(at_main, &pair.left, LEXER_MODE_DEFAULT);
-        let right = cached(
-            UniversalPath::from(pair.right.clone()),
-            &pair.right,
-            LEXER_MODE_DEFAULT,
-        );
+        let left = cached(at_main, &pair.left);
+        let right = cached(UniversalPath::from(pair.right.clone()), &pair.right);
         let ctx = diff_files(left, right, DiffBuilderOptions::default());
 
         assert_eq!(
@@ -890,16 +852,8 @@ mod tests {
         let local = workspace.path().join("file.txt");
         std::fs::write(&local, "a\nB\n").unwrap();
         let ctx = diff_files(
-            cached(
-                UniversalPath::from(temp_copy.clone()),
-                &temp_copy,
-                LEXER_MODE_DEFAULT,
-            ),
-            cached(
-                UniversalPath::from(local.clone()),
-                &local,
-                LEXER_MODE_DEFAULT,
-            ),
+            cached(UniversalPath::from(temp_copy.clone()), &temp_copy),
+            cached(UniversalPath::from(local.clone()), &local),
             DiffBuilderOptions::default(),
         );
         let request = |target| RevertRequest { hunk: 0, target };
@@ -921,16 +875,8 @@ mod tests {
         );
         // Swapped sides: the temp copy is the right file now.
         let swapped = diff_files(
-            cached(
-                UniversalPath::from(local.clone()),
-                &local,
-                LEXER_MODE_DEFAULT,
-            ),
-            cached(
-                UniversalPath::from(temp_copy.clone()),
-                &temp_copy,
-                LEXER_MODE_DEFAULT,
-            ),
+            cached(UniversalPath::from(local.clone()), &local),
+            cached(UniversalPath::from(temp_copy.clone()), &temp_copy),
             DiffBuilderOptions::default(),
         );
         assert_eq!(check_revert(&swapped, Left, temp_root.path()), Ok(()));
@@ -943,11 +889,7 @@ mod tests {
     #[test]
     fn missing_side_or_hunk_is_refused() {
         let pair = Pair::new("a\nb\n", "a\nB\n");
-        let left = cached(
-            UniversalPath::from(pair.left.clone()),
-            &pair.left,
-            LEXER_MODE_DEFAULT,
-        );
+        let left = cached(UniversalPath::from(pair.left.clone()), &pair.left);
         let mut processor = DiffProcessor::default();
         processor.request_update(UpdateDiffRowsInput {
             file_1: Some(left),

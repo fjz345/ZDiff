@@ -5,7 +5,7 @@ use std::sync::{Arc, atomic::AtomicBool};
 use crate::{
     diff_builder::{DiffBuilderOptions, DiffRow, LineContent, build_diff_rows},
     diff_ir::{DiffIR, DiffOp},
-    lexer::{LexerDefault, RawToken},
+    lexer::{Lexer, RawToken},
 };
 
 #[cfg(test)]
@@ -27,8 +27,8 @@ impl<'a> DiffTestHarness<'a> {
         options: DiffBuilderOptions,
         estimated_num_rows: usize,
     ) -> Self {
-        let t1: Vec<RawToken> = LexerDefault::<RawToken>::new(s1).collect();
-        let t2: Vec<RawToken> = LexerDefault::<RawToken>::new(s2).collect();
+        let t1: Vec<RawToken> = Lexer::new(s1).collect();
+        let t2: Vec<RawToken> = Lexer::new(s2).collect();
         let diff_ir = DiffIR::new(&path, false, Arc::new(AtomicBool::new(false)))
             .expect("Failed to create DiffIR");
         let rows = build_diff_rows(

@@ -14,7 +14,7 @@ use zdiff::universal_path::UniversalPath;
 use zdiff::{
     cached_file::CachedFile,
     char_diff::{CharRanges, character_diff_traced},
-    diff_builder::{DiffBuilderOptions, DiffRow, LineContent, build_diff_rows},
+    diff_builder::{DiffBuilderOptions, DiffRow, LineContent, RowBg, build_diff_rows},
     diff_ir::{DiffIR, DiffOp},
     ignore::IgnoreOptions,
     lexer::{RawToken, TokenKind},
@@ -23,10 +23,13 @@ use zdiff::{
         myers_count_add_deletes, myers_diff_path_traced, token_diff, validate_pins,
     },
     row_text::build_row_text,
+    scope::{changed_scopes, scope_lines},
     trace::PhaseTrace,
 };
 
-use crate::{clamped_cursor::ClampedCursor, scope, ui_egui::active_side::ActiveSide};
+use crate::{
+    clamped_cursor::ClampedCursor, diff_phases::run_phases, scope, ui_egui::active_side::ActiveSide,
+};
 
 #[derive(Debug, Default, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -51,10 +54,6 @@ impl PartialEq for UpdateDiffRowsInput {
             && self.myers_diff_algorithm == other.myers_diff_algorithm
             && self.pins == other.pins
             && self.collect_trace == other.collect_trace
-            && self.file_1.as_ref().map(|f| &f.lexer_mode)
-                == other.file_1.as_ref().map(|f| &f.lexer_mode)
-            && self.file_2.as_ref().map(|f| &f.lexer_mode)
-                == other.file_2.as_ref().map(|f| &f.lexer_mode)
     }
 }
 
@@ -242,8 +241,8 @@ impl From<UpdateDiffRowsInput> for MyersCtxInput {
             file_1: input.file_1,
             file_2: input.file_2,
             algo: input.myers_diff_algorithm,
+            phases: run_phases(&input.options),
             ignore: input.options.ignore,
-            phases: input.options.phases,
             pins: input.pins,
             collect_trace: input.collect_trace,
         }
@@ -257,7 +256,7 @@ impl From<&UpdateDiffRowsInput> for MyersCtxInput {
             file_2: input.file_2.clone(),
             algo: input.myers_diff_algorithm,
             ignore: input.options.ignore.clone(),
-            phases: input.options.phases,
+            phases: run_phases(&input.options),
             pins: input.pins.clone(),
             collect_trace: input.collect_trace,
         }
@@ -310,6 +309,7 @@ pub struct DiffRowsCtx {
     collapsed_blocks: Arc<CollapsedBlocks>,
     /// Every block unexpanded.
     row_blocks: Arc<Vec<RowBlock>>,
+    changed_scopes: Arc<[Vec<Range<usize>>; 2]>,
     elapsed: Duration,
 }
 
@@ -353,6 +353,8 @@ pub struct MinimalDiffCtx {
     pub collapsed_blocks: Arc<CollapsedBlocks>,
     /// Each collapsed block's place in `diff_rows`, ordered by row.
     pub row_blocks: Arc<Vec<RowBlock>>,
+    /// Per side, 0-based line ranges of the top-level scopes holding a visible change.
+    pub changed_scopes: Arc<[Vec<Range<usize>>; 2]>,
 }
 
 macro_rules! check_cancel {
@@ -806,6 +808,7 @@ impl DiffCtx {
                             c2.metadata.line_starts.len(),
                         );
                         let row_blocks = unexpanded_row_blocks(&collapsed_blocks);
+                        let changed_scopes = changed_scope_lines(&rows, [c1, c2]);
                         let _ = tx.send(Some(DiffRowsCtx {
                             input,
                             rows: Arc::new(rows),
@@ -813,6 +816,7 @@ impl DiffCtx {
                             precomputed_file_rows: Arc::new(precomputed_file_rows),
                             collapsed_blocks: Arc::new(collapsed_blocks),
                             row_blocks: Arc::new(row_blocks),
+                            changed_scopes: Arc::new(changed_scopes),
                             elapsed: start.elapsed(),
                         }));
                     } else if !cancel.load(Ordering::Relaxed) {
@@ -841,6 +845,7 @@ impl DiffCtx {
         let diff_ir = diff_row_ctx.input.diff_ir.clone();
         let collapsed_blocks = diff_row_ctx.collapsed_blocks.clone();
         let row_blocks = diff_row_ctx.row_blocks.clone();
+        let changed_scopes = diff_row_ctx.changed_scopes.clone();
         let diff_rows_elapsed = diff_row_ctx.elapsed;
         // Rows are only returned when they were built from the current IR ctx. Read it here
         // rather than requesting it again, which would clone and compare the Myers path.
@@ -872,6 +877,7 @@ impl DiffCtx {
             diff_ir,
             collapsed_blocks,
             row_blocks,
+            changed_scopes,
         })
     }
 }
@@ -1466,6 +1472,7 @@ fn update_diff_rows_minimal_diff_ctx(
         c1.metadata.line_starts.len(),
         c2.metadata.line_starts.len(),
     );
+    let changed_scopes = changed_scope_lines(&final_rows, [c1, c2]);
     let stage_times = DiffStageTimes {
         line_diff: line_elapsed,
         token_diff: token_elapsed,
@@ -1488,6 +1495,28 @@ fn update_diff_rows_minimal_diff_ctx(
         diff_ir: Arc::new(diff_ir),
         row_blocks: Arc::new(unexpanded_row_blocks(&collapsed_blocks)),
         collapsed_blocks: Arc::new(collapsed_blocks),
+        changed_scopes: Arc::new(changed_scopes),
+    })
+}
+
+fn changed_scope_lines(
+    rows: &[DiffRow],
+    files: [&CachedFile<RawToken>; 2],
+) -> [Vec<Range<usize>>; 2] {
+    let changed_line = |content: &LineContent| match content {
+        LineContent::Code {
+            line_num,
+            bg: RowBg::Delete | RowBg::Insert,
+            ..
+        } if *line_num > 0 => Some(*line_num as usize - 1),
+        _ => None,
+    };
+    [0, 1].map(|side| {
+        let changed = rows
+            .iter()
+            .filter_map(|row| changed_line(if side == 0 { &row.left } else { &row.right }));
+        let file = files[side];
+        changed_scopes(&scope_lines(&file.tokens, &file.contents), changed)
     })
 }
 
@@ -2114,51 +2143,75 @@ mod tests {
                 let mut processor = DiffProcessor::default();
                 let mut current = input(&a.0, &a.1);
                 open(&mut processor, &current);
-                let line_and_token = settle(&mut processor).expect("first diff never completed");
+                settle(&mut processor).expect("first diff never completed");
 
-                current.options.phases.token = false;
+                current.options.phases.line = false;
                 open(&mut processor, &current);
                 assert!(
                     processor.ctx.myers_inflight_input.is_some(),
                     "a phase change must recompute the diff stage"
                 );
-                let line_only = settle(&mut processor).expect("phase toggle never completed");
-                assert!(
-                    line_only.input == current,
-                    "diff shows {:?}",
-                    line_only.input
-                );
-                assert_ne!(line_only.num_add_deletes, line_and_token.num_add_deletes);
-
-                current.options.phases = DiffPhases {
-                    line: false,
-                    ..DiffPhases::default()
-                };
-                open(&mut processor, &current);
                 let token_only = settle(&mut processor).expect("phase toggle never completed");
                 assert!(
                     token_only.input == current,
                     "diff shows {:?}",
                     token_only.input
                 );
-                assert_ne!(token_only.num_add_deletes, line_only.num_add_deletes);
             }
 
             #[test]
-            fn the_character_phase_marks_changed_chars_in_the_rows_only_while_on() {
+            fn the_token_phase_always_runs() {
+                let dir = tempfile::tempdir().unwrap();
+                let current = digit_pair(dir.path());
+                let mut processor = DiffProcessor::default();
+                open(&mut processor, &current);
+                let with_token = settle(&mut processor).expect("diff never completed");
+
+                let mut without_token = digit_pair(dir.path());
+                without_token.options.phases = DiffPhases {
+                    token: false,
+                    ..DiffPhases::default()
+                };
+                let mut processor = DiffProcessor::default();
+                open(&mut processor, &without_token);
+                let ctx = settle(&mut processor).expect("diff never completed");
+                assert_eq!(ctx.num_add_deletes, with_token.num_add_deletes);
+            }
+
+            #[test]
+            fn changed_scopes_are_the_scopes_holding_a_visible_change() {
+                let dir = tempfile::tempdir().unwrap();
+                let write = |name: &str, contents: &str| {
+                    let path = dir.path().join(name);
+                    std::fs::write(&path, contents).unwrap();
+                    load(&UniversalPath::from(path))
+                };
+                let current = input(
+                    &write("left.rs", "fn a() {\n    x();\n}\nfn b() {\n    y();\n}\n"),
+                    &write("right.rs", "fn a() {\n    x();\n}\nfn b() {\n    z();\n}\n"),
+                );
+                let mut processor = DiffProcessor::default();
+                open(&mut processor, &current);
+                let ctx = settle(&mut processor).expect("diff never completed");
+                assert_eq!(*ctx.changed_scopes, [vec![3..6], vec![3..6]]);
+            }
+
+            #[test]
+            fn the_character_mark_runs_the_character_phase_only_while_on() {
                 let dir = tempfile::tempdir().unwrap();
                 let mut current = digit_pair(dir.path());
+                current.options.phases.character = true;
                 let mut processor = DiffProcessor::default();
                 open(&mut processor, &current);
                 let off = settle(&mut processor).expect("diff never completed");
                 assert_eq!(changed_chars(&off), Vec::<Range<usize>>::new());
 
-                current.options.phases.character = true;
+                current.options.mark_chars = true;
                 open(&mut processor, &current);
                 let on = settle(&mut processor).expect("character toggle never completed");
                 assert_eq!(changed_chars(&on), vec![13..14, 13..14]);
 
-                current.options.phases.character = false;
+                current.options.mark_chars = false;
                 open(&mut processor, &current);
                 let off_again = settle(&mut processor).expect("character toggle never completed");
                 assert_eq!(changed_chars(&off_again), Vec::<Range<usize>>::new());
@@ -2168,7 +2221,7 @@ mod tests {
             fn the_phase_trace_is_collected_only_while_requested() {
                 let dir = tempfile::tempdir().unwrap();
                 let mut current = digit_pair(dir.path());
-                current.options.phases.character = true;
+                current.options.mark_chars = true;
                 let mut processor = DiffProcessor::default();
                 open(&mut processor, &current);
                 let off = settle(&mut processor).expect("diff never completed");

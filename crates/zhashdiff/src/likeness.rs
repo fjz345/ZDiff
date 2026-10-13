@@ -9,7 +9,7 @@ use std::{
 use zcommon::kinds::{FileKind, KindTable, normalize_extension};
 use zdiff::{
     ignore::IgnoreMask,
-    lexer::{LexerGreedy, RawToken, TokenKind},
+    lexer::{Lexer, RawToken, TokenKind},
     myers::{MyersDiffAlgorithm, line_diff},
     pixel::{RgbaBuffer, pixel_diff},
 };
@@ -79,8 +79,8 @@ pub fn likeness(
 }
 
 fn text_likeness(left: &str, right: &str, cancel: &Arc<AtomicBool>) -> Option<f64> {
-    let left_tokens: Vec<RawToken> = LexerGreedy::new(left).parse();
-    let right_tokens: Vec<RawToken> = LexerGreedy::new(right).parse();
+    let left_tokens: Vec<RawToken> = Lexer::new(left).parse();
+    let right_tokens: Vec<RawToken> = Lexer::new(right).parse();
     let (left_lines, right_lines) = (count_lines(&left_tokens), count_lines(&right_tokens));
     let total = left_lines + right_lines;
     if total == 0 {

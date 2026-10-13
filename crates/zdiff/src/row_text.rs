@@ -25,6 +25,8 @@ pub struct RowText {
     pub dimmed: Vec<Range<usize>>,
     /// Changed characters inside real edited tokens, as byte ranges into `text`.
     pub changed_chars: Vec<Range<usize>>,
+    /// Real edited tokens that aren't hidden, as byte ranges into `text`.
+    pub changed_tokens: Vec<Range<usize>>,
 }
 
 /// `changed_chars` is the row's `LineContent::Code::changed_chars`.
@@ -39,6 +41,7 @@ pub fn build_row_text<T: RawTokenTrait>(
         ghosts: Vec::new(),
         dimmed: Vec::new(),
         changed_chars: Vec::new(),
+        changed_tokens: Vec::new(),
     };
 
     for (diff_result, is_dimmed, is_ghost) in tokens {
@@ -65,6 +68,9 @@ pub fn build_row_text<T: RawTokenTrait>(
             }
             // Equal tokens may resolve to the other side's file, where these offsets mean nothing.
             if !matches!(diff_result.operation, DiffOp::Equal(_)) {
+                if !diff_result.hide_in_diff {
+                    row.changed_tokens.push(start..row.text.len());
+                }
                 let changed = ranges_in_span(changed_chars, &token.span);
                 let to_row = |r: &Range<usize>| {
                     start + r.start - token.span.start..start + r.end - token.span.start
@@ -106,7 +112,7 @@ mod tests {
         diff_builder::{DiffBuilderOptions, LineContent, build_diff_rows},
         diff_ir::DiffIR,
         ignore::IgnoreMask,
-        lexer::{LEXER_MODE_DEFAULT, LexerDefault, RawToken},
+        lexer::{Lexer, RawToken},
         myers::{DiffPhases, MyersDiffAlgorithm, myers_diff_path},
         universal_path::UniversalPath,
     };
@@ -116,9 +122,8 @@ mod tests {
             path: UniversalPath::from("test"),
             hash: String::new(),
             contents: contents.to_string(),
-            tokens: LexerDefault::<RawToken>::new(contents).parse(),
+            tokens: Lexer::new(contents).parse(),
             metadata: FileMetadata::new(contents),
-            lexer_mode: LEXER_MODE_DEFAULT,
         }
     }
 
@@ -165,6 +170,27 @@ mod tests {
         let row = build_row_text(&tokens, &changed, Some(&file), Some(&file));
         assert_eq!(row.text, "ab cd");
         assert_eq!(row.changed_chars, [4..5]);
+    }
+
+    #[test]
+    fn changed_tokens_are_the_real_edited_tokens_not_hidden() {
+        // Tokens: "zz"(0) "\n"(1) "ab"(2) " "(3) "cd"(4) " "(5) "ef"(6)
+        let file = cached_file("zz\nab cd ef");
+        let hidden = DiffResult {
+            hide_in_diff: true,
+            ..ghost_delete(6)
+        };
+        let tokens = vec![
+            (equal(2), false, false),
+            (equal(3), false, false),
+            (ghost_delete(4), false, false),
+            (ghost_delete(0), false, true),
+            (equal(5), false, false),
+            (hidden, false, false),
+        ];
+        let row = build_row_text(&tokens, &[], Some(&file), Some(&file));
+        assert_eq!(row.text, "ab cd ef");
+        assert_eq!(row.changed_tokens, [3..5]);
     }
 
     #[test]

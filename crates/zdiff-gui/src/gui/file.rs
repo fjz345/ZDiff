@@ -4,7 +4,7 @@ use std::sync::{Arc, mpsc};
 
 use zcommon::vcs::git::{self, GitCommand, GitRunner};
 use zdiff::cached_file::CachedFile;
-use zdiff::lexer::{LEXER_MODE_DEFAULT, RawToken};
+use zdiff::lexer::RawToken;
 use zdiff::universal_path::{DepotRev, GitRev, UniversalPath};
 
 use crate::p4::{P4Command, P4Runner, print_file};
@@ -72,16 +72,12 @@ impl LoadedFile {
     }
 }
 
-pub fn load_file(
-    display_path: UniversalPath,
-    physical_path: &Path,
-    lexer_mode: u8,
-) -> io::Result<LoadedFile> {
+pub fn load_file(display_path: UniversalPath, physical_path: &Path) -> io::Result<LoadedFile> {
     let bytes = std::fs::read(physical_path)?;
     match sniff_viewer_kind(&bytes) {
         // Reads the file a second time, so text loading stays in CachedFile until the
         // text-encoding-eol decoder replaces it.
-        ViewerKind::Text => CachedFile::new(display_path, physical_path, lexer_mode)
+        ViewerKind::Text => CachedFile::new(display_path, physical_path)
             .map(|file| LoadedFile::Text(Arc::new(file))),
         // Sniffing never picks Image; image content is binary, and the Image viewer reads bytes.
         ViewerKind::Hex | ViewerKind::Image | ViewerKind::Audio | ViewerKind::Video => {
@@ -98,7 +94,6 @@ pub fn load_file(
 pub fn load_depot_file(
     display_path: UniversalPath,
     temp_root: &Path,
-    lexer_mode: u8,
     p4: &impl P4Runner,
 ) -> Result<LoadedFile, String> {
     let UniversalPath::Depot(depot_str, rev) = &display_path else {
@@ -131,7 +126,7 @@ pub fn load_depot_file(
     std::fs::write(&temp_path, &bytes)
         .map_err(|e| format!("Failed to write P4 content to temp file: {}", e))?;
 
-    let loaded = load_file(display_path.clone(), &temp_path, lexer_mode)
+    let loaded = load_file(display_path.clone(), &temp_path)
         .map_err(|e| format!("Cannot load file {}, Error: {e}", temp_path.display()));
     let _ = std::fs::remove_file(&temp_path);
     loaded
@@ -140,7 +135,6 @@ pub fn load_depot_file(
 pub fn load_git_file(
     display_path: UniversalPath,
     temp_root: &Path,
-    lexer_mode: u8,
     git: &impl GitRunner,
 ) -> Result<LoadedFile, String> {
     let UniversalPath::Git(path, rev) = &display_path else {
@@ -159,7 +153,7 @@ pub fn load_git_file(
         .map_err(|e| format!("Failed to create a temp file for {display_path}: {e}"))?;
     temp.write_all(&bytes)
         .map_err(|e| format!("Failed to write git content to temp file: {e}"))?;
-    load_file(display_path.clone(), temp.path(), lexer_mode)
+    load_file(display_path.clone(), temp.path())
         .map_err(|e| format!("Cannot load file {}, Error: {e}", temp.path().display()))
 }
 
@@ -189,7 +183,6 @@ pub struct FileProcessor {
 
     #[cfg_attr(feature = "serde", serde(skip))]
     loaded_file: Option<LoadedFile>,
-    diff_lexer_mode: u8,
 
     #[cfg_attr(feature = "serde", serde(skip))]
     cached_file_path: Option<UniversalPath>, // only process once the path
@@ -213,7 +206,6 @@ impl Default for FileProcessor {
             channel: default_channel(),
             file_path: default_file_path(),
             loaded_file: None,
-            diff_lexer_mode: LEXER_MODE_DEFAULT,
             cached_file_path: None,
             root_path: None,
             channel_loaded_file: default_channel_loaded_file(),
@@ -239,14 +231,6 @@ impl FileProcessor {
     pub fn poll_path_channel(&mut self) {
         while let Ok(path) = self.channel.1.try_recv() {
             self.set_path(path);
-        }
-    }
-
-    pub fn set_lexer_mode(&mut self, mode: u8) {
-        if self.diff_lexer_mode != mode {
-            log::debug!("Setting lexer mode {} for path: {}", mode, self.file_path);
-            self.diff_lexer_mode = mode;
-            self.invalidate_cache_file();
         }
     }
 
@@ -439,30 +423,23 @@ impl FileProcessor {
             self.load_error = None;
             self.loading_path = Some(path.clone());
 
-            log::debug!(
-                "Loading file asynchronously: {} with lexer mode {}",
-                path,
-                self.diff_lexer_mode
-            );
+            log::debug!("Loading file asynchronously: {}", path);
 
             let tx = self.channel_loaded_file.0.clone();
             let path_clone = path.clone();
-            let diff_lexer_mode = self.diff_lexer_mode;
 
             std::thread::spawn(move || {
                 let loaded = match &path_clone {
-                    UniversalPath::Local(p) => load_file(path_clone.clone(), p, diff_lexer_mode)
+                    UniversalPath::Local(p) => load_file(path_clone.clone(), p)
                         .map_err(|e| format!("Cannot load file {}, Error: {e}", p.display())),
                     UniversalPath::Depot(..) => load_depot_file(
                         path_clone.clone(),
                         &std::env::temp_dir(),
-                        diff_lexer_mode,
                         &P4Command::new(false).for_file(path_clone.clone()),
                     ),
                     UniversalPath::Git(..) => load_git_file(
                         path_clone.clone(),
                         &std::env::temp_dir(),
-                        diff_lexer_mode,
                         &GitCommand::default(),
                     ),
                 };
@@ -580,7 +557,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("file.bin");
         std::fs::write(&path, bytes).unwrap();
-        load_file(UniversalPath::from(path.clone()), &path, LEXER_MODE_DEFAULT).unwrap()
+        load_file(UniversalPath::from(path.clone()), &path).unwrap()
     }
 
     #[test]
@@ -626,7 +603,7 @@ mod tests {
         fetched: Result<&[u8], &str>,
     ) -> Result<LoadedFile, String> {
         let path = UniversalPath::Depot(depot.into(), rev.map(DepotRev::Rev));
-        load_depot_file(path, temp_root, LEXER_MODE_DEFAULT, &BytesP4(fetched))
+        load_depot_file(path, temp_root, &BytesP4(fetched))
     }
 
     fn print_args(file: &str) -> Vec<Vec<String>> {
@@ -639,7 +616,7 @@ mod tests {
         let p4 = FakeP4::new(|_: &[&str]| Ok("at change\n".to_string()));
         let path = UniversalPath::Depot("//depot/src/a.rs".into(), Some(DepotRev::Change(1234)));
 
-        let loaded = load_depot_file(path.clone(), temp.path(), LEXER_MODE_DEFAULT, &p4).unwrap();
+        let loaded = load_depot_file(path.clone(), temp.path(), &p4).unwrap();
 
         assert_eq!(p4.calls(), print_args("//depot/src/a.rs@1234"));
         assert_eq!(loaded.bytes(), b"at change\n");
@@ -652,7 +629,7 @@ mod tests {
         let p4 = FakeP4::new(|_: &[&str]| Ok("shelved\n".to_string()));
         let path = UniversalPath::Depot("//depot/src/a.rs".into(), Some(DepotRev::Shelf(77)));
 
-        let loaded = load_depot_file(path.clone(), temp.path(), LEXER_MODE_DEFAULT, &p4).unwrap();
+        let loaded = load_depot_file(path.clone(), temp.path(), &p4).unwrap();
 
         assert_eq!(p4.calls(), print_args("//depot/src/a.rs@=77"));
         assert_eq!(loaded.bytes(), b"shelved\n");
@@ -665,7 +642,7 @@ mod tests {
         let p4 = FakeP4::new(|_: &[&str]| Ok("x".to_string()));
         for rev in [None, Some(DepotRev::Rev(3))] {
             let path = UniversalPath::Depot("//depot/src/a.rs".into(), rev);
-            load_depot_file(path, temp.path(), LEXER_MODE_DEFAULT, &p4).unwrap();
+            load_depot_file(path, temp.path(), &p4).unwrap();
         }
         let mut expected = print_args("//depot/src/a.rs");
         expected.extend(print_args("//depot/src/a.rs#3"));
@@ -821,7 +798,7 @@ mod tests {
         });
         let temp = tempfile::tempdir().unwrap();
         let path = UniversalPath::Git(repo.path().join("src").join("a.rs"), rev);
-        let loaded = load_git_file(path.clone(), temp.path(), LEXER_MODE_DEFAULT, &git);
+        let loaded = load_git_file(path.clone(), temp.path(), &git);
         if let Ok(loaded) = &loaded {
             assert_eq!(loaded.path(), &path);
         }

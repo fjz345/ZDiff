@@ -247,10 +247,10 @@ impl IgnoreMask {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lexer::{LexerDefault, RawToken};
+    use crate::lexer::{Lexer, RawToken};
 
     fn lex(text: &str) -> Vec<RawToken> {
-        LexerDefault::<RawToken>::new(text).parse()
+        Lexer::new(text).parse()
     }
 
     fn with_patterns(patterns: &str) -> IgnoreOptions {

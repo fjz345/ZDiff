@@ -141,23 +141,14 @@ pub struct StringsSide {
     pub offsets: Arc<[usize]>,
 }
 
-fn strings_side(
-    file: &LoadedFile,
-    min_len: usize,
-    lexer_mode: u8,
-    cancel: &AtomicBool,
-) -> Option<StringsSide> {
+fn strings_side(file: &LoadedFile, min_len: usize, cancel: &AtomicBool) -> Option<StringsSide> {
     let strings = extract_strings(file.bytes(), min_len, cancel)?;
     let text = strings_text(&strings);
     if cancel.load(Ordering::Acquire) {
         return None;
     }
     Some(StringsSide {
-        file: Arc::new(CachedFile::from_contents(
-            file.path().clone(),
-            text,
-            lexer_mode,
-        )),
+        file: Arc::new(CachedFile::from_contents(file.path().clone(), text)),
         offsets: strings.iter().map(|s| s.offset).collect(),
     })
 }
@@ -167,7 +158,6 @@ type StringsPair = [Option<StringsSide>; 2];
 struct StringsRequest {
     files: [Option<LoadedFile>; 2],
     min_len: usize,
-    lexer_mode: u8,
 }
 
 /// Extracts the strings of the current pair on a worker thread. A new request cancels the running
@@ -207,16 +197,9 @@ impl std::fmt::Debug for HexStrings {
 
 impl HexStrings {
     /// No-op for the request already made.
-    pub fn request(
-        &mut self,
-        ctx: &egui::Context,
-        files: [Option<LoadedFile>; 2],
-        min_len: usize,
-        lexer_mode: u8,
-    ) {
+    pub fn request(&mut self, ctx: &egui::Context, files: [Option<LoadedFile>; 2], min_len: usize) {
         if let Some(current) = &self.request
             && current.min_len == min_len
-            && current.lexer_mode == lexer_mode
             && is_same_side(&current.files[0], &files[0])
             && is_same_side(&current.files[1], &files[1])
         {
@@ -226,11 +209,7 @@ impl HexStrings {
         self.generation += 1;
         self.sides = None;
         let work = files.clone();
-        self.request = Some(StringsRequest {
-            files,
-            min_len,
-            lexer_mode,
-        });
+        self.request = Some(StringsRequest { files, min_len });
 
         let tx = self.channel.0.clone();
         let generation = self.generation;
@@ -240,7 +219,7 @@ impl HexStrings {
             let mut pair = StringsPair::default();
             for (slot, file) in pair.iter_mut().zip(&work) {
                 if let Some(file) = file {
-                    let Some(side) = strings_side(file, min_len, lexer_mode, &cancel_flag) else {
+                    let Some(side) = strings_side(file, min_len, &cancel_flag) else {
                         return;
                     };
                     *slot = Some(side);
@@ -432,12 +411,7 @@ mod tests {
     fn a_request_extracts_each_side_off_thread() {
         let mut strings = HexStrings::default();
         let files = [Some(binary(b"\0abcd\0efgh")), None];
-        strings.request(
-            &egui::Context::default(),
-            files.clone(),
-            4,
-            zdiff::lexer::LEXER_MODE_DEFAULT,
-        );
+        strings.request(&egui::Context::default(), files.clone(), 4);
         wait_for(&mut strings);
 
         let [left, right] = strings.sides().unwrap();
@@ -452,7 +426,7 @@ mod tests {
         let cancel = AtomicBool::new(true);
         assert!(extract_strings(b"abcd\0efgh", 4, &cancel).is_none());
         let file = binary(b"abcd\0efgh");
-        assert!(strings_side(&file, 4, zdiff::lexer::LEXER_MODE_DEFAULT, &cancel).is_none());
+        assert!(strings_side(&file, 4, &cancel).is_none());
     }
 
     #[test]
@@ -460,10 +434,10 @@ mod tests {
         let mut strings = HexStrings::default();
         let ctx = egui::Context::default();
         let files = [Some(binary(b"\0abcd\0efghij")), None];
-        strings.request(&ctx, files.clone(), 4, zdiff::lexer::LEXER_MODE_DEFAULT);
+        strings.request(&ctx, files.clone(), 4);
         let first = strings.cancel_flag.clone();
         assert!(!first.load(Ordering::Acquire));
-        strings.request(&ctx, files.clone(), 5, zdiff::lexer::LEXER_MODE_DEFAULT);
+        strings.request(&ctx, files.clone(), 5);
         assert!(first.load(Ordering::Acquire));
         assert!(!strings.cancel_flag.load(Ordering::Acquire));
         let second = strings.cancel_flag.clone();
@@ -476,13 +450,13 @@ mod tests {
         let mut strings = HexStrings::default();
         let ctx = egui::Context::default();
         let files = [Some(binary(b"\0abcd\0efghij")), None];
-        strings.request(&ctx, files.clone(), 4, zdiff::lexer::LEXER_MODE_DEFAULT);
+        strings.request(&ctx, files.clone(), 4);
         wait_for(&mut strings);
 
-        strings.request(&ctx, files.clone(), 4, zdiff::lexer::LEXER_MODE_DEFAULT);
+        strings.request(&ctx, files.clone(), 4);
         assert!(strings.sides().is_some());
 
-        strings.request(&ctx, files.clone(), 5, zdiff::lexer::LEXER_MODE_DEFAULT);
+        strings.request(&ctx, files.clone(), 5);
         assert!(strings.sides().is_none());
         wait_for(&mut strings);
         let [left, _] = strings.sides().unwrap();

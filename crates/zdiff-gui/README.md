@@ -16,11 +16,11 @@ GUI for zdiff crate
     - Search for text
     - Goto line
     - Line pins (align chosen line pairs)
-    - Lexer modes
     - P4 depot paths
     - Diff Options
         + Ignore whitespace
-        + Highlight rows that differ
+        + Highlight rows that differ: switches the diff marks on/off; its dropdown picks changed scopes, lines, tokens and/or characters
+        + Diff phases (Options): Scope and Line skip unchanged parts before the token diff
         + Inline ghost tokens
         + Diff only
     - Occurrence highlight: selecting text in a row highlights its other occurrences in the visible rows, on both sides

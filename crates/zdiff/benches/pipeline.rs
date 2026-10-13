@@ -14,7 +14,7 @@ use zdiff::{
     diff_builder::{DiffBuilderOptions, build_diff_rows},
     diff_ir::DiffIR,
     ignore::IgnoreMask,
-    lexer::{LexerGreedy, RawToken},
+    lexer::{Lexer, RawToken},
     myers::{
         DiffPhases, MyersDiffAlgorithm, MyersPath, line_diff, myers_count_add_deletes,
         myers_diff_path, token_diff,
@@ -135,8 +135,8 @@ fn main() {
     }
     println!();
     for fixture in &fixtures {
-        let tokens_source: Vec<RawToken> = LexerGreedy::new(&fixture.source).parse();
-        let tokens_target: Vec<RawToken> = LexerGreedy::new(&fixture.target).parse();
+        let tokens_source: Vec<RawToken> = Lexer::new(&fixture.source).parse();
+        let tokens_target: Vec<RawToken> = Lexer::new(&fixture.target).parse();
         assert_eq!(
             driver_path(
                 &fixture.source,
@@ -193,8 +193,8 @@ fn run_once(source: &str, target: &str) -> Run {
         .max(FileMetadata::new(target).num_lines());
 
     let start = Instant::now();
-    let tokens_source: Vec<RawToken> = LexerGreedy::new(black_box(source)).parse();
-    let tokens_target: Vec<RawToken> = LexerGreedy::new(black_box(target)).parse();
+    let tokens_source: Vec<RawToken> = Lexer::new(black_box(source)).parse();
+    let tokens_target: Vec<RawToken> = Lexer::new(black_box(target)).parse();
     let lex = start.elapsed();
 
     // Same comparison as zdiff-gui's compare_tokens.

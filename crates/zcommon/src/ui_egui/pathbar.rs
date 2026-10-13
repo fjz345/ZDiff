@@ -33,6 +33,28 @@ pub fn elide(
         .or(Some(1..n - 2))
 }
 
+/// Width limits that make `widths` fit in `available`: the widest items share one cap, narrower
+/// ones keep theirs.
+fn cap_widths(widths: &[f32], available: f32) -> Vec<f32> {
+    let available = available.max(0.0);
+    if widths.iter().sum::<f32>() <= available {
+        return widths.to_vec();
+    }
+    let mut sorted = widths.to_vec();
+    sorted.sort_by(f32::total_cmp);
+    let mut remaining = available;
+    let mut cap = 0.0;
+    for (i, &width) in sorted.iter().enumerate() {
+        let even = remaining / (sorted.len() - i) as f32;
+        if width > even {
+            cap = even;
+            break;
+        }
+        remaining -= width;
+    }
+    widths.iter().map(|&width| width.min(cap)).collect()
+}
+
 #[derive(Clone)]
 struct EditState {
     text: String,
@@ -132,10 +154,14 @@ fn display(
         None if i < dim => visuals.weak_text_color(),
         None => visuals.text_color(),
     };
-    let font = egui::TextStyle::Button.resolve(ui.style());
-    let text_width = |text: &str| {
+    let text_width = |text: &str, style: egui::TextStyle| {
+        let style = ui.style().override_text_style.clone().unwrap_or(style);
         ui.painter()
-            .layout_no_wrap(text.to_owned(), font.clone(), egui::Color32::PLACEHOLDER)
+            .layout_no_wrap(
+                text.to_owned(),
+                style.resolve(ui.style()),
+                egui::Color32::PLACEHOLDER,
+            )
             .size()
             .x
     };
@@ -143,64 +169,98 @@ fn display(
     let padding = ui.spacing().button_padding.x;
     let widths: Vec<f32> = segments
         .iter()
-        .map(|s| text_width(&s.name) + 2.0 * padding)
+        .enumerate()
+        .map(|(i, s)| {
+            if clickable(i) {
+                text_width(&s.name, egui::TextStyle::Button) + 2.0 * padding
+            } else {
+                text_width(&s.name, egui::TextStyle::Body)
+            }
+        })
         .collect();
-    let edit_width = text_width("Edit") + 2.0 * padding;
-    let available = rect.width() - 2.0 * padding - edit_width - spacing;
-    let hidden = elide(
-        &widths,
-        text_width(SEPARATOR) + 2.0 * spacing,
-        text_width(ELLIPSIS) + 2.0 * padding,
-        available,
+    let edit_width = text_width("Edit", egui::TextStyle::Button) + 2.0 * padding;
+    let inner = rect.shrink2(egui::vec2(padding, 0.0));
+    let edit_rect = egui::Rect::from_min_max(
+        egui::pos2(inner.right() - edit_width, inner.top()),
+        inner.max,
     );
+    let area = egui::Rect::from_min_max(
+        inner.min,
+        egui::pos2(edit_rect.left() - spacing, inner.bottom()),
+    );
+    let separator_width = text_width(SEPARATOR, egui::TextStyle::Body) + 2.0 * spacing;
+    let ellipsis_width = text_width(ELLIPSIS, egui::TextStyle::Body);
+    let hidden = elide(&widths, separator_width, ellipsis_width, area.width());
+
+    let shown: Vec<usize> = (0..segments.len())
+        .filter(|i| !hidden.as_ref().is_some_and(|h| h.contains(i)))
+        .collect();
+    let items = shown.len() + usize::from(hidden.is_some());
+    let fixed = separator_width * items.saturating_sub(1) as f32
+        + if hidden.is_some() { ellipsis_width } else { 0.0 };
+    let shown_widths: Vec<f32> = shown.iter().map(|&i| widths[i]).collect();
+    let caps = cap_widths(&shown_widths, area.width() - fixed);
 
     let mut action = None;
     let mut child = ui.new_child(
         egui::UiBuilder::new()
-            .max_rect(rect.shrink2(egui::vec2(padding, 0.0)))
+            .max_rect(area)
             .layout(egui::Layout::left_to_right(egui::Align::Center)),
     );
-    child.set_clip_rect(rect.intersect(ui.clip_rect()));
-    child.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-        if ui
-            .add(egui::Button::new("Edit").frame_when_inactive(false))
-            .on_hover_text("Edit path")
-            .clicked()
-        {
-            start_editing(ui, id, full_path);
+    child.set_clip_rect(area.intersect(ui.clip_rect()));
+    child.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
+    if segments.is_empty() {
+        let text = egui::RichText::new("No folder").color(visuals.weak_text_color());
+        child.add(egui::Label::new(text).selectable(false));
+    }
+    for (i, segment) in segments.iter().enumerate() {
+        if hidden.as_ref().is_some_and(|h| h.contains(&i)) {
+            if hidden.as_ref().is_some_and(|h| h.start == i) {
+                child.add(egui::Label::new(SEPARATOR).selectable(false));
+                child
+                    .add(egui::Label::new(ELLIPSIS).selectable(false))
+                    .on_hover_text(full_path);
+            }
+            continue;
         }
-        ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-            if segments.is_empty() {
-                let text = egui::RichText::new("No folder").color(visuals.weak_text_color());
-                ui.add(egui::Label::new(text).selectable(false));
+        if i > 0 {
+            child.add(egui::Label::new(SEPARATOR).selectable(false));
+        }
+        let text = egui::RichText::new(&segment.name).color(text_color(i));
+        let slot = shown.iter().position(|&s| s == i).expect("segment is shown");
+        let cut = caps[slot] < widths[i];
+        let size = egui::vec2(caps[slot], rect.height());
+        if clickable(i) {
+            let button = egui::Button::new(text).frame_when_inactive(false);
+            let response = if cut {
+                child.add_sized(size, button.truncate())
+            } else {
+                child.add(button)
+            };
+            if response.on_hover_text(&segment.path).clicked() {
+                action = Some(PathBarAction::Segment(i));
             }
-            for (i, segment) in segments.iter().enumerate() {
-                if hidden.as_ref().is_some_and(|h| h.contains(&i)) {
-                    if hidden.as_ref().is_some_and(|h| h.start == i) {
-                        ui.add(egui::Label::new(SEPARATOR).selectable(false));
-                        ui.add(egui::Label::new(ELLIPSIS).selectable(false))
-                            .on_hover_text(full_path);
-                    }
-                    continue;
-                }
-                if i > 0 {
-                    ui.add(egui::Label::new(SEPARATOR).selectable(false));
-                }
-                let text = egui::RichText::new(&segment.name).color(text_color(i));
-                if clickable(i) {
-                    if ui
-                        .add(egui::Button::new(text).frame_when_inactive(false))
-                        .on_hover_text(&segment.path)
-                        .clicked()
-                    {
-                        action = Some(PathBarAction::Segment(i));
-                    }
-                } else {
-                    ui.add(egui::Label::new(text).selectable(false));
-                }
-            }
-        });
-    });
+        } else if cut {
+            child
+                .add_sized(size, egui::Label::new(text).selectable(false).truncate())
+                .on_hover_text(&segment.path);
+        } else {
+            child.add(egui::Label::new(text).selectable(false));
+        }
+    }
+
+    let mut edit_ui = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(edit_rect)
+            .layout(egui::Layout::left_to_right(egui::Align::Center)),
+    );
+    if edit_ui
+        .add(egui::Button::new("Edit").frame_when_inactive(false))
+        .on_hover_text("Edit path")
+        .clicked()
+    {
+        start_editing(ui, id, full_path);
+    }
 
     if background.clicked() {
         start_editing(ui, id, full_path);
@@ -221,7 +281,7 @@ const ELLIPSIS: &str = "…";
 
 #[cfg(test)]
 mod tests {
-    use super::{PathBarAction, elide, path_bar};
+    use super::{PathBarAction, cap_widths, elide, path_bar};
     use crate::path::split_path;
     use eframe::egui::{self, Event, Modifiers, PointerButton, Pos2, Rect};
 
@@ -295,6 +355,105 @@ mod tests {
         }
     }
 
+    fn text_shapes(shape: &egui::Shape, out: &mut Vec<(String, Rect)>) {
+        match shape {
+            egui::Shape::Vec(shapes) => shapes.iter().for_each(|s| text_shapes(s, out)),
+            egui::Shape::Text(text) => out.push((
+                text.galley.text().to_owned(),
+                text.galley.rect.translate(text.pos.to_vec2()),
+            )),
+            _ => {}
+        }
+    }
+
+    fn displayed_text(
+        path: &str,
+        width: f32,
+        style: Option<egui::TextStyle>,
+    ) -> (Vec<(String, Rect)>, Rect) {
+        let ctx = egui::Context::default();
+        let segments = split_path(path);
+        let mut bar = Rect::NOTHING;
+        let mut run = |ctx: &egui::Context, events: Vec<Event>| {
+            let raw = egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, egui::vec2(width, 200.0))),
+                events,
+                ..Default::default()
+            };
+            ctx.run(raw, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    ui.style_mut().override_text_style = style.clone();
+                    bar = ui.available_rect_before_wrap();
+                    path_bar(ui, "bar", &segments, 0, |i| i + 1 < segments.len(), None, false);
+                });
+            })
+        };
+        run(&ctx, vec![]);
+        let output = run(&ctx, vec![]);
+        let mut texts = Vec::new();
+        output
+            .shapes
+            .iter()
+            .for_each(|clipped| text_shapes(&clipped.shape, &mut texts));
+        texts.retain(|(_, rect)| bar.y_range().intersects(rect.y_range()));
+        (texts, bar)
+    }
+
+    fn assert_text_fits_left_of_edit(path: &str, width: f32) {
+        for style in [None, Some(egui::TextStyle::Monospace)] {
+            assert_text_fits_left_of_edit_in(path, width, style);
+        }
+    }
+
+    fn assert_text_fits_left_of_edit_in(path: &str, width: f32, style: Option<egui::TextStyle>) {
+        let (texts, bar) = displayed_text(path, width, style.clone());
+        let padding = egui::Style::default().spacing.button_padding.x;
+        let edit = texts
+            .iter()
+            .find(|(text, _)| text == "Edit")
+            .expect("the Edit button is drawn")
+            .1;
+        for (text, rect) in texts.iter().filter(|(text, _)| text != "Edit") {
+            assert!(
+                rect.right() <= edit.left() - padding,
+                "{style:?} {text:?} ends at {} under the Edit button starting at {}",
+                rect.right(),
+                edit.left() - padding
+            );
+        }
+        assert!(
+            edit.right() + padding <= bar.right(),
+            "{style:?} Edit button ends at {} past the bar at {}",
+            edit.right() + padding,
+            bar.right()
+        );
+    }
+
+    #[test]
+    fn long_paths_never_reach_the_edit_button() {
+        assert_text_fits_left_of_edit(
+            r"C:\a_very_long_directory_name\another_extremely_long_directory\yet_another_long_one\some_really_long_file_name_here.rs",
+            300.0,
+        );
+    }
+
+    #[test]
+    fn few_long_segments_never_reach_the_edit_button() {
+        assert_text_fits_left_of_edit(
+            r"C:\an_extremely_long_directory_name_that_goes_on\and_a_very_long_file_name_too.rs",
+            250.0,
+        );
+    }
+
+    #[test]
+    fn short_paths_are_shown_whole() {
+        let (texts, _) = displayed_text(PATH, 400.0, None);
+        for segment in split_path(PATH) {
+            let name = segment.name.as_str();
+            assert!(texts.iter().any(|(text, _)| text == name), "{name}");
+        }
+    }
+
     #[test]
     fn click_elsewhere_commits_when_asked() {
         let mut bar = Bar::editing(true);
@@ -322,6 +481,22 @@ mod tests {
             assert_eq!(bar.key(egui::Key::Escape), None);
             assert_eq!(bar.click(egui::pos2(200.0, 150.0)), None);
         }
+    }
+
+    #[test]
+    fn widths_that_fit_are_not_capped() {
+        assert_eq!(cap_widths(&[10.0, 100.0, 30.0], 140.0), [10.0, 100.0, 30.0]);
+    }
+
+    #[test]
+    fn only_the_widest_widths_are_capped() {
+        assert_eq!(cap_widths(&[10.0, 100.0, 30.0], 100.0), [10.0, 60.0, 30.0]);
+        assert_eq!(cap_widths(&[50.0, 50.0], 60.0), [30.0, 30.0]);
+    }
+
+    #[test]
+    fn no_room_caps_everything_to_nothing() {
+        assert_eq!(cap_widths(&[10.0, 20.0], -5.0), [0.0, 0.0]);
     }
 
     #[test]

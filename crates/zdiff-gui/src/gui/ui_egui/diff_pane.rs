@@ -8,6 +8,7 @@ use crate::{
         insert_pin,
         pin_line_counts,
     },
+    diff_phases::{Marks, diff_marks_checkboxes, in_scopes, run_phases},
     file::FileProcessor,
     keybindings::{FileAction, with_shortcut},
     revert::{self, RevertRequest, RevertTarget},
@@ -532,6 +533,14 @@ impl FileDiffPane {
                     egui::RichText::new("▬").monospace().strong(),
                     &hint(FileAction::HighlightRows, "Highlight Rows"),
                 );
+                egui::containers::menu::MenuButton::new("⏷")
+                    .config(
+                        egui::containers::menu::MenuConfig::new()
+                            .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside),
+                    )
+                    .ui(ui, |ui| diff_marks_checkboxes(ui, ctx.diff_options))
+                    .0
+                    .on_hover_text("Diff marks");
                 toggle_button(
                     ui,
                     &mut ctx.diff_options.ghost_rows,
@@ -681,6 +690,10 @@ impl FileDiffPane {
             }
         });
 
+        if let Some(reason) = ctx.viewer_fallback {
+            ui.colored_label(ui.visuals().warn_fg_color, format!("⚠ {reason}"));
+        }
+
         let diff_rows = ctx.diff_ctx.as_ref().and_then(|f| Some(&f.diff_rows));
         let source_path = ctx
             .diff_ctx
@@ -769,19 +782,22 @@ impl FileDiffPane {
                                 area.max.x -= RULER_WIDTH;
                             }
                             let button_padding = ui.spacing().button_padding.x;
-                            let center = center_layout(
-                                center_layout_cache,
-                                &mono_font,
-                                ui.ctx().pixels_per_point(),
-                                || {
-                                    ui.fonts_mut(|fonts| {
-                                        CenterLayout::measure(
-                                            |c| fonts.glyph_width(&mono_font, c),
-                                            button_padding,
-                                        )
-                                    })
-                                },
-                            );
+                            let center = CenterLayout {
+                                toggles: ctx.diff_ctx.is_some_and(|d| !d.row_blocks.is_empty()),
+                                ..center_layout(
+                                    center_layout_cache,
+                                    &mono_font,
+                                    ui.ctx().pixels_per_point(),
+                                    || {
+                                        ui.fonts_mut(|fonts| {
+                                            CenterLayout::measure(
+                                                |c| fonts.glyph_width(&mono_font, c),
+                                                button_padding,
+                                            )
+                                        })
+                                    },
+                                )
+                            };
                             let side_widths = split.widths(shared_width(
                                 area.width(),
                                 center.width(),
@@ -1127,7 +1143,23 @@ impl FileDiffPane {
 
                                     // Once per frame, not per row: a temp side gets no revert buttons.
                                     let temp_root = std::env::temp_dir();
-                                    let highlight_rows = ctx.diff_options.highlight_rows;
+                                    let text_diff = ctx.diff_ctx.filter(|_| !strings);
+                                    let character_phase =
+                                        text_diff.is_some_and(|d| run_phases(&d.input.options).character);
+                                    let marks = Marks::new(ctx.diff_options, character_phase);
+                                    let changed_scopes = text_diff.map(|d| &*d.changed_scopes);
+                                    let row_marks = |side: ActiveSide, content: &LineContent| {
+                                        let in_changed_scope = match (content, changed_scopes) {
+                                            (LineContent::Code { line_num, .. }, Some(scopes)) => {
+                                                in_scopes(&scopes[side as usize], *line_num)
+                                            }
+                                            _ => false,
+                                        };
+                                        Marks {
+                                            scope: marks.scope && in_changed_scope,
+                                            ..marks
+                                        }
+                                    };
                                     let shown_pins = ctx.diff_ctx.map_or(&[][..], shown_pins);
                                     let symbol_colors = [
                                         role_color(&egui_ctx, SharedRole::DeleteText),
@@ -1189,7 +1221,7 @@ impl FileDiffPane {
                                                                 },
                                                             }
                                                         },
-                                                        highlight_rows,
+                                                        row_marks(u.side, content),
                                                     );
                                                     if is_pinned(shown_pins, u.side, content) {
                                                         let cell_ui = ui.new_child(
@@ -1286,7 +1318,7 @@ impl FileDiffPane {
                                                             ctx.code_language,
                                                             overlay,
                                                             gutter,
-                                                            highlight_rows,
+                                                            row_marks(side, content),
                                                         );
                                                     let pinned = is_pinned(shown_pins, side, content);
                                                     if pinned || overlay.is_some() {
@@ -1332,7 +1364,9 @@ impl FileDiffPane {
                                                         block_toggle_buttons(ui, block, [expand_slot, toggle_slot], &mut *ctx.block_toggle_request);
                                                     }
                                                     revert_button(ui, left_slot, RevertTarget::Left, "<", "Replace this hunk in the left file with the right side");
-                                                    if let Some((symbol, color)) = row_symbol(diff_row, symbol_colors) {
+                                                    if let Some((symbol, color)) =
+                                                        row_symbol(diff_row, symbol_colors).filter(|_| marks.any())
+                                                    {
                                                         ui.put(
                                                             symbol_slot,
                                                             egui::Label::new(egui::RichText::new(symbol).color(color))
@@ -1656,10 +1690,16 @@ impl FileDiffPane {
             code_language,
             trace,
             Gutter::Single,
-            true,
+            Marks {
+                scope: false,
+                line: true,
+                tokens: false,
+                chars: true,
+            },
         );
     }
 
+    /// `marks.scope`: this row's line is in a changed scope and scopes are marked.
     fn render_row<T: RawTokenTrait>(
         ui: &mut egui::Ui,
         side: ActiveSide,
@@ -1677,7 +1717,7 @@ impl FileDiffPane {
         code_language: &str,
         trace: Option<&PhaseTrace>,
         gutter: Gutter,
-        highlight_rows: bool,
+        marks: Marks,
     ) {
         let row_h = ui.text_style_height(&egui::TextStyle::Monospace);
         // Wrapped rows fill their cell, which is as tall as the row's taller side.
@@ -1767,11 +1807,22 @@ impl FileDiffPane {
                             &row_text.dimmed,
                             color(FileRole::DimmedText),
                         );
-                        let changed_bg = match side {
-                            ActiveSide::Left => color(FileRole::DeleteChangedChars),
-                            ActiveSide::Right => color(FileRole::InsertChangedChars),
+                        let (tokens_bg, chars_bg) = match side {
+                            ActiveSide::Left => (
+                                color(FileRole::DeleteChangedTokens),
+                                color(FileRole::DeleteChangedChars),
+                            ),
+                            ActiveSide::Right => (
+                                color(FileRole::InsertChangedTokens),
+                                color(FileRole::InsertChangedChars),
+                            ),
                         };
-                        highlight_ranges(&mut layout_job, &row_text.changed_chars, changed_bg);
+                        if marks.tokens {
+                            highlight_ranges(&mut layout_job, &row_text.changed_tokens, tokens_bg);
+                        }
+                        if marks.chars {
+                            highlight_ranges(&mut layout_job, &row_text.changed_chars, chars_bg);
+                        }
                         let found = occurrences.ranges(side, row_index, &row_text.text);
                         highlight_ranges(&mut layout_job, &found, color(FileRole::Occurrence));
                         // After the occurrences, so a find match shows over one.
@@ -1864,9 +1915,16 @@ impl FileDiffPane {
                             ));
                         }
 
+                        if marks.scope {
+                            let scope_bg = match side {
+                                ActiveSide::Left => color(FileRole::DeleteChangedScope),
+                                ActiveSide::Right => color(FileRole::InsertChangedScope),
+                            };
+                            ui.painter().rect_filled(extended_rect, 0.0, scope_bg);
+                        }
                         let bg = match bg {
                             RowBg::None => egui::Color32::TRANSPARENT,
-                            RowBg::Delete | RowBg::Insert if !highlight_rows => {
+                            RowBg::Delete | RowBg::Insert if !marks.line => {
                                 egui::Color32::TRANSPARENT
                             }
                             RowBg::Delete => role_color(ui.ctx(), SharedRole::DeleteBackground),
@@ -2149,6 +2207,7 @@ fn block_toggle_buttons(
 struct CenterLayout {
     button: f32,
     symbol: f32,
+    toggles: bool,
 }
 
 impl CenterLayout {
@@ -2157,23 +2216,28 @@ impl CenterLayout {
         Self {
             button: widest(&['+', '{', '-', '<', '>']) + 2.0 * button_padding,
             symbol: widest(&['≠', '-', '+']),
+            toggles: true,
         }
     }
 
     fn width(self) -> f32 {
-        4.0 * self.button + self.symbol + 4.0 * CENTER_GAP
+        let buttons = if self.toggles { 4.0 } else { 2.0 };
+        buttons * self.button + self.symbol + buttons * CENTER_GAP
     }
 
     /// Expand, scope or collapse, revert-left, symbol, revert-right; at most `height` tall,
-    /// centered in `cell`.
+    /// centered in `cell`. Without toggles the first two are empty and take no room.
     fn slots(self, cell: egui::Rect, height: f32) -> [egui::Rect; 5] {
         let half = height.min(cell.height()) / 2.0;
         let y = egui::Rangef::new(cell.center().y - half, cell.center().y + half);
         let mut left = cell.left();
         let button = self.button;
-        [button, button, button, self.symbol, button].map(|width| {
+        let toggle = if self.toggles { button } else { 0.0 };
+        [toggle, toggle, button, self.symbol, button].map(|width| {
             let slot = egui::Rect::from_x_y_ranges(left..=left + width, y);
-            left += width + CENTER_GAP;
+            if width > 0.0 {
+                left += width + CENTER_GAP;
+            }
             slot
         })
     }
@@ -3583,6 +3647,7 @@ mod tests {
                     CenterLayout {
                         button: size,
                         symbol: size,
+                        toggles: true,
                     }
                 },
             );
@@ -3597,7 +3662,8 @@ mod tests {
             layout,
             CenterLayout {
                 button: 15.0,
-                symbol: 9.0
+                symbol: 9.0,
+                toggles: true
             }
         );
         assert_eq!(layout.width(), 4.0 * 15.0 + 9.0 + 4.0 * CENTER_GAP);
@@ -3608,6 +3674,7 @@ mod tests {
         let layout = CenterLayout {
             button: 15.0,
             symbol: 9.0,
+            toggles: true,
         };
         let cell =
             egui::Rect::from_min_size(egui::pos2(100.0, 40.0), egui::vec2(layout.width(), 14.0));
@@ -3625,10 +3692,32 @@ mod tests {
     }
 
     #[test]
+    fn center_without_block_toggles_has_only_revert_buttons_and_symbol() {
+        let layout = CenterLayout {
+            button: 15.0,
+            symbol: 9.0,
+            toggles: false,
+        };
+        assert_eq!(layout.width(), 2.0 * 15.0 + 9.0 + 2.0 * CENTER_GAP);
+
+        let cell =
+            egui::Rect::from_min_size(egui::pos2(100.0, 40.0), egui::vec2(layout.width(), 14.0));
+        let [expand, toggle, left, symbol, right] = layout.slots(cell, 18.0);
+
+        assert_eq!(expand.width(), 0.0);
+        assert_eq!(toggle.width(), 0.0);
+        assert_eq!(left.left(), cell.left());
+        assert_eq!(right.right(), cell.right());
+        assert_eq!(symbol.left() - left.right(), CENTER_GAP);
+        assert_eq!(right.left() - symbol.right(), CENTER_GAP);
+    }
+
+    #[test]
     fn center_slots_in_a_tall_row_are_one_button_high_and_centered() {
         let layout = CenterLayout {
             button: 15.0,
             symbol: 9.0,
+            toggles: true,
         };
         let cell =
             egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(layout.width(), 50.0));
@@ -3809,8 +3898,8 @@ mod tests {
     }
 
     fn ignored_runs<'a>(patterns: &IgnorePatterns, text: &'a str) -> Vec<&'a str> {
-        use zdiff::lexer::{LexerDefault, RawToken};
-        let tokens = LexerDefault::<RawToken>::new(text).parse();
+        use zdiff::lexer::Lexer;
+        let tokens = Lexer::new(text).parse();
         let flags = patterns.flags(&tokens, text);
         let mut runs = Vec::new();
         let mut run: Option<std::ops::Range<usize>> = None;

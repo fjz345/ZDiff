@@ -17,7 +17,7 @@ use zdiff::{
     cached_file::{CachedFile, FileMetadata},
     diff_builder::{DiffBuilderOptions, DiffRow, LineContent, build_diff_rows},
     diff_ir::DiffIR,
-    lexer::{LEXER_MODE_DEFAULT, LexerDefault, RawToken},
+    lexer::{Lexer, RawToken},
     myers::{DiffPhases, MyersDiffAlgorithm, myers_diff_path},
     row_text::{RowText, build_row_text},
     universal_path::UniversalPath,
@@ -73,9 +73,8 @@ fn cached_file(path: &str, contents: &str) -> CachedFile<RawToken> {
         path: UniversalPath::from(path),
         hash: String::new(),
         contents: contents.to_string(),
-        tokens: LexerDefault::<RawToken>::new(contents).parse(),
+        tokens: Lexer::new(contents).parse(),
         metadata: FileMetadata::new(contents),
-        lexer_mode: LEXER_MODE_DEFAULT,
     }
 }
 

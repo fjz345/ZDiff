@@ -195,7 +195,7 @@ mod tests {
     use crate::{
         char_diff::character_diff_traced,
         ignore::IgnoreOptions,
-        lexer::{LexerDefault, RawToken},
+        lexer::{Lexer, RawToken},
         myers::{
             DiffPhases, MyersDiffAlgorithm, MyersPath, Pin, myers_diff_path, myers_diff_path_traced,
         },
@@ -216,7 +216,7 @@ mod tests {
     const TARGET: &str = "fn a() {\n    x = foo124;\n}\ntop();\nmid2();\nfn c() {\n    uno();\n}\n";
 
     fn lex(text: &str) -> Vec<RawToken> {
-        LexerDefault::<RawToken>::new(text).parse()
+        Lexer::new(text).parse()
     }
 
     fn run(

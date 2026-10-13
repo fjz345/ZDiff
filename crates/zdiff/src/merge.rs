@@ -363,7 +363,7 @@ fn line_break(line: &str) -> Option<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lexer::{LexerDefault, RawToken};
+    use crate::lexer::Lexer;
     use crate::myers::split_lines;
 
     const ALGORITHMS: [MyersDiffAlgorithm; 3] = [
@@ -422,7 +422,7 @@ mod tests {
             "\r\r\n\n",
             "a\r\n\rb",
         ] {
-            let tokens = LexerDefault::<RawToken>::new(text).parse();
+            let tokens = Lexer::new(text).parse();
             let expected: Vec<&str> = split_lines(&tokens)
                 .into_iter()
                 .map(|l| &text[tokens[l.start].span.start..tokens[l.end - 1].span.end])

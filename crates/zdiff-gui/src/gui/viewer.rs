@@ -351,7 +351,12 @@ pub fn decode_fallback(
     if !resolution.viewers.shows(decoded) || failures.is_empty() {
         return resolution;
     }
-    hex_fallback(resolution, |kind| kind == decoded, failures.to_vec())
+    hex_fallback(
+        resolution,
+        |kind| kind == decoded,
+        decoded.name(),
+        failures.to_vec(),
+    )
 }
 
 pub fn ffmpeg_fallback(
@@ -382,6 +387,7 @@ pub fn ffmpeg_fallback(
     hex_fallback(
         resolution,
         |kind| matches!(kind, ViewerKind::Audio | ViewerKind::Video),
+        &media.join(" and "),
         vec![reason],
     )
 }
@@ -390,10 +396,14 @@ pub fn ffmpeg_fallback(
 fn hex_fallback(
     resolution: ViewerResolution,
     falls_back: impl Fn(ViewerKind) -> bool,
+    failed_as: &str,
     reasons: Vec<String>,
 ) -> ViewerResolution {
     let mut all: Vec<String> = resolution.fallback.into_iter().collect();
-    all.extend(reasons);
+    all.push(format!(
+        "Failed to diff as {failed_as}: {}",
+        reasons.join("; ")
+    ));
     all.push("showing Hex".to_string());
     ViewerResolution {
         viewers: resolution.viewers.map(|kind| {
@@ -1123,7 +1133,9 @@ mod tests {
         let failure = ["a.wav can't be decoded as audio: bad".to_string()];
         let resolution = decode_fallback(audio.clone(), ViewerKind::Audio, &failure);
         assert_eq!(resolution.viewers, Viewers::Pair(ViewerKind::Hex));
-        assert!(resolution.fallback.unwrap().contains(&failure[0]));
+        let reason = resolution.fallback.unwrap();
+        assert!(reason.starts_with("Failed to diff as Audio: "), "{reason}");
+        assert!(reason.contains(&failure[0]), "{reason}");
 
         assert_eq!(
             decode_fallback(audio.clone(), ViewerKind::Image, &failure),
@@ -1160,6 +1172,7 @@ mod tests {
                 "{extension}"
             );
             let reason = resolution.fallback.unwrap();
+            assert!(reason.starts_with("Failed to diff as "), "{reason}");
             assert!(reason.contains(&not_found.to_string()), "{reason}");
             assert!(reason.contains("not found"), "{reason}");
         }

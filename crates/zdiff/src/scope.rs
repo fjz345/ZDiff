@@ -322,6 +322,33 @@ pub fn find_scopes<T: RawTokenTrait>(tokens: &[T], text: &str) -> Option<Vec<Ran
     (depth == 0).then_some(scopes)
 }
 
+/// `find_scopes` as 0-based line ranges; empty when the braces don't balance.
+pub fn scope_lines<T: RawTokenTrait>(tokens: &[T], text: &str) -> Vec<Range<usize>> {
+    let lines = split_lines(tokens);
+    let line_of = |i: usize| lines.partition_point(|l| l.end <= i);
+    find_scopes(tokens, text)
+        .unwrap_or_default()
+        .iter()
+        .map(|scope| line_of(scope.start)..line_of(scope.end - 1) + 1)
+        .collect()
+}
+
+/// The `scopes` (sorted line ranges) holding any of the ascending `changed` lines.
+pub fn changed_scopes(
+    scopes: &[Range<usize>],
+    changed: impl IntoIterator<Item = usize>,
+) -> Vec<Range<usize>> {
+    let mut scopes = scopes.iter().peekable();
+    let mut held = Vec::new();
+    for line in changed {
+        while scopes.next_if(|s| s.end <= line).is_some() {}
+        if let Some(scope) = scopes.next_if(|s| s.start <= line) {
+            held.push(scope.clone());
+        }
+    }
+    held
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeSet;
@@ -329,7 +356,7 @@ mod tests {
     use super::*;
     use crate::{
         ignore::IgnoreOptions,
-        lexer::{LexerDefault, RawToken},
+        lexer::{Lexer, RawToken},
         myers::{Pin, Step, myers_diff_path, path_steps},
     };
 
@@ -365,7 +392,7 @@ mod tests {
     const C2: &str = "fn c() {\n    tres();\n}\n";
 
     fn lex(text: &str) -> Vec<RawToken> {
-        LexerDefault::<RawToken>::new(text).parse()
+        Lexer::new(text).parse()
     }
 
     fn diff(
@@ -705,7 +732,7 @@ mod tests {
 
     /// Each scope's text.
     fn scopes(text: &str) -> Option<Vec<&str>> {
-        let tokens: Vec<RawToken> = LexerDefault::<RawToken>::new(text).parse();
+        let tokens: Vec<RawToken> = Lexer::new(text).parse();
         let scopes = find_scopes(&tokens, text)?;
         let span = |r: &Range<usize>| {
             let start = tokens[r.start].span.start;
@@ -783,5 +810,22 @@ mod tests {
         assert_eq!(scopes("fn a() {\n"), None);
         assert_eq!(scopes("}\nfn a() {\n}\n"), None);
         assert_eq!(scopes("fn a() {\n}\n}\n"), None);
+    }
+
+    #[test]
+    fn scope_lines_are_the_line_ranges_of_the_scopes() {
+        let lines = |text: &str| scope_lines(&Lexer::new(text).parse(), text);
+        let text = "use x;\nfn a() {\n    b();\n}\n\nfn c() { d(); }\nlast";
+        assert_eq!(lines(text), [1..4, 5..6]);
+        assert_eq!(lines("x\nfn a() {\n}"), [1..3]);
+        assert!(lines("fn a() {\n").is_empty());
+    }
+
+    #[test]
+    fn changed_scopes_are_the_scopes_holding_a_changed_line() {
+        let scopes = [1..4, 5..6, 8..10];
+        assert_eq!(changed_scopes(&scopes, [0, 2, 3, 7, 9]), [1..4, 8..10]);
+        assert!(changed_scopes(&scopes, [4, 6]).is_empty());
+        assert!(changed_scopes(&[], [1]).is_empty());
     }
 }

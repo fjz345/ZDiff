@@ -20,7 +20,6 @@ use zcommon::ui_egui::keymap_editor::KeymapEditor;
 use zcommon::ui_egui::style_window::StyleWindow;
 use zdiff::{
     diff_builder::DiffBuilderOptions,
-    lexer::{LEXER_MODE_DEFAULT, LEXER_MODE_GREEDY, LEXER_MODE_NEWLINE, LEXER_MODE_TOKENIZE},
     myers::{DiffPhases, MyersDiffAlgorithm},
     universal_path::{DepotRev, UniversalPath},
 };
@@ -127,7 +126,6 @@ pub struct AppStateCtx {
     #[cfg_attr(feature = "serde", serde(skip), serde(default))]
     pub toggle_all: ToggleAll,
 
-    pub diff_lexer_mode: u8,
     pub diff_options: DiffBuilderOptions,
 
     pub myers_diff_algorithm: MyersDiffAlgorithm,
@@ -208,7 +206,6 @@ impl Default for AppStateCtx {
             goto_input: Default::default(),
             find_query: Default::default(),
             find_error: None,
-            diff_lexer_mode: LEXER_MODE_DEFAULT,
             keybindings: Default::default(),
             p4_profiles: Default::default(),
             regex_ignore_presets: Default::default(),
@@ -534,7 +531,6 @@ impl<'a> ZApp {
         goto_open: &mut bool,
         scroll_left: &mut f32,
         scroll_right: &mut f32,
-        lexer_mode: &mut u8,
         keybindings: &mut Keybindings,
         p4_profiles: &mut P4Profiles,
         kinds: &mut SharedKinds,
@@ -609,11 +605,6 @@ impl<'a> ZApp {
                             );
                         });
                         diff_phases_menu(ui, diff_phases);
-                        ui.menu_button("Lexer", |ui| {
-                            ui.radio_value(lexer_mode, LEXER_MODE_GREEDY, "LexerGreedy");
-                            ui.radio_value(lexer_mode, LEXER_MODE_TOKENIZE, "LexerTokenize");
-                            ui.radio_value(lexer_mode, LEXER_MODE_NEWLINE, "LexerNewLine");
-                        });
                         ui.menu_button("Code Language", |ui| {
                             let ctx = ui.ctx().clone();
                             let icon_for = |code: &str| {
@@ -927,7 +918,6 @@ impl<'a> ZApp {
                 goto_input,
                 find_query,
                 find_error,
-                diff_lexer_mode: lexer_mode,
                 keybindings,
                 myers_diff_algorithm,
                 diff_processor,
@@ -980,7 +970,6 @@ impl<'a> ZApp {
                 goto_open,
                 scroll_left,
                 scroll_right,
-                lexer_mode,
                 keybindings,
                 p4_profiles,
                 kinds,
@@ -1767,8 +1756,6 @@ impl eframe::App for ZApp {
 
             AppState::Idle(mut state) => {
                 self.sync_zoom(ctx);
-                state.file_1.set_lexer_mode(state.diff_lexer_mode);
-                state.file_2.set_lexer_mode(state.diff_lexer_mode);
 
                 let loaded_1 = state.file_1.get_loaded_file();
                 let loaded_2 = state.file_2.get_loaded_file();
@@ -1888,12 +1875,9 @@ impl eframe::App for ZApp {
                     state.diff_processor.reset_ctx();
                 }
                 if strings_view {
-                    state.hex_strings.request(
-                        ctx,
-                        hex_files,
-                        state.hex_settings.min_string_len,
-                        state.diff_lexer_mode,
-                    );
+                    state
+                        .hex_strings
+                        .request(ctx, hex_files, state.hex_settings.min_string_len);
                     state.hex_strings.poll();
                 } else {
                     state.hex_strings.clear();
@@ -2552,6 +2536,18 @@ mod tests {
         let restored: AppStateCtx = serde_json::from_value(json).unwrap();
         assert_eq!(restored.diff_options.phases, DiffPhases::default());
         assert!(restored.diff_options.ignore.whitespace);
+    }
+
+    #[test]
+    fn a_save_without_diff_marks_loads_only_the_line_mark() {
+        let mut json = serde_json::to_value(AppStateCtx::default()).unwrap();
+        let options = json["diff_options"].as_object_mut().unwrap();
+        for field in ["mark_scopes", "mark_lines", "mark_tokens", "mark_chars"] {
+            options.remove(field).unwrap();
+        }
+        let restored: AppStateCtx = serde_json::from_value(json).unwrap();
+        assert_eq!(restored.diff_options, DiffBuilderOptions::default());
+        assert!(restored.diff_options.highlight_rows && restored.diff_options.mark_lines);
     }
 
     #[test]

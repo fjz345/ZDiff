@@ -10,7 +10,7 @@ use zdiff::{
     diff_builder::{Color32, LineContent, RowBg},
     diff_ir::{DiffIR, DiffOp, DiffResult},
     ignore::IgnoreMask,
-    lexer::{LEXER_MODE_DEFAULT, LexerDefault, RawToken, TokenKind},
+    lexer::{Lexer, RawToken, TokenKind},
     merge::{self, ChunkKind, Merge, MergeChunk, MergeLabels, MergeTexts, Pick, Resolution},
     myers::{DiffPhases, MyersDiffAlgorithm, myers_diff_path},
     universal_path::UniversalPath,
@@ -181,7 +181,7 @@ fn line_tokens(file: &CachedFile<RawToken>) -> Vec<Range<usize>> {
 }
 
 fn text_file(path: UniversalPath, contents: String) -> CachedFile<RawToken> {
-    let tokens = LexerDefault::<RawToken>::new(&contents).parse();
+    let tokens = Lexer::new(&contents).parse();
     let metadata = FileMetadata::new(&contents);
     CachedFile {
         path,
@@ -189,7 +189,6 @@ fn text_file(path: UniversalPath, contents: String) -> CachedFile<RawToken> {
         contents,
         tokens,
         metadata,
-        lexer_mode: LEXER_MODE_DEFAULT,
     }
 }
 

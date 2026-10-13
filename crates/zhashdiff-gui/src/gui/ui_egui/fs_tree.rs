@@ -957,6 +957,8 @@ pub fn draw_ui_folder_tree(
     let mut side_rects = [egui::Rect::NOTHING; 2];
     let mut clicked_row = None;
     let mut toggle_row = None;
+    let mut center_clicked_row = None;
+    let mut center_double_clicked_row = None;
     let mut row_action = None;
     let mut chip_event = None;
 
@@ -1136,9 +1138,11 @@ pub fn draw_ui_folder_tree(
                     SplitColumn::Center => center.show(ui, |slot, ui| match slot {
                         CenterSlot::State => {
                             ui.vertical(|ui| {
-                                sort_header(ui, "≠", SortKey::State, sort);
+                                center.state_header(ui, |ui| {
+                                    sort_header(ui, "≠", SortKey::State, sort)
+                                });
                                 if let Some(state) = root_state {
-                                    ui_custom_diff_state(ui, state);
+                                    center.state_symbol(ui, |ui| ui_custom_diff_state(ui, state));
                                 }
                             });
                         }
@@ -1175,12 +1179,33 @@ pub fn draw_ui_folder_tree(
                         if row.entry.is_dir {
                             fill_cell(ui, ui.max_rect().x_range(), row_tint);
                         }
-                        render_center_cell(ui, &row, &center, compare, tolerance);
+                        let cell = render_center_cell(ui, &row, &center, compare, tolerance);
+                        if cell.clicked {
+                            center_clicked_row = Some(&visible_rows[drawn_rows[i]]);
+                        }
+                        if cell.double_clicked {
+                            center_double_clicked_row = Some(&visible_rows[drawn_rows[i]]);
+                        }
                     }
                 },
             );
             side_rects = output.side_rects;
         });
+    if let Some(entry) = center_clicked_row {
+        clicked_row = Some(entry);
+    }
+    if let Some(entry) = center_double_clicked_row {
+        if !entry.is_dir {
+            *tool_message = on_row_item_clicked(
+                file_system_1_view.as_ref(),
+                file_system_2_view.as_ref(),
+                entry,
+                diff_tool_config,
+            );
+        } else if !flat {
+            toggle_row = Some(entry);
+        }
+    }
     if let Some(two_folder) = two_folder {
         two_folder.find.chip_event = chip_event;
     }
@@ -1801,6 +1826,7 @@ enum CenterSlot {
 struct CenterLayout {
     tag: f32,
     state: f32,
+    arrow_room: f32,
     likeness: Option<f32>,
 }
 
@@ -1808,8 +1834,8 @@ impl CenterLayout {
     fn measure(ui: &egui::Ui, likeness_bar: bool) -> Self {
         let tag_font = egui::TextStyle::Monospace.resolve(ui.style());
         let header_font = egui::TextStyle::Button.resolve(ui.style());
-        let (tag_glyph, header) = ui.fonts_mut(|f| {
-            let header = ["≠ ⏶", "≠ ⏷"].map(|text| {
+        let (tag_glyph, header, state_symbol) = ui.fonts_mut(|f| {
+            let mut width = |text: &str| {
                 f.layout_no_wrap(
                     text.to_owned(),
                     header_font.clone(),
@@ -1817,18 +1843,47 @@ impl CenterLayout {
                 )
                 .size()
                 .x
-            });
-            (f.glyph_width(&tag_font, 'M'), header[0].max(header[1]))
+            };
+            let header = ["≠ ⏶", "≠ ⏷"].map(&mut width);
+            let state_symbol = width("≠");
+            (
+                f.glyph_width(&tag_font, 'M'),
+                header[0].max(header[1]),
+                state_symbol,
+            )
         });
         let tag = 4.0 * tag_glyph;
-        // The sort header is a selectable label, padded like a button.
-        let state = (header + 2.0 * ui.spacing().button_padding.x)
+        // The sort header is a selectable label, padded like a button. Its sort arrow's room is
+        // kept on the left too, so the "≠" and the row symbols sit in the middle of the slot.
+        let arrow_room = header - state_symbol;
+        let state = (header + arrow_room + 2.0 * ui.spacing().button_padding.x)
             .max(ui.text_style_height(&egui::TextStyle::Body));
         Self {
             tag,
             state,
+            arrow_room,
             likeness: likeness_bar.then_some(1.5 * tag),
         }
+    }
+
+    fn state_symbol<R>(&self, ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
+        let height = ui.text_style_height(&egui::TextStyle::Body);
+        ui.allocate_ui_with_layout(
+            egui::vec2(self.state, height),
+            egui::Layout::centered_and_justified(egui::Direction::LeftToRight),
+            add,
+        )
+        .inner
+    }
+
+    fn state_header<R>(&self, ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
+        let cursor = ui.cursor().min;
+        let rect = egui::Rect::from_min_max(
+            egui::pos2(cursor.x + self.arrow_room, cursor.y),
+            ui.max_rect().right_bottom(),
+        );
+        ui.scope_builder(egui::UiBuilder::new().max_rect(rect), add)
+            .inner
     }
 
     fn slots(&self) -> impl Iterator<Item = (CenterSlot, f32)> {
@@ -1992,6 +2047,14 @@ fn render_side_cell(
         || toggle = true,
     );
 
+    if label.is_some() && cell.double_clicked() {
+        if !entry.is_dir {
+            *tool_message = on_row_item_clicked(views[0], views[1], entry, diff_tool_config);
+        } else if flat_rel_path.is_none() {
+            toggle = true;
+        }
+    }
+
     let nodes = [side_node(views[0], ids[0]), side_node(views[1], ids[1])];
     let entries = nodes.map(|node| {
         node.map(|n| {
@@ -2023,13 +2086,18 @@ fn render_side_cell(
     }
 }
 
+struct CenterCell {
+    clicked: bool,
+    double_clicked: bool,
+}
+
 fn render_center_cell(
     ui: &mut egui::Ui,
     row: &RowCell,
     center: &CenterLayout,
     compare: &TreeCompare,
     tolerance: &Tolerance,
-) {
+) -> CenterCell {
     let RowCell {
         views,
         entry,
@@ -2039,6 +2107,13 @@ fn render_center_cell(
         diff_tool_config,
         ..
     } = *row;
+    // Before the slots, so their buttons and tooltips stay on top. A click-only sense leaves
+    // the drag to the split strip below.
+    let cell = ui.interact(
+        ui.max_rect(),
+        ui.id().with("center_cell"),
+        egui::Sense::click(),
+    );
     let nodes = [
         side_node(views[0], entry.diff_state.first()),
         side_node(views[1], entry.diff_state.second()),
@@ -2065,11 +2140,14 @@ fn render_center_cell(
                     };
                     // Not selectable: a selectable label takes the hover, hiding the tag's tooltip.
                     let text = RichText::new(text).monospace().color(color);
-                    ui.add(egui::Label::new(text).selectable(false));
+                    ui.centered_and_justified(|ui| {
+                        ui.add(egui::Label::new(text).selectable(false));
+                    });
                 }
             }
             CenterSlot::State => {
-                let response = ui_custom_diff_state(ui, &entry.diff_state);
+                let response =
+                    center.state_symbol(ui, |ui| ui_custom_diff_state(ui, &entry.diff_state));
                 if matches!(entry.diff_state, DiffState::Similar(..)) {
                     let (sides, likeness) = match nodes {
                         [Some(left), Some(right)] if !entry.is_dir => (
@@ -2088,6 +2166,10 @@ fn render_center_cell(
             }
         }
     });
+    CenterCell {
+        clicked: cell.clicked() || cell.secondary_clicked(),
+        double_clicked: cell.double_clicked(),
+    }
 }
 
 fn side_node(view: Option<&FileSystemView>, id: Option<FsNodeId>) -> Option<&FsNode> {

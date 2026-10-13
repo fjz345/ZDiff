@@ -1,4 +1,4 @@
-use std::{marker::PhantomData, ops::Range};
+use std::ops::Range;
 
 pub trait RawTokenTrait: Clone + AsRef<RawToken> + From<RawToken> + Send + Sync + 'static {}
 impl<T> RawTokenTrait for T where T: Clone + AsRef<RawToken> + From<RawToken> + Send + Sync + 'static
@@ -53,46 +53,21 @@ impl AsRef<RawToken> for RawToken {
     }
 }
 
-impl<const LEXER_MODE: u8, T: RawTokenTrait> Lexer<'_, LEXER_MODE, T> {
-    pub fn read_content_span(&self, span: Range<usize>) -> &str {
-        &self.source[span]
-    }
-}
-
-pub const LEXER_MODE_DEFAULT: u8 = LEXER_MODE_GREEDY;
-pub const LEXER_MODE_GREEDY: u8 = 1; // longest possible token lengths to reduce number of tokens
-pub const LEXER_MODE_TOKENIZE: u8 = 2; // Try to tokenize as much as possible
-pub const LEXER_MODE_NEWLINE: u8 = 3; // Handle newlines specifically
-pub type LexerDefault<'a, T> = Lexer<'a, LEXER_MODE_DEFAULT, T>;
-pub type LexerGreedy<'a, T> = Lexer<'a, LEXER_MODE_GREEDY, T>;
-pub type LexerTokenize<'a, T> = Lexer<'a, LEXER_MODE_TOKENIZE, T>;
-pub type LexerNewLine<'a, T> = Lexer<'a, LEXER_MODE_NEWLINE, T>;
-
-/// What the cursor is inside, carried across tokens and lines. String literals never span a
-/// line, so they are lexed in one go and need no state.
-#[derive(Debug, Clone, Copy, PartialEq)]
-enum LexState {
-    Code,
-    /// Only entered in TOKENIZE mode; the other modes consume a line comment as one token.
-    LineComment,
-    BlockComment,
-}
-
+/// Greedy: identifier, number and blank runs merge; a line comment or directive is one token.
 #[derive(Debug, Clone)]
-pub struct Lexer<'a, const LEXER_MODE: u8, T: RawTokenTrait> {
+pub struct Lexer<'a> {
     source: &'a str,
     cursor: usize,
-    state: LexState,
-    phantom_data: PhantomData<T>,
+    // The only state carried across tokens: string literals and line comments never span a line.
+    in_block_comment: bool,
 }
 
-impl<'a, const LEXER_MODE: u8, T: RawTokenTrait> Lexer<'a, LEXER_MODE, T> {
+impl<'a> Lexer<'a> {
     pub fn new(source: &'a str) -> Self {
         Self {
             source,
             cursor: 0,
-            state: LexState::Code,
-            phantom_data: PhantomData,
+            in_block_comment: false,
         }
     }
 
@@ -130,15 +105,15 @@ impl<'a, const LEXER_MODE: u8, T: RawTokenTrait> Lexer<'a, LEXER_MODE, T> {
         Some(c)
     }
 
-    pub fn parse(&mut self) -> Vec<T> {
-        self.map(T::from).collect()
+    pub fn parse(&mut self) -> Vec<RawToken> {
+        self.by_ref().collect()
     }
 
-    pub fn token_value(&self, token: &T) -> &str {
-        &self.source[token.as_ref().span.clone()]
+    pub fn token_value(&self, token: &RawToken) -> &str {
+        &self.source[token.span.clone()]
     }
 
-    pub fn reconstruct_source(&self, tokens: &[T]) -> String {
+    pub fn reconstruct_source(&self, tokens: &[RawToken]) -> String {
         tokens.iter().map(|t| self.token_value(t)).collect()
     }
 }
@@ -261,21 +236,16 @@ fn literal_len(rest: &str) -> Option<usize> {
     }
 }
 
-impl<'a, const LEXER_MODE: u8, T: RawTokenTrait + From<RawToken>> Iterator
-    for Lexer<'a, LEXER_MODE, T>
-{
+impl Iterator for Lexer<'_> {
     type Item = RawToken;
 
     fn next(&mut self) -> Option<Self::Item> {
         self.peek()?;
         let start = self.cursor;
-        let kind = if LEXER_MODE == LEXER_MODE_NEWLINE {
-            self.next_line_segment()
+        let kind = if self.in_block_comment {
+            self.next_block_comment_token()
         } else {
-            match self.state {
-                LexState::Code => self.next_code_token(),
-                LexState::LineComment | LexState::BlockComment => self.next_comment_token(),
-            }
+            self.next_code_token()
         };
         Some(RawToken {
             kind,
@@ -284,62 +254,16 @@ impl<'a, const LEXER_MODE: u8, T: RawTokenTrait + From<RawToken>> Iterator
     }
 }
 
-impl<'a, const LEXER_MODE: u8, T: RawTokenTrait> Lexer<'a, LEXER_MODE, T> {
-    /// NEWLINE mode: a line is split only where a comment starts or ends. Code (string literals
-    /// included) is one String token, each comment part is one Comment token.
-    fn next_line_segment(&mut self) -> TokenKind {
-        if let Some(kind) = self.lex_newline() {
+impl Lexer<'_> {
+    /// Whitespace keeps its kinds (ignore-whitespace and row building depend on them) and
+    /// everything else is Comment. Quotes, `//`, `/*` and `#` are plain text here.
+    fn next_block_comment_token(&mut self) -> TokenKind {
+        if let Some(kind) = self.lex_newline().or_else(|| self.lex_blank()) {
             return kind;
         }
-        if self.state == LexState::Code {
-            if self.rest().starts_with("//") {
-                while !self.at_line_end() {
-                    self.consume();
-                }
-                return TokenKind::Comment;
-            }
-            if self.rest().starts_with("/*") {
-                self.consume_bytes(2);
-                self.state = LexState::BlockComment;
-            } else {
-                while !self.at_line_end()
-                    && !self.rest().starts_with("//")
-                    && !self.rest().starts_with("/*")
-                {
-                    if !self.consume_literal() {
-                        self.consume();
-                    }
-                }
-                return TokenKind::String;
-            }
-        }
-        debug_assert_eq!(self.state, LexState::BlockComment);
-        while !self.at_line_end() {
-            if self.rest().starts_with("*/") {
-                self.consume_bytes(2);
-                self.state = LexState::Code;
-                break;
-            }
-            self.consume();
-        }
-        TokenKind::Comment
-    }
-
-    /// Inside a comment, whitespace keeps its kinds (ignore-whitespace and row building depend on
-    /// them) and everything else is Comment. Quotes, `//`, `/*` and `#` are plain text here.
-    fn next_comment_token(&mut self) -> TokenKind {
-        if let Some(kind) = self.lex_newline() {
-            if self.state == LexState::LineComment {
-                self.state = LexState::Code;
-            }
-            return kind;
-        }
-        if let Some(kind) = self.lex_blank() {
-            return kind;
-        }
-        if self.state == LexState::BlockComment && self.rest().starts_with("*/") {
+        if self.rest().starts_with("*/") {
             self.consume_bytes(2);
-            self.state = LexState::Code;
+            self.in_block_comment = false;
             return TokenKind::CommentEnd;
         }
         self.lex_word_or_symbol();
@@ -371,12 +295,10 @@ impl<'a, const LEXER_MODE: u8, T: RawTokenTrait> Lexer<'a, LEXER_MODE, T> {
             }
             c if c.is_whitespace() => {
                 self.consume();
-                if LEXER_MODE == LEXER_MODE_GREEDY {
-                    while self.peek().map_or(false, |next| {
-                        next.is_whitespace() && next != '\n' && next != '\r'
-                    }) {
-                        self.consume();
-                    }
+                while self.peek().map_or(false, |next| {
+                    next.is_whitespace() && next != '\n' && next != '\r'
+                }) {
+                    self.consume();
                 }
                 Some(TokenKind::Whitespace)
             }
@@ -391,19 +313,14 @@ impl<'a, const LEXER_MODE: u8, T: RawTokenTrait> Lexer<'a, LEXER_MODE, T> {
         let c = self.peek().expect("next_code_token at end of source");
         match c {
             '/' if self.rest().starts_with("//") => {
-                self.consume_bytes(2);
-                if LEXER_MODE == LEXER_MODE_GREEDY {
-                    while !self.at_line_end() {
-                        self.consume();
-                    }
-                } else {
-                    self.state = LexState::LineComment;
+                while !self.at_line_end() {
+                    self.consume();
                 }
                 TokenKind::Comment
             }
             '/' if self.rest().starts_with("/*") => {
                 self.consume_bytes(2);
-                self.state = LexState::BlockComment;
+                self.in_block_comment = true;
                 TokenKind::CommentStart
             }
             // A `*/` with no open comment: kept as CommentEnd, as before; it changes no state.
@@ -414,16 +331,14 @@ impl<'a, const LEXER_MODE: u8, T: RawTokenTrait> Lexer<'a, LEXER_MODE, T> {
             '"' | '\'' if self.consume_literal() => TokenKind::String,
             '#' => {
                 self.consume();
-                if LEXER_MODE == LEXER_MODE_GREEDY {
-                    // The directive ends where a comment starts; literals are skipped so a `//`
-                    // inside one (`#define URL "http://x"`) doesn't end it.
-                    while !self.at_line_end()
-                        && !self.rest().starts_with("//")
-                        && !self.rest().starts_with("/*")
-                    {
-                        if !self.consume_literal() {
-                            self.consume();
-                        }
+                // The directive ends where a comment starts; literals are skipped so a `//`
+                // inside one (`#define URL "http://x"`) doesn't end it.
+                while !self.at_line_end()
+                    && !self.rest().starts_with("//")
+                    && !self.rest().starts_with("/*")
+                {
+                    if !self.consume_literal() {
+                        self.consume();
                     }
                 }
                 TokenKind::Preprocessor
@@ -441,15 +356,12 @@ impl<'a, const LEXER_MODE: u8, T: RawTokenTrait> Lexer<'a, LEXER_MODE, T> {
             {
                 let start = self.cursor;
                 self.consume();
-
-                if LEXER_MODE == LEXER_MODE_GREEDY {
-                    while self.peek().map_or(false, |next| {
-                        next.is_alphanumeric()
-                            || next == '_'
-                            || (next > '\x7f' && !next.is_control() && !next.is_whitespace())
-                    }) {
-                        self.consume();
-                    }
+                while self.peek().map_or(false, |next| {
+                    next.is_alphanumeric()
+                        || next == '_'
+                        || (next > '\x7f' && !next.is_control() && !next.is_whitespace())
+                }) {
+                    self.consume();
                 }
 
                 let word = &self.source[start..self.cursor];
@@ -461,10 +373,8 @@ impl<'a, const LEXER_MODE: u8, T: RawTokenTrait> Lexer<'a, LEXER_MODE, T> {
             }
             _ if c.is_digit(10) => {
                 self.consume();
-                if LEXER_MODE == LEXER_MODE_GREEDY {
-                    while self.peek().map_or(false, |next| next.is_digit(10)) {
-                        self.consume();
-                    }
+                while self.peek().map_or(false, |next| next.is_digit(10)) {
+                    self.consume();
                 }
                 TokenKind::Number
             }
@@ -500,204 +410,9 @@ impl<'a, const LEXER_MODE: u8, T: RawTokenTrait> Lexer<'a, LEXER_MODE, T> {
     }
 }
 
-pub fn visualize_diff_grid<'a, const LEXER_MODE: u8, T: RawTokenTrait + From<RawToken>>(
-    lexer1: &Lexer<'a, LEXER_MODE, T>,
-    tokens1: &[T],
-    lexer2: &Lexer<'a, LEXER_MODE, T>,
-    tokens2: &[T],
-) {
-    let n = tokens1.len();
-    let m = tokens2.len();
-    let col_w = 8;
-
-    // ANSI Colors
-    let blue = "\x1b[34m";
-    let green = "\x1b[32m";
-    let gray = "\x1b[90m";
-    let reset = "\x1b[0m";
-
-    let label = |val: &str| {
-        let escaped = val.replace("\n", "\\n").replace(" ", "·");
-        if escaped.len() > col_w - 1 {
-            format!("{}…", &escaped[..col_w - 2])
-        } else {
-            escaped
-        }
-    };
-
-    // 1. Horizontal Header
-    print!("{:>width$} ", "", width = col_w);
-    for t in tokens1 {
-        print!(
-            " {}{:^width$}{}",
-            blue,
-            label(lexer1.token_value(t)),
-            reset,
-            width = col_w - 1
-        );
-    }
-    println!("\n");
-
-    for j in 0..=m {
-        // --- Line A: Nodes and Horizontal Edges ---
-        print!("{:>width$} ", "", width = col_w);
-        for i in 0..=n {
-            print!("{}┼{}", gray, reset);
-            if i < n {
-                print!("{}{}{}", gray, "─".repeat(col_w - 1), reset);
-            }
-        }
-        println!();
-
-        // --- Line B: Vertical Edges, Diagonals, and Vertical Labels ---
-        if j < m {
-            print!(
-                "{}{:>width$}{} ",
-                blue,
-                label(lexer2.token_value(&tokens2[j])),
-                reset,
-                width = col_w
-            );
-
-            for i in 0..=n {
-                print!("{}│{}", gray, reset);
-                if i < n {
-                    let is_match = tokens1[i].as_ref().kind == tokens2[j].as_ref().kind
-                        && lexer1.token_value(&tokens1[i]) == lexer2.token_value(&tokens2[j]);
-
-                    if is_match {
-                        let pad = (col_w - 2) / 2;
-                        print!(
-                            "{}{}{}{}{}{}",
-                            " ".repeat(pad),
-                            green,
-                            "\\",
-                            reset,
-                            " ".repeat(col_w - 2 - pad),
-                            ""
-                        );
-                    } else {
-                        print!("{}", " ".repeat(col_w - 1));
-                    }
-                }
-            }
-            println!();
-        }
-    }
-}
-
-pub fn visualize_diff_grid_with_path<
-    'a,
-    const LEXER_MODE: u8,
-    F,
-    T: RawTokenTrait + From<RawToken>,
->(
-    lexer1: &Lexer<'a, LEXER_MODE, T>,
-    tokens1: &[T],
-    lexer2: &Lexer<'a, LEXER_MODE, T>,
-    tokens2: &[T],
-    path: &[(i32, i32)],
-    mut cmp: F,
-) where
-    F: FnMut(&T, &T) -> bool,
-{
-    let (n, m) = (tokens1.len() as i32, tokens2.len() as i32);
-    let col_w = 8;
-    let (blue, green, gray, yellow, reset) =
-        ("\x1b[34m", "\x1b[32m", "\x1b[90m", "\x1b[33m", "\x1b[0m");
-
-    let is_on_path = |x: i32, y: i32| path.contains(&(x, y));
-
-    let label = |val: &str| {
-        let escaped = val.replace("\n", "\\n").replace(" ", "·");
-        if escaped.len() > col_w - 1 {
-            format!("{}…", &escaped[..col_w - 2])
-        } else {
-            escaped
-        }
-    };
-
-    // 1. Horizontal Header
-    print!("{:>width$} ", "", width = col_w);
-    for t in tokens1 {
-        print!(
-            " {:^width$}",
-            format!("{}{}{}", blue, label(lexer1.token_value(t)), reset),
-            width = col_w + 8
-        );
-    }
-    println!("\n");
-
-    for j in 0..=m {
-        // --- Line A: Nodes and Horizontal Edges (Deletions) ---
-        print!("{:>width$} ", "", width = col_w);
-        for i in 0..=n {
-            let node = if is_on_path(i, j) {
-                format!("{}█{}", yellow, reset)
-            } else {
-                format!("{}┼{}", gray, reset)
-            };
-            print!("{}", node);
-
-            if i < n {
-                let on_path = is_on_path(i, j) && is_on_path(i + 1, j);
-                let color = if on_path { yellow } else { gray };
-                print!("{}{}{}", color, "─".repeat(col_w - 1), reset);
-            }
-        }
-        println!();
-
-        // --- Line B: Vertical Edges (Insertions), Diagonals (Matches), and Labels ---
-        if j < m {
-            print!(
-                "{}{:>width$}{} ",
-                blue,
-                label(lexer2.token_value(&tokens2[j as usize])),
-                reset,
-                width = col_w
-            );
-
-            for i in 0..=n {
-                let on_path_v = is_on_path(i, j) && is_on_path(i, j + 1);
-                let v_color = if on_path_v { yellow } else { gray };
-                print!("{}│{}", v_color, reset);
-
-                if i < n {
-                    let is_match = cmp(&tokens1[i as usize], &tokens2[j as usize]);
-                    let on_diag_path = is_on_path(i, j) && is_on_path(i + 1, j + 1);
-
-                    if is_match {
-                        let color = if on_diag_path { green } else { gray };
-                        let pad = (col_w - 2) / 2;
-                        print!(
-                            "{}{}{}{}{}",
-                            " ".repeat(pad),
-                            color,
-                            "\\",
-                            reset,
-                            " ".repeat(col_w - 2 - pad)
-                        );
-                    } else {
-                        print!("{}", " ".repeat(col_w - 1));
-                    }
-                }
-            }
-            println!();
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // use std::fs::{self, File};
-    // use std::path::Path;
-    // use tempfile::{TempDir, tempdir};
-
-    // fn create_file(path: &Path) {
-    //     File::create(path).expect("failed to create file");
-    // }
 
     #[test]
     fn test_function_syntax() {
@@ -722,7 +437,7 @@ mod tests {
         ];
 
         for (name, src) in cases {
-            let mut lexer = LexerDefault::<RawToken>::new(src);
+            let mut lexer = Lexer::new(src);
             let tokens = lexer.parse();
 
             assert!(
@@ -748,7 +463,7 @@ mod tests {
     #[test]
     fn test_greedy_operators_exhaustive() {
         let input = "x / / y // comment\nx /* block */ y";
-        let mut lexer = Lexer::<LEXER_MODE_DEFAULT, RawToken>::new(input);
+        let mut lexer = Lexer::new(input);
         let tokens = lexer.parse();
 
         // Verification Table:
@@ -820,7 +535,7 @@ mod tests {
     #[test]
     fn test_complex_strings() {
         let input = r#"" " "" "with symbols !@#" "unclosed"#;
-        let mut lexer = LexerDefault::<RawToken>::new(input);
+        let mut lexer = Lexer::new(input);
         let tokens = lexer.parse();
 
         assert!(
@@ -840,7 +555,7 @@ mod tests {
     #[test]
     fn test_numeric_boundaries() {
         let input = "123.456 789";
-        let mut lexer = LexerDefault::<RawToken>::new(input);
+        let mut lexer = Lexer::new(input);
         let tokens = lexer.parse();
 
         assert_eq!(
@@ -878,7 +593,7 @@ mod tests {
     #[test]
     fn test_unicode_and_whitespace() {
         let input = "let 🦀 = \"value\";\t\n ";
-        let mut lexer = LexerDefault::<RawToken>::new(input);
+        let mut lexer = Lexer::new(input);
         let tokens = lexer.parse();
 
         for token in &tokens {
@@ -900,11 +615,11 @@ mod tests {
     #[test]
     fn test_lex_idempotency() {
         let input = "fn main() { let x = 5; } // check";
-        let mut lexer1 = LexerDefault::<RawToken>::new(input);
+        let mut lexer1 = Lexer::new(input);
         let tokens1 = lexer1.parse();
 
         let reconstructed = lexer1.reconstruct_source(&tokens1);
-        let mut lexer2 = LexerDefault::<RawToken>::new(&reconstructed);
+        let mut lexer2 = Lexer::new(&reconstructed);
         let tokens2 = lexer2.parse();
 
         assert_eq!(
@@ -935,7 +650,7 @@ mod tests {
         let win_input = "a\r\nb";
 
         // Test Unix Lexing
-        let lex_unix = LexerDefault::<RawToken>::new(unix_input);
+        let lex_unix = Lexer::new(unix_input);
         let tokens_unix: Vec<RawToken> = lex_unix.collect();
 
         // Expect: [Identifier("a"), Newline("\n"), Identifier("b")]
@@ -945,7 +660,7 @@ mod tests {
         assert_eq!(&unix_input[tokens_unix[1].span.clone()], "\n");
 
         // Test Windows Lexing
-        let lex_win = LexerDefault::<RawToken>::new(win_input);
+        let lex_win = Lexer::new(win_input);
         let tokens_win: Vec<RawToken> = lex_win.collect();
 
         // Expect: [Identifier("a"), Newline("\r\n"), Identifier("b")]
@@ -958,7 +673,7 @@ mod tests {
     #[test]
     fn test_lexer_mixed_whitespace_and_newlines() {
         let input = " \n \r\n ";
-        let tokens: Vec<RawToken> = LexerDefault::<RawToken>::new(input).collect();
+        let tokens: Vec<RawToken> = Lexer::new(input).collect();
 
         dbg!(&tokens);
 
@@ -1007,7 +722,7 @@ mod tests {
         ];
 
         for (filename, content) in files {
-            let mut lexer = LexerDefault::<RawToken>::new(content);
+            let mut lexer = Lexer::new(content);
             let tokens = lexer.parse();
 
             assert!(
@@ -1193,7 +908,7 @@ mod tests {
         ];
 
         for (name, source) in workload {
-            let mut lexer = LexerDefault::<RawToken>::new(source);
+            let mut lexer = Lexer::new(source);
             let tokens = lexer.parse();
 
             let unknown_tokens: Vec<_> = tokens
@@ -1271,7 +986,7 @@ mod tests {
             ("\n", TokenKind::Newline),
         ];
 
-        let mut lexer = LexerDefault::<RawToken>::new(source);
+        let mut lexer = Lexer::new(source);
         let tokens = lexer.parse();
 
         let unknown: Vec<_> = tokens
@@ -1338,47 +1053,30 @@ mod tests {
         }
     }
 
-    const ALL_MODES: [u8; 3] = [LEXER_MODE_GREEDY, LEXER_MODE_TOKENIZE, LEXER_MODE_NEWLINE];
-
-    fn lex_mode(mode: u8, src: &str) -> Vec<RawToken> {
-        let tokens = match mode {
-            LEXER_MODE_GREEDY => LexerGreedy::<RawToken>::new(src).parse(),
-            LEXER_MODE_TOKENIZE => LexerTokenize::<RawToken>::new(src).parse(),
-            LEXER_MODE_NEWLINE => LexerNewLine::<RawToken>::new(src).parse(),
-            _ => unreachable!(),
-        };
-        assert_tiles(mode, src, &tokens);
+    fn lex(src: &str) -> Vec<RawToken> {
+        let tokens = Lexer::new(src).parse();
+        assert_tiles(src, &tokens);
         tokens
     }
 
     /// Reconstruction is exact, spans are contiguous and non-empty, and line breaks only ever
     /// appear in Newline tokens (rows, line metadata and revert's hunk_bytes rely on all three).
-    fn assert_tiles(mode: u8, src: &str, tokens: &[RawToken]) {
+    fn assert_tiles(src: &str, tokens: &[RawToken]) {
         let mut cursor = 0;
         for t in tokens {
-            assert_eq!(
-                t.span.start, cursor,
-                "mode {mode}: gap or overlap at {t:?} in {src:?}"
-            );
-            assert!(
-                !t.span.is_empty(),
-                "mode {mode}: empty token {t:?} in {src:?}"
-            );
+            assert_eq!(t.span.start, cursor, "gap or overlap at {t:?} in {src:?}");
+            assert!(!t.span.is_empty(), "empty token {t:?} in {src:?}");
             let text = &src[t.span.clone()];
             if t.kind != TokenKind::Newline {
                 assert!(
                     !text.contains(['\r', '\n']),
-                    "mode {mode}: line break inside {:?} token {text:?} in {src:?}",
+                    "line break inside {:?} token {text:?} in {src:?}",
                     t.kind
                 );
             }
             cursor = t.span.end;
         }
-        assert_eq!(
-            cursor,
-            src.len(),
-            "mode {mode}: tokens don't reach the end of {src:?}"
-        );
+        assert_eq!(cursor, src.len(), "tokens don't reach the end of {src:?}");
     }
 
     fn range_of(src: &str, part: &str) -> Range<usize> {
@@ -1392,59 +1090,43 @@ mod tests {
         start..start + part.len()
     }
 
-    /// In every mode: each non-whitespace token inside one of `comments` has a comment kind and
-    /// each one outside doesn't; no token straddles a comment edge. Each of `strings` is covered
-    /// by a String token, which is exactly the literal except in NEWLINE mode (where code and
-    /// literals share one segment).
+    /// Each non-whitespace token inside one of `comments` has a comment kind and each one outside
+    /// doesn't; no token straddles a comment edge. Each of `strings` is exactly one String token.
     fn check_comments_and_strings(src: &str, comments: &[&str], strings: &[&str]) {
         let comment_ranges: Vec<_> = comments.iter().map(|c| range_of(src, c)).collect();
         let string_ranges: Vec<_> = strings.iter().map(|s| range_of(src, s)).collect();
-        for mode in ALL_MODES {
-            let tokens = lex_mode(mode, src);
-            let describe = |t: &RawToken| {
-                format!(
-                    "mode {mode}: {:?} {:?} in {src:?}",
-                    t.kind,
-                    &src[t.span.clone()]
-                )
-            };
-            for t in &tokens {
-                let inside = comment_ranges
-                    .iter()
-                    .any(|r| r.start <= t.span.start && t.span.end <= r.end);
-                let overlaps = comment_ranges
-                    .iter()
-                    .any(|r| t.span.start < r.end && r.start < t.span.end);
-                assert!(
-                    inside || !overlaps,
-                    "{} straddles a comment edge",
-                    describe(t)
-                );
-                if t.kind.is_whitespace() {
-                    continue;
-                }
-                assert_eq!(t.kind.is_comment(), inside, "{}", describe(t));
+        let tokens = lex(src);
+        let describe = |t: &RawToken| format!("{:?} {:?} in {src:?}", t.kind, &src[t.span.clone()]);
+        for t in &tokens {
+            let inside = comment_ranges
+                .iter()
+                .any(|r| r.start <= t.span.start && t.span.end <= r.end);
+            let overlaps = comment_ranges
+                .iter()
+                .any(|r| t.span.start < r.end && r.start < t.span.end);
+            assert!(
+                inside || !overlaps,
+                "{} straddles a comment edge",
+                describe(t)
+            );
+            if t.kind.is_whitespace() {
+                continue;
             }
-            for r in &string_ranges {
-                let covered = tokens.iter().any(|t| {
-                    t.kind == TokenKind::String
-                        && if mode == LEXER_MODE_NEWLINE {
-                            t.span.start <= r.start && r.end <= t.span.end
-                        } else {
-                            t.span == *r
-                        }
-                });
-                assert!(
-                    covered,
-                    "mode {mode}: no String token for {:?} in {src:?}: {tokens:?}",
-                    &src[r.clone()]
-                );
-            }
+            assert_eq!(t.kind.is_comment(), inside, "{}", describe(t));
+        }
+        for r in &string_ranges {
+            assert!(
+                tokens
+                    .iter()
+                    .any(|t| t.kind == TokenKind::String && t.span == *r),
+                "no String token for {:?} in {src:?}: {tokens:?}",
+                &src[r.clone()]
+            );
         }
     }
 
     #[test]
-    fn block_comment_spans_lines_in_every_mode() {
+    fn block_comment_spans_lines() {
         check_comments_and_strings("a /* if x\n   while */ b\n", &["/* if x\n   while */"], &[]);
         check_comments_and_strings(
             "a /* if x\r\n\t \"y\r\n*/ b\r\n",
@@ -1454,13 +1136,13 @@ mod tests {
     }
 
     #[test]
-    fn line_comment_runs_to_the_end_of_its_line_in_every_mode() {
+    fn line_comment_runs_to_the_end_of_its_line() {
         check_comments_and_strings("x = 1; // return y\nz\n", &["// return y"], &[]);
         check_comments_and_strings("x = 1; // return y\r\nz", &["// return y"], &[]);
     }
 
     #[test]
-    fn comment_markers_inside_strings_do_not_start_comments_in_every_mode() {
+    fn comment_markers_inside_strings_do_not_start_comments() {
         check_comments_and_strings(
             "s = \"// not\" + \"/* no\";\nt = '/' ;\n",
             &[],
@@ -1470,7 +1152,7 @@ mod tests {
     }
 
     #[test]
-    fn escaped_quotes_do_not_end_literals_in_every_mode() {
+    fn escaped_quotes_do_not_end_literals() {
         check_comments_and_strings(
             "a = \"x\\\"// y\\\\\"; b // c\n",
             &["// c"],
@@ -1484,7 +1166,7 @@ mod tests {
     }
 
     #[test]
-    fn unterminated_string_ends_at_the_line_end_in_every_mode() {
+    fn unterminated_string_ends_at_the_line_end() {
         check_comments_and_strings("a = \"abc // d\nb // c\n", &["// c"], &["\"abc // d"]);
         check_comments_and_strings("a = \"abc // d\r\nb // c", &["// c"], &["\"abc // d"]);
         // A trailing backslash must not swallow the line break, LF or CRLF.
@@ -1494,7 +1176,7 @@ mod tests {
     }
 
     #[test]
-    fn unterminated_block_comment_runs_to_eof_in_every_mode() {
+    fn unterminated_block_comment_runs_to_eof() {
         check_comments_and_strings(
             "a /* x\nif y\n\"z\n// w\n",
             &["/* x\nif y\n\"z\n// w\n"],
@@ -1504,20 +1186,10 @@ mod tests {
     }
 
     #[test]
-    fn keywords_inside_comments_are_not_keywords_in_every_mode() {
+    fn keywords_inside_comments_are_not_keywords() {
         let src = "if a // if while\n/* return\nstruct */ else\n";
         check_comments_and_strings(src, &["// if while", "/* return\nstruct */"], &[]);
-        for mode in ALL_MODES {
-            let tokens = lex_mode(mode, src);
-            assert!(
-                !tokens
-                    .iter()
-                    .any(|t| t.kind == TokenKind::Keyword && t.kind.is_comment()),
-                "mode {mode}"
-            );
-        }
-        let greedy = lex_mode(LEXER_MODE_GREEDY, src);
-        let keywords: Vec<_> = greedy
+        let keywords: Vec<_> = lex(src)
             .iter()
             .filter(|t| t.kind == TokenKind::Keyword)
             .map(|t| &src[t.span.clone()])
