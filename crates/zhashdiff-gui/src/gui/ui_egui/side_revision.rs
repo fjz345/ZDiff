@@ -298,14 +298,18 @@ fn menu_contents(
         }
     }
     let result = pick.map(|pick| pick_revision(root, &pick, streams));
-    match result {
+    let picked = match result {
         Some(Ok(root)) => Some(root),
         Some(Err(e)) => {
             state.error = Some(e);
             None
         }
         None => None,
+    };
+    if let Some(e) = &state.error {
+        ui.colored_label(ui.visuals().error_fg_color, e);
     }
+    picked
 }
 
 #[cfg(test)]
