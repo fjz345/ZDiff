@@ -4,6 +4,7 @@ members = [ "crates/zcommon",
     "crates/zdiff-gui",
     "crates/zhashdiff",
     "crates/zhashdiff-gui",
+    "xtask",
     "crates/zcommon",
 ]
 resolver = "2"

@@ -1,0 +1,1 @@
+`cargo xtask fetch-ffmpeg` downloads a pinned LGPL ffmpeg build here (`ffmpeg.exe`, `ffprobe.exe`, `ffmpeg-LICENSE.txt`, `ffmpeg-SOURCE.txt`). The zdiff-gui build copies them next to its exe. Everything but this file is gitignored.

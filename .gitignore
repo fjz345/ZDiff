@@ -30,3 +30,7 @@ test
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #.idea/
 tsan.bat
+
+# Filled by cargo xtask fetch-ffmpeg; the folder stays tracked so build.rs can watch it
+/ffmpeg/*
+!/ffmpeg/README.md
