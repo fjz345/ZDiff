@@ -1,7 +1,11 @@
 //! Hex Strings mode: each side's printable strings as text, one string per line, so the text
 //! engine diffs them and the gutter can show each string's byte offset.
 
-use std::sync::{Arc, mpsc};
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+    mpsc,
+};
 
 use eframe::egui;
 use zdiff::{cached_file::CachedFile, lexer::RawToken};
@@ -75,12 +79,22 @@ fn is_printable(c: char) -> bool {
     c == '\t' || !c.is_control()
 }
 
+const CANCEL_CHECK_CHARS: usize = 1 << 16;
+
 /// Runs of printable characters (ASCII and valid UTF-8) of at least `min_len` characters, with the
-/// byte offset each starts at. Bytes that aren't valid UTF-8 end a run.
-pub fn extract_strings(bytes: &[u8], min_len: usize) -> Vec<ExtractedString<'_>> {
+/// byte offset each starts at. Bytes that aren't valid UTF-8 end a run. `None` once `cancel` is set.
+pub fn extract_strings<'a>(
+    bytes: &'a [u8],
+    min_len: usize,
+    cancel: &AtomicBool,
+) -> Option<Vec<ExtractedString<'a>>> {
     let mut found = Vec::new();
     let mut chunk_start = 0;
+    let mut scanned = 0usize;
     for chunk in bytes.utf8_chunks() {
+        if cancel.load(Ordering::Acquire) {
+            return None;
+        }
         let valid = chunk.valid();
         let mut run: Option<(usize, usize)> = None;
         let mut end_run = |run: &mut Option<(usize, usize)>, end: usize| {
@@ -94,6 +108,10 @@ pub fn extract_strings(bytes: &[u8], min_len: usize) -> Vec<ExtractedString<'_>>
             }
         };
         for (i, c) in valid.char_indices() {
+            scanned += 1;
+            if scanned % CANCEL_CHECK_CHARS == 0 && cancel.load(Ordering::Acquire) {
+                return None;
+            }
             if is_printable(c) {
                 run.get_or_insert((i, 0)).1 += 1;
             } else {
@@ -103,7 +121,7 @@ pub fn extract_strings(bytes: &[u8], min_len: usize) -> Vec<ExtractedString<'_>>
         end_run(&mut run, valid.len());
         chunk_start += valid.len() + chunk.invalid().len();
     }
-    found
+    Some(found)
 }
 
 /// One string per line, no trailing newline, so line `n` is string `n - 1`.
@@ -123,17 +141,25 @@ pub struct StringsSide {
     pub offsets: Arc<[usize]>,
 }
 
-fn strings_side(file: &LoadedFile, min_len: usize, lexer_mode: u8) -> StringsSide {
-    let strings = extract_strings(file.bytes(), min_len);
+fn strings_side(
+    file: &LoadedFile,
+    min_len: usize,
+    lexer_mode: u8,
+    cancel: &AtomicBool,
+) -> Option<StringsSide> {
+    let strings = extract_strings(file.bytes(), min_len, cancel)?;
     let text = strings_text(&strings);
-    StringsSide {
+    if cancel.load(Ordering::Acquire) {
+        return None;
+    }
+    Some(StringsSide {
         file: Arc::new(CachedFile::from_contents(
             file.path().clone(),
             text,
             lexer_mode,
         )),
         offsets: strings.iter().map(|s| s.offset).collect(),
-    }
+    })
 }
 
 type StringsPair = [Option<StringsSide>; 2];
@@ -144,12 +170,13 @@ struct StringsRequest {
     lexer_mode: u8,
 }
 
-/// Extracts the strings of the current pair on a worker thread. A new request drops the result of
-/// an older one.
+/// Extracts the strings of the current pair on a worker thread. A new request cancels the running
+/// one and drops the result of an older one.
 pub struct HexStrings {
     request: Option<StringsRequest>,
     sides: Option<StringsPair>,
     generation: u64,
+    cancel_flag: Arc<AtomicBool>,
     channel: (
         mpsc::Sender<(u64, StringsPair)>,
         mpsc::Receiver<(u64, StringsPair)>,
@@ -162,6 +189,7 @@ impl Default for HexStrings {
             request: None,
             sides: None,
             generation: 0,
+            cancel_flag: Arc::new(AtomicBool::new(false)),
             channel: mpsc::channel(),
         }
     }
@@ -179,7 +207,13 @@ impl std::fmt::Debug for HexStrings {
 
 impl HexStrings {
     /// No-op for the request already made.
-    pub fn request(&mut self, files: [Option<LoadedFile>; 2], min_len: usize, lexer_mode: u8) {
+    pub fn request(
+        &mut self,
+        ctx: &egui::Context,
+        files: [Option<LoadedFile>; 2],
+        min_len: usize,
+        lexer_mode: u8,
+    ) {
         if let Some(current) = &self.request
             && current.min_len == min_len
             && current.lexer_mode == lexer_mode
@@ -188,6 +222,7 @@ impl HexStrings {
         {
             return;
         }
+        self.cancel();
         self.generation += 1;
         self.sides = None;
         let work = files.clone();
@@ -199,10 +234,26 @@ impl HexStrings {
 
         let tx = self.channel.0.clone();
         let generation = self.generation;
+        let cancel_flag = self.cancel_flag.clone();
+        let ctx = ctx.clone();
         std::thread::spawn(move || {
-            let pair = work.map(|file| file.map(|f| strings_side(&f, min_len, lexer_mode)));
+            let mut pair = StringsPair::default();
+            for (slot, file) in pair.iter_mut().zip(&work) {
+                if let Some(file) = file {
+                    let Some(side) = strings_side(file, min_len, lexer_mode, &cancel_flag) else {
+                        return;
+                    };
+                    *slot = Some(side);
+                }
+            }
             let _ = tx.send((generation, pair));
+            ctx.request_repaint();
         });
+    }
+
+    fn cancel(&mut self) {
+        self.cancel_flag.store(true, Ordering::Release);
+        self.cancel_flag = Arc::new(AtomicBool::new(false));
     }
 
     pub fn poll(&mut self) {
@@ -220,6 +271,7 @@ impl HexStrings {
 
     pub fn clear(&mut self) {
         if self.request.is_some() {
+            self.cancel();
             self.generation += 1;
             self.request = None;
             self.sides = None;
@@ -237,8 +289,12 @@ mod tests {
     use super::*;
     use crate::{file::BinaryFile, ui_egui::copy_harness::CopyHarness};
 
+    fn extract(bytes: &[u8], min_len: usize) -> Vec<ExtractedString<'_>> {
+        extract_strings(bytes, min_len, &AtomicBool::new(false)).unwrap()
+    }
+
     fn found(bytes: &[u8], min_len: usize) -> Vec<(usize, &str)> {
-        extract_strings(bytes, min_len)
+        extract(bytes, min_len)
             .iter()
             .map(|s| (s.offset, s.text))
             .collect()
@@ -310,7 +366,7 @@ mod tests {
 
     #[test]
     fn text_is_one_string_per_line_without_a_trailing_newline() {
-        let strings = extract_strings(b"abcd\0efgh", 4);
+        let strings = extract(b"abcd\0efgh", 4);
         assert_eq!(strings_text(&strings), "abcd\nefgh");
         assert_eq!(strings_text(&[]), "");
     }
@@ -328,9 +384,9 @@ mod tests {
     fn diff_rows_map_back_to_each_strings_offset() {
         let left = b"\0\0alpha\0beta12\0gamma";
         let right = b"alpha\0\0\0beta12\0delta";
-        let side_text = |bytes| strings_text(&extract_strings(bytes, 4));
+        let side_text = |bytes| strings_text(&extract(bytes, 4));
         let offsets =
-            |bytes| -> Vec<usize> { extract_strings(bytes, 4).iter().map(|s| s.offset).collect() };
+            |bytes| -> Vec<usize> { extract(bytes, 4).iter().map(|s| s.offset).collect() };
         let harness = CopyHarness::new(
             &side_text(left),
             &side_text(right),
@@ -376,7 +432,12 @@ mod tests {
     fn a_request_extracts_each_side_off_thread() {
         let mut strings = HexStrings::default();
         let files = [Some(binary(b"\0abcd\0efgh")), None];
-        strings.request(files.clone(), 4, zdiff::lexer::LEXER_MODE_DEFAULT);
+        strings.request(
+            &egui::Context::default(),
+            files.clone(),
+            4,
+            zdiff::lexer::LEXER_MODE_DEFAULT,
+        );
         wait_for(&mut strings);
 
         let [left, right] = strings.sides().unwrap();
@@ -387,16 +448,41 @@ mod tests {
     }
 
     #[test]
+    fn a_cancelled_extraction_yields_nothing() {
+        let cancel = AtomicBool::new(true);
+        assert!(extract_strings(b"abcd\0efgh", 4, &cancel).is_none());
+        let file = binary(b"abcd\0efgh");
+        assert!(strings_side(&file, 4, zdiff::lexer::LEXER_MODE_DEFAULT, &cancel).is_none());
+    }
+
+    #[test]
+    fn a_new_request_cancels_the_running_one() {
+        let mut strings = HexStrings::default();
+        let ctx = egui::Context::default();
+        let files = [Some(binary(b"\0abcd\0efghij")), None];
+        strings.request(&ctx, files.clone(), 4, zdiff::lexer::LEXER_MODE_DEFAULT);
+        let first = strings.cancel_flag.clone();
+        assert!(!first.load(Ordering::Acquire));
+        strings.request(&ctx, files.clone(), 5, zdiff::lexer::LEXER_MODE_DEFAULT);
+        assert!(first.load(Ordering::Acquire));
+        assert!(!strings.cancel_flag.load(Ordering::Acquire));
+        let second = strings.cancel_flag.clone();
+        strings.clear();
+        assert!(second.load(Ordering::Acquire));
+    }
+
+    #[test]
     fn a_changed_minimum_re_extracts_and_the_same_request_does_not() {
         let mut strings = HexStrings::default();
+        let ctx = egui::Context::default();
         let files = [Some(binary(b"\0abcd\0efghij")), None];
-        strings.request(files.clone(), 4, zdiff::lexer::LEXER_MODE_DEFAULT);
+        strings.request(&ctx, files.clone(), 4, zdiff::lexer::LEXER_MODE_DEFAULT);
         wait_for(&mut strings);
 
-        strings.request(files.clone(), 4, zdiff::lexer::LEXER_MODE_DEFAULT);
+        strings.request(&ctx, files.clone(), 4, zdiff::lexer::LEXER_MODE_DEFAULT);
         assert!(strings.sides().is_some());
 
-        strings.request(files.clone(), 5, zdiff::lexer::LEXER_MODE_DEFAULT);
+        strings.request(&ctx, files.clone(), 5, zdiff::lexer::LEXER_MODE_DEFAULT);
         assert!(strings.sides().is_none());
         wait_for(&mut strings);
         let [left, _] = strings.sides().unwrap();

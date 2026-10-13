@@ -1151,7 +1151,7 @@ impl<'a> ZApp {
                     find_count,
                     active_side: &mut active_side,
                     toggle_active_side: std::mem::take(&mut self.toggle_active_side),
-                    diff_loading: diff_processor.is_in_progress(),
+                    diff_loading: diff_processor.is_in_progress() || strings_pending,
                     code_language,
                     revert_request: &mut None,
                     block_toggle_request: &mut block_toggle_request,
@@ -1890,6 +1890,7 @@ impl eframe::App for ZApp {
                 }
                 if strings_view {
                     state.hex_strings.request(
+                        ctx,
                         hex_files,
                         state.hex_settings.min_string_len,
                         state.diff_lexer_mode,
