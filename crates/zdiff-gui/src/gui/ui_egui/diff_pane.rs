@@ -93,6 +93,8 @@ pub struct FileDiffPaneCtx<'a> {
     pub h_scroll_linked: &'a mut bool,
     /// Long lines wrap; rows then grow to the taller side.
     pub word_wrap: &'a mut bool,
+    pub toggle_all_held: bool,
+    pub toggle_all_request: &'a mut bool,
     pub text_mode: &'a mut TextMode,
 
     pub code_language: &'a str,
@@ -483,6 +485,15 @@ impl FileDiffPane {
 
             ui.with_layout(Layout::left_to_right(egui::Align::Center), |ui| {
                 ui.spacing_mut().item_spacing.x = 4.0;
+                let mut held = ctx.toggle_all_held;
+                if toggle_button(
+                    ui,
+                    &mut held,
+                    egui::RichText::new("All").strong(),
+                    &hint(FileAction::ToggleAllOptions, "Toggle All Options"),
+                ) {
+                    *ctx.toggle_all_request = true;
+                }
                 toggle_button(
                     ui,
                     &mut ctx.diff_options.ignore.whitespace,

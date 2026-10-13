@@ -43,6 +43,7 @@ use crate::{
         self, HistoryStep, PendingP4Edit, RevertHistory, RevertRecord, RevertRefusal, RevertTarget,
         RevertWrite, WriteRefusal,
     },
+    toggle_all::{OptionSet, ToggleAll},
     ui_egui::{
         diff_pane::{FileDiffPane, FileDiffPaneCtx, wheel_rects_id},
         file_role::FileRole,
@@ -123,6 +124,8 @@ pub struct AppStateCtx {
     /// Undo and redo of reverts; in memory only.
     #[cfg_attr(feature = "serde", serde(skip), serde(default))]
     pub revert_history: RevertHistory,
+    #[cfg_attr(feature = "serde", serde(skip), serde(default))]
+    pub toggle_all: ToggleAll,
 
     pub diff_lexer_mode: u8,
     pub diff_options: DiffBuilderOptions,
@@ -193,6 +196,7 @@ impl Default for AppStateCtx {
             kinds: Default::default(),
             ffmpeg: Default::default(),
             revert_history: Default::default(),
+            toggle_all: Default::default(),
             scroll_left: Default::default(),
             scroll_right: Default::default(),
             h_scroll_linked: default_h_scroll_linked(),
@@ -927,6 +931,7 @@ impl<'a> ZApp {
                 ffmpeg,
                 legacy_extension_map: _,
                 revert_history,
+                toggle_all,
                 code_language,
                 code_language_custom,
                 p4_profiles,
@@ -1075,6 +1080,7 @@ impl<'a> ZApp {
                 None => [&[][..]; 2],
             };
             let mut block_toggle_request = None;
+            let mut toggle_all_request = false;
             let mut behavior = TreeBehavior {
                 ctx_file_diff: FileDiffPaneCtx {
                     diff_ctx: diff_ctx.as_ref(),
@@ -1130,6 +1136,8 @@ impl<'a> ZApp {
                     code_language,
                     revert_request: &mut None,
                     block_toggle_request: &mut block_toggle_request,
+                    toggle_all_held: toggle_all.is_held(),
+                    toggle_all_request: &mut toggle_all_request,
                     hex_view: hex_bytes.then(|| hex_processor.view_ctx()),
                     hex_mode: is_hex.then_some(&mut *hex_settings),
                     string_offsets,
@@ -1335,6 +1343,14 @@ impl<'a> ZApp {
                 diff_processor.toggle_block(key, toggle);
                 ctx.request_repaint();
             }
+            if toggle_all_request {
+                toggle_all_options(
+                    toggle_all,
+                    &mut app_ctx.diff_options,
+                    &mut app_ctx.h_scroll_linked,
+                    &mut app_ctx.word_wrap,
+                );
+            }
 
             for (_tile_id, tile) in self.tree.tiles.iter() {
                 if let Tile::Pane(Pane::FileDiff(..)) = tile {
@@ -1539,8 +1555,20 @@ impl<'a> ZApp {
                         | FileAction::DiffOnly
                         | FileAction::FewerContextRows
                         | FileAction::MoreContextRows => toggle_option(app_state_ctx, action),
+                        FileAction::ToggleAllOptions => toggle_all_options(
+                            &mut app_state_ctx.toggle_all,
+                            &mut app_state_ctx.diff_options,
+                            &mut app_state_ctx.h_scroll_linked,
+                            &mut app_state_ctx.word_wrap,
+                        ),
                     }
                 }
+                let current = OptionSet::read(
+                    &app_state_ctx.diff_options,
+                    app_state_ctx.h_scroll_linked,
+                    app_state_ctx.word_wrap,
+                );
+                app_state_ctx.toggle_all.observe(current);
 
                 let handle_kb = |opt: &Option<Shortcut>, func: &mut dyn FnMut(Shortcut)| {
                     if let Some(kb) = opt {
@@ -2012,6 +2040,18 @@ fn menu_item(
         button = button.shortcut_text(text);
     }
     ui.add(button)
+}
+
+fn toggle_all_options(
+    toggle_all: &mut ToggleAll,
+    options: &mut DiffBuilderOptions,
+    h_scroll_linked: &mut bool,
+    word_wrap: &mut bool,
+) {
+    let current = OptionSet::read(options, *h_scroll_linked, *word_wrap);
+    toggle_all
+        .press(current)
+        .apply(options, h_scroll_linked, word_wrap);
 }
 
 // Mirrors the toolbar buttons in diff_pane.

@@ -74,6 +74,7 @@ pub enum FileAction {
     DiffOnly,
     FewerContextRows,
     MoreContextRows,
+    ToggleAllOptions,
     SaveMerge,
     NextFrame,
     PrevFrame,
@@ -111,6 +112,7 @@ impl Action for FileAction {
             Self::DiffOnly,
             Self::FewerContextRows,
             Self::MoreContextRows,
+            Self::ToggleAllOptions,
             Self::SaveMerge,
             Self::NextFrame,
             Self::PrevFrame,
@@ -148,6 +150,7 @@ impl Action for FileAction {
             Self::DiffOnly => "diff_only",
             Self::FewerContextRows => "diff_only_fewer_context_rows",
             Self::MoreContextRows => "diff_only_more_context_rows",
+            Self::ToggleAllOptions => "toggle_all_options",
             Self::SaveMerge => "save_merge",
             Self::NextFrame => "next_frame",
             Self::PrevFrame => "prev_frame",
@@ -185,6 +188,7 @@ impl Action for FileAction {
             Self::DiffOnly => "Diff Only",
             Self::FewerContextRows => "Diff Only: Fewer Context Rows",
             Self::MoreContextRows => "Diff Only: More Context Rows",
+            Self::ToggleAllOptions => "Toggle All Options",
             Self::SaveMerge => "Save Merge",
             Self::NextFrame => "Video: Next Frame",
             Self::PrevFrame => "Video: Previous Frame",
@@ -321,6 +325,10 @@ impl Action for FileAction {
             }],
             Self::MoreContextRows => &[Shortcut {
                 key: Key::CloseBracket,
+                modifiers: Modifiers::ALT,
+            }],
+            Self::ToggleAllOptions => &[Shortcut {
+                key: Key::A,
                 modifiers: Modifiers::ALT,
             }],
             Self::DiffShelfBase => &[],
@@ -852,6 +860,7 @@ mod tests {
                 press(Key::CloseBracket, Modifiers::ALT),
                 FileAction::MoreContextRows,
             ),
+            (press(Key::A, Modifiers::ALT), FileAction::ToggleAllOptions),
         ];
         for (event, action) in expected {
             assert_eq!(
@@ -957,6 +966,7 @@ mod tests {
                 FileAction::DiffOnly,
                 FileAction::FewerContextRows,
                 FileAction::MoreContextRows,
+                FileAction::ToggleAllOptions,
                 FileAction::SaveMerge,
                 FileAction::NextFrame,
                 FileAction::PrevFrame,

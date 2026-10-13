@@ -22,6 +22,7 @@ mod p4;
 mod phase_trace_window;
 mod revert;
 mod scope;
+mod toggle_all;
 pub mod ui_egui;
 mod viewer;
 
