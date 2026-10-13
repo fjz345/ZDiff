@@ -386,6 +386,7 @@ mod tests {
             assert!(result.is_err(), "{name}");
         }
     }
+
     #[test]
     fn removing_the_temp_dir_deletes_the_fetched_files() {
         let root = tempfile::tempdir().unwrap();
