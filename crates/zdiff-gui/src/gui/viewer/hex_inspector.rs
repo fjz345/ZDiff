@@ -97,9 +97,7 @@ impl fmt::Display for InspectorValue {
     }
 }
 
-/// The value of `kind` at `offset`; `None` when it runs past the end of `bytes`. Text is the
-/// printable ASCII up to the first NUL or `STRING_BYTES`, other bytes shown as `.`; it needs at
-/// least one byte.
+/// `None` past the end of `bytes`. Text is printable ASCII up to the first NUL or `STRING_BYTES`, others as `.`.
 pub fn decode(
     bytes: &[u8],
     offset: usize,
@@ -148,7 +146,6 @@ pub fn decode(
     })
 }
 
-/// All of `INSPECTOR_KINDS` at `offset`, in order.
 pub fn decode_all(bytes: &[u8], offset: usize, endian: Endian) -> [Option<InspectorValue>; 11] {
     INSPECTOR_KINDS.map(|kind| decode(bytes, offset, kind, endian))
 }

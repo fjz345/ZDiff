@@ -301,7 +301,6 @@ impl HexDiffProcessor {
         self.goto_offset = Some(offset);
     }
 
-    /// First byte of the last goto, stop or click.
     pub fn cursor(&self) -> Option<usize> {
         self.highlight.as_ref().map(|range| range.start)
     }

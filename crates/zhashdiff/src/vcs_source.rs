@@ -62,9 +62,7 @@ pub enum DepotRevisions {
     Shelf(u32),
 }
 
-/// `None` when cancelled. A `path@git:<rev>` root is listed from git and a `//depot/folder`
-/// root (optionally `@<changelist>` or `@=<shelf>`) from Perforce, without a checkout or sync;
-/// any other root is scanned on disk.
+/// `None` when cancelled. Git and depot roots are listed without a checkout or sync.
 pub fn scan_side(
     git: &impl GitRunner,
     p4: &impl P4Runner,

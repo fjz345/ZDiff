@@ -24,10 +24,7 @@ pub fn is_file_diff_tool(tool: &DiffTool) -> bool {
         .is_some_and(|stem| stem.eq_ignore_ascii_case("zdiff-gui"))
 }
 
-/// The file diff gets `path@git:<commit>` for a revision side, which it reads itself; any other
-/// tool gets the blob written under `temp_dir/{left,right}/<rel_path>`. On success the files stay
-/// for the tool to open and the caller removes them with `remove_temp_dir`; on error `temp_dir`
-/// is already gone.
+/// On success the caller removes `temp_dir` with `remove_temp_dir`; on error it is already gone.
 pub fn tool_paths(
     git: &impl GitRunner,
     p4: &impl P4Runner,

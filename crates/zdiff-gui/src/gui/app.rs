@@ -82,7 +82,6 @@ pub struct AppStateCtx {
     pub hex_settings: HexSettings,
     #[cfg_attr(feature = "serde", serde(skip), serde(default))]
     pub hex_strings: HexStrings,
-    /// Whether the last frame showed the Hex Strings mode.
     #[cfg_attr(feature = "serde", serde(skip), serde(default))]
     pub strings_active: bool,
     #[cfg_attr(feature = "serde", serde(skip), serde(default))]
