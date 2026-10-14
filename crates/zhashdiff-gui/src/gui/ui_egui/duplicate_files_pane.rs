@@ -822,7 +822,7 @@ impl DuplicateFilesPane {
         ui.vertical(|ui| {
             self.ui_popups(ui, ctx);
 
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 if ui.button("Open Folder").clicked() {
                     self.open_dir_window = true;
                 }

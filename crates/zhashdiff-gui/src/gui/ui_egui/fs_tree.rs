@@ -1049,13 +1049,21 @@ pub fn draw_ui_folder_tree(
                 let columns = node_columns
                     .as_mut()
                     .expect("single-side mode has node columns");
+                // Not `Column::remainder()`: egui_extras floors a non-last remainder column at
+                // its widest content, pushing the node columns off screen.
+                let name_width = ui.available_rect_before_wrap().width()
+                    - ui.spacing().scroll.allocated_width()
+                    - columns
+                        .iter()
+                        .map(|column| column.width + ui.spacing().item_spacing.x)
+                        .sum::<f32>();
                 let mut table = TableBuilder::new(ui)
                     .id_salt("single_side_table")
                     .striped(true)
                     .resizable(false)
                     .auto_shrink([false, false])
                     .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-                    .column(Column::remainder().clip(true));
+                    .column(Column::exact(name_width.max(0.0)));
                 for column in columns.iter() {
                     table = table.column(Column::exact(column.width).clip(true));
                 }

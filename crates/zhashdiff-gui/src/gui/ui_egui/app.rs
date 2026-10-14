@@ -870,18 +870,20 @@ impl ZApp {
                         }
                     }
                 });
-            });
 
-            let shown = app_ctx.file_system_model_1_view.is_some()
-                || app_ctx.file_system_model_2_view.is_some();
-            let mut refresh = ui.add_enabled(shown, egui::Button::new("Refresh"));
-            if let Some(shortcut) = app_ctx.keymap.shortcuts(FolderAction::Refresh).first() {
-                refresh = refresh.on_hover_text(shortcut.format());
-            }
-            if refresh.clicked() {
-                app_ctx.refresh();
-                ui.ctx().request_repaint();
-            }
+                // Inside the bar: `MenuBar` takes the full width, so anything after it overflows
+                // and widens the panel under it.
+                let shown = app_ctx.file_system_model_1_view.is_some()
+                    || app_ctx.file_system_model_2_view.is_some();
+                let mut refresh = ui.add_enabled(shown, egui::Button::new("Refresh"));
+                if let Some(shortcut) = app_ctx.keymap.shortcuts(FolderAction::Refresh).first() {
+                    refresh = refresh.on_hover_text(shortcut.format());
+                }
+                if refresh.clicked() {
+                    app_ctx.refresh();
+                    ui.ctx().request_repaint();
+                }
+            });
         });
         if self.tools_window.open {
             self.tools_window.show(ui.ctx(), &mut app_ctx.diff_config);
