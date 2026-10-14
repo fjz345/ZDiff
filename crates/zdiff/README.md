@@ -4,24 +4,22 @@ Library diffing file contents.
 
 ../zdiff-gui/README.md builds on this
 
-# Featuers
-* Myers diffing
-* Powerful diffing view
-
-## Todo
-* Propper state based lexer for parsing scopes (// COMMENT & /* COMMENT\n*/)
-* Line diff -> inner line diff
-
-* Regex filter text contents
-* image file diff
-
-* hex diff/binary diff
+# Features
+* Stateful lexer: comments and string literals across lines
+* Myers diffing: `Trace`, `Linear` and `LinearMT` (rayon)
+* Phase driver (`DiffPhases`): scope (top-level brace scopes), line, token and character, each refining inside the coarser one's changes
+* Pins: forced line pairs split the diff into stretches
+* Ignore options: whitespace, comments, regex patterns (matched tokens are ignored and dimmed)
+* Side-by-side rows built in parallel chunks, with ghost tokens and diff-only collapsing
+* Hex (byte) and pixel diffs
+* 3-way merge model: chunking, resolution and output
+* Phase trace for debugging
 
 ## Benchmark
 ```
 cargo bench -p zdiff --bench pipeline
 ```
-Runs the whole pipeline on each fixture and prints one row per fixture: the median time in ms of each stage (lex, line, token, ir, rows; line and token are the two phases of `myers_diff_path`) over 7 iterations after 1 warm-up. `total` is the median of the per-iteration totals, not the sum of the stage medians. The bench profile inherits `[profile.release]` (`opt-level = "z"`, LTO), so the numbers are for the shipped size-optimized build.
+Runs the whole pipeline on each fixture and prints one row per fixture: the median time in ms of each stage (lex, line, token, ir, rows; line and token are the two default phases of `myers_diff_path`) over 7 iterations after 1 warm-up. `total` is the median of the per-iteration totals, not the sum of the stage medians. The bench profile inherits `[profile.release]` (`opt-level = "z"`, LTO), so the numbers are for the shipped size-optimized build.
 
 * Fixtures are generated with fixed seeds: 20k C-like lines against a copy with ~2% each of deleted, inserted and modified lines; the same 20k lines against themselves; two unrelated 2k-line files (the Myers worst case). Pairs from the gitignored `test/` dir are added when present and skipped silently otherwise.
 * Settings match zdiff-gui's defaults: greedy lexer, `Linear` Myers, default `DiffBuilderOptions`. `rows` is `build_diff_rows` only; zdiff-gui's IR clone and row finalization are not included.
@@ -31,7 +29,7 @@ Runs the whole pipeline on each fixture and prints one row per fixture: the medi
 * `cargo test` doesn't build it, and with `--benches`/`--all-targets` the binary skips itself (cargo passes `--bench` only under `cargo bench`).
 
 ## Design note: phases and hunk independence
-Research only (diff-engine issue 09); it describes the engine as of row chunking (issue 08). Times are one `cargo bench` run (ms, median of 7) on a 32-thread 7950X3D.
+Research only (diff-engine issue 09); it describes the engine as of row chunking (issue 08). Times are one `cargo bench` run (ms, median of 7) on a 32-thread 7950X3D. The scope and character phases were built later (`DiffPhases`).
 
 ### Phases
 | Phase | Code | Hands to the next phase |

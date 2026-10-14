@@ -1,29 +1,48 @@
 # ZDiff-GUI
 
-![alt text](img/showcase.png)
+![zdiff-gui](img/showcase.png)
 
 GUI for zdiff crate
 
-# Featuers
-* Myers diffing
-    - Linear version
+# Features
+* Myers diffing (Options > Myers Algo)
+    - Linear version (default)
     - Linear MT version
+    - Trace version
 * Keybindings
-    - Customizable
-    - P4 integrated commands
-* Powerful diffing view
-    - Next conflict
-    - Search for text
-    - Goto line
-    - Line pins (align chosen line pairs)
-    - P4 depot paths
-    - Diff Options
-        + Ignore whitespace
+    - Customizable (Ctrl+O), every toolbar toggle has an action
+    - P4 integrated commands and quick diffs (F1-F4)
+* Text diff view
+    - Side by side, Unified, or a single side at full width with its changed lines tinted
+    - Next/previous conflict (Ctrl+1/2, Alt+Up/Down), goto line (Ctrl+G)
+    - Find (Ctrl+F) with whole word and regex
+    - Line pins: align chosen line pairs
+    - Overview ruler beside the scrollbar; click or drag to scroll there
+    - Collapsed context blocks expand, up to the enclosing scope's opening line
+    - Word wrap with aligned rows, horizontal scrolling with optional linked sides
+    - Syntax highlighting with the language per pane or auto-detected (Options > Code Language)
+    - Diff status with -/+ counts and compute time per stage
+    - Revert a hunk on disk, with undo/redo (refused after an external change); read-only Perforce files are offered a `p4 edit`
+    - Occurrence highlight: selecting text in a row highlights its other occurrences in the visible rows, on both sides
+    - Diff options (toolbar)
+        + Ignore whitespace, comments, and regex patterns (with presets); ignored regex matches are dimmed
         + Highlight rows that differ: switches the diff marks on/off; its dropdown picks changed scopes, lines, tokens and/or characters
         + Diff phases (Options): Scope, Line and Token (both default), Character. Each runs only where the coarser one found a change; with none on, the lines just sit side by side
         + Inline ghost tokens
-        + Diff only
-    - Occurrence highlight: selecting text in a row highlights its other occurrences in the visible rows, on both sides
+        + Diff only, with a context row count
+        + Toggle all options (Alt+A)
+* Sides
+    - Breadcrumb path bar per side, and a folder browser over that side to pick another file
+    - Local paths, Perforce depot paths, changelists and shelves, git revisions, picked from a revision dropdown per side
+    - Diff a depot file against its local file (Ctrl+L), a shelved file against its base
+* Viewers, picked from the file kind (override per diff); mismatched types show each side in its own viewer
+    - Hex: Bytes or Strings mode, overview strip, next/previous difference, goto offset, value inspector (ints, floats, string, endian toggle)
+    - Image: side by side, blink, difference, heatmap, histogram, swipe and overlay; channel filter, tolerance, Nearest/Linear sampling, linked zoom and pan
+    - Audio: waveform lanes, overlay, spectrograms with their dB difference, sample difference lanes, metadata table with loudness
+    - Video: frame compare with timestamp matching, scrubber and frame steps, a difference timeline, Audio and Metadata tabs
+    - Audio and video need ffmpeg: `cargo xtask fetch-ffmpeg` (see [ffmpeg/README.md](../../ffmpeg/README.md))
+* 3-way merge view: picks, chunk editing, undo/redo, conflict navigation, save (Ctrl+S)
+* Style window: text, syntax, hex and image colors, presets, and the look of empty and collapsed rows
 
 ## Occurrence highlighting
 Selecting text within one row (drag, double-click a word, triple-click the line) highlights every other occurrence of that exact text in the visible rows on both sides, in purple. Matching is case-sensitive. Selections shorter than 2 characters, whitespace-only selections and selections spanning rows highlight nothing. The highlight clears with the selection (Escape, or a click elsewhere).
@@ -98,21 +117,5 @@ Settings > External Programs (TortoiseSVN) or Settings > Diff Viewer / Merge Too
 * lost_focus not called correctly on paths when holding down mouse: https://github.com/emilk/egui/issues/2142
 
 ## Todo
-* Revert lines
-* Better handling of temp paths (example: [p4] Zdiff.exe %s %s)
-    - Need to be able to use QuickDiffs after opening a file via p4 diff
-
-* p4 feature to quick diff towards the current local file
-    - Keybinding?
-* Add platform image for .exe
-* show time it took to compute the diff
-
 * Batch DiffRow performance optimzation
-* Quick Diff /w multiple p4 repositories
-
-* Research row independant diffing if it is possible
-* Color/style customization
-* Syncronized scroll bar (like p4)
 * user defined comparison per file format
-* better horizontal scrolling
-* word wrapping
