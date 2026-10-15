@@ -1,6 +1,7 @@
 pub mod ffmpeg;
 pub mod find;
 pub mod hash;
+pub mod job;
 pub mod kinds;
 pub mod logger;
 pub mod path;
