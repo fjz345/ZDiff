@@ -3,6 +3,7 @@ use eframe::egui::{self, ScrollArea};
 use log::{Metadata, Record, SetLoggerError};
 use std::collections::VecDeque;
 use std::env;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 
 pub const DEFAULT_LOG_FILTER: &str = "info,wgpu=warn,naga=warn";
@@ -32,10 +33,50 @@ fn build_env_logger() -> env_logger::Logger {
     builder.build()
 }
 
-/// Also loads `.env`; variables already in the real environment win.
+pub fn env_file_path(exe: &Path) -> Option<PathBuf> {
+    exe.parent().map(|dir| dir.join(".env"))
+}
+
+enum EnvLoad {
+    Loaded(PathBuf),
+    NoneFound,
+    Unreadable(PathBuf, String),
+    NoExe(String),
+}
+
+fn load_env_file() -> EnvLoad {
+    let exe = match env::current_exe() {
+        Ok(exe) => exe,
+        Err(e) => return EnvLoad::NoExe(e.to_string()),
+    };
+    let Some(path) = env_file_path(&exe) else {
+        return EnvLoad::NoExe("executable path has no parent".to_string());
+    };
+    if !path.is_file() {
+        return EnvLoad::NoneFound;
+    }
+    match dotenvy::from_path(&path) {
+        Ok(()) => EnvLoad::Loaded(path),
+        Err(dotenvy::Error::Io(e)) => EnvLoad::Unreadable(path, e.to_string()),
+        Err(_) => EnvLoad::Unreadable(path, "malformed content".to_string()),
+    }
+}
+
+/// Also loads `.env` from the executable's folder; variables already in the real environment win.
 pub fn init_logging() -> Result<LogBuffer, SetLoggerError> {
-    dotenvy::dotenv().ok();
-    LogCollector::init()
+    let loaded = load_env_file();
+    let buffer = LogCollector::init()?;
+    match loaded {
+        EnvLoad::Loaded(path) => log::info!("Loaded env file {}", path.display()),
+        EnvLoad::NoneFound => log::info!("No .env file found next to the executable"),
+        EnvLoad::Unreadable(path, why) => {
+            log::error!("Skipped unreadable env file {}: {}", path.display(), why)
+        }
+        EnvLoad::NoExe(why) => {
+            log::error!("Cannot resolve executable path, no .env loaded: {}", why)
+        }
+    }
+    Ok(buffer)
 }
 
 pub struct LogCollector {
@@ -160,6 +201,45 @@ mod tests {
             push_capped(&mut buf, i.to_string(), 3);
         }
         assert_eq!(buf, ["2", "3", "4"]);
+    }
+
+    #[test]
+    fn env_file_is_in_exe_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = dir.path().join("app.exe");
+        assert_eq!(env_file_path(&exe), Some(dir.path().join(".env")));
+    }
+
+    #[test]
+    fn env_file_ignores_cwd_and_its_parent() {
+        let cwd = tempfile::tempdir().unwrap();
+        let child = cwd.path().join("child");
+        let exe_dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(&child).unwrap();
+        std::fs::write(cwd.path().join(".env"), "A=1").unwrap();
+        std::fs::write(child.join(".env"), "A=1").unwrap();
+        let chosen = env_file_path(&exe_dir.path().join("app.exe")).unwrap();
+        assert_eq!(chosen, exe_dir.path().join(".env"));
+    }
+
+    #[test]
+    fn env_file_none_without_parent() {
+        assert_eq!(env_file_path(Path::new("")), None);
+    }
+
+    #[test]
+    fn from_path_does_not_override_existing_vars() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".env");
+        std::fs::write(
+            &path,
+            "ZCOMMON_TEST_ENV_KEEP=file\nZCOMMON_TEST_ENV_NEW=file\n",
+        )
+        .unwrap();
+        unsafe { env::set_var("ZCOMMON_TEST_ENV_KEEP", "real") };
+        dotenvy::from_path(&path).unwrap();
+        assert_eq!(env::var("ZCOMMON_TEST_ENV_KEEP").unwrap(), "real");
+        assert_eq!(env::var("ZCOMMON_TEST_ENV_NEW").unwrap(), "file");
     }
 
     #[test]

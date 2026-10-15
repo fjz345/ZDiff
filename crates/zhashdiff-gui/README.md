@@ -35,6 +35,10 @@ zhashdiff-gui [<dir1> [<dir2>]]
     - Keep this, next/previous group, then Resolve recycles the non-keepers
 * Customizable keybindings (Ctrl+O), style window
 
+## Configuration
+
+zhashdiff-gui reads a `.env` file only from the folder of its executable (`target/<profile>/` for `cargo run`). The working directory and its parents are not searched. Real environment variables win over `.env` values. The log window shows which file was loaded, or that none was found.
+
 # Todo
 * Maybe fixed?? ____ Some PCs egui becomes white after first launch ____ 
 

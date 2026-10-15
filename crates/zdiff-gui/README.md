@@ -113,6 +113,10 @@ Settings > External Programs (TortoiseSVN) or Settings > Diff Viewer / Merge Too
   ```
   Theirs is shown on the left, mine on the right.
 
+## Configuration
+
+zdiff-gui reads a `.env` file only from the folder of its executable (`target/<profile>/` for `cargo run`). The working directory and its parents are not searched. Real environment variables win over `.env` values. The log window shows which file was loaded, or that none was found.
+
 ## Known bugs
 * lost_focus not called correctly on paths when holding down mouse: https://github.com/emilk/egui/issues/2142
 
