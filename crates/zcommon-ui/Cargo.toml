@@ -7,7 +7,7 @@ edition = "2024"
 name = "zcommon_ui"
 
 [features]
-default = []
+default = ["serde"]
 serde = ["dep:serde", "zcommon/serde"]
 
 [dependencies]
