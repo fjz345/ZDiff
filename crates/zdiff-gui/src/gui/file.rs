@@ -2,6 +2,7 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, mpsc};
 
+use zcommon::job::Job;
 use zcommon::vcs::git::{self, GitCommand, GitRunner};
 use zdiff::cached_file::CachedFile;
 use zdiff::lexer::RawToken;
@@ -160,10 +161,10 @@ pub fn load_git_file(
 fn default_channel() -> (mpsc::Sender<UniversalPath>, mpsc::Receiver<UniversalPath>) {
     mpsc::channel()
 }
-type LoadResult = (UniversalPath, Result<LoadedFile, String>);
+type LoadResult = Result<LoadedFile, String>;
 
-fn default_channel_loaded_file() -> (mpsc::Sender<LoadResult>, mpsc::Receiver<LoadResult>) {
-    mpsc::channel()
+fn default_load_job() -> Job<LoadResult> {
+    Job::new(|| {})
 }
 
 fn default_file_path() -> UniversalPath {
@@ -187,11 +188,8 @@ pub struct FileProcessor {
     #[cfg_attr(feature = "serde", serde(skip))]
     cached_file_path: Option<UniversalPath>, // only process once the path
 
-    #[cfg_attr(
-        feature = "serde",
-        serde(skip, default = "default_channel_loaded_file")
-    )]
-    channel_loaded_file: (mpsc::Sender<LoadResult>, mpsc::Receiver<LoadResult>),
+    #[cfg_attr(feature = "serde", serde(skip, default = "default_load_job"))]
+    load_job: Job<LoadResult>,
     #[cfg_attr(feature = "serde", serde(skip))]
     loading_path: Option<UniversalPath>,
     #[cfg_attr(feature = "serde", serde(skip))]
@@ -208,7 +206,7 @@ impl Default for FileProcessor {
             loaded_file: None,
             cached_file_path: None,
             root_path: None,
-            channel_loaded_file: default_channel_loaded_file(),
+            load_job: default_load_job(),
             loading_path: None,
             label: None,
             load_error: None,
@@ -405,14 +403,12 @@ impl FileProcessor {
     }
 
     pub fn get_loaded_file(&mut self) -> Option<LoadedFile> {
-        while let Ok((loaded_path, loaded)) = self.channel_loaded_file.1.try_recv() {
-            if self.cached_file_path.as_ref() == Some(&loaded_path) {
-                (self.loaded_file, self.load_error) = match loaded {
-                    Ok(file) => (Some(file), None),
-                    Err(e) => (None, Some(e)),
-                };
-                self.loading_path = None;
-            }
+        for loaded in self.load_job.poll() {
+            (self.loaded_file, self.load_error) = match loaded {
+                Ok(file) => (Some(file), None),
+                Err(e) => (None, Some(e)),
+            };
+            self.loading_path = None;
         }
 
         let path = &self.get_full_path();
@@ -425,10 +421,9 @@ impl FileProcessor {
 
             log::debug!("Loading file asynchronously: {}", path);
 
-            let tx = self.channel_loaded_file.0.clone();
             let path_clone = path.clone();
 
-            std::thread::spawn(move || {
+            self.load_job.start(move |ctx| {
                 let loaded = match &path_clone {
                     UniversalPath::Local(p) => load_file(path_clone.clone(), p)
                         .map_err(|e| format!("Cannot load file {}, Error: {e}", p.display())),
@@ -445,7 +440,7 @@ impl FileProcessor {
                 };
                 let loaded = loaded.inspect_err(|e| log::error!("{e}"));
 
-                let _ = tx.send((path_clone, loaded));
+                ctx.send(loaded);
             });
         }
 
