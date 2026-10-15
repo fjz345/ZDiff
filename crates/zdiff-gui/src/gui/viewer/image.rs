@@ -5,7 +5,10 @@
 use std::{
     borrow::Cow,
     io::Cursor,
-    sync::{Arc, OnceLock, atomic::{AtomicBool, Ordering}},
+    sync::{
+        Arc, OnceLock,
+        atomic::{AtomicBool, Ordering},
+    },
     time::{Duration, Instant},
 };
 
