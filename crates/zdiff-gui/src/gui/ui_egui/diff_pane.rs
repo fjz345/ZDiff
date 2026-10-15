@@ -45,15 +45,15 @@ use zcommon::{
     path::{PathSegment, common_parent, split_path},
     presets::{BuiltinPreset, UserPresets},
     style::{Rgba8, RowLook, SharedRole, SyntaxCategory, stripe_segments},
-    ui_egui::{
-        h_scroll,
-        keymap::{Action, Keymap},
-        pathbar::{PathBarAction, path_bar},
-        presets::presets_menu,
-        style_window::{collapsed_look, role_color, syntax_colors, void_look},
-        table::{Rows, Split, SplitColumn, SplitTable, shared_width},
-        toggle::{TOGGLE_BUTTON_SIZE, toggle_button},
-    },
+};
+use zcommon_ui::{
+    h_scroll,
+    keymap::{Action, Keymap},
+    pathbar::{PathBarAction, path_bar},
+    presets::presets_menu,
+    style_window::{collapsed_look, role_color, syntax_colors, void_look},
+    table::{Rows, Split, SplitColumn, SplitTable, shared_width},
+    toggle::{TOGGLE_BUTTON_SIZE, toggle_button},
 };
 use zdiff::{
     cached_file::CachedFile,
@@ -3488,10 +3488,8 @@ mod tests {
 
     mod row_looks {
         use eframe::egui::{self, Color32, Shape};
-        use zcommon::{
-            style::{RowLook, stripe_segments},
-            ui_egui::table::{Rows, Split, SplitColumn, SplitTable},
-        };
+        use zcommon::style::{RowLook, stripe_segments};
+        use zcommon_ui::table::{Rows, Split, SplitColumn, SplitTable};
 
         use super::super::{STRIPE_SPACING, row_look_shapes, stripe_origin};
 
@@ -3624,7 +3622,7 @@ mod tests {
     use std::time::Duration;
 
     use eframe::egui;
-    use zcommon::ui_egui::table::{Split, SplitColumn, SplitTable};
+    use zcommon_ui::table::{Split, SplitColumn, SplitTable};
     use zdiff::{
         change_count::ChangeUnit,
         diff_builder::{DiffBuilderOptions, DiffRow, LineContent, RowBg},

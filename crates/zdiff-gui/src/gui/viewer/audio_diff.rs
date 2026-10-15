@@ -8,7 +8,8 @@ use std::sync::{
 };
 
 use eframe::egui::{self, Align2, Rect, vec2};
-use zcommon::{ffmpeg::FfmpegPaths, ui_egui::style_window::role_color};
+use zcommon::ffmpeg::FfmpegPaths;
+use zcommon_ui::style_window::role_color;
 
 use super::audio::{DecodeProgress, DecodedAudio, TimeView, decode_file, draw_wave, format_time};
 use crate::{file::LoadedFile, ui_egui::file_role::FileRole};

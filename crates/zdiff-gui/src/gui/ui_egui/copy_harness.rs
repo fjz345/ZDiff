@@ -12,7 +12,7 @@ use std::{
 use eframe::egui::{
     self, Event, Galley, Modifiers, OutputCommand, PointerButton, Pos2, Rect, Shape,
 };
-use zcommon::ui_egui::table::{Split, SplitColumn, SplitTable, show_scrolled};
+use zcommon_ui::table::{Split, SplitColumn, SplitTable, show_scrolled};
 use zdiff::{
     cached_file::{CachedFile, FileMetadata},
     diff_builder::{DiffBuilderOptions, DiffRow, LineContent, build_diff_rows},

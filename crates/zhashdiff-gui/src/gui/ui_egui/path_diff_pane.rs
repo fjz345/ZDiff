@@ -5,10 +5,8 @@ use eframe::egui::{
     containers::menu::{MenuButton, MenuConfig},
 };
 use serde::{Deserialize, Serialize};
-use zcommon::{
-    presets::{BuiltinPreset, UserPresets},
-    ui_egui::{presets::presets_menu, toggle::toggle_button},
-};
+use zcommon::presets::{BuiltinPreset, UserPresets};
+use zcommon_ui::{presets::presets_menu, toggle::toggle_button};
 use zhashdiff::{
     external_diff_tool::DiffToolConfig,
     filter::{PathFilter, PatternList},

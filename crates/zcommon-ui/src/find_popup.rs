@@ -1,6 +1,7 @@
 use eframe::egui;
 
-use crate::{find::FindQuery, ui_egui::common::show_custom_popup};
+use crate::common::show_custom_popup;
+use zcommon::find::FindQuery;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FindPopupEvent {

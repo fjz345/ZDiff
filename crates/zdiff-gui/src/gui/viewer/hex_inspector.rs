@@ -4,7 +4,7 @@
 use std::{cell::Cell, fmt};
 
 use eframe::egui;
-use zcommon::ui_egui::style_window::role_color;
+use zcommon_ui::style_window::role_color;
 
 use crate::ui_egui::file_role::FileRole;
 

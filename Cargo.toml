@@ -1,5 +1,6 @@
 [workspace]
 members = [ "crates/zcommon",
+    "crates/zcommon-ui",
     "crates/zdiff",
     "crates/zdiff-gui",
     "crates/zhashdiff",

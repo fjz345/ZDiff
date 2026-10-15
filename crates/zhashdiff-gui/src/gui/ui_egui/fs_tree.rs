@@ -27,10 +27,10 @@ use zhashdiff::{
 
 use zcommon::path::{common_parent, split_path};
 use zcommon::style::{Rgba8, Role};
-use zcommon::ui_egui::h_scroll::text_width;
-use zcommon::ui_egui::pathbar::{PathBarAction, path_bar};
-use zcommon::ui_egui::style_window::role_color;
-use zcommon::ui_egui::table::{Rows, Split, SplitColumn, SplitTable};
+use zcommon_ui::h_scroll::text_width;
+use zcommon_ui::pathbar::{PathBarAction, path_bar};
+use zcommon_ui::style_window::role_color;
+use zcommon_ui::table::{Rows, Split, SplitColumn, SplitTable};
 
 use crate::ui_egui::folder_keymap::FolderAction;
 use crate::ui_egui::revision_open::{self, RevisionOpen, is_revision};
@@ -2371,7 +2371,7 @@ mod tests {
     use eframe::egui;
     use std::time::{Duration, SystemTime};
     use zcommon::path::split_path;
-    use zcommon::ui_egui::pathbar::PathBarAction;
+    use zcommon_ui::pathbar::PathBarAction;
     use zhashdiff::external_diff_tool::{DiffTool, DiffToolConfig};
 
     use std::cell::Cell;

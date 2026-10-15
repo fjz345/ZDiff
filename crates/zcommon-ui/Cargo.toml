@@ -1,0 +1,29 @@
+[package]
+name = "zcommon-ui"
+version = "2.0.1"
+edition = "2024"
+
+[lib]
+name = "zcommon_ui"
+
+[features]
+default = []
+serde = ["dep:serde", "zcommon/serde"]
+
+[dependencies]
+zcommon = { path = "../zcommon" }
+eframe = { version = "0.33.3", default-features = false, features = [
+    "default_fonts",
+    "accesskit",
+    "glow",
+    "serde",
+    "persistence"
+] }
+egui_extras = { version = "0.33.3", features = ["image"] }
+log = "0.4.27"
+tempfile = "3.27.0"
+serde_json = "1.0.48"
+serde = { version = "1.0.48", features = ["derive"], optional = true }
+
+[dev-dependencies]
+zcommon = { path = "../zcommon", features = ["test-util"] }

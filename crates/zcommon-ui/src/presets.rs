@@ -1,6 +1,6 @@
 use eframe::egui;
 
-use crate::presets::{BuiltinPreset, NameUse, UserPresets};
+use zcommon::presets::{BuiltinPreset, NameUse, UserPresets};
 
 #[derive(Clone, Default)]
 struct SaveDialog {

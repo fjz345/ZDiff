@@ -11,8 +11,8 @@ required-features = ["gui"]
 
 [features]
 default = ["gui", "serde"]
-serde = ["zhashdiff/serde", "dep:serde", "dep:serde_json"]
-gui = ["serde", "zcommon/gui", "dep:eframe", "dep:egui_tiles", "dep:egui_extras"]
+serde = ["zhashdiff/serde", "zcommon/serde", "zcommon-ui?/serde", "dep:serde", "dep:serde_json"]
+gui = ["serde", "dep:zcommon-ui", "dep:eframe", "dep:egui_tiles", "dep:egui_extras"]
 pretty-backtrace = ["dep:color-backtrace"]
 accesskit = []
 
@@ -21,6 +21,7 @@ eframe = { version = "0.33.3", features = ["wayland", "x11"], optional = true }
 
 [dependencies]
 zcommon = { path = "../zcommon" }
+zcommon-ui = { path = "../zcommon-ui", optional = true }
 zhashdiff = { path = "../zhashdiff" }
 eframe = { version = "0.33.3", default-features = false, features = [
     "default_fonts",

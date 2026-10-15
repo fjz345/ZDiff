@@ -12,13 +12,13 @@ use std::{
 };
 use zcommon::find::FindQuery;
 use zcommon::presets::UserPresets;
-use zcommon::ui_egui::common::show_custom_popup;
-use zcommon::ui_egui::find_popup::{FindPopupEvent, find_popup};
-use zcommon::ui_egui::h_scroll::{self, WheelModifier};
-use zcommon::ui_egui::keymap::{Action, Shortcut, menu_item};
-use zcommon::ui_egui::keymap_editor::KeymapEditor;
-use zcommon::ui_egui::shared_keymap::load_shared;
-use zcommon::ui_egui::style_window::StyleWindow;
+use zcommon_ui::common::show_custom_popup;
+use zcommon_ui::find_popup::{FindPopupEvent, find_popup};
+use zcommon_ui::h_scroll::{self, WheelModifier};
+use zcommon_ui::keymap::{Action, Shortcut, menu_item};
+use zcommon_ui::keymap_editor::KeymapEditor;
+use zcommon_ui::shared_keymap::load_shared;
+use zcommon_ui::style_window::StyleWindow;
 use zdiff::{
     diff_builder::DiffBuilderOptions,
     myers::{DiffPhases, MyersDiffAlgorithm},

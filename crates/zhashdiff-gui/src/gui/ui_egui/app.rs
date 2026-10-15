@@ -16,14 +16,14 @@ use zcommon::{
     hash::HashService,
     kinds::KindTable,
     logger::LogBuffer,
-    ui_egui::{
-        find_popup::{FindPopupEvent, find_popup},
-        keymap::{Keymap, menu_item},
-        shared_keymap::load_shared,
-        style_window::StyleWindow,
-    },
     universal_path::UniversalPath,
     vcs::{git::GitCommand, p4::P4Command},
+};
+use zcommon_ui::{
+    find_popup::{FindPopupEvent, find_popup},
+    keymap::{Keymap, menu_item},
+    shared_keymap::load_shared,
+    style_window::StyleWindow,
 };
 use zhashdiff::{
     external_diff_tool::DiffToolConfig,
@@ -1339,10 +1339,8 @@ mod tests {
         time::{Duration, Instant},
     };
     use tempfile::{TempDir, tempdir};
-    use zcommon::{
-        logger::LogBuffer,
-        ui_egui::keymap::{Action, Keymap, Shortcut},
-    };
+    use zcommon::logger::LogBuffer;
+    use zcommon_ui::keymap::{Action, Keymap, Shortcut};
     use zhashdiff::{
         comparison::{PairCompare, PairState},
         filter::{PathFilter, PatternList},

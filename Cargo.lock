@@ -5090,14 +5090,25 @@ version = "2.0.1"
 dependencies = [
  "blake3",
  "dotenvy",
- "eframe",
- "egui_extras",
  "env_logger",
  "log",
  "regex",
  "serde",
  "serde_json",
  "tempfile",
+]
+
+[[package]]
+name = "zcommon-ui"
+version = "2.0.1"
+dependencies = [
+ "eframe",
+ "egui_extras",
+ "log",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "zcommon",
 ]
 
 [[package]]
@@ -5129,6 +5140,7 @@ dependencies = [
  "syntect",
  "tempfile",
  "zcommon",
+ "zcommon-ui",
  "zdiff",
 ]
 
@@ -5236,6 +5248,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "zcommon",
+ "zcommon-ui",
  "zhashdiff",
 ]
 

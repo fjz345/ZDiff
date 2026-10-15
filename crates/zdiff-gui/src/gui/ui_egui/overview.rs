@@ -1,5 +1,5 @@
 use eframe::egui;
-use zcommon::ui_egui::table::Rows;
+use zcommon_ui::table::Rows;
 use zdiff::{
     diff_builder::{DiffRow, LineContent},
     diff_ir::DiffOp,

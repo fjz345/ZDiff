@@ -1,10 +1,8 @@
 use std::sync::{Arc, mpsc};
 
 use eframe::egui;
-use zcommon::{
-    path::split_path,
-    ui_egui::pathbar::{PathBarAction, path_bar},
-};
+use zcommon::path::split_path;
+use zcommon_ui::pathbar::{PathBarAction, path_bar};
 use zdiff::universal_path::UniversalPath;
 
 use crate::p4::{P4Command, P4Runner, parse_dirs, parse_files_at_head};

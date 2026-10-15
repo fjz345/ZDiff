@@ -12,10 +12,8 @@ use std::{
 };
 
 use eframe::egui::{self, Sense, Stroke, pos2, vec2};
-use zcommon::{
-    ffmpeg::{FfmpegError, FfmpegPaths, run_ffmpeg, scaled_frames_args},
-    ui_egui::style_window::role_color,
-};
+use zcommon::ffmpeg::{FfmpegError, FfmpegPaths, run_ffmpeg, scaled_frames_args};
+use zcommon_ui::style_window::role_color;
 
 use super::video_frames::{VideoTrack, end_time, format_time};
 use crate::ui_egui::file_role::FileRole;

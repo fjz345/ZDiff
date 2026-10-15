@@ -7,7 +7,5 @@ pub mod logger;
 pub mod path;
 pub mod presets;
 pub mod style;
-#[cfg(feature = "gui")]
-pub mod ui_egui;
 pub mod universal_path;
 pub mod vcs;

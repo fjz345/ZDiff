@@ -2,7 +2,7 @@ use std::ops::Range;
 
 use eframe::egui;
 
-use crate::path::PathSegment;
+use zcommon::path::PathSegment;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PathBarAction {
@@ -289,7 +289,7 @@ const ELLIPSIS: &str = "…";
 #[cfg(test)]
 mod tests {
     use super::{PathBarAction, cap_widths, elide, path_bar};
-    use crate::path::split_path;
+    use zcommon::path::split_path;
     use eframe::egui::{self, Event, Modifiers, PointerButton, Pos2, Rect};
 
     const PATH: &str = r"C:\proj\src\main.rs";

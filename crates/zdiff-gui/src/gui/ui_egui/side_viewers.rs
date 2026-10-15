@@ -1,5 +1,5 @@
 use eframe::egui::{self, Rect, UiBuilder};
-use zcommon::ui_egui::table::SplitColumn;
+use zcommon_ui::table::SplitColumn;
 use zdiff::diff_builder::{LineContent, RowBg};
 
 use crate::{

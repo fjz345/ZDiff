@@ -1,5 +1,5 @@
 use eframe::egui::{self, Key, Modifiers};
-use zcommon::ui_egui::{
+use zcommon_ui::{
     common::show_custom_popup,
     keymap::{Action, Keymap, Shortcut},
     keymap_editor::KeymapEditor,

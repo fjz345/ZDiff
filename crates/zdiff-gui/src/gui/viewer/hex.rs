@@ -12,7 +12,7 @@ use std::{
 };
 
 use eframe::egui::{self, Color32, FontId, text::LayoutJob};
-use zcommon::ui_egui::{style_window::role_color, table::SplitColumn};
+use zcommon_ui::{style_window::role_color, table::SplitColumn};
 use zdiff::hex::{HexDiff, HexSide, hex_diff};
 
 use super::hex_inspector::{Endian, inspector_ui};

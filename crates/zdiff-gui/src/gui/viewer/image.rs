@@ -17,7 +17,7 @@ use eframe::egui::{
     self, Color32, ColorImage, Pos2, Rect, Sense, Stroke, StrokeKind, TextureFilter, TextureHandle,
     TextureOptions, Vec2, pos2, vec2,
 };
-use zcommon::ui_egui::style_window::role_color;
+use zcommon_ui::style_window::role_color;
 use zdiff::pixel::{PixelDiff, PixelStats, RgbaBuffer, pixel_diff};
 
 use super::{hex::is_same_side, path_extension};

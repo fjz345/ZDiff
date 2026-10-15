@@ -6,7 +6,7 @@ use std::{
 use eframe::egui::{Key, Modifiers};
 
 use super::keymap::{Action, Keymap, Shortcut};
-use crate::style::settings_dir;
+use zcommon::style::settings_dir;
 
 const CTRL: Modifiers = Modifiers {
     ctrl: !cfg!(target_os = "macos"),

@@ -12,9 +12,9 @@ use serde::Deserialize;
 use serde::Serialize;
 use zcommon::hash::HashRepresentation;
 use zcommon::hash::HashService;
-use zcommon::ui_egui::common::show_custom_popup;
-use zcommon::ui_egui::style_window::role_color;
-use zcommon::ui_egui::toggle::toggle_button;
+use zcommon_ui::common::show_custom_popup;
+use zcommon_ui::style_window::role_color;
+use zcommon_ui::toggle::toggle_button;
 use zhashdiff::conflict::DuplicateGroup;
 use zhashdiff::conflict::ResolutionSummary;
 use zhashdiff::conflict::SizedFile;
@@ -52,7 +52,7 @@ use crate::ui_egui::tree_filter::DuplicatesFilter;
 use crate::ui_egui::tree_filter::filter_rows;
 use crate::ui_egui::tree_sort::TreeSort;
 use crate::ui_egui::tree_sort::sort_file_list;
-use zcommon::ui_egui::common::hash_to_color;
+use zcommon_ui::common::hash_to_color;
 
 const MAX_CONCURRENT_HASHES: usize = 16;
 

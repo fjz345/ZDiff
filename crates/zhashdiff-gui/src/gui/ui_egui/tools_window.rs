@@ -5,7 +5,8 @@ use std::{
 };
 
 use eframe::egui::{self, RichText, TextBuffer};
-use zcommon::{kinds::FileKind, ui_egui::common::show_custom_popup};
+use zcommon::kinds::FileKind;
+use zcommon_ui::common::show_custom_popup;
 use zhashdiff::external_diff_tool::{
     DiffPair, DiffTool, DiffToolConfig, DiffToolMatch, DiffToolRule, ExeNotFound, find_on_path,
     folder_labels, open_diff_tool, presets, preview_command, resolve_exe,

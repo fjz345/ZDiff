@@ -4,7 +4,7 @@ use std::sync::Arc;
 use eframe::egui::{self, Color32, Id, Theme, ThemePreference};
 
 use super::common::show_custom_popup;
-use crate::style::{
+use zcommon::style::{
     Mode, Palette, Rgba8, Role, RowLook, SYNTAX_PRESETS, SharedRole, Style, SyntaxCategory,
     SyntaxColors, Tone, style_file_path,
 };

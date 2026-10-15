@@ -4,7 +4,7 @@ use eframe::egui::{self};
 use serde::{Deserialize, Serialize};
 use zcommon::{
     hash::HashService,
-    logger::{LogBuffer, ui_log_window},
+    logger::LogBuffer,
 };
 use zhashdiff::{external_diff_tool::DiffToolConfig, filter::PathFilter};
 
@@ -176,7 +176,7 @@ impl ZAppPane for LogPane {
 
 impl LogPane {
     fn ui(&mut self, ui: &mut egui::Ui, log_buffer: &LogBuffer) -> egui_tiles::UiResponse {
-        ui_log_window(ui, log_buffer.clone(), &mut self.scroll_to_bottom);
+        zcommon_ui::log_window::log_window(ui, log_buffer.clone(), &mut self.scroll_to_bottom);
 
         return egui_tiles::UiResponse::None;
     }

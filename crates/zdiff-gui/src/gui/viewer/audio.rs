@@ -17,7 +17,8 @@ use zcommon::ffmpeg::{
     FfmpegError, FfmpegPaths, MediaInfo, StreamKind, pcm_decode_args, probe, resampled_decode_args,
     run_ffmpeg,
 };
-use zcommon::{style::SharedRole, ui_egui::style_window::role_color};
+use zcommon::style::SharedRole;
+use zcommon_ui::style_window::role_color;
 
 use super::{
     audio_diff::SampleDiffProcessor,
