@@ -503,11 +503,18 @@ pub fn print_file(p4: &impl P4Runner, depot_path: &str, revision: &str) -> Resul
 
 /// What a failed command reports: stderr, else stdout, else the exit status.
 fn failure_text(stderr: &[u8], stdout: &[u8], status: impl std::fmt::Display) -> String {
-    [stderr, stdout]
-        .iter()
-        .map(|text| String::from_utf8_lossy(text).trim().to_string())
+    let texts = [stderr, stdout].map(|text| String::from_utf8_lossy(text).trim().to_string());
+    let needs_login = texts.iter().any(|text| {
+        text.contains("(P4PASSWD) invalid or unset") || text.contains("session has expired")
+    });
+    let mut message = texts
+        .into_iter()
         .find(|text| !text.is_empty())
-        .unwrap_or_else(|| format!("p4 failed ({status})"))
+        .unwrap_or_else(|| format!("p4 failed ({status})"));
+    if needs_login {
+        message.push_str("\nRun `p4 login` to authenticate.");
+    }
+    message
 }
 
 pub struct P4Command {
@@ -928,6 +935,17 @@ mod tests {
             failure_text(b"", b"", "exit code: 1"),
             "p4 failed (exit code: 1)"
         );
+    }
+
+    #[test]
+    fn failure_text_hints_p4_login_for_auth_failures() {
+        let password: &[u8] = b"Perforce password (P4PASSWD) invalid or unset.\n";
+        let expired: &[u8] = b"Your session has expired, please login again.\n";
+        for text in [password, expired] {
+            assert!(failure_text(text, b"", "exit code: 1").contains("p4 login"));
+            assert!(failure_text(b"", text, "exit code: 1").contains("p4 login"));
+        }
+        assert!(!failure_text(b"Connect to server failed", b"", "exit code: 1").contains("p4 login"));
     }
 
     const WHERE_SPACES: &str = "... depotFile //depot/main/my dir/a b.txt\n\
