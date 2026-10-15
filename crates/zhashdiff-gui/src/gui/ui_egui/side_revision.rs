@@ -1,11 +1,12 @@
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 use eframe::egui;
 use zcommon::{
     universal_path::{DepotRev, GitRev, UniversalPath},
     vcs::{
         git::{GitCommand, GitRef, RefKind, list_refs, locate},
-        p4::{P4Command, P4Stream, list_streams},
+        p4::{P4Command, P4Stream, depot_folder_of_local, list_streams},
     },
 };
 
@@ -93,8 +94,14 @@ pub fn pick_revision(
     root: &Path,
     pick: &RootPick,
     streams: &[P4Stream],
+    workspace_depot: Option<&str>,
 ) -> Result<PathBuf, String> {
     let (folder, current) = split_side(root);
+    if let (SideRev::Git(None), Some(depot)) = (&current, workspace_depot)
+        && *pick != RootPick::WorkingTree
+    {
+        return pick_revision(Path::new(depot), pick, streams, None);
+    }
     let rev = match (&current, pick) {
         (SideRev::Git(_), RootPick::WorkingTree) => SideRev::Git(None),
         (SideRev::Git(_), RootPick::Index) => SideRev::Git(Some(GitRev::Index)),
@@ -132,32 +139,39 @@ fn revision_text(rev: &SideRev) -> String {
     }
 }
 
-#[derive(Clone)]
 enum Listing {
     Git(Vec<GitRef>),
     Streams(Vec<P4Stream>),
+    Workspace {
+        depot: String,
+        streams: Vec<P4Stream>,
+    },
 }
+
+type Loading = Arc<Mutex<Option<Result<Listing, String>>>>;
 
 #[derive(Clone)]
 struct MenuState {
     folder: PathBuf,
     text: String,
     error: Option<String>,
-    listing: Result<Listing, String>,
+    listing: Loading,
 }
 
 impl MenuState {
-    fn load(folder: PathBuf, depot: bool) -> Self {
-        let listing = if depot {
-            let depot_folder = UniversalPath::Depot(folder.to_string_lossy().into_owned(), None);
-            list_streams(&P4Command::new(false).for_file(depot_folder)).map(Listing::Streams)
-        } else {
-            let git = GitCommand::default();
-            locate(&git, &folder)
-                .and_then(|location| list_refs(&git, &location.root))
-                .map(Listing::Git)
-                .map_err(|e| e.to_string())
-        };
+    fn load(ctx: &egui::Context, folder: PathBuf, current: &SideRev) -> Self {
+        let listing: Loading = Arc::default();
+        let (shared, thread_folder, current, ctx) = (
+            listing.clone(),
+            folder.clone(),
+            current.clone(),
+            ctx.clone(),
+        );
+        std::thread::spawn(move || {
+            let result = load_listing(&thread_folder, &current);
+            *shared.lock().unwrap() = Some(result);
+            ctx.request_repaint();
+        });
         Self {
             folder,
             text: String::new(),
@@ -167,8 +181,33 @@ impl MenuState {
     }
 }
 
-/// Some(root) when a revision was picked or typed. Refs and streams are listed synchronously when
-/// the menu opens.
+fn load_listing(folder: &Path, current: &SideRev) -> Result<Listing, String> {
+    if matches!(current, SideRev::Depot(_)) {
+        let depot_folder = UniversalPath::Depot(folder.to_string_lossy().into_owned(), None);
+        return list_streams(&P4Command::new(false).for_file(depot_folder)).map(Listing::Streams);
+    }
+    let git = GitCommand::default();
+    match locate(&git, folder) {
+        Ok(location) => list_refs(&git, &location.root)
+            .map(Listing::Git)
+            .map_err(|e| e.to_string()),
+        Err(git_err) if *current == SideRev::Git(None) => {
+            load_workspace(folder).map_err(|p4_err| {
+                format!("Not in a git repo or p4 workspace.\ngit: {git_err}\np4: {p4_err}")
+            })
+        }
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+fn load_workspace(folder: &Path) -> Result<Listing, String> {
+    let p4 = P4Command::new(false).for_file(UniversalPath::Local(folder.join("...")));
+    let depot = depot_folder_of_local(&p4, folder)?;
+    list_streams(&p4).map(|streams| Listing::Workspace { depot, streams })
+}
+
+/// Some(root) when a revision was picked or typed. Refs and streams are listed on a background
+/// thread when the menu opens.
 pub fn revision_dropdown(
     ui: &mut egui::Ui,
     id_salt: usize,
@@ -192,9 +231,7 @@ pub fn revision_dropdown(
         let mut state = ui
             .data(|d| d.get_temp::<MenuState>(state_id))
             .filter(|state| state.folder == folder)
-            .unwrap_or_else(|| {
-                MenuState::load(folder.clone(), matches!(current, SideRev::Depot(_)))
-            });
+            .unwrap_or_else(|| MenuState::load(ui.ctx(), folder.clone(), &current));
         picked = menu_contents(ui, &mut state, root, &current);
         ui.data_mut(|d| d.insert_temp(state_id, state));
         if picked.is_some() {
@@ -214,7 +251,12 @@ fn menu_contents(
     root: &Path,
     current: &SideRev,
 ) -> Option<PathBuf> {
-    let depot = matches!(current, SideRev::Depot(_));
+    let listing = state.listing.lock().unwrap();
+    let workspace_depot = match listing.as_ref() {
+        Some(Ok(Listing::Workspace { depot, .. })) => Some(depot.as_str()),
+        _ => None,
+    };
+    let depot = matches!(current, SideRev::Depot(_)) || workspace_depot.is_some();
     let mut pick = None;
     let edit = ui.add(
         egui::TextEdit::singleline(&mut state.text)
@@ -226,8 +268,16 @@ fn menu_contents(
             .desired_width(220.0),
     );
     let entered = edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-    if entered && !state.text.trim().is_empty() {
+    // Before the listing arrives, a workspace folder's typed text would be read as a git revision.
+    if entered && listing.is_some() && !state.text.trim().is_empty() {
         pick = Some(RootPick::Typed(state.text.clone()));
+    }
+    if !matches!(current, SideRev::Depot(_))
+        && ui
+            .selectable_label(*current == SideRev::Git(None), WORKING_TREE)
+            .clicked()
+    {
+        pick = Some(RootPick::WorkingTree);
     }
     if depot {
         if ui
@@ -238,12 +288,6 @@ fn menu_contents(
         }
     } else {
         if ui
-            .selectable_label(*current == SideRev::Git(None), WORKING_TREE)
-            .clicked()
-        {
-            pick = Some(RootPick::WorkingTree);
-        }
-        if ui
             .selectable_label(*current == SideRev::Git(Some(GitRev::Index)), "Index")
             .clicked()
         {
@@ -251,11 +295,17 @@ fn menu_contents(
         }
     }
     let mut streams: &[P4Stream] = &[];
-    match &state.listing {
-        Err(e) => {
+    match listing.as_ref() {
+        None => {
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.label("Loading");
+            });
+        }
+        Some(Err(e)) => {
             ui.colored_label(ui.visuals().error_fg_color, e);
         }
-        Ok(Listing::Git(refs)) => {
+        Some(Ok(Listing::Git(refs))) => {
             egui::ScrollArea::vertical()
                 .max_height(300.0)
                 .show(ui, |ui| {
@@ -281,9 +331,10 @@ fn menu_contents(
                     }
                 });
         }
-        Ok(Listing::Streams(all)) => {
+        Some(Ok(Listing::Streams(all) | Listing::Workspace { streams: all, .. })) => {
             streams = all;
-            let current_stream = stream_of(&state.folder.to_string_lossy(), all);
+            let folder = state.folder.to_string_lossy();
+            let current_stream = stream_of(workspace_depot.unwrap_or(&folder), all);
             egui::ScrollArea::vertical()
                 .max_height(300.0)
                 .show(ui, |ui| {
@@ -297,7 +348,8 @@ fn menu_contents(
                 });
         }
     }
-    let result = pick.map(|pick| pick_revision(root, &pick, streams));
+    let result = pick.map(|pick| pick_revision(root, &pick, streams, workspace_depot));
+    drop(listing);
     let picked = match result {
         Some(Ok(root)) => Some(root),
         Some(Err(e)) => {
@@ -339,7 +391,51 @@ mod tests {
     }
 
     fn pick(root: &str, pick: RootPick) -> Result<String, String> {
-        pick_revision(Path::new(root), &pick, &streams()).map(|p| p.to_string_lossy().into_owned())
+        pick_revision(Path::new(root), &pick, &streams(), None)
+            .map(|p| p.to_string_lossy().into_owned())
+    }
+
+    fn pick_in_workspace(root: &str, pick: RootPick) -> Result<String, String> {
+        pick_revision(
+            Path::new(root),
+            &pick,
+            &streams(),
+            Some("//stream/main/src"),
+        )
+        .map(|p| p.to_string_lossy().into_owned())
+    }
+
+    #[test]
+    fn depot_picks_on_a_workspace_folder_use_its_depot_folder() {
+        let local = r"C:\ws\src";
+        assert_eq!(
+            pick_in_workspace(local, RootPick::Head).unwrap(),
+            "//stream/main/src"
+        );
+        assert_eq!(
+            pick_in_workspace(local, RootPick::Typed("@1234".into())).unwrap(),
+            "//stream/main/src@1234"
+        );
+        assert_eq!(
+            pick_in_workspace(local, RootPick::Stream("//stream/dev".into())).unwrap(),
+            "//stream/dev/src"
+        );
+    }
+
+    #[test]
+    fn working_tree_on_a_workspace_folder_stays_local() {
+        assert_eq!(
+            pick_in_workspace(r"C:\ws\src", RootPick::WorkingTree).unwrap(),
+            r"C:\ws\src"
+        );
+    }
+
+    #[test]
+    fn git_picks_on_a_workspace_folder_report_why() {
+        let local = r"C:\ws\src";
+        assert!(pick_in_workspace(local, RootPick::Typed("main".into())).is_err());
+        assert!(pick_in_workspace(local, RootPick::Index).is_err());
+        assert!(pick_in_workspace(local, RootPick::Git("main".into())).is_err());
     }
 
     #[test]

@@ -1,3 +1,4 @@
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use eframe::egui::{
@@ -7,7 +8,7 @@ use eframe::egui::{
 use zcommon::vcs::git::{self, GitCommand, GitRef, RefKind};
 use zdiff::universal_path::{DepotRev, GitRev, UniversalPath};
 
-use crate::p4::{P4Command, P4Stream, list_streams};
+use crate::p4::{P4Command, P4Stream, depot_file_of_local, list_streams};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RevisionPick {
@@ -23,7 +24,14 @@ pub fn pick_revision(
     path: &UniversalPath,
     pick: &RevisionPick,
     streams: &[P4Stream],
+    workspace_depot: Option<&str>,
 ) -> Result<UniversalPath, String> {
+    if let (UniversalPath::Local(_), Some(depot)) = (path, workspace_depot)
+        && *pick != RevisionPick::WorkingTree
+    {
+        let depot = UniversalPath::Depot(depot.to_owned(), None);
+        return pick_revision(&depot, pick, streams, None);
+    }
     match (path, pick) {
         (UniversalPath::Local(p) | UniversalPath::Git(p, _), pick) => {
             let rev = match pick {
@@ -105,6 +113,10 @@ pub fn revision_label(path: &UniversalPath) -> String {
 enum Listing {
     Git(Vec<GitRef>),
     Streams(Vec<P4Stream>),
+    Workspace {
+        depot: String,
+        streams: Vec<P4Stream>,
+    },
 }
 
 type Loading = Arc<Mutex<Option<Result<Listing, String>>>>;
@@ -124,12 +136,26 @@ fn load_listing(path: &UniversalPath) -> Result<Listing, String> {
         }
         UniversalPath::Local(p) | UniversalPath::Git(p, _) => {
             let git_cmd = GitCommand::default();
-            let location = git::locate(&git_cmd, p).map_err(|e| e.to_string())?;
+            let location = match git::locate(&git_cmd, p) {
+                Ok(location) => location,
+                Err(git_err) if matches!(path, UniversalPath::Local(_)) => {
+                    return load_workspace(p).map_err(|p4_err| {
+                        format!("Not in a git repo or p4 workspace.\ngit: {git_err}\np4: {p4_err}")
+                    });
+                }
+                Err(e) => return Err(e.to_string()),
+            };
             git::list_refs(&git_cmd, &location.root)
                 .map(Listing::Git)
                 .map_err(|e| e.to_string())
         }
     }
+}
+
+fn load_workspace(file: &Path) -> Result<Listing, String> {
+    let p4 = P4Command::new(false).for_file(UniversalPath::Local(file.to_path_buf()));
+    let depot = depot_file_of_local(&p4, file)?;
+    list_streams(&p4).map(|streams| Listing::Workspace { depot, streams })
 }
 
 fn start(ctx: &egui::Context, path: &UniversalPath) -> State {
@@ -174,7 +200,13 @@ fn menu(ui: &mut egui::Ui, id: egui::Id, path: &UniversalPath) -> Option<Univers
         .unwrap_or_else(|| start(ui.ctx(), path));
     ui.set_min_width(260.0);
 
-    let is_depot = path.is_depot();
+    let listing = state.listing.lock().unwrap();
+    let (streams, workspace_depot): (&[P4Stream], Option<&str>) = match listing.as_ref() {
+        Some(Ok(Listing::Streams(streams))) => (streams, None),
+        Some(Ok(Listing::Workspace { depot, streams })) => (streams, Some(depot)),
+        _ => (&[], None),
+    };
+    let is_depot = path.is_depot() || workspace_depot.is_some();
     let hint = if is_depot {
         "Filter, or @change, @=shelf, #rev"
     } else {
@@ -190,12 +222,8 @@ fn menu(ui: &mut egui::Ui, id: egui::Id, path: &UniversalPath) -> Option<Univers
     }
     let entered = edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
 
-    let listing = state.listing.lock().unwrap();
-    let streams: &[P4Stream] = match listing.as_ref() {
-        Some(Ok(Listing::Streams(streams))) => streams,
-        _ => &[],
-    };
-    let mut pick = entered.then(|| RevisionPick::Typed(state.text.clone()));
+    // Before the listing arrives, a workspace file's typed text would be read as a git revision.
+    let mut pick = (entered && listing.is_some()).then(|| RevisionPick::Typed(state.text.clone()));
     let filter = state.text.trim().to_lowercase();
     let shown = |name: &str| filter.is_empty() || name.to_lowercase().contains(&filter);
     let mut item = |ui: &mut egui::Ui, selected: bool, name: &str, p: RevisionPick| {
@@ -205,6 +233,14 @@ fn menu(ui: &mut egui::Ui, id: egui::Id, path: &UniversalPath) -> Option<Univers
     };
 
     ui.separator();
+    if !path.is_depot() {
+        item(
+            ui,
+            matches!(path, UniversalPath::Local(_)),
+            "Working tree",
+            RevisionPick::WorkingTree,
+        );
+    }
     if is_depot {
         item(
             ui,
@@ -213,12 +249,6 @@ fn menu(ui: &mut egui::Ui, id: egui::Id, path: &UniversalPath) -> Option<Univers
             RevisionPick::Head,
         );
     } else {
-        item(
-            ui,
-            matches!(path, UniversalPath::Local(_)),
-            "Working tree",
-            RevisionPick::WorkingTree,
-        );
         item(
             ui,
             matches!(path, UniversalPath::Git(_, GitRev::Index)),
@@ -266,11 +296,14 @@ fn menu(ui: &mut egui::Ui, id: egui::Id, path: &UniversalPath) -> Option<Univers
                     }
                 });
         }
-        Some(Ok(Listing::Streams(all))) => {
-            let current = match path {
-                UniversalPath::Depot(file, _) => stream_of(file, all).map(|s| s.stream.as_str()),
-                _ => None,
+        Some(Ok(Listing::Streams(all) | Listing::Workspace { streams: all, .. })) => {
+            let depot_file = match path {
+                UniversalPath::Depot(file, _) => Some(file.as_str()),
+                _ => workspace_depot,
             };
+            let current = depot_file
+                .and_then(|file| stream_of(file, all))
+                .map(|s| s.stream.as_str());
             egui::ScrollArea::vertical()
                 .max_height(300.0)
                 .show(ui, |ui| {
@@ -292,7 +325,7 @@ fn menu(ui: &mut egui::Ui, id: egui::Id, path: &UniversalPath) -> Option<Univers
         ui.colored_label(ui.visuals().error_fg_color, error);
     }
 
-    let picked = pick.map(|pick| pick_revision(path, &pick, streams));
+    let picked = pick.map(|pick| pick_revision(path, &pick, streams, workspace_depot));
     drop(listing);
     let result = match picked {
         Some(Ok(new_path)) => {
@@ -314,7 +347,17 @@ mod tests {
     use super::*;
 
     fn pick(path: &str, pick: RevisionPick) -> Result<String, String> {
-        pick_revision(&UniversalPath::from(path), &pick, &streams()).map(|p| p.to_string())
+        pick_revision(&UniversalPath::from(path), &pick, &streams(), None).map(|p| p.to_string())
+    }
+
+    fn pick_in_workspace(path: &str, pick: RevisionPick) -> Result<String, String> {
+        pick_revision(
+            &UniversalPath::from(path),
+            &pick,
+            &streams(),
+            Some("//stream/main/src/a.rs"),
+        )
+        .map(|p| p.to_string())
     }
 
     fn typed(path: &str, text: &str) -> Result<String, String> {
@@ -483,6 +526,7 @@ mod tests {
             &UniversalPath::from(path),
             &RevisionPick::Stream(to.into()),
             &listed,
+            None,
         )
         .map(|p| p.to_string())
     }
@@ -529,6 +573,39 @@ mod tests {
         assert!(pick("//depot/a.txt", RevisionPick::WorkingTree).is_err());
         assert!(pick(r"C:\ws\a.rs", RevisionPick::Stream("//stream/dev".into())).is_err());
         assert!(pick(r"C:\ws\a.rs", RevisionPick::Head).is_err());
+    }
+
+    #[test]
+    fn depot_picks_on_a_workspace_file_use_its_depot_path() {
+        let local = r"C:\ws\src\a.rs";
+        assert_eq!(
+            pick_in_workspace(local, RevisionPick::Head).unwrap(),
+            "//stream/main/src/a.rs"
+        );
+        assert_eq!(
+            pick_in_workspace(local, RevisionPick::Typed("@1234".into())).unwrap(),
+            "//stream/main/src/a.rs@1234"
+        );
+        assert_eq!(
+            pick_in_workspace(local, RevisionPick::Stream("//stream/dev".into())).unwrap(),
+            "//stream/dev/src/a.rs"
+        );
+    }
+
+    #[test]
+    fn working_tree_on_a_workspace_file_stays_local() {
+        assert_eq!(
+            pick_in_workspace(r"C:\ws\src\a.rs", RevisionPick::WorkingTree).unwrap(),
+            r"C:\ws\src\a.rs"
+        );
+    }
+
+    #[test]
+    fn git_picks_on_a_workspace_file_are_refused() {
+        let local = r"C:\ws\src\a.rs";
+        assert!(pick_in_workspace(local, RevisionPick::Typed("main".into())).is_err());
+        assert!(pick_in_workspace(local, RevisionPick::Index).is_err());
+        assert!(pick_in_workspace(local, RevisionPick::Git("main".into())).is_err());
     }
 
     #[test]

@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
 use std::{env, str};
 
@@ -202,6 +202,41 @@ fn depot_path_without_revision(file: &UniversalPath) -> Result<&str, String> {
         UniversalPath::Depot(path, _rev) => Ok(path),
         _ => Err(format!("{file} is not a depot path")),
     }
+}
+
+/// A folder query also gets records for view lines under the folder, so only records for exactly
+/// `local` count; of those the last wins, as with `parse_where_local_path`.
+fn depot_path_of_where(p4: &impl P4Runner, local: &Path) -> Result<String, String> {
+    let normalize = |path: &str| path.replace('/', "\\").to_lowercase();
+    let queried = local.to_string_lossy();
+    let out = p4.run(&["-ztag", "where", &escape_local_path(&queried)])?;
+    let records = ztag_records(&out);
+    let last = records
+        .iter()
+        .rev()
+        .find(|r| ztag_field(r, "path").is_some_and(|p| normalize(p) == normalize(&queried)));
+    match last {
+        Some(record) if ztag_field(record, "unmap").is_none() => {
+            ztag_field(record, "depotFile").map(str::to_owned)
+        }
+        _ => None,
+    }
+    .ok_or_else(|| format!("{} is not mapped to the p4 workspace", local.display()))
+}
+
+pub fn depot_file_of_local(p4: &impl P4Runner, file: &Path) -> Result<String, String> {
+    depot_path_of_where(p4, file)
+}
+
+/// Run `p4` with `folder` as cwd so a P4CONFIG file at the workspace root is found.
+pub fn depot_folder_of_local(p4: &impl P4Runner, folder: &Path) -> Result<String, String> {
+    let tree = depot_path_of_where(p4, &folder.join("..."))?;
+    tree.strip_suffix("/...").map(str::to_owned).ok_or_else(|| {
+        format!(
+            "p4 where {}: unexpected depot path {tree}",
+            folder.display()
+        )
+    })
 }
 
 /// The local path in `p4 -ztag where` output, or `None` when the file isn't mapped. Tagged output
@@ -948,6 +983,80 @@ mod tests {
             parse_where_local_path(&format!("{excluded}\n{mapped}\n")),
             Some(PathBuf::from(r"C:\ws\main\a.txt"))
         );
+    }
+
+    #[test]
+    fn depot_file_of_a_local_file_asks_p4_where_with_the_escaped_path() {
+        let p4 = FakeP4::new(|_: &[&str]| Ok(WHERE_SPACES.to_string()));
+        assert_eq!(
+            depot_file_of_local(&p4, Path::new(r"C:\ws\main\my dir\a b.txt")),
+            Ok("//depot/main/my dir/a b.txt".to_string())
+        );
+        let p4 = FakeP4::new(|_: &[&str]| Ok(String::new()));
+        let _ = depot_file_of_local(&p4, Path::new(r"C:\ws\a@1.txt"));
+        assert_eq!(
+            p4.calls(),
+            vec![args(&["-ztag", "where", r"C:\ws\a%401.txt"])]
+        );
+    }
+
+    #[test]
+    fn depot_folder_of_a_local_folder_asks_for_its_tree_and_drops_the_wildcard() {
+        let ztag = "... depotFile //depot/main/src/...\n\
+                    ... clientFile //ws/src/...\n\
+                    ... path C:\\ws\\src\\...\n";
+        let p4 = FakeP4::new(|_: &[&str]| Ok(ztag.to_string()));
+        assert_eq!(
+            depot_folder_of_local(&p4, Path::new(r"C:\ws\src")),
+            Ok("//depot/main/src".to_string())
+        );
+        assert_eq!(
+            p4.calls(),
+            vec![args(&["-ztag", "where", r"C:\ws\src\..."])]
+        );
+    }
+
+    #[test]
+    fn depot_folder_ignores_records_for_excluded_subfolders() {
+        let ztag = "... depotFile //depot/main/src/...\n\
+                    ... clientFile //ws/src/...\n\
+                    ... path C:\\ws\\src\\...\n\
+                    \n\
+                    ... depotFile -//depot/main/src/tmp/...\n\
+                    ... clientFile -//ws/src/tmp/...\n\
+                    ... path C:\\ws\\src\\tmp\\...\n\
+                    ... unmap\n";
+        let p4 = FakeP4::new(|_: &[&str]| Ok(ztag.to_string()));
+        assert_eq!(
+            depot_folder_of_local(&p4, Path::new(r"C:\ws\SRC")),
+            Ok("//depot/main/src".to_string())
+        );
+    }
+
+    #[test]
+    fn depot_folder_of_an_excluded_folder_is_an_error() {
+        let ztag = "... depotFile //depot/main/src/...\n\
+                    ... clientFile //ws/src/...\n\
+                    ... path C:\\ws\\src\\...\n\
+                    \n\
+                    ... depotFile -//depot/main/src/...\n\
+                    ... clientFile -//ws/src/...\n\
+                    ... path C:\\ws\\src\\...\n\
+                    ... unmap\n";
+        let p4 = FakeP4::new(|_: &[&str]| Ok(ztag.to_string()));
+        let err = depot_folder_of_local(&p4, Path::new(r"C:\ws\src")).unwrap_err();
+        assert!(err.contains(r"C:\ws\src"), "{err}");
+    }
+
+    #[test]
+    fn depot_path_of_an_unmapped_local_path_is_an_error() {
+        let p4 = FakeP4::new(|_: &[&str]| Ok(String::new()));
+        let err = depot_file_of_local(&p4, Path::new(r"C:\ws\a.txt")).unwrap_err();
+        assert!(err.contains(r"C:\ws\a.txt"), "{err}");
+
+        let p4 = FakeP4::new(|_: &[&str]| Err("not under client's root".to_string()));
+        let err = depot_folder_of_local(&p4, Path::new(r"D:\x")).unwrap_err();
+        assert!(err.contains("not under client's root"), "{err}");
     }
 
     #[test]
