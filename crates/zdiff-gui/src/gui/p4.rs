@@ -44,23 +44,20 @@ pub fn ui_p4_profiles(ui: &mut egui::Ui, profiles: &mut P4Profiles) {
                     .num_columns(2)
                     .spacing([40.0, 8.0])
                     .show(ui, |ui| {
-                        let mut edit_row =
-                            |label: &str, value: &mut String, hint: &str, password: bool| {
-                                ui.label(label);
-                                ui.add(
-                                    egui::TextEdit::singleline(value)
-                                        .hint_text(hint)
-                                        .password(password)
-                                        .desired_width(200.0),
-                                );
-                                ui.end_row();
-                            };
+                        let mut edit_row = |label: &str, value: &mut String, hint: &str| {
+                            ui.label(label);
+                            ui.add(
+                                egui::TextEdit::singleline(value)
+                                    .hint_text(hint)
+                                    .desired_width(200.0),
+                            );
+                            ui.end_row();
+                        };
 
-                        edit_row("P4PORT", &mut config.port, "ssl:perforce:1666", false);
-                        edit_row("P4USER", &mut config.user, "username", false);
-                        edit_row("P4CLIENT", &mut config.client, "workspace_name", false);
-                        edit_row("P4CHARSET", &mut config.charset, "utf8", false);
-                        edit_row("P4PASSWD", &mut config.password, "password", true);
+                        edit_row("P4PORT", &mut config.port, "ssl:perforce:1666");
+                        edit_row("P4USER", &mut config.user, "username");
+                        edit_row("P4CLIENT", &mut config.client, "workspace_name");
+                        edit_row("P4CHARSET", &mut config.charset, "utf8");
                     });
             }
         });

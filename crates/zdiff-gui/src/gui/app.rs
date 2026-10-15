@@ -2854,7 +2854,6 @@ mod tests {
         let mut ctx = AppStateCtx::default();
         let id = ctx.p4_profiles.add("work".into());
         ctx.p4_profiles.profiles[0].config.port = "ssl:p4:1666".into();
-        ctx.p4_profiles.profiles[0].config.password = "pw".into();
         ctx.p4_profiles.default = Some(id);
         ctx.keybindings.user_quick_diffs[1].1.p4_profile = Some(id);
 
@@ -2868,6 +2867,22 @@ mod tests {
             .map(|(_, slot)| slot.p4_profile)
             .collect();
         assert_eq!(slot_profiles, [None, Some(id), None, None]);
+    }
+
+    #[test]
+    fn a_save_with_a_p4_password_loads_and_drops_it_on_the_next_save() {
+        let mut ctx = AppStateCtx::default();
+        ctx.p4_profiles.add("work".into());
+        let mut json = serde_json::to_value(&ctx).unwrap();
+        json["p4_profiles"]["profiles"][0]["config"]["password"] = "secret".into();
+
+        let restored: AppStateCtx = serde_json::from_value(json).unwrap();
+        assert_eq!(restored.p4_profiles, ctx.p4_profiles);
+        assert!(
+            !serde_json::to_string(&restored)
+                .unwrap()
+                .contains("password")
+        );
     }
 
     /// The single p4 config before profiles was never saved, so such a save has no profiles.

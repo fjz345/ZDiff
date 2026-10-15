@@ -39,11 +39,10 @@ pub fn set_p4_slot_profile(slot_profile: Option<u64>) {
 #[derive(Debug, Clone, Default, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct P4Config {
-    pub port: String,     // e.g., "localhost:1666"
-    pub user: String,     // e.g., "admin"
-    pub client: String,   // e.g., "my_workspace"
-    pub charset: String,  // e.g., "utf8"
-    pub password: String, // e.g., "secret"
+    pub port: String,    // e.g., "localhost:1666"
+    pub user: String,    // e.g., "admin"
+    pub client: String,  // e.g., "my_workspace"
+    pub charset: String, // e.g., "utf8"
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -115,7 +114,6 @@ impl P4Profiles {
             user: pick(|c| &c.user),
             client: pick(|c| &c.client),
             charset: pick(|c| &c.charset),
-            password: pick(|c| &c.password),
         }
     }
 }
@@ -176,7 +174,6 @@ pub fn resolve_p4_env(config: &P4Config, file: Option<&UniversalPath>, gui: bool
     for (option, var, value) in [
         ("-p", "P4PORT", &config.port),
         ("-u", "P4USER", &config.user),
-        ("-P", "P4PASSWD", &config.password),
         ("-c", "P4CLIENT", &config.client),
         ("-C", "P4CHARSET", &config.charset),
     ] {
@@ -674,13 +671,12 @@ mod tests {
 
     use super::*;
 
-    fn config(port: &str, user: &str, client: &str, charset: &str, password: &str) -> P4Config {
+    fn config(port: &str, user: &str, client: &str, charset: &str) -> P4Config {
         P4Config {
             port: port.into(),
             user: user.into(),
             client: client.into(),
             charset: charset.into(),
-            password: password.into(),
         }
     }
 
@@ -717,8 +713,8 @@ mod tests {
     #[test]
     fn slot_profile_over_default_profile_over_environment() {
         let profiles = two_profiles(
-            config("slot:1666", "", "", "", ""),
-            config("default:1666", "me", "", "", ""),
+            config("slot:1666", "", "", ""),
+            config("default:1666", "me", "", ""),
         );
         let (args_, unset) = command_shape(&profiles, Some(1));
         assert_eq!(args_, args(&["-p", "slot:1666", "-u", "me"]));
@@ -727,7 +723,7 @@ mod tests {
 
     #[test]
     fn empty_slot_fields_fall_through_to_the_default_then_the_environment() {
-        let profiles = two_profiles(config("", "", "", "", ""), config("", "me", "", "utf8", ""));
+        let profiles = two_profiles(config("", "", "", ""), config("", "me", "", "utf8"));
         let (args_, unset) = command_shape(&profiles, Some(1));
         assert_eq!(args_, args(&["-u", "me", "-C", "utf8"]));
         assert!(unset.is_empty());
@@ -738,20 +734,17 @@ mod tests {
 
     #[test]
     fn hash_in_the_slot_unsets_even_when_the_default_has_a_value() {
-        let profiles = two_profiles(
-            config("", "#", "#", "", ""),
-            config("", "me", "ws", "", "pw"),
-        );
+        let profiles = two_profiles(config("", "#", "#", ""), config("", "me", "ws", ""));
         let (args_, unset) = command_shape(&profiles, Some(1));
-        assert_eq!(args_, args(&["-P", "pw"]));
+        assert!(args_.is_empty());
         assert_eq!(unset, vec!["P4USER", "P4CLIENT"]);
     }
 
     #[test]
     fn auto_uses_the_default_profile_and_the_environment_only() {
         let profiles = two_profiles(
-            config("slot:1666", "slot_user", "", "", ""),
-            config("", "me", "", "", ""),
+            config("slot:1666", "slot_user", "", ""),
+            config("", "me", "", ""),
         );
         let (args_, unset) = command_shape(&profiles, None);
         assert_eq!(args_, args(&["-u", "me"]));
@@ -760,10 +753,7 @@ mod tests {
 
     #[test]
     fn a_removed_slot_profile_is_auto_and_a_removed_default_is_the_environment() {
-        let mut profiles = two_profiles(
-            config("slot:1666", "", "", "", ""),
-            config("", "me", "", "", ""),
-        );
+        let mut profiles = two_profiles(config("slot:1666", "", "", ""), config("", "me", "", ""));
         profiles.remove(1);
         assert_eq!(command_shape(&profiles, Some(1)).0, args(&["-u", "me"]));
 
@@ -775,7 +765,7 @@ mod tests {
 
     #[test]
     fn a_dangling_default_is_the_environment() {
-        let mut profiles = two_profiles(P4Config::default(), config("", "me", "", "", ""));
+        let mut profiles = two_profiles(P4Config::default(), config("", "me", "", ""));
         profiles.default = Some(7);
         assert_eq!(command_shape(&profiles, None), (vec![], vec![]));
     }
@@ -811,42 +801,35 @@ mod tests {
 
     #[test]
     fn p4vc_gets_variables_instead_of_flags() {
-        let env = resolve_p4_env(&config("ssl:p4:1666", "#", "", "", "pw"), None, true);
+        let env = resolve_p4_env(&config("ssl:p4:1666", "#", "", ""), None, true);
         assert!(env.args.is_empty());
-        assert_eq!(
-            env.set,
-            vec![
-                ("P4PORT", "ssl:p4:1666".to_string()),
-                ("P4PASSWD", "pw".to_string()),
-            ]
-        );
+        assert_eq!(env.set, vec![("P4PORT", "ssl:p4:1666".to_string())]);
         assert_eq!(env.unset, vec!["P4USER"]);
     }
 
     #[test]
     fn non_empty_fields_are_passed_as_global_options() {
-        let env = resolve_p4_env(
-            &config("ssl:p4:1666", "me", "ws", "utf8", "pw"),
-            None,
-            false,
-        );
+        let config = config("ssl:p4:1666", "me", "ws", "utf8");
+        let env = resolve_p4_env(&config, None, false);
         assert_eq!(
             env.args,
-            args(&[
-                "-p",
-                "ssl:p4:1666",
-                "-u",
-                "me",
-                "-P",
-                "pw",
-                "-c",
-                "ws",
-                "-C",
-                "utf8"
-            ])
+            args(&["-p", "ssl:p4:1666", "-u", "me", "-c", "ws", "-C", "utf8"])
         );
         assert!(env.set.is_empty());
         assert!(env.unset.is_empty());
+    }
+
+    #[test]
+    fn no_password_option_or_variable_is_ever_produced() {
+        let hashes = config("#", "#", "#", "#");
+        for config in [config("p", "u", "c", "s"), hashes] {
+            for gui in [false, true] {
+                let env = resolve_p4_env(&config, None, gui);
+                assert!(!env.args.iter().any(|a| a == "-P"));
+                assert!(env.set.iter().all(|(var, _)| *var != "P4PASSWD"));
+                assert!(!env.unset.contains(&"P4PASSWD"));
+            }
+        }
     }
 
     #[test]
@@ -860,16 +843,16 @@ mod tests {
             P4Env::default()
         );
 
-        let env = resolve_p4_env(&config("", "me", "", "", ""), None, false);
+        let env = resolve_p4_env(&config("", "me", "", ""), None, false);
         assert_eq!(env.args, args(&["-u", "me"]));
         assert!(env.unset.is_empty());
     }
 
     #[test]
     fn hash_unsets_the_variable() {
-        let env = resolve_p4_env(&config("#", "me", "#", "", "#"), None, false);
+        let env = resolve_p4_env(&config("#", "me", "#", ""), None, false);
         assert_eq!(env.args, args(&["-u", "me"]));
-        assert_eq!(env.unset, vec!["P4PORT", "P4PASSWD", "P4CLIENT"]);
+        assert_eq!(env.unset, vec!["P4PORT", "P4CLIENT"]);
     }
 
     #[test]
@@ -899,7 +882,7 @@ mod tests {
         let dir = env::temp_dir().join("ws");
         let mut cmd = P4Command::new(false)
             .for_file(UniversalPath::Local(dir.join("a.txt")))
-            .build_cmd(&config("ssl:p4:1666", "#", "", "", ""));
+            .build_cmd(&config("ssl:p4:1666", "#", "", ""));
         cmd.args(["print", "-q", "a.txt"]);
         let cmd_args: Vec<_> = cmd.get_args().collect();
         assert_eq!(cmd_args, ["-p", "ssl:p4:1666", "print", "-q", "a.txt"]);
@@ -915,7 +898,7 @@ mod tests {
 
     #[test]
     fn p4vc_commands_set_variables() {
-        let cmd = P4Command::new(true).build_cmd(&config("ssl:p4:1666", "#", "", "", ""));
+        let cmd = P4Command::new(true).build_cmd(&config("ssl:p4:1666", "#", "", ""));
         assert_eq!(cmd.get_args().count(), 0);
         let envs: Vec<_> = cmd.get_envs().collect();
         assert_eq!(
@@ -945,7 +928,9 @@ mod tests {
             assert!(failure_text(text, b"", "exit code: 1").contains("p4 login"));
             assert!(failure_text(b"", text, "exit code: 1").contains("p4 login"));
         }
-        assert!(!failure_text(b"Connect to server failed", b"", "exit code: 1").contains("p4 login"));
+        assert!(
+            !failure_text(b"Connect to server failed", b"", "exit code: 1").contains("p4 login")
+        );
     }
 
     const WHERE_SPACES: &str = "... depotFile //depot/main/my dir/a b.txt\n\
