@@ -5,7 +5,7 @@ use eframe::egui::{self, Key, Modifiers};
 use super::shared_keymap::SharedAction;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct Shortcut {
     pub key: Key,
     pub modifiers: Modifiers,
@@ -163,7 +163,6 @@ pub fn menu_item<A: Action>(
     response
 }
 
-#[cfg(feature = "serde")]
 impl<A: Action> serde::Serialize for Keymap<A> {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         serializer.collect_map(
@@ -174,7 +173,6 @@ impl<A: Action> serde::Serialize for Keymap<A> {
     }
 }
 
-#[cfg(feature = "serde")]
 impl<'de, A: Action> serde::Deserialize<'de> for Keymap<A> {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let mut saved =
@@ -406,7 +404,6 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "serde")]
     #[test]
     fn keymap_serde_round_trip() {
         let mut keymap = Keymap::<TestAction>::default();
@@ -421,7 +418,6 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "serde")]
     #[test]
     fn keymap_deserialize_gives_missing_actions_their_defaults() {
         let mut json = serde_json::to_value(Keymap::<TestAction>::default()).unwrap();
@@ -435,7 +431,6 @@ mod tests {
         assert!(keymap.shortcuts(TestAction::Refresh).is_empty());
     }
 
-    #[cfg(feature = "serde")]
     #[test]
     fn keymap_deserialize_drops_unknown_names() {
         let mut json = serde_json::to_value(Keymap::<TestAction>::default()).unwrap();
@@ -444,7 +439,6 @@ mod tests {
         assert_eq!(keymap, Keymap::default());
     }
 
-    #[cfg(feature = "serde")]
     #[test]
     fn keymap_deserialize_keeps_an_explicit_empty_list() {
         let keymap =

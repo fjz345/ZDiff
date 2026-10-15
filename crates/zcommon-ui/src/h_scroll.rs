@@ -7,7 +7,7 @@ use super::table::Side;
 
 /// The modifier that turns the mouse wheel into horizontal scrolling over the text rows.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(serde::Serialize, serde::Deserialize)]
 pub enum WheelModifier {
     #[default]
     Shift,

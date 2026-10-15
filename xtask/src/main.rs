@@ -26,11 +26,12 @@ const FFMPEG_EXTRACT: [(&str, &str); 3] = [
 ];
 const FFMPEG_NOTE: &str = "ffmpeg-SOURCE.txt";
 
-const USAGE: &str = "usage: cargo xtask fetch-ffmpeg";
+const USAGE: &str = "usage: cargo xtask <fetch-ffmpeg|check-features>";
 
 fn main() -> ExitCode {
     let result = match env::args().nth(1).as_deref() {
         Some("fetch-ffmpeg") => fetch_ffmpeg(),
+        Some("check-features") => check_features(),
         _ => Err(USAGE.to_string()),
     };
     match result {
@@ -107,6 +108,118 @@ fn fetch_ffmpeg() -> Result<(), String> {
         out_dir.display()
     );
     Ok(())
+}
+
+struct Package {
+    name: String,
+    features: Vec<String>,
+}
+
+fn feature_args(features: &[String]) -> Vec<Vec<String>> {
+    let mut combos = vec![vec![], vec!["--no-default-features".to_string()]];
+    for feature in features.iter().filter(|f| *f != "default") {
+        combos.push(vec![
+            "--no-default-features".to_string(),
+            "--features".to_string(),
+            feature.clone(),
+        ]);
+    }
+    combos
+}
+
+fn cargo_program() -> std::ffi::OsString {
+    env::var_os("CARGO").unwrap_or_else(|| "cargo".into())
+}
+
+fn workspace_packages() -> Result<Vec<Package>, String> {
+    let output = Command::new(cargo_program())
+        .args(["metadata", "--format-version", "1", "--no-deps"])
+        .current_dir(workspace_root())
+        .output()
+        .map_err(|e| format!("start cargo metadata: {e}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "cargo metadata failed: {}\n{}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+    let meta: serde_json::Value =
+        serde_json::from_slice(&output.stdout).map_err(|e| format!("parse cargo metadata: {e}"))?;
+    let packages = meta["packages"]
+        .as_array()
+        .ok_or("cargo metadata: missing packages")?;
+    let mut result = Vec::new();
+    for package in packages {
+        let name = package["name"]
+            .as_str()
+            .ok_or("cargo metadata: package without name")?;
+        if name == "xtask" {
+            continue;
+        }
+        let mut features: Vec<String> = package["features"]
+            .as_object()
+            .ok_or("cargo metadata: package without features")?
+            .keys()
+            .cloned()
+            .collect();
+        features.sort();
+        result.push(Package {
+            name: name.to_string(),
+            features,
+        });
+    }
+    Ok(result)
+}
+
+fn check_features() -> Result<(), String> {
+    let mut failures = Vec::new();
+    for package in workspace_packages()? {
+        for extra in feature_args(&package.features) {
+            let shown = format!(
+                "cargo check -p {} --all-targets {}",
+                package.name,
+                extra.join(" ")
+            );
+            let shown = shown.trim_end();
+            println!("> {shown}");
+            let status = Command::new(cargo_program())
+                .current_dir(workspace_root())
+                .args(["check", "-p", &package.name, "--all-targets"])
+                .args(&extra)
+                .status();
+            match status {
+                Ok(status) if status.success() => {}
+                Ok(status) => failures.push(format!("{shown} ({status})")),
+                Err(e) => failures.push(format!("{shown} (start failed: {e})")),
+            }
+        }
+    }
+    if failures.is_empty() {
+        println!("check-features: all combinations passed");
+        return Ok(());
+    }
+    println!("check-features: {} failing combination(s):", failures.len());
+    for failure in &failures {
+        println!("  {failure}");
+    }
+    Err(format!("{} combination(s) failed", failures.len()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn feature_args_cover_defaults_none_and_each_feature_alone() {
+        let features = ["default".to_string(), "a".to_string(), "b".to_string()];
+        let combos = feature_args(&features);
+        assert_eq!(combos.len(), 4);
+        assert!(combos[0].is_empty());
+        assert_eq!(combos[1], ["--no-default-features"]);
+        assert_eq!(combos[2], ["--no-default-features", "--features", "a"]);
+        assert_eq!(combos[3], ["--no-default-features", "--features", "b"]);
+    }
 }
 
 // Git for Windows puts GNU tar first on PATH, and GNU tar can't read zip.

@@ -10,7 +10,7 @@ required-features = ["gui"]
 
 [features]
 default = ["pretty-backtrace", "serde", "gui"]
-serde = ["zdiff/serde", "zcommon/serde", "zcommon-ui?/serde", "dep:serde", "dep:serde_json"]
+serde = ["zdiff/serde", "zcommon/serde", "dep:serde", "dep:serde_json"]
 gui = ["serde", "dep:zcommon-ui", "dep:eframe", "dep:egui_tiles"]
 pretty-backtrace = ["dep:color-backtrace"]
 accesskit = []
