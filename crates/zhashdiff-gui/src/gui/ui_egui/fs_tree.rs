@@ -181,44 +181,26 @@ impl FileSystemView {
             ),
         > = BTreeMap::new();
 
-        let get_rel_path = |view: &FileSystemView, id: FsNodeId, node: &FsNode| -> String {
-            let root_id = view.file_system.get_root_node_id();
-            if id == root_id {
-                return String::new();
-            }
-
-            let root_node = view.file_system.get_node(root_id).unwrap();
-            let root_path = root_node.as_path();
-
-            // Use components to rebuild the path cleanly, avoiding slash/prefix issues
-            node.as_path()
-                .as_ref()
-                .strip_prefix(&root_path)
-                .unwrap_or(node.as_path().as_ref())
-                .components()
-                .map(|c| c.as_os_str().to_string_lossy())
-                .collect::<Vec<_>>()
-                .join("/")
-        };
-
         // Filtered entries never enter the map, so folder states only see visible entries.
         if let Some(view) = file_system_1 {
             let hidden = filtered_out(view, filter);
+            let mut rels = rel_paths(view);
             for (id, node, depth) in view.file_system.iter_tree() {
                 if hidden[id] {
                     continue;
                 }
-                let rel = get_rel_path(view, id, node);
+                let rel = std::mem::take(&mut rels[id]);
                 entries_map.insert(rel, (Some((id, node, depth)), None));
             }
         }
         if let Some(view) = file_system_2 {
             let hidden = filtered_out(view, filter);
+            let mut rels = rel_paths(view);
             for (id, node, depth) in view.file_system.iter_tree() {
                 if hidden[id] {
                     continue;
                 }
-                let rel = get_rel_path(view, id, node);
+                let rel = std::mem::take(&mut rels[id]);
                 entries_map
                     .entry(rel)
                     .and_modify(|e| e.1 = Some((id, node, depth)))
@@ -319,16 +301,20 @@ impl FileSystemView {
 
             let file_kinds = [file_kind(left), file_kind(right)];
             let mut blueprints = [false, false];
-            for (i, side) in [left, right].into_iter().enumerate() {
+            for (i, (side, view)) in [(left, file_system_1), (right, file_system_2)]
+                .into_iter()
+                .enumerate()
+            {
                 if file_kinds[i] == Some(FileKind::UnrealAsset)
-                    && let Some((_, node, _)) = side
+                    && let Some((id, node, _)) = side
+                    && let Some(view) = view
                     && let Some(modified) = node.modified
                 {
                     let meta = FileMeta {
                         size: node.size,
                         modified,
                     };
-                    blueprints[i] = blueprint(node.as_path().as_ref(), meta).unwrap_or(false);
+                    blueprints[i] = blueprint(&view.file_system.path(*id), meta).unwrap_or(false);
                 }
             }
 
@@ -360,13 +346,28 @@ fn filtered_out(view: &FileSystemView, filter: &PathFilter) -> Vec<bool> {
         let Some(parent) = node.parent else {
             continue;
         };
-        hidden[id] = hidden[parent] || {
-            let path = node.as_path();
-            let name = path.as_ref().file_name().unwrap_or_default();
-            !filter.keeps(&name.to_string_lossy(), node.is_dir())
-        };
+        hidden[id] = hidden[parent] || !filter.keeps(node.name(), node.is_dir());
     }
     hidden
+}
+
+/// Per node id of the view's model, the "/"-joined path relative to the root ("" for the root).
+fn rel_paths(view: &FileSystemView) -> Vec<String> {
+    let model = &view.file_system;
+    let mut rels = vec![String::new(); model.total_files_and_folders()];
+    // Pre-order, so a parent is built before its children.
+    for (id, node, _) in model.iter_tree() {
+        let Some(parent) = node.parent else {
+            continue;
+        };
+        let rel = &rels[parent];
+        rels[id] = if rel.is_empty() {
+            node.name().to_owned()
+        } else {
+            format!("{rel}/{}", node.name())
+        };
+    }
+    rels
 }
 
 /// Per node id of the view's model, true when the filter hides the node in a single-tree view
@@ -1086,6 +1087,10 @@ pub fn draw_ui_folder_tree(
                 (find.matcher, find.match_path, find.chip)
             });
 
+    let pending_ids = pending_deletion
+        .zip(file_system_1_view.as_ref())
+        .map(|(pending, view)| pending_node_ids(&view.file_system, pending));
+
     let frame_output = egui::Frame::default()
         .fill(egui::Color32::from_gray(20))
         .inner_margin(0.0)
@@ -1107,9 +1112,11 @@ pub fn draw_ui_folder_tree(
                 // would override it.
                 let dimmed =
                     selected_row != Some(i) && matches!(entry.diff_state, DiffState::Same(..));
-                let pending = pending_deletion.is_some_and(|pending| {
-                    side_node(views[0], entry.diff_state.first())
-                        .is_some_and(|node| pending.contains(node.as_path().as_ref()))
+                let pending = pending_ids.as_ref().is_some_and(|pending| {
+                    entry
+                        .diff_state
+                        .first()
+                        .is_some_and(|id| pending.contains(&id))
                 });
                 RowCell {
                     views,
@@ -1715,16 +1722,10 @@ fn on_row_item_clicked(
                 &file_system_1_view.unwrap().file_system,
                 &file_system_2_view.unwrap().file_system,
             );
-            let (left_node, right_node) = (
-                left_model.get_node(path1).unwrap(),
-                right_model.get_node(path2).unwrap(),
-            );
-            let side = |model: &FileSystemModel, node: &FsNode| {
-                let path = node.as_path();
-                let path: &Path = path.as_ref();
-                (model.content().clone(), path.to_path_buf())
+            let side = |model: &FileSystemModel, id: FsNodeId| {
+                (model.content().clone(), model.path(id))
             };
-            let sides = [side(left_model, left_node), side(right_model, right_node)];
+            let sides = [side(left_model, path1), side(right_model, path2)];
             if sides.iter().any(|(content, _)| is_revision(content)) {
                 message.status = Some(format!("Fetching {}...", entry.rel_path));
                 revision_open::spawn(RevisionOpen {
@@ -2155,8 +2156,11 @@ fn render_side_cell(
     let mut action = None;
     if let Some(menu) = row_menu(entries, menu_side) {
         response.context_menu(|ui| {
-            let paths = nodes.map(|node| node.map(|n| n.as_path()));
-            let paths = [0, 1].map(|i| paths[i].as_ref().map(|p| p.as_ref()));
+            let paths = [0, 1].map(|i| {
+                let (view, id) = (views[i]?, ids[i]?);
+                Some(view.file_system.path(id))
+            });
+            let paths = [0, 1].map(|i| paths[i].as_deref());
             action = show_row_menu(ui, &menu, paths, menu_side);
             if let (Some(extra_menu), Some(id)) = (extra_menu, ids[side]) {
                 extra_menu(ui, id);
@@ -2258,6 +2262,25 @@ fn render_center_cell(
 
 fn side_node(view: Option<&FileSystemView>, id: Option<FsNodeId>) -> Option<&FsNode> {
     view?.file_system.get_node(id?)
+}
+
+fn pending_node_ids(model: &FileSystemModel, pending: &HashSet<PathBuf>) -> HashSet<FsNodeId> {
+    let root = model.path(model.get_root_node_id());
+    pending
+        .iter()
+        .filter_map(|path| {
+            let mut id = model.get_root_node_id();
+            for component in path.strip_prefix(&root).ok()?.components() {
+                let name = component.as_os_str();
+                id = *model
+                    .get_node(id)?
+                    .children()?
+                    .iter()
+                    .find(|&&child| model.get_node(child).is_some_and(|n| n.name() == name))?;
+            }
+            Some(id)
+        })
+        .collect()
 }
 
 /// Each line sits under its folder's expander, in the children's indentation.
@@ -2418,8 +2441,8 @@ mod tests {
 
     fn find_id_by_rel_path(fs: &FileSystemModel, root: &Path, rel: &str) -> FsNodeId {
         let target = root.join(rel);
-        for (id, node, _) in fs.iter_tree() {
-            if node.as_path().as_ref() == target {
+        for (id, _, _) in fs.iter_tree() {
+            if fs.path(id) == target {
                 return id;
             }
         }
@@ -2428,15 +2451,13 @@ mod tests {
 
     #[allow(dead_code)]
     fn get_rel(file_system: &FileSystemModel, root: &Path, id: FsNodeId) -> String {
-        let node = file_system.get_node(id).expect("Node ID not found");
         if id == file_system.get_root_node_id() {
             return String::new();
         }
 
-        node.as_path()
-            .as_ref()
-            .strip_prefix(root)
-            .unwrap_or(node.as_path().as_ref())
+        let path = file_system.path(id);
+        path.strip_prefix(root)
+            .unwrap_or(&path)
             .components()
             .map(|c| c.as_os_str().to_string_lossy())
             .collect::<Vec<_>>()

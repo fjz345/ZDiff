@@ -57,10 +57,15 @@ pub struct PendingPair {
 }
 
 impl PendingPair {
-    fn new(rel_path: &str, nodes: [&FsNode; 2], sources: [&ContentSource; 2]) -> Self {
+    fn new(
+        rel_path: &str,
+        nodes: [&FsNode; 2],
+        paths: [PathBuf; 2],
+        sources: [&ContentSource; 2],
+    ) -> Self {
         Self {
             rel_path: rel_path.to_owned(),
-            paths: nodes.map(|node| node.as_path().as_ref().to_path_buf()),
+            paths,
             sizes: nodes.map(|node| node.size),
             modified: nodes.map(|node| node.modified),
             hashes: nodes.map(|node| node.hash.clone()),
@@ -163,6 +168,10 @@ pub fn pending_pairs(
             DiffState::Pending(l_id, r_id) => Some(PendingPair::new(
                 &row.rel_path,
                 [node(0, l_id)?, node(1, r_id)?],
+                [
+                    views[0]?.file_system.path(l_id),
+                    views[1]?.file_system.path(r_id),
+                ],
                 [
                     views[0]?.file_system.content(),
                     views[1]?.file_system.content(),
@@ -335,16 +344,16 @@ impl TreeCompare {
         if let Some(state) = self.states.get(rel_path) {
             return Some(*state);
         }
-        let paths = nodes.map(|node| node.as_path());
+        // The cache keys on rel_path and meta only.
         let left = cache_side(
             rel_path,
-            paths[0].as_ref(),
+            Path::new(""),
             nodes[0].size,
             nodes[0].modified,
         )?;
         let right = cache_side(
             rel_path,
-            paths[1].as_ref(),
+            Path::new(""),
             nodes[1].size,
             nodes[1].modified,
         )?;
@@ -411,10 +420,8 @@ impl TreeCompare {
                     return None;
                 };
                 let nodes = [node(0, l_id)?, node(1, r_id)?];
-                let sources = [
-                    views[0]?.file_system.content(),
-                    views[1]?.file_system.content(),
-                ];
+                let models = [&views[0]?.file_system, &views[1]?.file_system];
+                let sources = models.map(|model| model.content());
                 // Rows patched less often than results arrive can still be Pending.
                 let state = match row.diff_state {
                     DiffState::Pending(..) => self.state_of(&row.rel_path, nodes),
@@ -431,7 +438,12 @@ impl TreeCompare {
                     && sources.iter().all(|source| **source == ContentSource::Disk)
                     && self.likeness_of(&row.rel_path, nodes).is_none();
                 (compare || likeness).then(|| PairTask {
-                    pair: PendingPair::new(&row.rel_path, nodes, sources),
+                    pair: PendingPair::new(
+                        &row.rel_path,
+                        nodes,
+                        [models[0].path(l_id), models[1].path(r_id)],
+                        sources,
+                    ),
                     compare,
                     likeness,
                 })
