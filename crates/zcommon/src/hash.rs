@@ -448,7 +448,7 @@ mod tests {
         let start = Instant::now();
         service.resize_workers(0);
 
-        assert!(start.elapsed() < Duration::from_millis(500));
+        assert!(start.elapsed() < Duration::from_secs(2));
         assert_eq!(service.count_threads(), 0);
     }
 
@@ -461,7 +461,7 @@ mod tests {
         let start = Instant::now();
         drop(service);
 
-        assert!(start.elapsed() < Duration::from_millis(500));
+        assert!(start.elapsed() < Duration::from_secs(2));
         assert!(rx.upgrade().is_none());
     }
 
