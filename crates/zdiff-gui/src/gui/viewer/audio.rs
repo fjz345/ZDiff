@@ -729,7 +729,7 @@ fn draw_ruler(ui: &egui::Ui, rect: Rect, view: TimeView) {
     painter.rect_filled(rect, 0.0, visuals.faint_bg_color);
     let step = tick_step(view.secs_per_px, MIN_TICK_PX);
     let decimals = decimals_for(step);
-    let stroke = Stroke::new(1.0, visuals.weak_text_color());
+    let stroke = Stroke::new(1.0_f32, visuals.weak_text_color());
     let font = egui::TextStyle::Small.resolve(ui.style());
     let mut tick = (view.start / step).ceil() * step;
     while view.x_of(tick) <= rect.width() {
@@ -858,7 +858,7 @@ pub fn show(ui: &mut egui::Ui, processor: &mut AudioDiffProcessor, settings: &mu
     }
     let painter = ui.painter_at(lanes_rect);
     let visuals = ui.visuals();
-    let line = Stroke::new(1.0, visuals.widgets.noninteractive.bg_stroke.color);
+    let line = Stroke::new(1.0_f32, visuals.widgets.noninteractive.bg_stroke.color);
     let overlay = settings.mode == AudioMode::Overlay;
     for (i, lane) in lanes.iter().enumerate() {
         let rect = lane_rect(i);
@@ -909,7 +909,7 @@ pub fn show(ui: &mut egui::Ui, processor: &mut AudioDiffProcessor, settings: &mu
         ui.painter_at(view_rect).vline(
             pointer.x,
             view_rect.y_range(),
-            Stroke::new(1.0, visuals.strong_text_color()),
+            Stroke::new(1.0_f32, visuals.strong_text_color()),
         );
     }
     let status_painter = ui.painter_at(area);

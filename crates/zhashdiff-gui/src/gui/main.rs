@@ -1,4 +1,4 @@
-// #![windows_subsystem = "windows"]
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 // #![allow(dead_code)]
 // #![allow(unreachable_patterns)]
 
@@ -17,12 +17,6 @@ fn main() -> eframe::Result {
 
     let log_buffer = init_logging().expect("Failed to init logger");
     let launch_args = parse_launch_args(std::env::args_os().skip(1));
-
-    // Test build with zdiff
-    {
-        let zdiff_path = env!("ZDIFF_BIN_PATH");
-        println!("The zdiff binary is located at: {}", zdiff_path);
-    }
 
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -48,11 +42,16 @@ fn main() -> eframe::Result {
                 // Try to load saved state from storage
                 if let Some(storage) = cc.storage {
                     if let Some(json) = storage.get_string(eframe::APP_KEY) {
-                        if let Ok(mut app) = serde_json::from_str::<ZApp>(&json) {
-                            log::info!("Found previous app storage");
-                            app.request_init();
-                            app.apply_launch_args(&launch_args);
-                            return Ok(Box::new(app));
+                        match serde_json::from_str::<ZApp>(&json) {
+                            Ok(mut app) => {
+                                log::info!("Found previous app storage");
+                                app.request_init();
+                                app.apply_launch_args(&launch_args);
+                                return Ok(Box::new(app));
+                            }
+                            Err(e) => {
+                                log::error!("Saved app state is unreadable, using defaults: {e}")
+                            }
                         }
                     }
                 }

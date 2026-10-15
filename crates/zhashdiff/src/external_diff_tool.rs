@@ -478,6 +478,7 @@ pub enum TemplateError {
     UnclosedPlaceholder,
     MissingLeft,
     MissingRight,
+    QuoteInValue(String),
 }
 
 impl fmt::Display for TemplateError {
@@ -487,6 +488,7 @@ impl fmt::Display for TemplateError {
             TemplateError::UnclosedPlaceholder => write!(f, "'{{' without a closing '}}'"),
             TemplateError::MissingLeft => write!(f, "missing {{left}}"),
             TemplateError::MissingRight => write!(f, "missing {{right}}"),
+            TemplateError::QuoteInValue(value) => write!(f, "{value:?} contains a double quote"),
         }
     }
 }
@@ -517,6 +519,10 @@ pub fn expand_template(template: &str, pair: &DiffPair) -> Result<String, Templa
             "right_name" => pair.right_name,
             unknown => return Err(TemplateError::UnknownPlaceholder(unknown.to_string())),
         };
+        // Values go inside the template's quotes, so a quote would end them and start new arguments.
+        if value.contains('"') {
+            return Err(TemplateError::QuoteInValue(value.to_string()));
+        }
         expanded.push_str(value);
         rest = &after_open[close + 1..];
     }
@@ -749,6 +755,24 @@ mod tests {
         assert_eq!(
             expand_template("{left} {right_name}", &values),
             Err(TemplateError::MissingRight)
+        );
+    }
+
+    #[test]
+    fn template_rejects_a_value_with_a_double_quote() {
+        let template = r#""{left}" "{right}" -nl "{left_name}""#;
+        let escaping = r#"a" & calc & ".txt"#;
+        assert_eq!(
+            expand_template(template, &pair(escaping, RIGHT)),
+            Err(TemplateError::QuoteInValue(escaping.to_string()))
+        );
+        let values = DiffPair {
+            left_name: "Folder 1: \"",
+            ..pair(LEFT, RIGHT)
+        };
+        assert_eq!(
+            expand_template(template, &values),
+            Err(TemplateError::QuoteInValue("Folder 1: \"".to_string()))
         );
     }
 

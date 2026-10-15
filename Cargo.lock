@@ -1268,19 +1268,6 @@ dependencies = [
 
 [[package]]
 name = "env_logger"
-version = "0.10.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4cd405aab171cb85d6735e5c8d9db038c17d3ca007a4d2c25f337935c3d90580"
-dependencies = [
- "humantime",
- "is-terminal",
- "log",
- "regex",
- "termcolor",
-]
-
-[[package]]
-name = "env_logger"
 version = "0.11.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b2daee4ea451f429a58296525ddf28b45a3b64f1acf6587e2067437bb11e218d"
@@ -1786,12 +1773,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "humantime"
-version = "2.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "135b12329e5e3ce057a9f972339ea52bc954fe1e9358ef27f95e89716fbc5424"
-
-[[package]]
 name = "hybrid-array"
 version = "0.4.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1947,17 +1928,6 @@ dependencies = [
  "hashbrown 0.16.1",
  "serde",
  "serde_core",
-]
-
-[[package]]
-name = "is-terminal"
-version = "0.4.17"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3640c1c38b8e4e43584d8df18be5fc6b0aa314ce6ebf51b53313d4306cca8e46"
-dependencies = [
- "hermit-abi",
- "libc",
- "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -5122,8 +5092,7 @@ dependencies = [
  "dotenvy",
  "eframe",
  "egui_extras",
- "egui_tiles",
- "env_logger 0.11.9",
+ "env_logger",
  "log",
  "regex",
  "serde",
@@ -5135,13 +5104,10 @@ dependencies = [
 name = "zdiff"
 version = "2.0.0"
 dependencies = [
- "color-backtrace",
- "env_logger 0.11.9",
  "log",
  "rayon",
  "regex",
  "serde",
- "serde_json",
  "tempfile",
  "zcommon",
 ]
@@ -5150,15 +5116,12 @@ dependencies = [
 name = "zdiff-gui"
 version = "2.0.0"
 dependencies = [
- "blake3",
  "color-backtrace",
  "eframe",
  "egui_extras",
  "egui_tiles",
- "env_logger 0.11.9",
  "image",
  "log",
- "pollster",
  "rfd",
  "serde",
  "serde_json",
@@ -5247,11 +5210,6 @@ dependencies = [
 name = "zhashdiff"
 version = "2.0.0"
 dependencies = [
- "blake3",
- "color-backtrace",
- "crc32fast",
- "eframe",
- "env_logger 0.10.2",
  "image",
  "log",
  "serde",
@@ -5266,13 +5224,10 @@ dependencies = [
 name = "zhashdiff-gui"
 version = "2.0.0"
 dependencies = [
- "blake3",
  "color-backtrace",
- "crc32fast",
  "eframe",
  "egui_extras",
  "egui_tiles",
- "env_logger 0.10.2",
  "image",
  "log",
  "memmap2",

@@ -133,7 +133,7 @@ fn display(
     let background = ui.interact(rect, id.with("background"), egui::Sense::click());
     let visuals = ui.visuals().clone();
     let stroke = match error {
-        Some(_) => egui::Stroke::new(1.0, visuals.error_fg_color),
+        Some(_) => egui::Stroke::new(1.0_f32, visuals.error_fg_color),
         None => visuals.widgets.inactive.bg_stroke,
     };
     ui.painter().rect(
@@ -197,7 +197,11 @@ fn display(
         .collect();
     let items = shown.len() + usize::from(hidden.is_some());
     let fixed = separator_width * items.saturating_sub(1) as f32
-        + if hidden.is_some() { ellipsis_width } else { 0.0 };
+        + if hidden.is_some() {
+            ellipsis_width
+        } else {
+            0.0
+        };
     let shown_widths: Vec<f32> = shown.iter().map(|&i| widths[i]).collect();
     let caps = cap_widths(&shown_widths, area.width() - fixed);
 
@@ -227,7 +231,10 @@ fn display(
             child.add(egui::Label::new(SEPARATOR).selectable(false));
         }
         let text = egui::RichText::new(&segment.name).color(text_color(i));
-        let slot = shown.iter().position(|&s| s == i).expect("segment is shown");
+        let slot = shown
+            .iter()
+            .position(|&s| s == i)
+            .expect("segment is shown");
         let cut = caps[slot] < widths[i];
         let size = egui::vec2(caps[slot], rect.height());
         if clickable(i) {
@@ -384,7 +391,15 @@ mod tests {
                 egui::CentralPanel::default().show(ctx, |ui| {
                     ui.style_mut().override_text_style = style.clone();
                     bar = ui.available_rect_before_wrap();
-                    path_bar(ui, "bar", &segments, 0, |i| i + 1 < segments.len(), None, false);
+                    path_bar(
+                        ui,
+                        "bar",
+                        &segments,
+                        0,
+                        |i| i + 1 < segments.len(),
+                        None,
+                        false,
+                    );
                 });
             })
         };

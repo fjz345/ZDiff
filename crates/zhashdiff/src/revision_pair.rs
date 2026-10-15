@@ -10,6 +10,7 @@ use zcommon::{
 
 use crate::{
     external_diff_tool::DiffTool,
+    scan::is_plain_name,
     vcs_source::{ContentSource, GitContent, depot_node, read_depot_file, read_git_file},
 };
 
@@ -57,7 +58,7 @@ fn fetch_paths(
                 revision_path(content, source.path)?.to_string()
             }
             ContentSource::Git(content) => {
-                let file = temp_file(temp_dir, side_dir, rel_path);
+                let file = temp_file(temp_dir, side_dir, rel_path)?;
                 write_file(&file, read_git_file(git, content, source.path)?)?;
                 file.to_string_lossy().into_owned()
             }
@@ -66,7 +67,7 @@ fn fetch_paths(
                 UniversalPath::Depot(path, Some(revision)).to_string()
             }
             ContentSource::Depot(content) => {
-                let file = temp_file(temp_dir, side_dir, rel_path);
+                let file = temp_file(temp_dir, side_dir, rel_path)?;
                 write_file(&file, read_depot_file(p4, content, source.path)?)?;
                 file.to_string_lossy().into_owned()
             }
@@ -108,10 +109,16 @@ fn revision_path(content: &GitContent, node: &Path) -> io::Result<UniversalPath>
     Ok(UniversalPath::Git(folder.join(rel), rev))
 }
 
-fn temp_file(temp_dir: &Path, side_dir: &str, rel_path: &str) -> PathBuf {
-    rel_path
+fn temp_file(temp_dir: &Path, side_dir: &str, rel_path: &str) -> io::Result<PathBuf> {
+    if !rel_path.split('/').all(is_plain_name) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("{rel_path:?} would leave the temp folder"),
+        ));
+    }
+    Ok(rel_path
         .split('/')
-        .fold(temp_dir.join(side_dir), |path, segment| path.join(segment))
+        .fold(temp_dir.join(side_dir), |path, segment| path.join(segment)))
 }
 
 fn write_file(file: &Path, bytes: Vec<u8>) -> io::Result<()> {
@@ -262,6 +269,44 @@ mod tests {
 
         assert_ne!(paths[0], paths[1]);
         assert!(Path::new(&paths[0]).is_file() && Path::new(&paths[1]).is_file());
+    }
+
+    #[test]
+    fn a_rel_path_that_leaves_the_temp_dir_is_an_error() {
+        let temp = tempfile::tempdir().unwrap();
+        let inner = temp.path().join("inner");
+        let content = git_content(Some(COMMIT));
+
+        for rel_path in [
+            r"a\..\..\..\x.txt",
+            "../x.txt",
+            "a/../../x.txt",
+            "./x.txt",
+            "C:x.txt",
+            "x.txt:stream",
+            "a/.. /x.txt",
+        ] {
+            let result = tool_paths(
+                &BlobGit,
+                &blob_p4(),
+                &tool("WinMerge"),
+                [
+                    PairSource {
+                        content: &content,
+                        path: Path::new(r"D:\repo\src@git:origin/main\a.txt"),
+                    },
+                    PairSource {
+                        content: &ContentSource::Disk,
+                        path: Path::new(r"D:\wt\src\a.txt"),
+                    },
+                ],
+                rel_path,
+                &inner,
+            );
+
+            assert!(result.is_err(), "{rel_path}");
+            assert_eq!(fs::read_dir(temp.path()).unwrap().count(), 0, "{rel_path}");
+        }
     }
 
     #[test]

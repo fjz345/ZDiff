@@ -5,7 +5,7 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Weak;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use eframe::egui;
 use serde::Deserialize;
@@ -256,7 +256,11 @@ fn resolve_preview(
     ResolvePreview {
         skipped: conflict_map.len() - kept.len(),
         kept,
-        removed: plan_resolution(conflict_map, keepers).deletions,
+        removed: plan_resolution(conflict_map, keepers)
+            .deletions
+            .into_iter()
+            .map(|deletion| deletion.path)
+            .collect(),
     }
 }
 
@@ -423,6 +427,7 @@ fn pending_deletions(
     plan_resolution(conflict_map, keepers)
         .deletions
         .into_iter()
+        .map(|deletion| deletion.path)
         .collect()
 }
 
@@ -472,6 +477,8 @@ pub struct DuplicateFilesPane {
     groups: Option<DuplicateGroups>,
     #[serde(skip)]
     was_hashing: bool,
+    #[serde(skip)]
+    last_regroup: Option<Instant>,
     /// Outcome of the last Resolve, shown until closed.
     #[serde(skip)]
     resolution_summary: Option<ResolutionSummary>,
@@ -536,6 +543,7 @@ impl DuplicateFilesPane {
             open_dir_window: false,
             groups: None,
             was_hashing: false,
+            last_regroup: None,
             resolution_summary: None,
             cursor: TreeCursor::default(),
             cursor_root: None,
@@ -726,9 +734,10 @@ impl DuplicateFilesPane {
         moved
     }
 
-    /// Groups again when Folder 1 or the filter changed, and every frame while hashing
-    /// plus one after it, which sees the last hashes.
+    /// Groups again when Folder 1 or the filter changed, every `REGROUP_INTERVAL` while
+    /// hashing, and once after it, which sees the last hashes.
     fn update_groups(&mut self, ctx: &mut DuplicateFilesPaneCtx) {
+        const REGROUP_INTERVAL: Duration = Duration::from_millis(500);
         let hashing = self.hash_progress(ctx.hash_service).is_some();
         let was_hashing = std::mem::replace(&mut self.was_hashing, hashing);
         let current = match (ctx.path_diff_view.file_system_1_view.as_ref(), &self.groups) {
@@ -736,11 +745,15 @@ impl DuplicateFilesPane {
             (None, None) => true,
             _ => false,
         };
-        if current && !hashing && !was_hashing {
+        let regrouped_recently = self
+            .last_regroup
+            .is_some_and(|at| at.elapsed() < REGROUP_INTERVAL);
+        if current && (hashing && regrouped_recently || !hashing && !was_hashing) {
             return;
         }
         let snapshot = ctx.hash_service.snapshot();
         self.regroup(ctx, &snapshot.hashes);
+        self.last_regroup = Some(Instant::now());
     }
 
     /// Keepers survive only as members of their group, so a resolve can't recycle a file

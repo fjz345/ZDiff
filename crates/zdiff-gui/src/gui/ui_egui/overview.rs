@@ -212,7 +212,7 @@ pub fn show(
         painter.rect_stroke(
             mark,
             0.0,
-            egui::Stroke::new(1.0, text.gamma_multiply(0.7)),
+            egui::Stroke::new(1.0_f32, text.gamma_multiply(0.7)),
             egui::StrokeKind::Inside,
         );
     }

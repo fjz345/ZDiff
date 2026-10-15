@@ -398,13 +398,13 @@ pub fn show(
         let top = rect.bottom() - (peak / scale * (rect.height() - 2.0)).max(1.0);
         painter.line_segment(
             [pos2(x, rect.bottom()), pos2(x, top)],
-            Stroke::new(1.0, diff_color),
+            Stroke::new(1.0_f32, diff_color),
         );
     }
     let cursor = rect.left() + (time_secs / end).clamp(0.0, 1.0) as f32 * rect.width();
     painter.line_segment(
         [pos2(cursor, rect.top()), pos2(cursor, rect.bottom())],
-        Stroke::new(1.0, ui.visuals().text_color()),
+        Stroke::new(1.0_f32, ui.visuals().text_color()),
     );
 
     let pointer = response.interact_pointer_pos()?;

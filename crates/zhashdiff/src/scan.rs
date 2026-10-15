@@ -27,6 +27,7 @@ pub struct ContentHash {
 pub struct ListingEntry {
     pub path: PathBuf,
     pub is_dir: bool,
+    pub is_link: bool,
     pub size: u64,
     pub modified: Option<SystemTime>,
     pub hash: Option<ContentHash>,
@@ -69,7 +70,7 @@ impl FlatListing {
             skipped.into_iter().map(Err).collect::<Vec<_>>(),
         );
         for file in files {
-            if file.rel_path.split('/').any(str::is_empty) {
+            if !file.rel_path.split('/').all(is_plain_name) {
                 dirs.get_mut(root).unwrap().push(Err(SkippedEntry {
                     path: root.to_path_buf(),
                     reason: format!("malformed path {:?}", file.rel_path),
@@ -89,6 +90,7 @@ impl FlatListing {
                     dirs.get_mut(&dir).unwrap().push(Ok(ListingEntry {
                         path: sub.clone(),
                         is_dir: true,
+                        is_link: false,
                         size: 0,
                         modified: None,
                         hash: None,
@@ -100,6 +102,7 @@ impl FlatListing {
             dirs.get_mut(&dir).unwrap().push(Ok(ListingEntry {
                 path,
                 is_dir: false,
+                is_link: false,
                 size: file.size,
                 modified: None,
                 hash: file.hash,
@@ -107,6 +110,12 @@ impl FlatListing {
         }
         Self { dirs }
     }
+}
+
+/// A file or folder name that, joined to a folder, stays a direct child of it. Windows drops
+/// trailing dots and spaces, so `. .` is `..` there; `:` names a drive or a data stream.
+pub(crate) fn is_plain_name(name: &str) -> bool {
+    !name.contains(['/', '\\', ':']) && !name.trim_end_matches(['.', ' ']).is_empty()
 }
 
 impl ListingSource for FlatListing {
@@ -131,13 +140,17 @@ impl ListingSource for LocalDisk {
                 let path = entry.path();
                 // DirEntry::metadata is free on Windows but doesn't follow symlinks and junctions,
                 // which is_symlink covers there.
-                let meta = match entry.file_type() {
-                    Ok(file_type) if !file_type.is_symlink() => entry.metadata(),
-                    _ => std::fs::metadata(&path),
+                let is_link =
+                    !matches!(entry.file_type(), Ok(file_type) if !file_type.is_symlink());
+                let meta = if is_link {
+                    std::fs::metadata(&path)
+                } else {
+                    entry.metadata()
                 };
                 match meta {
                     Ok(meta) => Ok(ListingEntry {
                         is_dir: meta.is_dir(),
+                        is_link,
                         size: meta.len(),
                         modified: meta.modified().ok(),
                         hash: None,
@@ -179,8 +192,9 @@ pub fn scan(
         source,
         cancel,
         found,
-        model: FileSystemModel::empty(root),
+        model: FileSystemModel::empty(),
         skipped: Vec::new(),
+        ancestors: vec![root.to_path_buf()],
     };
     let root_id = scanner.push(None, FsNodeKind::new_empty_dir(root), 0, None, None);
     assert_eq!(root_id, 0);
@@ -198,9 +212,19 @@ struct Scanner<'a> {
     found: &'a AtomicUsize,
     model: FileSystemModel,
     skipped: Vec<SkippedEntry>,
+    ancestors: Vec<PathBuf>,
 }
 
 impl Scanner<'_> {
+    /// The folder being scanned above `link` that `link` resolves to. Following it would list the
+    /// same files again until the path gets too long.
+    fn looped_ancestor(&self, link: &Path) -> Option<&PathBuf> {
+        let real = link.canonicalize().ok()?;
+        self.ancestors
+            .iter()
+            .find(|ancestor| ancestor.canonicalize().is_ok_and(|a| a == real))
+    }
+
     fn push(
         &mut self,
         parent: Option<FsNodeId>,
@@ -228,6 +252,16 @@ impl Scanner<'_> {
                 }
             };
             let child_id = if entry.is_dir {
+                if entry.is_link
+                    && let Some(ancestor) = self.looped_ancestor(&entry.path)
+                {
+                    let reason = format!("links back to {}", ancestor.display());
+                    self.skipped.push(SkippedEntry {
+                        path: entry.path,
+                        reason,
+                    });
+                    continue;
+                }
                 // An unlistable folder is omitted rather than shown empty, so it can't compare as Same.
                 let sub_listing = match self.source.children(&entry.path) {
                     Ok(listing) => listing,
@@ -249,7 +283,9 @@ impl Scanner<'_> {
                     entry.modified,
                     None,
                 );
+                self.ancestors.push(entry.path);
                 self.add_children(id, sub_listing)?;
+                self.ancestors.pop();
                 id
             } else {
                 self.push(
@@ -384,6 +420,65 @@ mod tests {
         assert_eq!(node_at(model, &link.join("inside.txt")).size, 5);
     }
 
+    #[cfg(windows)]
+    fn junction(link: &Path, target: &Path) {
+        let status = std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(link)
+            .arg(target)
+            .output()
+            .unwrap()
+            .status;
+        assert!(status.success());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn local_scan_skips_a_junction_to_an_ancestor() {
+        let dir = tempdir().unwrap();
+        let root = dir.path().join("root");
+        fs::create_dir_all(root.join("sub")).unwrap();
+        fs::write(root.join("sub").join("a.txt"), "a").unwrap();
+        let link = root.join("sub").join("up");
+        junction(&link, &root);
+
+        let output = scan_local(&root);
+
+        assert_eq!(output.model.total_files(), 1);
+        assert!(output.model.find_path(&link).is_none());
+        assert_eq!(output.skipped.len(), 1);
+        assert_eq!(output.skipped[0].path, link);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn local_scan_skips_junctions_that_loop_through_each_other() {
+        let dir = tempdir().unwrap();
+        let root = dir.path().join("root");
+        let (a, b) = (root.join("a"), root.join("b"));
+        fs::create_dir_all(&a).unwrap();
+        fs::create_dir_all(&b).unwrap();
+        fs::write(a.join("a.txt"), "a").unwrap();
+        junction(&a.join("to_b"), &b);
+        junction(&b.join("to_a"), &a);
+
+        let output = scan_local(&root);
+
+        assert_eq!(output.model.total_files(), 2);
+        assert!(
+            output
+                .model
+                .find_path(b.join("to_a").join("a.txt"))
+                .is_some()
+        );
+        let mut skipped: Vec<PathBuf> = output.skipped.into_iter().map(|s| s.path).collect();
+        skipped.sort();
+        assert_eq!(
+            skipped,
+            vec![a.join("to_b").join("to_a"), b.join("to_a").join("to_b")]
+        );
+    }
+
     #[test]
     fn local_scan_with_cancel_set_returns_none() {
         let dir = tempdir().unwrap();
@@ -438,6 +533,7 @@ mod tests {
         Ok(ListingEntry {
             path: path.into(),
             is_dir,
+            is_link: false,
             size: 0,
             modified: None,
             hash: None,
@@ -586,6 +682,38 @@ mod tests {
         assert_eq!(
             child_paths(&output.model, output.model.get_root()),
             vec![root.join("c.txt")]
+        );
+    }
+
+    #[test]
+    fn flat_listing_skips_paths_that_could_leave_the_root() {
+        let root = Path::new("root");
+        let unsafe_paths = [
+            r"a\..\..\x.txt",
+            "a/../../x.txt",
+            "./x.txt",
+            "a/. . /x.txt",
+            "C:x.txt",
+            "x.txt:stream",
+        ];
+        let files = unsafe_paths
+            .iter()
+            .map(|path| flat(path, 1, None))
+            .chain([flat("dir/ok.txt", 1, None)])
+            .collect();
+
+        let output = scan_flat(root, &FlatListing::new(root, files, Vec::new()));
+
+        assert_eq!(output.skipped.len(), unsafe_paths.len());
+        for (skipped, path) in output.skipped.iter().zip(unsafe_paths) {
+            assert!(skipped.reason.contains(&format!("{path:?}")), "{path}");
+        }
+        assert_eq!(output.model.total_files(), 1);
+        assert!(
+            output
+                .model
+                .find_path(root.join("dir").join("ok.txt"))
+                .is_some()
         );
     }
 

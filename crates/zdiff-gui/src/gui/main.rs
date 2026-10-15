@@ -12,8 +12,8 @@ use crate::app::ZApp;
 
 mod app;
 mod browser;
-mod cli;
 mod clamped_cursor;
+mod cli;
 mod diff_ctx;
 mod diff_phases;
 mod file;
@@ -68,11 +68,16 @@ fn main() -> ExitCode {
                 // Try to load saved state from storage
                 if let Some(storage) = cc.storage {
                     if let Some(json) = storage.get_string(eframe::APP_KEY) {
-                        if let Ok(mut app) = serde_json::from_str::<ZApp>(&json) {
-                            log::info!("Found previous app storage");
-                            app.report_exit_code_to(app_exit_code);
-                            app.request_init();
-                            return Ok(Box::new(app));
+                        match serde_json::from_str::<ZApp>(&json) {
+                            Ok(mut app) => {
+                                log::info!("Found previous app storage");
+                                app.report_exit_code_to(app_exit_code);
+                                app.request_init();
+                                return Ok(Box::new(app));
+                            }
+                            Err(e) => {
+                                log::error!("Saved app state is unreadable, using defaults: {e}")
+                            }
                         }
                     }
                 }

@@ -5,8 +5,7 @@ use crate::{
     clamped_cursor::ClampedCursor,
     diff_ctx::{
         BlockToggle, DiffRows, DiffStageTimes, FindHit, MinimalDiffCtx, RowBlock, ScrollSpan,
-        insert_pin,
-        pin_line_counts,
+        insert_pin, pin_line_counts,
     },
     diff_phases::{Marks, diff_marks_checkboxes, in_scopes},
     file::FileProcessor,
@@ -275,7 +274,10 @@ struct RulerSpans {
     spans: Vec<ChangeSpan>,
 }
 
-fn ruler_spans<'c>(cache: &'c mut Option<RulerSpans>, diff_ctx: &MinimalDiffCtx) -> &'c [ChangeSpan] {
+fn ruler_spans<'c>(
+    cache: &'c mut Option<RulerSpans>,
+    diff_ctx: &MinimalDiffCtx,
+) -> &'c [ChangeSpan] {
     let hit = cache
         .as_ref()
         .is_some_and(|cached| Arc::ptr_eq(&cached.rows, &diff_ctx.diff_rows));
@@ -424,9 +426,7 @@ impl FileDiffPane {
             Gutter::Single
         };
         let unified = match ctx.diff_ctx {
-            Some(diff_ctx)
-                if text_viewer && !strings && *ctx.text_mode != TextMode::SideBySide =>
-            {
+            Some(diff_ctx) if text_viewer && !strings && *ctx.text_mode != TextMode::SideBySide => {
                 Some(unified_view(
                     &mut self.unified,
                     &diff_ctx.diff_rows,
@@ -835,7 +835,7 @@ impl FileDiffPane {
                                             if !is_valid {
                                                 let bg = egui::Color32::from_rgb(45, 10, 10);
                                                 let stroke =
-                                                    egui::Stroke::new(1.0, egui::Color32::RED);
+                                                    egui::Stroke::new(1.0_f32, egui::Color32::RED);
 
                                                 {
                                                     let visuals = &mut ui.visuals_mut();
@@ -1622,12 +1622,8 @@ impl FileDiffPane {
 
         let active_rect = side_rects[h_scroll::side_index(active_side)];
         if active_rect.is_positive() {
-            ui.painter().rect_stroke(
-                active_rect,
-                0.0,
-                outline_stroke(),
-                egui::StrokeKind::Inside,
-            );
+            ui.painter()
+                .rect_stroke(active_rect, 0.0, outline_stroke(), egui::StrokeKind::Inside);
         }
         let [left_rect, right_rect] = side_rects;
         self.active_side.end_frame(left_rect, right_rect);
@@ -1746,10 +1742,7 @@ impl FileDiffPane {
                             } else {
                                 text.color(role_color(ui.ctx(), FileRole::LineNumber))
                             };
-                            ui.add_sized(
-                                [width, row_h],
-                                egui::Label::new(text).selectable(false),
-                            );
+                            ui.add_sized([width, row_h], egui::Label::new(text).selectable(false));
                         };
                         match gutter {
                             Gutter::Single => {
@@ -1766,7 +1759,8 @@ impl FileDiffPane {
                                 };
                                 line_number(ui, shown(left), GUTTER_WIDTH);
                                 line_number(ui, shown(right), GUTTER_WIDTH);
-                                let (sign, color) = sign.unwrap_or((' ', egui::Color32::PLACEHOLDER));
+                                let (sign, color) =
+                                    sign.unwrap_or((' ', egui::Color32::PLACEHOLDER));
                                 ui.add_sized(
                                     [UNIFIED_SIGN_WIDTH, row_h],
                                     egui::Label::new(egui::RichText::new(sign).color(color))
@@ -2060,9 +2054,9 @@ fn stepper(
 ) -> Option<Step> {
     let reset_click = |r: &egui::Response| r.secondary_clicked() || r.middle_clicked();
     let dec = ui.button("<").on_hover_text(dec_hint);
-    let mid = ui
-        .button(value)
-        .on_hover_text(format!("{reset_hint}\n(click, or right/middle-click any arrow)"));
+    let mid = ui.button(value).on_hover_text(format!(
+        "{reset_hint}\n(click, or right/middle-click any arrow)"
+    ));
     let inc = ui.button(">").on_hover_text(inc_hint);
     if mid.clicked() || reset_click(&dec) || reset_click(&mid) || reset_click(&inc) {
         Some(Step::Reset)
@@ -2390,7 +2384,7 @@ fn paint_trace_gutter(ui: &egui::Ui, trace: &PhaseTrace, side: ActiveSide, conte
         if !lines.contains(&line) {
             continue;
         }
-        let stroke = egui::Stroke::new(1.5, SCOPE_PAIR_COLORS[i % SCOPE_PAIR_COLORS.len()]);
+        let stroke = egui::Stroke::new(1.5_f32, SCOPE_PAIR_COLORS[i % SCOPE_PAIR_COLORS.len()]);
         let (first, last) = (line == lines.start, line + 1 == lines.end);
         let top = if first { rect.top() + 1.0 } else { rect.top() };
         let bottom = if last {
@@ -2472,7 +2466,7 @@ fn paint_trace_row(
             painter.rect_stroke(
                 rect.translate(origin.to_vec2()),
                 0.0,
-                egui::Stroke::new(1.0, *color),
+                egui::Stroke::new(1.0_f32, *color),
                 egui::StrokeKind::Inside,
             );
         }
@@ -2483,7 +2477,7 @@ fn paint_trace_row(
             painter.hline(
                 rect.x_range(),
                 rect.bottom() - 1.0,
-                egui::Stroke::new(1.5, CHAR_UNDERLINE),
+                egui::Stroke::new(1.5_f32, CHAR_UNDERLINE),
             );
         }
     }
@@ -2996,7 +2990,10 @@ const COPY_MARKER_NO_LINE: char = '\u{FDD0}';
 const COPY_MARKER_BLANK_LINE: char = '\u{FDD1}';
 
 fn strip_copy_markers(copied: &str) -> String {
-    let (no_line, blank) = (COPY_MARKER_NO_LINE.to_string(), COPY_MARKER_BLANK_LINE.to_string());
+    let (no_line, blank) = (
+        COPY_MARKER_NO_LINE.to_string(),
+        COPY_MARKER_BLANK_LINE.to_string(),
+    );
     copied
         .split('\n')
         .filter(|line| *line != no_line)
@@ -3013,15 +3010,18 @@ impl egui::Plugin for CopyMarkerPlugin {
     }
 
     fn output_hook(&mut self, output: &mut egui::FullOutput) {
-        output.platform_output.commands.retain_mut(|command| match command {
-            egui::OutputCommand::CopyText(text)
-                if text.contains([COPY_MARKER_NO_LINE, COPY_MARKER_BLANK_LINE]) =>
-            {
-                *text = strip_copy_markers(text);
-                !text.is_empty()
-            }
-            _ => true,
-        });
+        output
+            .platform_output
+            .commands
+            .retain_mut(|command| match command {
+                egui::OutputCommand::CopyText(text)
+                    if text.contains([COPY_MARKER_NO_LINE, COPY_MARKER_BLANK_LINE]) =>
+                {
+                    *text = strip_copy_markers(text);
+                    !text.is_empty()
+                }
+                _ => true,
+            });
     }
 }
 
@@ -3098,7 +3098,10 @@ fn recolor_ranges(
     }
     for section in &mut job.sections {
         let r = &section.byte_range;
-        if ranges.iter().any(|range| range.start <= r.start && r.end <= range.end) {
+        if ranges
+            .iter()
+            .any(|range| range.start <= r.start && r.end <= range.end)
+        {
             section.format.color = color;
         }
     }
@@ -3992,8 +3995,20 @@ mod tests {
 
     #[test]
     fn copy_markers_drop_non_file_rows_and_keep_blank_lines() {
-        let (no_line, blank) = (COPY_MARKER_NO_LINE.to_string(), COPY_MARKER_BLANK_LINE.to_string());
-        let copied = [no_line.as_str(), "a", &no_line, &blank, &blank, "b", &no_line].join("\n");
+        let (no_line, blank) = (
+            COPY_MARKER_NO_LINE.to_string(),
+            COPY_MARKER_BLANK_LINE.to_string(),
+        );
+        let copied = [
+            no_line.as_str(),
+            "a",
+            &no_line,
+            &blank,
+            &blank,
+            "b",
+            &no_line,
+        ]
+        .join("\n");
 
         assert_eq!(strip_copy_markers(&copied), "a\n\n\nb");
     }
@@ -4182,7 +4197,6 @@ mod tests {
         assert_eq!(copied.as_deref(), Some("let z"));
     }
 
-
     // Same on both sides except the last line, so rows 0..=2 carry no ghosts and are identical
     // on both sides.
     const SHARED_SOURCE: &str = "fn main() {\n    foo(bar, baz);\n    let x = 1;\n}\nold\n";
@@ -4241,7 +4255,8 @@ mod tests {
 
     #[test]
     fn crlf_rows_are_joined_with_lf() {
-        let mut harness = CopyHarness::new("a\r\nb\r\n", "a\r\nb\r\n", &DiffBuilderOptions::default());
+        let mut harness =
+            CopyHarness::new("a\r\nb\r\n", "a\r\nb\r\n", &DiffBuilderOptions::default());
 
         let copied = harness.drag_and_copy(Side::Left, (0, 0), (1, 1));
         assert_eq!(copied.as_deref(), Some("a\nb"));
@@ -4328,7 +4343,6 @@ mod tests {
         assert_only_real_text(harness.drag_and_copy(Side::Left, (0, 0), (2, 14)));
     }
 
-
     fn options_variants() -> [(&'static str, DiffBuilderOptions); 2] {
         [
             ("default", DiffBuilderOptions::default()),
@@ -4348,18 +4362,34 @@ mod tests {
     #[test]
     fn inline_ghost_tokens_add_no_characters() {
         for (name, options) in options_variants() {
-            let mut harness = CopyHarness::new("let x = old(1);\nkeep\n", "let x = new(1);\nkeep\n", &options);
+            let mut harness = CopyHarness::new(
+                "let x = old(1);\nkeep\n",
+                "let x = new(1);\nkeep\n",
+                &options,
+            );
 
             let copied = harness.drag_and_copy(Side::Left, (0, 0), (1, 4));
-            assert_eq!(copied.as_deref(), Some("let x = old(1);\nkeep"), "left, {name}");
+            assert_eq!(
+                copied.as_deref(),
+                Some("let x = old(1);\nkeep"),
+                "left, {name}"
+            );
             let copied = harness.drag_and_copy(Side::Right, (0, 0), (1, 4));
-            assert_eq!(copied.as_deref(), Some("let x = new(1);\nkeep"), "right, {name}");
+            assert_eq!(
+                copied.as_deref(),
+                Some("let x = new(1);\nkeep"),
+                "right, {name}"
+            );
         }
     }
 
     #[test]
     fn inline_ghost_row_copies_partial_real_text_on_either_side_of_the_ghost() {
-        let mut harness = CopyHarness::new("let x = old(1);\nkeep\n", "let x = new(1);\nkeep\n", &DiffBuilderOptions::default());
+        let mut harness = CopyHarness::new(
+            "let x = old(1);\nkeep\n",
+            "let x = new(1);\nkeep\n",
+            &DiffBuilderOptions::default(),
+        );
 
         let copied = harness.drag_and_copy(Side::Left, (0, 4), (0, 12));
         assert_eq!(copied.as_deref(), Some("x = old("));
@@ -4416,9 +4446,17 @@ mod tests {
             let last = harness.rows().len() - 1;
 
             let copied = harness.drag_and_copy(Side::Left, (0, 0), (last, 1));
-            assert_eq!(copied.as_deref(), Some(REAL_SOURCE.trim_end()), "left, {name}");
+            assert_eq!(
+                copied.as_deref(),
+                Some(REAL_SOURCE.trim_end()),
+                "left, {name}"
+            );
             let copied = harness.drag_and_copy(Side::Right, (0, 0), (last, 1));
-            assert_eq!(copied.as_deref(), Some(REAL_TARGET.trim_end()), "right, {name}");
+            assert_eq!(
+                copied.as_deref(),
+                Some(REAL_TARGET.trim_end()),
+                "right, {name}"
+            );
         }
     }
 
@@ -4476,9 +4514,21 @@ mod tests {
     fn switching_sides_leaves_only_the_new_sides_selection() {
         let mut harness = sides_harness();
 
-        assert_only(&whole_side(&mut harness, Side::Left), "LEFTONLY", "RIGHTONLY");
-        assert_only(&whole_side(&mut harness, Side::Right), "RIGHTONLY", "LEFTONLY");
-        assert_only(&whole_side(&mut harness, Side::Left), "LEFTONLY", "RIGHTONLY");
+        assert_only(
+            &whole_side(&mut harness, Side::Left),
+            "LEFTONLY",
+            "RIGHTONLY",
+        );
+        assert_only(
+            &whole_side(&mut harness, Side::Right),
+            "RIGHTONLY",
+            "LEFTONLY",
+        );
+        assert_only(
+            &whole_side(&mut harness, Side::Left),
+            "LEFTONLY",
+            "RIGHTONLY",
+        );
     }
 
     #[test]
@@ -4538,7 +4588,10 @@ mod tests {
         );
         if let Some(copied) = harness.copy() {
             for line in copied.lines().filter(|l| !l.is_empty()) {
-                assert!(SIDES_SOURCE.lines().any(|s| s == line), "garbled line {line:?}");
+                assert!(
+                    SIDES_SOURCE.lines().any(|s| s == line),
+                    "garbled line {line:?}"
+                );
             }
         }
     }
@@ -5016,6 +5069,10 @@ mod tests {
                 _ => false,
             })
         });
-        assert!(has_ghost, "expected at least one ghost token in {:?}", harness.rows());
+        assert!(
+            has_ghost,
+            "expected at least one ghost token in {:?}",
+            harness.rows()
+        );
     }
 }

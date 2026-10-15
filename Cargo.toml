@@ -5,13 +5,11 @@ members = [ "crates/zcommon",
     "crates/zhashdiff",
     "crates/zhashdiff-gui",
     "xtask",
-    "crates/zcommon",
 ]
 resolver = "2"
 
 [profile.release]
-# Optimize for size (use "s" for "small", or "z" for "tiny")
-opt-level = "z" 
+opt-level = 3
 # Link Time Optimization: Aggressively optimizes across crate boundaries
 lto = true 
 # Reduces parallel build tasks to 1, allowing better global optimization

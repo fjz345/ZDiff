@@ -440,8 +440,8 @@ impl<'a> ZApp {
 
     fn open_file_picker(tx: mpsc::Sender<UniversalPath>) {
         std::thread::spawn(move || {
-            if let Some(path) = pollster::block_on(rfd::AsyncFileDialog::new().pick_file()) {
-                if let Err(e) = tx.send(UniversalPath::from(path.path().to_path_buf())) {
+            if let Some(path) = rfd::FileDialog::new().pick_file() {
+                if let Err(e) = tx.send(UniversalPath::from(path)) {
                     log::error!("Failed to send path: {e}");
                 }
             }
@@ -1783,7 +1783,10 @@ impl eframe::App for ZApp {
             app_ctx.diff_processor.conflict_cursor.set_max(conflict_max);
         }
 
-        let state = self.state.as_mut().expect("State should always be valid during update");
+        let state = self
+            .state
+            .as_mut()
+            .expect("State should always be valid during update");
         if matches!(state, AppState::Startup(_))
             || ctx.input(|i| i.events.contains(&egui::Event::WindowFocused(true)))
         {

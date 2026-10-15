@@ -4,24 +4,19 @@ use std::{env, path::PathBuf};
 mod build_icon;
 
 fn main() {
-    let profile_env = env::var("PROFILE").unwrap();
-    let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
-    let workspace_root = manifest_dir.parent().unwrap().parent().unwrap();
+    let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
+    // OUT_DIR is <target dir>/<profile>/build/<pkg>-<hash>/out, next to where the binaries go.
+    let profile_dir = out_dir
+        .ancestors()
+        .nth(3)
+        .expect("OUT_DIR is nested under the profile folder");
 
-    let out_folder = if profile_env == "debug" {
-        "debug"
-    } else {
-        "release"
-    };
     let bin_name = if cfg!(windows) {
         "zdiff-gui.exe"
     } else {
         "zdiff-gui"
     };
-    let bin_path = workspace_root
-        .join("target")
-        .join(out_folder)
-        .join(bin_name);
+    let bin_path = profile_dir.join(bin_name);
 
     // Warning if you forgot to build the workspace
     if !bin_path.exists() {

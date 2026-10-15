@@ -8,7 +8,7 @@ name = "zcommon"
 
 [features]
 default = []
-gui = ["serde", "dep:eframe", "dep:egui_tiles", "dep:egui_extras"]
+gui = ["serde", "dep:eframe", "dep:egui_extras"]
 serde = ["dep:serde"]
 test-util = []
 
@@ -20,7 +20,6 @@ eframe = { version = "0.33.3", default-features = false, features = [
     "serde",
     "persistence"
 ] , optional = true }
-egui_tiles =  {version = "0.14.1", features = ["serde"], optional = true}
 egui_extras = { version = "0.33.3", features = ["image"], optional = true }
 blake3 = { version = "1.8.2", features = ["rayon", "mmap"] }
 log = "0.4.27"

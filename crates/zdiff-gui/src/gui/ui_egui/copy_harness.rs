@@ -575,8 +575,7 @@ impl CopyHarness {
                 .iter()
                 .fold(Rect::NOTHING, |acc, r| acc.union(*r))
         };
-        self.active_side
-            .end_frame(side_rect(0), side_rect(1));
+        self.active_side.end_frame(side_rect(0), side_rect(1));
         (layout, output)
     }
 }

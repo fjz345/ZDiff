@@ -49,7 +49,8 @@ impl ActiveSideState {
         left_loaded: bool,
         right_loaded: bool,
     ) -> ActiveSide {
-        if let Some(pressed) = press_pos.and_then(|p| side_at_press(p, self.left_rect, self.right_rect))
+        if let Some(pressed) =
+            press_pos.and_then(|p| side_at_press(p, self.left_rect, self.right_rect))
         {
             self.side = pressed;
         }
@@ -73,7 +74,7 @@ impl ActiveSideState {
 
 /// Style of the outline around the active side's text block.
 pub fn outline_stroke() -> egui::Stroke {
-    egui::Stroke::new(1.0, egui::Color32::from_rgb(60, 90, 130))
+    egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(60, 90, 130))
 }
 
 #[cfg(test)]
@@ -166,7 +167,10 @@ mod tests {
         let mut state = state_with_rects();
 
         let press_left = Some(egui::pos2(10.0, 10.0));
-        assert_eq!(state.begin_frame(press_left, false, true), ActiveSide::Right);
+        assert_eq!(
+            state.begin_frame(press_left, false, true),
+            ActiveSide::Right
+        );
         assert_eq!(state.begin_frame(None, false, true), ActiveSide::Right);
     }
 

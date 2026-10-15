@@ -2205,7 +2205,7 @@ fn render_center_cell(
     let undiffable = undiffable(entry, diff_tool_config);
     center.show(ui, |slot, ui| {
         if let (CenterSlot::Tag(_), Some(reason)) = (slot, &undiffable) {
-            let stroke = egui::Stroke::new(1.0, ui.visuals().warn_fg_color);
+            let stroke = egui::Stroke::new(1.0_f32, ui.visuals().warn_fg_color);
             ui.painter()
                 .rect_stroke(ui.max_rect(), 2.0, stroke, egui::StrokeKind::Inside);
             ui.interact(ui.max_rect(), ui.id().with("tag"), egui::Sense::hover())
@@ -2265,7 +2265,7 @@ fn paint_guides(ui: &egui::Ui, guides: &[Guide]) {
     let cell = ui.max_rect();
     // Spans the item spacing between rows, like the folder tint, so the lines have no gaps.
     let half_spacing = 0.5 * ui.spacing().item_spacing.y;
-    let stroke = egui::Stroke::new(1.0, role_color(ui.ctx(), FolderRole::GuideLine));
+    let stroke = egui::Stroke::new(1.0_f32, role_color(ui.ctx(), FolderRole::GuideLine));
     for (k, guide) in guides.iter().enumerate() {
         let bottom = match guide {
             Guide::Blank => continue,

@@ -1,8 +1,11 @@
 use std::{
     collections::{BTreeMap, HashMap},
     fmt::Display,
+    fs, io,
     path::{Path, PathBuf},
 };
+
+use crate::comparison::{DiskReader, FileMeta, PairSide, PairState, compare_pair};
 
 /// Groups files by content hash. Only groups of two or more files are returned,
 /// ordered by hash with each group's paths sorted, so the result does not depend
@@ -25,12 +28,18 @@ pub fn group_duplicates(
         .collect()
 }
 
+#[derive(Debug, PartialEq)]
+pub struct Deletion {
+    pub path: PathBuf,
+    pub keeper: PathBuf,
+}
+
 /// What a resolve removes.
 #[derive(Debug, Default, PartialEq)]
 pub struct ResolutionPlan {
     /// Every non-keeper of each group whose keeper is one of its files, ordered by
     /// group hash, then by the group's order.
-    pub deletions: Vec<PathBuf>,
+    pub deletions: Vec<Deletion>,
     /// Groups whose keeper is not one of their files. Nothing of them is planned.
     pub rejected: Vec<String>,
 }
@@ -54,8 +63,15 @@ pub fn plan_resolution(
             plan.rejected.push(hash.clone());
             continue;
         }
-        plan.deletions
-            .extend(paths.iter().filter(|path| *path != keeper).cloned());
+        plan.deletions.extend(
+            paths
+                .iter()
+                .filter(|path| *path != keeper)
+                .map(|path| Deletion {
+                    path: path.clone(),
+                    keeper: keeper.clone(),
+                }),
+        );
     }
     plan
 }
@@ -67,7 +83,8 @@ pub struct ResolutionSummary {
     pub failed: Vec<(PathBuf, String)>,
 }
 
-/// Removes the planned files through `delete`, which is `recycle` outside of tests.
+/// Removes the planned files through `delete`, which is `recycle` outside of tests. A file is
+/// only removed while its keeper exists, is another file and still has the same content.
 pub fn execute_resolution<E: Display>(
     plan: &ResolutionPlan,
     mut delete: impl FnMut(&Path) -> Result<(), E>,
@@ -77,7 +94,12 @@ pub fn execute_resolution<E: Display>(
     }
 
     let mut summary = ResolutionSummary::default();
-    for path in &plan.deletions {
+    for Deletion { path, keeper } in &plan.deletions {
+        if let Err(e) = verify_duplicate(path, keeper) {
+            log::error!("Not removing {path:?}: {e}");
+            summary.failed.push((path.clone(), e));
+            continue;
+        }
         match delete(path) {
             Ok(()) => {
                 log::info!("Removed duplicate {path:?}");
@@ -96,6 +118,40 @@ pub fn execute_resolution<E: Display>(
         summary.failed.len()
     );
     summary
+}
+
+/// Hashes can be stale, and a junction or symlink makes one file appear under two paths.
+fn verify_duplicate(path: &Path, keeper: &Path) -> Result<(), String> {
+    let side = |path: &Path| -> Result<(PathBuf, FileMeta), String> {
+        let error = |e: io::Error| format!("{path:?}: {e}");
+        let real = path.canonicalize().map_err(error)?;
+        let meta = fs::metadata(&real).map_err(error)?;
+        let modified = meta.modified().map_err(error)?;
+        let size = meta.len();
+        Ok((real, FileMeta { size, modified }))
+    };
+    let (keeper_side, path_side) = (side(keeper)?, side(path)?);
+    if keeper_side.0 == path_side.0 {
+        return Err(format!("it is the keeper {keeper:?} under another path"));
+    }
+    fn pair_side((path, meta): &(PathBuf, FileMeta)) -> PairSide<'_> {
+        PairSide {
+            rel_path: "",
+            path,
+            meta: *meta,
+            hash: None,
+        }
+    }
+    let compare = compare_pair(
+        &DiskReader,
+        &pair_side(&keeper_side),
+        &pair_side(&path_side),
+    );
+    match (compare.state, compare.error) {
+        (PairState::Same, _) => Ok(()),
+        (PairState::Different, Some(e)) => Err(format!("comparing with {keeper:?}: {e}")),
+        (PairState::Different, None) => Err(format!("its content differs from {keeper:?}")),
+    }
 }
 
 /// Moves `path` to the Recycle Bin.
@@ -271,6 +327,10 @@ mod tests {
         paths.iter().map(PathBuf::from).collect()
     }
 
+    fn deleted(plan: &ResolutionPlan) -> Vec<PathBuf> {
+        plan.deletions.iter().map(|d| d.path.clone()).collect()
+    }
+
     #[test]
     fn plan_never_includes_the_keeper() {
         let groups = conflict_map(&[("h", &["a", "b", "c"])]);
@@ -282,7 +342,7 @@ mod tests {
                 .into_iter()
                 .filter(|path| *path != keeper)
                 .collect();
-            assert_eq!(plan.deletions, paths(&others));
+            assert_eq!(deleted(&plan), paths(&others));
             assert!(plan.rejected.is_empty());
         }
     }
@@ -296,7 +356,7 @@ mod tests {
             ResolutionPlan::default()
         );
         assert_eq!(
-            plan_resolution(&groups, &keepers(&[("h2", "d")])).deletions,
+            deleted(&plan_resolution(&groups, &keepers(&[("h2", "d")]))),
             paths(&["c"])
         );
         // A keeper for a group that no longer exists plans nothing and rejects nothing.
@@ -316,7 +376,7 @@ mod tests {
 
         let plan = plan_resolution(&groups, &keepers(&[("hb", "y/1"), ("ha", "x/2")]));
 
-        assert_eq!(plan.deletions, paths(&["y/2", "x/1", "z/1"]));
+        assert_eq!(deleted(&plan), paths(&["y/2", "x/1", "z/1"]));
         assert!(plan.rejected.is_empty());
     }
 
@@ -334,7 +394,7 @@ mod tests {
             &keepers(&[("h1", ""), ("h2", "c"), ("h3", "elsewhere")]),
         );
 
-        assert_eq!(plan.deletions, paths(&["d"]));
+        assert_eq!(deleted(&plan), paths(&["d"]));
         assert_eq!(plan.rejected, vec!["h1".to_string(), "h3".to_string()]);
     }
 
@@ -399,6 +459,80 @@ mod tests {
         assert!(a.exists(), "the keeper is never touched");
         assert!(b.exists(), "a failed removal leaves the file in place");
         assert!(!c.exists());
+    }
+
+    fn plan_keeping(keeper: &Path, files: &[&Path]) -> ResolutionPlan {
+        let groups = HashMap::from([(
+            "h".to_string(),
+            files.iter().map(|path| path.to_path_buf()).collect(),
+        )]);
+        plan_resolution(
+            &groups,
+            &HashMap::from([("h".to_string(), keeper.to_path_buf())]),
+        )
+    }
+
+    fn failed_paths(summary: &ResolutionSummary) -> Vec<PathBuf> {
+        summary
+            .failed
+            .iter()
+            .map(|(path, _)| path.clone())
+            .collect()
+    }
+
+    #[test]
+    fn execute_resolution_removes_nothing_when_the_keeper_is_gone() {
+        let (_dir, a, b, c) = same_files();
+        let plan = plan_keeping(&a, &[&a, &b, &c]);
+        fs::remove_file(&a).unwrap();
+
+        let summary = execute_resolution(&plan, |path| fs::remove_file(path));
+
+        assert!(summary.removed.is_empty());
+        assert_eq!(failed_paths(&summary), vec![b.clone(), c.clone()]);
+        assert!(b.exists());
+        assert!(c.exists());
+    }
+
+    #[test]
+    fn execute_resolution_keeps_a_file_that_changed_after_hashing() {
+        let (_dir, a, b, c) = same_files();
+        let plan = plan_keeping(&a, &[&a, &b, &c]);
+        fs::write(&b, "diff").unwrap();
+
+        let summary = execute_resolution(&plan, |path| fs::remove_file(path));
+
+        assert_eq!(summary.removed, vec![c.clone()]);
+        assert_eq!(failed_paths(&summary), vec![b.clone()]);
+        assert!(b.exists());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn execute_resolution_never_removes_the_keeper_through_a_junction() {
+        let dir = tempdir().unwrap();
+        let (real, link) = (dir.path().join("real"), dir.path().join("link"));
+        fs::create_dir(&real).unwrap();
+        fs::write(real.join("f.txt"), "same").unwrap();
+        let status = std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(&link)
+            .arg(&real)
+            .output()
+            .unwrap()
+            .status;
+        assert!(status.success());
+        let (file, alias) = (real.join("f.txt"), link.join("f.txt"));
+
+        for (keeper, other) in [(&file, &alias), (&alias, &file)] {
+            let plan = plan_keeping(keeper, &[&file, &alias]);
+
+            let summary = execute_resolution(&plan, |path| fs::remove_file(path));
+
+            assert!(summary.removed.is_empty());
+            assert_eq!(failed_paths(&summary), vec![other.clone()]);
+            assert!(file.exists());
+        }
     }
 
     fn sized(path: &str, size: u64) -> SizedFile {

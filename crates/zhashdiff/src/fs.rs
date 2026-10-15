@@ -135,7 +135,6 @@ impl<'a> Iterator for TreeIter<'a> {
 #[derive(Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct FileSystemModel {
-    root_path: PathBuf,
     root_id: FsNodeId,
     nodes: Vec<FsNode>,
     content: ContentSource,
@@ -156,9 +155,8 @@ impl FileSystemModel {
         Ok(output.model)
     }
 
-    pub(crate) fn empty(root_path: impl AsRef<Path>) -> Self {
+    pub(crate) fn empty() -> Self {
         Self {
-            root_path: root_path.as_ref().to_path_buf(),
             root_id: 0,
             nodes: Vec::new(),
             content: ContentSource::Disk,

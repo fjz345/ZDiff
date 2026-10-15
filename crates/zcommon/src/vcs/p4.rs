@@ -515,6 +515,12 @@ impl P4Command {
         if let Some(cwd) = env.cwd {
             cmd.current_dir(cwd);
         }
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            // CREATE_NO_WINDOW: no console flashing up per spawn from the GUI apps.
+            cmd.creation_flags(0x0800_0000);
+        }
         cmd
     }
 

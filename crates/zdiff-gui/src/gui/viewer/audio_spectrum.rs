@@ -685,7 +685,7 @@ pub fn show_lanes(
 
     let painter = ui.painter_at(rect);
     let visuals = ui.visuals();
-    let line = egui::Stroke::new(1.0, visuals.widgets.noninteractive.bg_stroke.color);
+    let line = egui::Stroke::new(1.0_f32, visuals.widgets.noninteractive.bg_stroke.color);
     for (i, label) in LANES.iter().enumerate() {
         let lane = Rect::from_min_size(
             pos2(rect.left(), rect.top() + i as f32 * lane_height),

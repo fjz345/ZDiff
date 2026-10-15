@@ -19,14 +19,12 @@ pub struct QuickDiffPaths {
     pub p4_profile: Option<u64>,
 }
 
-const DEFAULT_COMMAND_ENABLE: bool = if cfg!(target_os = "macos")
-{true}
-else
-{true};
-const DEFAULT_CONTROL_ENABLE: bool = if cfg!(target_os = "macos")
-{false}
-else
-{true};
+const DEFAULT_COMMAND_ENABLE: bool = true;
+const DEFAULT_CONTROL_ENABLE: bool = if cfg!(target_os = "macos") {
+    false
+} else {
+    true
+};
 
 const CTRL: Modifiers = Modifiers {
     ctrl: DEFAULT_CONTROL_ENABLE,
@@ -591,7 +589,12 @@ pub fn ui_keybindings(
                         });
 
                         if should_surrender {
-                            log::info!("Setting shortcut for {}:\n{:?}\n -> \n{:?}", label, shortcut, next_shortcut);
+                            log::info!(
+                                "Setting shortcut for {}:\n{:?}\n -> \n{:?}",
+                                label,
+                                shortcut,
+                                next_shortcut
+                            );
                             *shortcut = next_shortcut;
                             ui.memory_mut(|mem| mem.surrender_focus(id));
                         }

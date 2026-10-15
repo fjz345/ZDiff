@@ -256,8 +256,8 @@ pub fn show_custom_popup_with_color<F>(
 
     title_visuals.window_fill = title_color;
     title_visuals.override_text_color = Some(egui::Color32::BLACK);
-    title_visuals.widgets.active.fg_stroke = egui::Stroke::new(1.0, egui::Color32::BLACK);
-    title_visuals.widgets.inactive.fg_stroke = egui::Stroke::new(1.0, egui::Color32::BLACK);
+    title_visuals.widgets.active.fg_stroke = egui::Stroke::new(1.0_f32, egui::Color32::BLACK);
+    title_visuals.widgets.inactive.fg_stroke = egui::Stroke::new(1.0_f32, egui::Color32::BLACK);
 
     ctx.set_visuals(title_visuals);
 

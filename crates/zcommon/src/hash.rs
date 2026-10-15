@@ -17,9 +17,17 @@ pub fn hash_contents(contents: &[u8]) -> String {
     hasher.finalize().to_hex().to_string()
 }
 
+/// blake3 measures rayon helping from about 128 KiB.
+const RAYON_MIN_FILE_SIZE: u64 = 128 * 1024;
+
 pub fn hash_file_mmap(path: impl AsRef<Path>) -> io::Result<String> {
+    let path = path.as_ref();
     let mut hasher = blake3::Hasher::new();
-    hasher.update_mmap_rayon(path)?;
+    if std::fs::metadata(path)?.len() >= RAYON_MIN_FILE_SIZE {
+        hasher.update_mmap_rayon(path)?;
+    } else {
+        hasher.update_mmap(path)?;
+    }
     Ok(hasher.finalize().to_hex().to_string())
 }
 
@@ -242,6 +250,17 @@ mod tests {
 
         assert!(hash.is_some());
         assert_eq!(hash.unwrap(), hash_file_mmap(&file_path).unwrap());
+    }
+
+    #[test]
+    fn file_hash_matches_the_content_hash_below_and_above_the_rayon_cutoff() {
+        let dir = tempdir().unwrap();
+        for size in [0, 10, RAYON_MIN_FILE_SIZE as usize + 1] {
+            let contents: Vec<u8> = (0..size).map(|i| i as u8).collect();
+            let path = dir.path().join(format!("{size}.bin"));
+            fs::write(&path, &contents).unwrap();
+            assert_eq!(hash_file_mmap(&path).unwrap(), hash_contents(&contents));
+        }
     }
 
     #[test]

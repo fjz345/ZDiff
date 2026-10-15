@@ -1441,14 +1441,14 @@ impl OpenMergeForm {
 
 fn browse(ctx: egui::Context, field: usize, tx: mpsc::Sender<(usize, String)>) {
     std::thread::spawn(move || {
-        let dialog = rfd::AsyncFileDialog::new();
+        let dialog = rfd::FileDialog::new();
         let picked = if MERGE_FIELDS[field] == "Output" {
-            pollster::block_on(dialog.save_file())
+            dialog.save_file()
         } else {
-            pollster::block_on(dialog.pick_file())
+            dialog.pick_file()
         };
         if let Some(file) = picked {
-            if let Err(e) = tx.send((field, file.path().display().to_string())) {
+            if let Err(e) = tx.send((field, file.display().to_string())) {
                 log::error!("Failed to send path: {e}");
             }
             ctx.request_repaint();

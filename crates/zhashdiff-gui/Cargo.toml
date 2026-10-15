@@ -12,12 +12,12 @@ required-features = ["gui"]
 [features]
 default = ["gui", "serde"]
 serde = ["zhashdiff/serde", "dep:serde", "dep:serde_json"]
-gui = ["zcommon/gui", "dep:eframe", "dep:egui_tiles", "dep:egui_extras"]
+gui = ["serde", "zcommon/gui", "dep:eframe", "dep:egui_tiles", "dep:egui_extras"]
 pretty-backtrace = ["dep:color-backtrace"]
 accesskit = []
 
 [target.'cfg(target_os = "linux")'.dependencies]
-eframe = { version = "0.33.3", features = ["wayland", "x11"] }
+eframe = { version = "0.33.3", features = ["wayland", "x11"], optional = true }
 
 [dependencies]
 zcommon = { path = "../zcommon" }
@@ -31,16 +31,15 @@ eframe = { version = "0.33.3", default-features = false, features = [
 ], optional = true }
 egui_tiles =  { version = "0.14.1", features = ["serde"], optional = true }
 egui_extras = { version = "0.33.3", features = ["image"], optional = true  }
-env_logger = "0.10"
 serde = { version = "1.0.48", features = ["derive"], optional = true}
 serde_json = { version = "1.0.48", optional = true }
 log = "0.4.27"
 memmap2 = "0.9.10"
-blake3 = { version = "1.8.2", features = ["rayon", "mmap"] }
 rfd = "0.17.1"
-crc32fast = "1.5.0"
-tempfile = "3.25.0"
 color-backtrace = { version = "0.7.2", optional = true }
+
+[dev-dependencies]
+tempfile = "3.25.0"
 
 [build-dependencies]
 image = { version = "0.25.9", default-features = false, features = ["png"] }

@@ -371,7 +371,7 @@ macro_rules! check_cancel {
 #[cfg(feature = "debug_alloc")]
 macro_rules! track_alloc {
     ($reg:expr, $step:expr) => {
-        log::log!("Allocations {}: {:?}", $step, $reg.change_and_reset());
+        log::debug!("Allocations {}: {:?}", $step, $reg.change_and_reset());
     };
 }
 

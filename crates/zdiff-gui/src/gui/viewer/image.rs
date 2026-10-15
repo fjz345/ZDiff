@@ -1198,7 +1198,7 @@ pub fn show(
                 painter.rect_stroke(
                     drawn,
                     0.0,
-                    Stroke::new(1.0, Color32::from_gray(80)),
+                    Stroke::new(1.0_f32, Color32::from_gray(80)),
                     StrokeKind::Outside,
                 );
 
@@ -1226,7 +1226,7 @@ pub fn show(
                         painter.rect_stroke(
                             changed.expand(2.0),
                             0.0,
-                            Stroke::new(1.5, diff_color),
+                            Stroke::new(1.5_f32, diff_color),
                             StrokeKind::Outside,
                         );
                     }
@@ -1248,14 +1248,14 @@ pub fn show(
         painter.vline(
             x,
             left.y_range(),
-            Stroke::new(4.0, Color32::from_black_alpha(160)),
+            Stroke::new(4.0_f32, Color32::from_black_alpha(160)),
         );
-        painter.vline(x, left.y_range(), Stroke::new(2.0, Color32::WHITE));
+        painter.vline(x, left.y_range(), Stroke::new(2.0_f32, Color32::WHITE));
         painter.circle(
             pos2(x, left.center().y),
             6.0,
             Color32::WHITE,
-            Stroke::new(1.0, Color32::from_black_alpha(160)),
+            Stroke::new(1.0_f32, Color32::from_black_alpha(160)),
         );
     }
 }
@@ -1301,7 +1301,7 @@ fn paint_heat_legend(painter: &egui::Painter, area: Rect, tolerance: u8, font: e
     painter.rect_stroke(
         bar,
         0.0,
-        Stroke::new(1.0, Color32::from_gray(160)),
+        Stroke::new(1.0_f32, Color32::from_gray(160)),
         StrokeKind::Outside,
     );
     let label_y = bar.bottom() + 3.0;
@@ -1390,7 +1390,7 @@ fn histogram_ui(ui: &mut egui::Ui, area: Rect, channel: ImageChannel, histograms
         painter.rect_stroke(
             plot,
             0.0,
-            Stroke::new(1.0, Color32::from_gray(80)),
+            Stroke::new(1.0_f32, Color32::from_gray(80)),
             StrokeKind::Outside,
         );
         painter.text(

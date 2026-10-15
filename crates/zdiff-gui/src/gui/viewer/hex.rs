@@ -540,7 +540,7 @@ fn side_row_job(
                 color: if marked { colors.highlight } else { text_color },
                 background: background(state),
                 underline: if marked {
-                    egui::Stroke::new(1.0, colors.highlight)
+                    egui::Stroke::new(1.0_f32, colors.highlight)
                 } else {
                     egui::Stroke::NONE
                 },
@@ -767,7 +767,7 @@ mod tests {
         assert_eq!(format(5).color, colors.highlight);
         assert_eq!(
             format(5).underline,
-            egui::Stroke::new(1.0, colors.highlight)
+            egui::Stroke::new(1.0_f32, colors.highlight)
         );
     }
 
