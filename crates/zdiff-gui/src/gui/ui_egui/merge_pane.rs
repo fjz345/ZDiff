@@ -1,10 +1,11 @@
 use std::{
     ops::Range,
     path::Path,
-    sync::{Arc, atomic::AtomicBool, mpsc},
+    sync::{Arc, OnceLock, atomic::AtomicBool},
 };
 
 use eframe::egui::{self, Layout, UiBuilder};
+use zcommon::job::Job;
 use zdiff::{
     cached_file::{CachedFile, FileMetadata},
     diff_builder::{Color32, LineContent, RowBg},
@@ -1375,26 +1376,32 @@ pub struct OpenMergeForm {
     pub open: bool,
     fields: [String; 4],
     error: Option<String>,
-    browse_tx: mpsc::Sender<(usize, String)>,
-    browse_rx: mpsc::Receiver<(usize, String)>,
+    ctx: Arc<OnceLock<egui::Context>>,
+    browse: Job<(usize, String)>,
 }
 
 impl Default for OpenMergeForm {
     fn default() -> Self {
-        let (browse_tx, browse_rx) = mpsc::channel();
+        let ctx = Arc::new(OnceLock::<egui::Context>::new());
+        let wake_ctx = ctx.clone();
         Self {
             open: false,
             fields: Default::default(),
             error: None,
-            browse_tx,
-            browse_rx,
+            ctx,
+            browse: Job::new(move || {
+                if let Some(ctx) = wake_ctx.get() {
+                    ctx.request_repaint();
+                }
+            }),
         }
     }
 }
 
 impl OpenMergeForm {
     pub fn ui(&mut self, ctx: &egui::Context) -> Option<MergeRequest> {
-        while let Ok((field, path)) = self.browse_rx.try_recv() {
+        self.ctx.get_or_init(|| ctx.clone());
+        for (field, path) in self.browse.poll() {
             self.fields[field] = path;
         }
         let mut open = self.open;
@@ -1416,7 +1423,7 @@ impl OpenMergeForm {
                                     .hint_text(hint),
                             );
                             if ui.button("...").clicked() {
-                                browse(ctx.clone(), field, self.browse_tx.clone());
+                                browse(&mut self.browse, field);
                             }
                             ui.end_row();
                         }
@@ -1439,8 +1446,8 @@ impl OpenMergeForm {
     }
 }
 
-fn browse(ctx: egui::Context, field: usize, tx: mpsc::Sender<(usize, String)>) {
-    std::thread::spawn(move || {
+fn browse(job: &mut Job<(usize, String)>, field: usize) {
+    job.start(move |ctx| {
         let dialog = rfd::FileDialog::new();
         let picked = if MERGE_FIELDS[field] == "Output" {
             dialog.save_file()
@@ -1448,10 +1455,7 @@ fn browse(ctx: egui::Context, field: usize, tx: mpsc::Sender<(usize, String)>) {
             dialog.pick_file()
         };
         if let Some(file) = picked {
-            if let Err(e) = tx.send((field, file.display().to_string())) {
-                log::error!("Failed to send path: {e}");
-            }
-            ctx.request_repaint();
+            ctx.send((field, file.display().to_string()));
         }
     });
 }
