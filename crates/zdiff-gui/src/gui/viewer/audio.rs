@@ -5,9 +5,8 @@ use std::{
     io::Write,
     path::Path,
     sync::{
-        Arc,
+        Arc, OnceLock,
         atomic::{AtomicBool, AtomicU64, Ordering},
-        mpsc,
     },
     time::Duration,
 };
@@ -17,6 +16,7 @@ use zcommon::ffmpeg::{
     FfmpegError, FfmpegPaths, MediaInfo, StreamKind, pcm_decode_args, probe, resampled_decode_args,
     run_ffmpeg,
 };
+use zcommon::job::Job;
 use zcommon::style::SharedRole;
 use zcommon_ui::style_window::role_color;
 
@@ -445,7 +445,19 @@ pub struct AudioSettings {
     pub spectrum: SpectrumSettings,
 }
 
-type DecodeResult = (usize, u64, Result<DecodedAudio, Option<String>>);
+type DecodeResult = Result<DecodedAudio, Option<String>>;
+
+/// Repaints the UI when a job posts; the context arrives after the jobs are created.
+pub(super) type RepaintContext = Arc<OnceLock<egui::Context>>;
+
+pub(super) fn repaint_job<M: Send + 'static>(context: &RepaintContext) -> Job<M> {
+    let context = context.clone();
+    Job::new(move || {
+        if let Some(context) = context.get() {
+            context.request_repaint();
+        }
+    })
+}
 
 /// Decodes each side on a worker thread when its load changes. A superseded or cancelled decode
 /// is killed, and a result for an older load of the side is dropped.
@@ -454,9 +466,8 @@ pub struct AudioDiffProcessor {
     ffmpeg: Option<FfmpegPaths>,
     files: [Option<LoadedFile>; 2],
     sides: [SideState; 2],
-    generations: [u64; 2],
-    cancels: [Arc<AtomicBool>; 2],
-    channel: (mpsc::Sender<DecodeResult>, mpsc::Receiver<DecodeResult>),
+    jobs: [Job<DecodeResult>; 2],
+    context: RepaintContext,
     view: TimeView,
     /// Fit once both sides are done decoding, so the second side arriving doesn't move the view.
     fit_pending: bool,
@@ -466,30 +477,26 @@ pub struct AudioDiffProcessor {
 
 impl Default for AudioDiffProcessor {
     fn default() -> Self {
+        let context = RepaintContext::default();
         Self {
             ffmpeg: None,
             files: [None, None],
             sides: [SideState::Empty, SideState::Empty],
-            generations: [0, 0],
-            cancels: Default::default(),
-            channel: mpsc::channel(),
+            jobs: [repaint_job(&context), repaint_job(&context)],
             view: TimeView::default(),
             fit_pending: false,
-            difference: SampleDiffProcessor::default(),
+            difference: SampleDiffProcessor::new(&context),
             spectrum: SpectrumProcessor::default(),
-        }
-    }
-}
-
-impl Drop for AudioDiffProcessor {
-    fn drop(&mut self) {
-        for cancel in &self.cancels {
-            cancel.store(true, Ordering::Relaxed);
+            context,
         }
     }
 }
 
 impl AudioDiffProcessor {
+    pub fn set_context(&self, ctx: &egui::Context) {
+        let _ = self.context.set(ctx.clone());
+    }
+
     /// No-op for the loads already requested; only a changed side is decoded again.
     pub fn request(
         &mut self,
@@ -520,7 +527,7 @@ impl AudioDiffProcessor {
     pub fn cancel(&mut self) {
         for index in 0..2 {
             if matches!(self.sides[index], SideState::Decoding(_)) {
-                self.stop(index);
+                self.jobs[index].cancel();
                 self.sides[index] = SideState::Cancelled;
             }
         }
@@ -536,15 +543,9 @@ impl AudioDiffProcessor {
         self.difference.decode_again();
     }
 
-    fn stop(&mut self, index: usize) {
-        self.cancels[index].store(true, Ordering::Relaxed);
-        self.cancels[index] = Arc::new(AtomicBool::new(false));
-        self.generations[index] += 1;
-    }
-
     /// Replaces the side's decode with one of `files[index]`.
     fn start(&mut self, index: usize) {
-        self.stop(index);
+        self.jobs[index].cancel();
         self.spectrum.reset(index);
         self.fit_pending = true;
         self.difference.clear();
@@ -558,28 +559,32 @@ impl AudioDiffProcessor {
             .expect("a side is only requested with ffmpeg");
         log::info!("Audio decode requested: {}", file.path());
         let progress = Arc::new(DecodeProgress::default());
-        let (cancel, tx) = (self.cancels[index].clone(), self.channel.0.clone());
-        let (generation, worker_progress) = (self.generations[index], progress.clone());
-        std::thread::spawn(move || {
-            let decoded =
-                decode_file(&ffmpeg, &file, None, &cancel, &worker_progress).map_err(|e| {
-                    e.map(|reason| format!("{} can't be decoded as audio: {reason}", file.path()))
-                });
-            let _ = tx.send((index, generation, decoded));
+        let worker_progress = progress.clone();
+        self.jobs[index].start(move |ctx| {
+            let decoded = decode_file(
+                &ffmpeg,
+                &file,
+                None,
+                ctx.cancel_flag(),
+                &worker_progress,
+            )
+            .map_err(|e| {
+                e.map(|reason| format!("{} can't be decoded as audio: {reason}", file.path()))
+            });
+            ctx.send(decoded);
         });
         self.sides[index] = SideState::Decoding(progress);
     }
 
     pub fn poll(&mut self) {
-        while let Ok((index, generation, decoded)) = self.channel.1.try_recv() {
-            if generation != self.generations[index] {
-                continue;
+        for index in 0..2 {
+            for decoded in self.jobs[index].poll() {
+                self.sides[index] = match decoded {
+                    Ok(audio) => SideState::Decoded(Arc::new(audio)),
+                    Err(Some(reason)) => SideState::Failed(reason),
+                    Err(None) => SideState::Cancelled,
+                };
             }
-            self.sides[index] = match decoded {
-                Ok(audio) => SideState::Decoded(Arc::new(audio)),
-                Err(Some(reason)) => SideState::Failed(reason),
-                Err(None) => SideState::Cancelled,
-            };
         }
         let inputs = match (&self.ffmpeg, &self.files[1], &self.sides) {
             (Some(ffmpeg), Some(file), [SideState::Decoded(left), SideState::Decoded(right)]) => {

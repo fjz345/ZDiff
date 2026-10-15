@@ -1874,6 +1874,7 @@ impl eframe::App for ZApp {
                 if (audio_1.is_some() || audio_2.is_some())
                     && let Ok(ffmpeg) = state.ffmpeg.lookup()
                 {
+                    state.audio_processor.set_context(ctx);
                     state.audio_processor.request(ffmpeg, audio_1, audio_2);
                 } else {
                     // Kills running decodes and drops the old pair's samples.

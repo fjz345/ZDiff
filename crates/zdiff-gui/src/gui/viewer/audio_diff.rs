@@ -1,17 +1,17 @@
 //! Sample difference: left minus right over aligned buffers, with peak and RMS difference and the
 //! first differing frame. A right side in another rate or layout is decoded again at the left's.
 
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
-    mpsc,
-};
+use std::sync::Arc;
 
 use eframe::egui::{self, Align2, Rect, vec2};
 use zcommon::ffmpeg::FfmpegPaths;
+use zcommon::job::Job;
 use zcommon_ui::style_window::role_color;
 
-use super::audio::{DecodeProgress, DecodedAudio, TimeView, decode_file, draw_wave, format_time};
+use super::audio::{
+    DecodeProgress, DecodedAudio, RepaintContext, TimeView, decode_file, draw_wave, format_time,
+    repaint_job,
+};
 use crate::{file::LoadedFile, ui_egui::file_role::FileRole};
 
 #[derive(Debug)]
@@ -88,7 +88,7 @@ impl std::fmt::Debug for DiffState {
     }
 }
 
-type DiffResult = (u64, Result<SampleDifference, Option<String>>);
+type DiffResult = Result<SampleDifference, Option<String>>;
 
 /// A resample failure stays here, not in the side failures: no reason to leave the audio view.
 #[derive(Debug)]
@@ -97,27 +97,12 @@ pub struct SampleDiffProcessor {
     inputs: Option<[Arc<DecodedAudio>; 2]>,
     resampled_to: Option<(u32, usize)>,
     state: DiffState,
-    generation: u64,
-    cancel: Arc<AtomicBool>,
-    channel: (mpsc::Sender<DiffResult>, mpsc::Receiver<DiffResult>),
+    job: Job<DiffResult>,
 }
 
 impl Default for SampleDiffProcessor {
     fn default() -> Self {
-        Self {
-            inputs: None,
-            resampled_to: None,
-            state: DiffState::Empty,
-            generation: 0,
-            cancel: Default::default(),
-            channel: mpsc::channel(),
-        }
-    }
-}
-
-impl Drop for SampleDiffProcessor {
-    fn drop(&mut self) {
-        self.cancel.store(true, Ordering::Relaxed);
+        Self::new(&RepaintContext::default())
     }
 }
 
@@ -129,6 +114,15 @@ pub type DiffInputs<'a> = (
 );
 
 impl SampleDiffProcessor {
+    pub(super) fn new(context: &RepaintContext) -> Self {
+        Self {
+            inputs: None,
+            resampled_to: None,
+            state: DiffState::Empty,
+            job: repaint_job(context),
+        }
+    }
+
     /// Restarts when either decoded side changed; `None` drops the difference.
     pub fn update(&mut self, inputs: Option<DiffInputs>) {
         let Some((ffmpeg, right_file, left, right)) = inputs else {
@@ -141,7 +135,6 @@ impl SampleDiffProcessor {
         {
             return;
         }
-        self.stop();
         self.inputs = Some([left.clone(), right.clone()]);
         self.resampled_to = resample_target(left, right);
         let progress = self
@@ -150,12 +143,10 @@ impl SampleDiffProcessor {
         let (ffmpeg, file) = (ffmpeg.clone(), right_file.clone());
         let (left, right) = (left.clone(), right.clone());
         let (target, worker_progress) = (self.resampled_to, progress.clone());
-        let (cancel, tx, generation) =
-            (self.cancel.clone(), self.channel.0.clone(), self.generation);
-        std::thread::spawn(move || {
+        self.job.start(move |ctx| {
             let difference = match target.zip(worker_progress) {
                 Some((target, progress)) => {
-                    decode_file(&ffmpeg, &file, Some(target), &cancel, &progress)
+                    decode_file(&ffmpeg, &file, Some(target), ctx.cancel_flag(), &progress)
                         .map(|resampled| sample_difference(&left, &resampled))
                         .map_err(|e| {
                             e.map(|reason| format!("{} can't be resampled: {reason}", file.path()))
@@ -163,7 +154,7 @@ impl SampleDiffProcessor {
                 }
                 None => Ok(sample_difference(&left, &right)),
             };
-            let _ = tx.send((generation, difference));
+            ctx.send(difference);
         });
         self.state = DiffState::Running(progress);
     }
@@ -173,7 +164,7 @@ impl SampleDiffProcessor {
         if self.inputs.is_none() && matches!(self.state, DiffState::Empty) {
             return;
         }
-        self.stop();
+        self.job.cancel();
         self.inputs = None;
         self.resampled_to = None;
         self.state = DiffState::Empty;
@@ -182,7 +173,7 @@ impl SampleDiffProcessor {
     /// Kills a running difference; it stays cancelled until `decode_again`.
     pub fn cancel(&mut self) {
         if self.running() {
-            self.stop();
+            self.job.cancel();
             self.state = DiffState::Cancelled;
         }
     }
@@ -194,17 +185,8 @@ impl SampleDiffProcessor {
         }
     }
 
-    fn stop(&mut self) {
-        self.cancel.store(true, Ordering::Relaxed);
-        self.cancel = Arc::new(AtomicBool::new(false));
-        self.generation += 1;
-    }
-
     pub fn poll(&mut self) {
-        while let Ok((generation, difference)) = self.channel.1.try_recv() {
-            if generation != self.generation {
-                continue;
-            }
+        for difference in self.job.poll() {
             self.state = match difference {
                 Ok(difference) => DiffState::Done(Arc::new(difference)),
                 Err(Some(reason)) => DiffState::Failed(reason),
@@ -415,9 +397,8 @@ mod tests {
         assert!(text.contains("first at 0:00.000 (frame 0)"), "{text}");
         assert!(!text.contains("resampled"), "{text}");
 
-        let generation = processor.generation;
         processor.update(Some((&ffmpeg, &file, &left, &right)));
-        assert_eq!(processor.generation, generation, "same sides: no-op");
+        assert!(!processor.running(), "same sides: no-op");
 
         let same = Arc::new(audio(8, 1, &[0.5, 0.25, 0.0, -0.5]));
         processor.update(Some((&ffmpeg, &file, &left, &same)));
@@ -453,7 +434,8 @@ mod tests {
         let mut processor = SampleDiffProcessor::default();
         processor.update(None);
         processor.clear();
-        assert_eq!(processor.generation, 0);
+        assert!(!processor.running());
+        assert_eq!(processor.status_text(), None);
     }
 
     #[test]
