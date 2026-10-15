@@ -4,7 +4,7 @@ use std::{
     ops::Range,
     path::{Path, PathBuf},
     sync::{
-        Arc,
+        Arc, Weak,
         atomic::{AtomicU64, Ordering},
     },
 };
@@ -42,7 +42,7 @@ use crate::ui_egui::tree_compare::{PairLikeness, TreeCompare};
 use crate::ui_egui::tree_cursor::{CursorRequest, CursorRow, TreeCursor};
 use crate::ui_egui::tree_filter::DiffFilter;
 use crate::ui_egui::tree_find::{FindChipEvent, TreeFindView, drawn_ranges};
-use crate::ui_egui::tree_guides::{Guide, tree_guides};
+use crate::ui_egui::tree_guides::{Guide, TreeGuides, tree_guides};
 use crate::ui_egui::tree_likeness::{likeness_cell, ui_likeness_cell};
 use crate::ui_egui::tree_menu::{Entry, RowAction, apply_row_action, row_menu, show_row_menu};
 use crate::ui_egui::tree_sort::{SortKey, TreeSort, sort_two_folder_rows};
@@ -79,6 +79,7 @@ impl Default for HScrollLink {
 pub struct TreeTable {
     split: Split,
     offsets: [f32; 2],
+    widths: ContentWidths,
 }
 
 impl FileSystemView {
@@ -489,6 +490,8 @@ pub struct CursorRowsCache {
     key: Option<CursorRowsKey>,
     cursor_rows: Vec<CursorRow>,
     drawn: Vec<usize>,
+    guides: [TreeGuides; 2],
+    generation: u64,
     #[cfg(test)]
     builds: usize,
 }
@@ -524,6 +527,17 @@ impl CursorRowsCache {
             self.drawn.clear();
             self.drawn
                 .extend((0..self.cursor_rows.len()).filter(|&i| !self.cursor_rows[i].hidden));
+            let sides: [fn(&DiffState) -> Option<FsNodeId>; 2] =
+                [DiffState::first, DiffState::second];
+            self.guides = sides.map(|id| {
+                let rows: Vec<(FsNodeDepth, bool)> = self
+                    .drawn
+                    .iter()
+                    .map(|&i| (rows[i].depth, id(&rows[i].diff_state).is_some()))
+                    .collect();
+                tree_guides(&rows)
+            });
+            self.generation += 1;
             self.key = Some(CursorRowsKey {
                 rows: rows_id,
                 flat,
@@ -543,6 +557,111 @@ impl CursorRowsCache {
 
     pub fn drawn(&self) -> &[usize] {
         &self.drawn
+    }
+
+    pub fn guides(&self) -> &[TreeGuides; 2] {
+        &self.guides
+    }
+
+    /// Changes whenever the drawn rows are rebuilt.
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+}
+
+/// Each side's widest drawn row. Names are measured once per model and font, so rebuilt rows
+/// and folds only take a max over the cached widths.
+#[derive(Default)]
+pub struct ContentWidths {
+    // Weak, like `TreeCompare`, so a new model can't reuse a dropped one's address.
+    models: [Weak<FileSystemModel>; 2],
+    font: Option<(egui::FontId, f32)>,
+    folder_prefix: f32,
+    // Per node id, NaN until measured.
+    names: [Vec<f32>; 2],
+    rel_paths: [Vec<f32>; 2],
+    widest: Option<(u64, RowLayout, f32, [f32; 2])>,
+    #[cfg(test)]
+    measured: usize,
+}
+
+impl ContentWidths {
+    fn get(
+        &mut self,
+        ui: &egui::Ui,
+        views: [Option<&FileSystemView>; 2],
+        rows: &[VisibleRowTwoFolderDiff],
+        drawn: &[usize],
+        generation: u64,
+        layout: RowLayout,
+    ) -> [f32; 2] {
+        let font = (
+            egui::TextStyle::Body.resolve(ui.style()),
+            ui.ctx().pixels_per_point(),
+        );
+        let models =
+            views.map(|view| view.map_or_else(Weak::new, |v| Arc::downgrade(&v.file_system)));
+        let same_models = (0..2).all(|side| models[side].ptr_eq(&self.models[side]));
+        if !same_models || self.font.as_ref() != Some(&font) {
+            let unmeasured = |view: Option<&FileSystemView>| {
+                vec![f32::NAN; view.map_or(0, |v| v.file_system.total_files_and_folders())]
+            };
+            self.names = views.map(unmeasured);
+            self.rel_paths = views.map(unmeasured);
+            self.folder_prefix =
+                ui.fonts_mut(|fonts| text_width("📁 ", &mut |c| fonts.glyph_width(&font.0, c)));
+            self.models = models;
+            self.font = Some(font);
+            self.widest = None;
+        }
+        let spacing = ui.spacing().item_spacing.x;
+        if let Some((built, built_layout, built_spacing, widths)) = self.widest
+            && (built, built_layout, built_spacing) == (generation, layout, spacing)
+        {
+            return widths;
+        }
+
+        let font = &self.font.as_ref().expect("set above").0;
+        let mut widths = [0.0f32; 2];
+        ui.fonts_mut(|fonts| {
+            for &i in drawn {
+                let entry = &rows[i];
+                let ids = [entry.diff_state.first(), entry.diff_state.second()];
+                for side in 0..2 {
+                    let Some(node) = side_node(views[side], ids[side]) else {
+                        continue;
+                    };
+                    let id = ids[side].expect("side_node found it");
+                    let cached = if layout == RowLayout::RelPaths {
+                        &mut self.rel_paths[side][id]
+                    } else {
+                        &mut self.names[side][id]
+                    };
+                    if cached.is_nan() {
+                        let name = if layout == RowLayout::RelPaths {
+                            entry.rel_path.as_str()
+                        } else {
+                            node.display_name()
+                        };
+                        *cached = text_width(name, &mut |c| fonts.glyph_width(font, c));
+                        #[cfg(test)]
+                        {
+                            self.measured += 1;
+                        }
+                    }
+                    let folder = if entry.is_dir {
+                        self.folder_prefix
+                    } else {
+                        0.0
+                    };
+                    let width =
+                        side_width(layout, entry.depth, entry.is_dir, folder + *cached, spacing);
+                    widths[side] = widths[side].max(width);
+                }
+            }
+        });
+        self.widest = Some((generation, layout, spacing, widths));
+        widths
     }
 }
 
@@ -920,21 +1039,7 @@ pub fn draw_ui_folder_tree(
     } else {
         RowLayout::Tree
     };
-    let guides = (layout == RowLayout::Tree).then(|| {
-        let side = |id: fn(&DiffState) -> Option<FsNodeId>| {
-            let rows: Vec<(FsNodeDepth, bool)> = drawn_rows
-                .iter()
-                .map(|&i| {
-                    (
-                        visible_rows[i].depth,
-                        id(&visible_rows[i].diff_state).is_some(),
-                    )
-                })
-                .collect();
-            tree_guides(&rows)
-        };
-        [side(DiffState::first), side(DiffState::second)]
-    });
+    let guides = (layout == RowLayout::Tree).then(|| rows_cache.guides());
     let root_state = match (file_system_1_view.as_ref(), file_system_2_view.as_ref()) {
         (Some(view), _) => {
             let root_id = view.file_system.get_root_node_id();
@@ -1108,10 +1213,12 @@ pub fn draw_ui_folder_tree(
                 return;
             };
             let center = CenterLayout::measure(ui, two_folder.likeness_bar);
-            let content_widths = side_content_widths(
+            let content_widths = two_folder.table.widths.get(
                 ui,
                 views,
-                drawn_rows.iter().map(|&i| &visible_rows[i]),
+                visible_rows,
+                drawn_rows,
+                rows_cache.generation(),
                 layout,
             );
 
@@ -1927,39 +2034,6 @@ impl CenterLayout {
     }
 }
 
-fn side_content_widths<'a>(
-    ui: &egui::Ui,
-    views: [Option<&FileSystemView>; 2],
-    rows: impl Iterator<Item = &'a VisibleRowTwoFolderDiff>,
-    layout: RowLayout,
-) -> [f32; 2] {
-    let font = egui::TextStyle::Body.resolve(ui.style());
-    let spacing = ui.spacing().item_spacing.x;
-    ui.fonts_mut(|fonts| {
-        let mut glyph_width = |c: char| fonts.glyph_width(&font, c);
-        let folder_width = text_width("📁 ", &mut glyph_width);
-        let mut widths = [0.0f32; 2];
-        for entry in rows {
-            let ids = [entry.diff_state.first(), entry.diff_state.second()];
-            for side in 0..2 {
-                let Some(node) = side_node(views[side], ids[side]) else {
-                    continue;
-                };
-                let name = if layout == RowLayout::RelPaths {
-                    entry.rel_path.as_str()
-                } else {
-                    node.display_name()
-                };
-                let folder = if entry.is_dir { folder_width } else { 0.0 };
-                let text = folder + text_width(name, &mut glyph_width);
-                let width = side_width(layout, entry.depth, entry.is_dir, text, spacing);
-                widths[side] = widths[side].max(width);
-            }
-        }
-        widths
-    })
-}
-
 /// Fills `cell_x` and half the gaps around it, like egui_extras' stripes, so a tinted row has
 /// no seams. A cell's own clip stops short of the gaps.
 fn fill_cell(ui: &egui::Ui, cell_x: egui::Rangef, color: egui::Color32) {
@@ -2279,18 +2353,20 @@ fn cursor_keys(input: &egui::InputState) -> Vec<egui::Key> {
 mod tests {
     use crate::ui_egui::fs_tree::apply_path_bar;
     use crate::ui_egui::fs_tree::{
-        CursorRowsCache, DiffState, EXPANDER_WIDTH, FileSystemView, RowLayout, RowsId, TREE_INDENT,
-        VisibleRowTwoFolderDiff, aggregate_folder_state, apply_blueprint_results,
-        apply_cursor_request, cursor_keys, side_width, single_side_rows, tree_hidden,
-        two_folder_cursor_rows,
+        ContentWidths, CursorRowsCache, DiffState, EXPANDER_WIDTH, FileSystemView, RowLayout,
+        RowsId, TREE_INDENT, VisibleRowTwoFolderDiff, aggregate_folder_state,
+        apply_blueprint_results, apply_cursor_request, cursor_keys, side_width, single_side_rows,
+        tree_hidden, two_folder_cursor_rows,
     };
     use crate::ui_egui::roots::{InvalidRoot, Side};
     use crate::ui_egui::status_line::ToolMessage;
     use crate::ui_egui::tree_compare::pending_pairs;
     use crate::ui_egui::tree_cursor::{CursorRequest, TreeCursor};
     use crate::ui_egui::tree_filter::{DiffFilter, arrange_two_folder_rows};
+    use crate::ui_egui::tree_guides::tree_guides;
     use crate::ui_egui::tree_sort::{SortKey, TreeSort, sort_two_folder_rows};
     use crate::ui_egui::tree_tolerance::{SizeDelta, Tolerance};
+    use eframe::egui;
     use std::time::{Duration, SystemTime};
     use zcommon::path::split_path;
     use zcommon::ui_egui::pathbar::PathBarAction;
@@ -3675,6 +3751,143 @@ mod tests {
 
         assert_eq!(builds(&left, &right, id, true), 5);
         assert_eq!(builds(&left, &right, id, true), 5);
+    }
+
+    fn content_widths(
+        widths: &mut ContentWidths,
+        views: [&FileSystemView; 2],
+        rows: &[VisibleRowTwoFolderDiff],
+        cache: &CursorRowsCache,
+    ) -> [f32; 2] {
+        let ctx = egui::Context::default();
+        let mut measured = [0.0; 2];
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                measured = widths.get(
+                    ui,
+                    views.map(Some),
+                    rows,
+                    cache.drawn(),
+                    cache.generation(),
+                    RowLayout::Tree,
+                );
+            });
+        });
+        measured
+    }
+
+    fn deep_and_shallow_trees() -> (TempDir, TempDir) {
+        let (left, right) = (tempdir().unwrap(), tempdir().unwrap());
+        for root in [left.path(), right.path()] {
+            write_files(
+                root,
+                &[
+                    ("x.txt", "x"),
+                    ("sub/deeper/a_much_longer_file_name_than_the_rest.txt", "y"),
+                ],
+            );
+        }
+        (left, right)
+    }
+
+    #[test]
+    fn content_widths_measure_each_name_once_and_follow_folds_and_rebuilt_rows() {
+        let (left_dir, right_dir) = deep_and_shallow_trees();
+        let mut left = load_view(left_dir.path());
+        let mut right = load_view(right_dir.path());
+        let rows = build_counting(&left, &right, &mut PairStates::default(), &Cell::new(0));
+        let mut cache = CursorRowsCache::default();
+        let mut widths = ContentWidths::default();
+        let id = RowsId::next();
+
+        cache.update([Some(&left), Some(&right)], &rows, id, false);
+        let expanded = content_widths(&mut widths, [&left, &right], &rows, &cache);
+        let measured = widths.measured;
+        assert!(measured > 0);
+        assert_eq!(
+            content_widths(&mut widths, [&left, &right], &rows, &cache),
+            expanded
+        );
+
+        cache.update([Some(&left), Some(&right)], &rows, RowsId::next(), false);
+        assert_eq!(
+            content_widths(&mut widths, [&left, &right], &rows, &cache),
+            expanded
+        );
+
+        let sub = rows.iter().find(|r| r.rel_path == "sub").unwrap();
+        left.toggle_collapse(sub.diff_state.first().unwrap());
+        right.toggle_collapse(sub.diff_state.second().unwrap());
+        cache.update([Some(&left), Some(&right)], &rows, id, false);
+        let folded = content_widths(&mut widths, [&left, &right], &rows, &cache);
+        assert_eq!(
+            folded,
+            content_widths(
+                &mut ContentWidths::default(),
+                [&left, &right],
+                &rows,
+                &cache
+            )
+        );
+        assert!(folded[0] < expanded[0] && folded[1] < expanded[1]);
+        assert_eq!(widths.measured, measured);
+    }
+
+    #[test]
+    fn content_widths_measure_a_rescanned_model_again() {
+        let (left_dir, right_dir) = deep_and_shallow_trees();
+        let left = load_view(left_dir.path());
+        let right = load_view(right_dir.path());
+        let rows = build_counting(&left, &right, &mut PairStates::default(), &Cell::new(0));
+        let mut cache = CursorRowsCache::default();
+        let mut widths = ContentWidths::default();
+        cache.update([Some(&left), Some(&right)], &rows, RowsId::next(), false);
+        let before = content_widths(&mut widths, [&left, &right], &rows, &cache);
+        let measured = widths.measured;
+
+        let left = load_view(left_dir.path());
+        let rows = build_counting(&left, &right, &mut PairStates::default(), &Cell::new(0));
+        cache.update([Some(&left), Some(&right)], &rows, RowsId::next(), false);
+
+        assert_eq!(
+            content_widths(&mut widths, [&left, &right], &rows, &cache),
+            before
+        );
+        assert!(widths.measured > measured);
+    }
+
+    #[test]
+    fn cached_guides_are_the_guides_of_the_drawn_rows() {
+        let (left_dir, right_dir) = two_folder_trees();
+        let mut left = load_view(left_dir.path());
+        let right = load_view(right_dir.path());
+        let rows = build_counting(&left, &right, &mut PairStates::default(), &Cell::new(0));
+        let mut cache = CursorRowsCache::default();
+        let id = RowsId::next();
+        let assert_guides = |cache: &CursorRowsCache| {
+            for (side, side_id) in [
+                (0, DiffState::first as fn(&DiffState) -> Option<FsNodeId>),
+                (1, DiffState::second),
+            ] {
+                let input: Vec<(FsNodeDepth, bool)> = cache
+                    .drawn()
+                    .iter()
+                    .map(|&i| (rows[i].depth, side_id(&rows[i].diff_state).is_some()))
+                    .collect();
+                let expected = tree_guides(&input);
+                for i in 0..input.len() {
+                    assert_eq!(cache.guides()[side].row(i), expected.row(i));
+                }
+            }
+        };
+
+        cache.update([Some(&left), Some(&right)], &rows, id, false);
+        assert_guides(&cache);
+
+        let sub = rows.iter().find(|r| r.rel_path == "sub/deep").unwrap();
+        left.toggle_collapse(sub.diff_state.first().unwrap());
+        cache.update([Some(&left), Some(&right)], &rows, id, false);
+        assert_guides(&cache);
     }
 
     #[test]

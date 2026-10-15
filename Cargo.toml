@@ -27,3 +27,8 @@ opt-level = 0
 debug = true
 strip = false
 panic = "unwind" # Keep unwinding for better error logs
+
+# Dependencies only: unoptimized egui alone takes most of a 60 Hz frame, which the frame-time
+# tests need. The workspace crates stay unoptimized.
+[profile.dev.package."*"]
+opt-level = 2

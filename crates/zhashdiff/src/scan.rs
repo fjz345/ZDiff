@@ -129,8 +129,13 @@ impl ListingSource for LocalDisk {
                     reason: e.to_string(),
                 })?;
                 let path = entry.path();
-                // Follows symlinks and junctions; DirEntry::metadata does not on Windows.
-                match std::fs::metadata(&path) {
+                // DirEntry::metadata is free on Windows but doesn't follow symlinks and junctions,
+                // which is_symlink covers there.
+                let meta = match entry.file_type() {
+                    Ok(file_type) if !file_type.is_symlink() => entry.metadata(),
+                    _ => std::fs::metadata(&path),
+                };
+                match meta {
                     Ok(meta) => Ok(ListingEntry {
                         is_dir: meta.is_dir(),
                         size: meta.len(),
@@ -350,6 +355,33 @@ mod tests {
 
         assert_eq!(node.size, 5);
         assert_eq!(node.modified, Some(mtime));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn local_scan_follows_a_junction_into_its_target() {
+        let dir = tempdir().unwrap();
+        let (target, root) = (dir.path().join("target"), dir.path().join("root"));
+        fs::create_dir_all(&target).unwrap();
+        fs::create_dir_all(&root).unwrap();
+        fs::write(target.join("inside.txt"), "12345").unwrap();
+        let link = root.join("link");
+        let status = std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(&link)
+            .arg(&target)
+            .output()
+            .unwrap()
+            .status;
+        assert!(status.success());
+
+        let output = scan_local(&root);
+        let model = &output.model;
+
+        let link_node = node_at(model, &link);
+        assert!(link_node.is_dir());
+        assert_eq!(child_paths(model, link_node), vec![link.join("inside.txt")]);
+        assert_eq!(node_at(model, &link.join("inside.txt")).size, 5);
     }
 
     #[test]

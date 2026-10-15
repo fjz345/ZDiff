@@ -10,6 +10,7 @@ pub enum Guide {
 
 /// Guide lines of one side of the drawn rows. Row `i`'s slice holds one guide per ancestor folder
 /// below the root, outermost first: index `k` is the line of the ancestor at depth `k + 1`.
+#[derive(Default)]
 pub struct TreeGuides {
     guides: Vec<Guide>,
     starts: Vec<usize>,

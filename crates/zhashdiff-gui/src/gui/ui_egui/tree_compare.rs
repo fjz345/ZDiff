@@ -26,6 +26,8 @@ use crate::ui_egui::fs_tree::{DiffState, FileSystemView, VisibleRowTwoFolderDiff
 // Disk bound: more readers than this mostly make the reads seek against each other.
 const MAX_COMPARE_WORKERS: usize = 4;
 const ROWS_PATCH_INTERVAL: Duration = Duration::from_millis(250);
+// The gap after a patch is at least this many times its cost, so big trees don't patch every frame.
+const PATCH_COST_FACTOR: u32 = 4;
 // The image viewer's default. The likeness cache doesn't key on it.
 const PIXEL_TOLERANCE: u8 = 0;
 
@@ -208,6 +210,7 @@ struct CompareJob {
     received: usize,
     started: Instant,
     patched: Instant,
+    patch_interval: Duration,
     unpatched: bool,
 }
 
@@ -226,6 +229,7 @@ impl CompareJob {
             received: 0,
             started: now,
             patched: now,
+            patch_interval: ROWS_PATCH_INTERVAL,
             unpatched: false,
         };
         (job, sender)
@@ -510,12 +514,19 @@ impl TreeCompare {
             self.job = None;
             return CompareUpdate::Finished;
         }
-        if job.unpatched && now >= job.patched + ROWS_PATCH_INTERVAL {
+        if job.unpatched && now >= job.patched + job.patch_interval {
             job.patched = now;
             job.unpatched = false;
             return CompareUpdate::Patch;
         }
         CompareUpdate::Idle
+    }
+
+    pub fn patched(&mut self, end: Instant, cost: Duration) {
+        if let Some(job) = &mut self.job {
+            job.patched = end;
+            job.patch_interval = ROWS_PATCH_INTERVAL.max(cost * PATCH_COST_FACTOR);
+        }
     }
 }
 
@@ -877,6 +888,40 @@ mod tests {
         }
         assert_eq!(compare.poll(later), CompareUpdate::Finished);
         assert_eq!(compare.poll(later), CompareUpdate::Idle);
+    }
+
+    #[test]
+    fn a_slow_patch_delays_the_next_one_from_its_end_in_proportion_to_its_cost() {
+        let (left_dir, right_dir) = trees();
+        let (left, right) = (load_view(left_dir.path()), load_view(right_dir.path()));
+        let mut compare = TreeCompare::default();
+        let rows = build(&mut compare, &left, &right);
+        let start = Instant::now();
+        compare.start(&rows, [Some(&left), Some(&right)], start);
+        let (sender, paths) = compare.pause(start);
+        assert!(paths.len() > 2);
+        let same = |i| {
+            let compare = PairCompare {
+                state: PairState::Same,
+                error: None,
+            };
+            let result = PairResult {
+                compare: Some(compare),
+                likeness: None,
+            };
+            sender.send((i, result)).unwrap();
+        };
+
+        same(0);
+        let later = start + ROWS_PATCH_INTERVAL;
+        assert_eq!(compare.poll(later), CompareUpdate::Patch);
+        let cost = Duration::from_millis(300);
+        let end = later + cost;
+        compare.patched(end, cost);
+        same(1);
+        assert_eq!(compare.poll(end + ROWS_PATCH_INTERVAL), CompareUpdate::Idle);
+        assert_eq!(compare.poll(end + 3 * cost), CompareUpdate::Idle);
+        assert_eq!(compare.poll(end + 4 * cost), CompareUpdate::Patch);
     }
 
     #[test]

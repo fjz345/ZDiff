@@ -263,6 +263,7 @@ impl AppStateCtx {
         match self.tree_compare.poll(now) {
             CompareUpdate::Idle => {}
             CompareUpdate::Patch => {
+                let patch_start = Instant::now();
                 if self.two_folder_diff_visible_rows.is_some()
                     && let Some(fresh) = self.build_rows(false)
                     && let Some(rows) = self.two_folder_diff_arranged_rows.as_mut()
@@ -270,6 +271,8 @@ impl AppStateCtx {
                     patch_row_states(rows, fresh);
                     self.narrow_rows_to_find();
                 }
+                let cost = patch_start.elapsed();
+                self.tree_compare.patched(now + cost, cost);
             }
             CompareUpdate::Finished => self.two_folder_diff_visible_rows = None,
         }
@@ -1294,7 +1297,10 @@ mod tests {
     use std::{
         fs,
         path::{Path, PathBuf},
-        sync::Arc,
+        sync::{
+            Arc,
+            atomic::{AtomicBool, AtomicUsize},
+        },
         time::{Duration, Instant},
     };
     use tempfile::{TempDir, tempdir};
@@ -1303,6 +1309,7 @@ mod tests {
         comparison::{PairCompare, PairState},
         filter::{PathFilter, PatternList},
         fs::FileSystemModel,
+        scan::{ContentHash, FlatEntry, FlatListing, HashKind, scan},
     };
 
     fn finish_compare(state: &mut AppStateCtx) {
@@ -2445,5 +2452,105 @@ mod tests {
         state.update_scans(&egui::Context::default());
         assert!(!state.file_system_1_scan.is_scanning());
         assert!(!state.file_system_2_scan.is_scanning());
+    }
+
+    const FRAME_AT_60_HZ: Duration = Duration::from_micros(16_667);
+
+    fn in_memory_view(root: &Path, files: Vec<FlatEntry>) -> FileSystemView {
+        let listing = FlatListing::new(root, files, Vec::new());
+        let output = scan(
+            &listing,
+            root,
+            &AtomicBool::new(false),
+            &AtomicUsize::new(0),
+        )
+        .unwrap()
+        .unwrap();
+        FileSystemView::new(Arc::new(output.model))
+    }
+
+    fn files_50k(side: usize) -> Vec<FlatEntry> {
+        (0..50_000)
+            .map(|i| FlatEntry {
+                rel_path: format!(
+                    "dir_{:02}/sub_{:02}/leaf_{:02}/some_longer_file_name_{:04}.txt",
+                    i / 5000,
+                    i / 500 % 10,
+                    i / 50 % 10,
+                    i % 50
+                ),
+                size: 1,
+                hash: Some(ContentHash {
+                    kind: HashKind::GitBlob,
+                    value: if i % 20 == 0 {
+                        format!("{i} on side {side}")
+                    } else {
+                        i.to_string()
+                    },
+                }),
+            })
+            .collect()
+    }
+
+    fn median_frame(
+        ctx: &egui::Context,
+        app: &mut ZApp,
+        frames: usize,
+        events: impl Fn() -> Vec<egui::Event>,
+    ) -> Duration {
+        let mut frame = eframe::Frame::_new_kittest();
+        let mut times: Vec<Duration> = (0..frames)
+            .map(|_| {
+                let input = egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1600.0, 1000.0),
+                    )),
+                    events: events(),
+                    ..Default::default()
+                };
+                let start = Instant::now();
+                let output = ctx.run(input, |ctx| eframe::App::update(app, ctx, &mut frame));
+                let _ = ctx.tessellate(output.shapes, output.pixels_per_point);
+                start.elapsed()
+            })
+            .collect();
+        times.sort();
+        times[frames / 2]
+    }
+
+    #[test]
+    fn idle_and_scrolling_frames_of_a_100k_file_folder_diff_fit_a_60_hz_frame() {
+        let (left, right) = (tempdir().unwrap(), tempdir().unwrap());
+        let mut state = AppStateCtx {
+            file_system_1_root_path: Some(left.path().to_path_buf()),
+            file_system_2_root_path: Some(right.path().to_path_buf()),
+            file_system_model_1_view: Some(in_memory_view(left.path(), files_50k(1))),
+            file_system_model_2_view: Some(in_memory_view(right.path(), files_50k(2))),
+            ..Default::default()
+        };
+        finish_compare(&mut state);
+        let mut app = ZApp::new(LogBuffer::default());
+        app.state = Some(AppState::Idle(state));
+        let ctx = egui::Context::default();
+
+        median_frame(&ctx, &mut app, 3, Vec::new);
+        let idle = median_frame(&ctx, &mut app, 31, Vec::new);
+        let scrolling = median_frame(&ctx, &mut app, 31, || {
+            vec![
+                egui::Event::PointerMoved(egui::pos2(400.0, 500.0)),
+                egui::Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Page,
+                    delta: egui::vec2(0.0, -1.0),
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ]
+        });
+
+        assert!(idle < FRAME_AT_60_HZ, "idle frame took {idle:?}");
+        assert!(
+            scrolling < FRAME_AT_60_HZ,
+            "scrolling frame took {scrolling:?}"
+        );
     }
 }
