@@ -20,8 +20,8 @@ use zdiff::{
     ignore::IgnoreOptions,
     lexer::{RawToken, TokenKind},
     myers::{
-        DiffPhases, MyersDiffAlgorithm, MyersNumAddDelete, MyersPath, Pin, PinError, line_diff,
-        myers_count_add_deletes, myers_diff_path_traced, token_diff, validate_pins,
+        DiffPhases, MyersDiffAlgorithm, MyersNumAddDelete, MyersPath, Pin, PinError, Side,
+        line_diff, myers_count_add_deletes, myers_diff_path_traced, token_diff, validate_pins,
     },
     row_text::build_row_text,
     scope::{changed_scopes, scope_lines},
@@ -620,22 +620,28 @@ impl DiffCtx {
                         && !phases.scope
                         && trace.is_none()
                     {
-                        line_diff(input.algo, t1, t2, &cmp, &ignore, cancel.clone()).and_then(
-                            |hunks| {
-                                let line_elapsed = start.elapsed();
-                                let start = Instant::now();
-                                let path = token_diff(
-                                    input.algo,
-                                    t1,
-                                    t2,
-                                    &hunks,
-                                    &cmp,
-                                    &ignore,
-                                    cancel.clone(),
-                                )?;
-                                Some((path, line_elapsed, start.elapsed()))
-                            },
+                        line_diff(
+                            input.algo,
+                            t1,
+                            t2,
+                            token_key(c1, c2),
+                            &ignore,
+                            cancel.clone(),
                         )
+                        .and_then(|hunks| {
+                            let line_elapsed = start.elapsed();
+                            let start = Instant::now();
+                            let path = token_diff(
+                                input.algo,
+                                t1,
+                                t2,
+                                &hunks,
+                                &cmp,
+                                &ignore,
+                                cancel.clone(),
+                            )?;
+                            Some((path, line_elapsed, start.elapsed()))
+                        })
                     } else {
                         myers_diff_path_traced(
                             input.algo,
@@ -1451,7 +1457,14 @@ fn update_diff_rows_minimal_diff_ctx(
         .options
         .ignore
         .mask(t1, &c1.contents, t2, &c2.contents);
-    let hunks = line_diff(algo, t1, t2, &cmp, &ignore, cancel_flag.clone())?;
+    let hunks = line_diff(
+        algo,
+        t1,
+        t2,
+        token_key(c1, c2),
+        &ignore,
+        cancel_flag.clone(),
+    )?;
     let line_elapsed = start.elapsed();
     let start = Instant::now();
     let myers_path = token_diff(algo, t1, t2, &hunks, &cmp, &ignore, cancel_flag.clone())?;
@@ -1572,6 +1585,19 @@ fn compare_tokens(
     let b_bytes = &c2.contents.as_bytes()[b.span.start..b.span.end];
 
     a_bytes == b_bytes
+}
+
+fn token_key<'a>(
+    c1: &'a CachedFile<RawToken>,
+    c2: &'a CachedFile<RawToken>,
+) -> impl Fn(Side, &RawToken) -> (TokenKind, &'a [u8]) {
+    move |side, t| {
+        let file = match side {
+            Side::Source => c1,
+            Side::Target => c2,
+        };
+        (t.kind, &file.contents.as_bytes()[t.span.clone()])
+    }
 }
 
 /// Diff-only collapsing. A block collapsed with zero context rows leaves no

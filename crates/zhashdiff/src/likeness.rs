@@ -10,7 +10,7 @@ use zcommon::kinds::{FileKind, KindTable, normalize_extension};
 use zdiff::{
     ignore::IgnoreMask,
     lexer::{Lexer, RawToken, TokenKind},
-    myers::{MyersDiffAlgorithm, line_diff},
+    myers::{MyersDiffAlgorithm, Side, line_diff},
     pixel::{RgbaBuffer, pixel_diff},
 };
 
@@ -86,14 +86,18 @@ fn text_likeness(left: &str, right: &str, cancel: &Arc<AtomicBool>) -> Option<f6
     if total == 0 {
         return Some(1.0);
     }
-    let cmp = |a: &RawToken, b: &RawToken| {
-        a.kind == b.kind && left.as_bytes()[a.span.clone()] == right.as_bytes()[b.span.clone()]
+    let key = |side: Side, t: &RawToken| {
+        let text = match side {
+            Side::Source => left,
+            Side::Target => right,
+        };
+        (t.kind, &text.as_bytes()[t.span.clone()])
     };
     let hunks = line_diff(
         MyersDiffAlgorithm::Linear,
         &left_tokens,
         &right_tokens,
-        cmp,
+        key,
         &IgnoreMask::default(),
         cancel.clone(),
     )?;

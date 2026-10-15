@@ -14,9 +14,9 @@ use zdiff::{
     diff_builder::{DiffBuilderOptions, build_diff_rows},
     diff_ir::DiffIR,
     ignore::IgnoreMask,
-    lexer::{Lexer, RawToken},
+    lexer::{Lexer, RawToken, TokenKind},
     myers::{
-        DiffPhases, MyersDiffAlgorithm, MyersPath, line_diff, myers_count_add_deletes,
+        DiffPhases, MyersDiffAlgorithm, MyersPath, Side, line_diff, myers_count_add_deletes,
         myers_diff_path, token_diff,
     },
     read_file_contents,
@@ -207,7 +207,7 @@ fn run_once(source: &str, target: &str) -> Run {
         MyersDiffAlgorithm::Linear,
         &tokens_source,
         &tokens_target,
-        &cmp,
+        token_key(source, target),
         &IgnoreMask::default(),
         cancel.clone(),
     )
@@ -277,6 +277,19 @@ fn driver_path(
     .expect("never cancelled")
 }
 
+fn token_key<'a>(
+    source: &'a str,
+    target: &'a str,
+) -> impl Fn(Side, &RawToken) -> (TokenKind, &'a [u8]) {
+    move |side, t| {
+        let text = match side {
+            Side::Source => source,
+            Side::Target => target,
+        };
+        (t.kind, &text.as_bytes()[t.span.clone()])
+    }
+}
+
 fn line_token_path(
     source: &str,
     target: &str,
@@ -295,7 +308,7 @@ fn line_token_path(
         algorithm,
         tokens_source,
         tokens_target,
-        cmp,
+        token_key(source, target),
         &mask,
         cancel.clone(),
     )

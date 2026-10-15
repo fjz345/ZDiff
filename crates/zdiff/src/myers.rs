@@ -1,5 +1,7 @@
 use std::{
     cell::RefCell,
+    collections::{HashMap, hash_map::DefaultHasher},
+    hash::{BuildHasher, BuildHasherDefault, Hash, Hasher},
     ops::Range,
     sync::{
         Arc,
@@ -353,7 +355,15 @@ where
     }
     let hunks = if phases.line {
         let start = trace.map(|_| Instant::now());
-        let hunks = line_diff(algorithm, source, target, cmp, ignore, cancel_flag.clone())?;
+        let key = |side: Side, t: &T| {
+            let t = t.as_ref();
+            let text = match side {
+                Side::Source => source_text,
+                Side::Target => target_text,
+            };
+            (t.kind, &text.as_bytes()[t.span.clone()])
+        };
+        let hunks = line_diff(algorithm, source, target, key, ignore, cancel_flag.clone())?;
         add_time(trace, start, |times| &mut times.line);
         if let Some(trace) = trace {
             let spans = hunks
@@ -467,36 +477,152 @@ pub struct LineHunk {
     pub target: Range<usize>,
 }
 
-/// Line phase: Myers over lines, where two lines are equal when their tokens are pairwise equal
-/// under `cmp`. Returns the hunks in order; tokens outside them pair up one to one.
-pub fn line_diff<T, F>(
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Side {
+    Source,
+    Target,
+}
+
+const INTERN_CANCEL_STRIDE: usize = 1024;
+const NO_ID: u32 = u32::MAX;
+
+/// One id per line of each side; two lines get the same id exactly when their tokens that aren't
+/// ignored are pairwise equal in `key` (kind and bytes).
+pub fn intern_lines<'k, T, K>(
+    source: &[T],
+    target: &[T],
+    source_lines: &[Range<usize>],
+    target_lines: &[Range<usize>],
+    ignore: &IgnoreMask,
+    key: K,
+    cancel_flag: &AtomicBool,
+) -> Option<(Vec<u32>, Vec<u32>)>
+where
+    K: Fn(Side, &T) -> (TokenKind, &'k [u8]),
+{
+    intern_lines_with(
+        source,
+        target,
+        source_lines,
+        target_lines,
+        ignore,
+        key,
+        cancel_flag,
+        &BuildHasherDefault::<DefaultHasher>::default(),
+    )
+}
+
+fn intern_lines_with<'k, T, K, S>(
+    source: &[T],
+    target: &[T],
+    source_lines: &[Range<usize>],
+    target_lines: &[Range<usize>],
+    ignore: &IgnoreMask,
+    key: K,
+    cancel_flag: &AtomicBool,
+    hasher: &S,
+) -> Option<(Vec<u32>, Vec<u32>)>
+where
+    K: Fn(Side, &T) -> (TokenKind, &'k [u8]),
+    S: BuildHasher,
+{
+    let ignored = |mask: &[bool], i: usize| mask.get(i).copied().unwrap_or(false);
+    let line_key = |side: Side, line: &Range<usize>| {
+        let (tokens, mask) = match side {
+            Side::Source => (source, &ignore.source),
+            Side::Target => (target, &ignore.target),
+        };
+        let key = &key;
+        line.clone()
+            .filter(move |&i| !ignored(mask, i))
+            .map(move |i| key(side, &tokens[i]))
+    };
+
+    let mut heads: HashMap<u64, u32, BuildHasherDefault<DefaultHasher>> = HashMap::default();
+    let mut next: Vec<u32> = Vec::new();
+    let mut reps: Vec<(Side, Range<usize>)> = Vec::new();
+    let mut seen = 0usize;
+    let mut intern_side = |side: Side, lines: &[Range<usize>]| -> Option<Vec<u32>> {
+        let mut ids = Vec::with_capacity(lines.len());
+        for line in lines {
+            seen += 1;
+            if seen % INTERN_CANCEL_STRIDE == 0 && cancel_flag.load(Ordering::Relaxed) {
+                return None;
+            }
+            let mut h = hasher.build_hasher();
+            for (kind, bytes) in line_key(side, line) {
+                std::mem::discriminant(&kind).hash(&mut h);
+                bytes.hash(&mut h);
+            }
+            let hash = h.finish();
+            let mut id = heads.get(&hash).copied().unwrap_or(NO_ID);
+            let found = loop {
+                if id == NO_ID {
+                    break None;
+                }
+                let (rep_side, rep) = &reps[id as usize];
+                if line_key(*rep_side, rep).eq(line_key(side, line)) {
+                    break Some(id);
+                }
+                id = next[id as usize];
+            };
+            let id = found.unwrap_or_else(|| {
+                let new = reps.len() as u32;
+                next.push(heads.insert(hash, new).unwrap_or(NO_ID));
+                reps.push((side, line.clone()));
+                new
+            });
+            ids.push(id);
+        }
+        Some(ids)
+    };
+    let source_ids = intern_side(Side::Source, source_lines)?;
+    let target_ids = intern_side(Side::Target, target_lines)?;
+    Some((source_ids, target_ids))
+}
+
+/// Line phase: Myers over interned lines, where two lines are equal when their tokens are
+/// pairwise equal in `key`. Returns the hunks in order; tokens outside them pair up one to one.
+pub fn line_diff<'k, T, K>(
     algorithm: MyersDiffAlgorithm,
     source: &[T],
     target: &[T],
-    cmp: F,
+    key: K,
     ignore: &IgnoreMask,
     cancel_flag: Arc<AtomicBool>,
 ) -> Option<Vec<LineHunk>>
 where
     T: RawTokenTrait,
-    F: Fn(&T, &T) -> bool + Sync,
+    K: Fn(Side, &T) -> (TokenKind, &'k [u8]),
 {
     if cancel_flag.load(Ordering::Relaxed) {
         return None;
     }
     assert_mask_fits(ignore, source, target);
-    if source.len() == target.len() && source.iter().zip(target).all(|(a, b)| cmp(a, b)) {
+    if source.len() == target.len()
+        && source
+            .iter()
+            .zip(target)
+            .all(|(a, b)| key(Side::Source, a) == key(Side::Target, b))
+    {
         return Some(Vec::new());
     }
 
     let (source_lines, target_lines) = (split_lines(source), split_lines(target));
-    let line_eq =
-        |a: &Range<usize>, b: &Range<usize>| lines_equal(source, target, a, b, &cmp, ignore);
-    let path = raw_diff_path(
-        algorithm,
+    let (source_ids, target_ids) = intern_lines(
+        source,
+        target,
         &source_lines,
         &target_lines,
-        line_eq,
+        ignore,
+        &key,
+        &cancel_flag,
+    )?;
+    let path = raw_diff_path(
+        algorithm,
+        &source_ids,
+        &target_ids,
+        |a: &u32, b: &u32| a == b,
         cancel_flag.clone(),
     )?;
     // The inner algorithms don't check the flag on every path (Trace's backtrack skips it for a
@@ -1684,6 +1810,112 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::lexer::{Lexer, RawToken};
+
+    fn text_key<'a>(
+        source: &'a str,
+        target: &'a str,
+    ) -> impl Fn(Side, &RawToken) -> (TokenKind, &'a [u8]) {
+        move |side, t| {
+            let text = match side {
+                Side::Source => source,
+                Side::Target => target,
+            };
+            (t.kind, &text.as_bytes()[t.span.clone()])
+        }
+    }
+
+    mod interning {
+        use super::*;
+        use crate::ignore::IgnoreOptions;
+
+        #[derive(Default)]
+        struct ConstHasher;
+        impl Hasher for ConstHasher {
+            fn finish(&self) -> u64 {
+                7
+            }
+            fn write(&mut self, _: &[u8]) {}
+        }
+
+        fn ids_with<S: BuildHasher>(
+            source: &str,
+            target: &str,
+            ignore: &IgnoreOptions,
+            hasher: &S,
+            cancel: &AtomicBool,
+        ) -> Option<(Vec<u32>, Vec<u32>)> {
+            let (ts, tt): (Vec<RawToken>, Vec<RawToken>) =
+                (Lexer::new(source).parse(), Lexer::new(target).parse());
+            let mask = ignore.mask(&ts, source, &tt, target);
+            intern_lines_with(
+                &ts,
+                &tt,
+                &split_lines(&ts),
+                &split_lines(&tt),
+                &mask,
+                text_key(source, target),
+                cancel,
+                hasher,
+            )
+        }
+
+        fn ids(source: &str, target: &str, ignore: &IgnoreOptions) -> (Vec<u32>, Vec<u32>) {
+            let hasher = BuildHasherDefault::<DefaultHasher>::default();
+            ids_with(source, target, ignore, &hasher, &AtomicBool::new(false)).unwrap()
+        }
+
+        #[test]
+        fn equal_lines_share_ids_across_sides_and_unequal_lines_do_not() {
+            let (s, t) = ids("a\nb\na\n", "b\nc\na\n", &IgnoreOptions::default());
+            assert_eq!(s[0], s[2]);
+            assert_eq!(s[0], t[2]);
+            assert_eq!(s[1], t[0]);
+            assert_ne!(s[0], s[1]);
+            assert_ne!(t[1], s[0]);
+            assert_ne!(t[1], s[1]);
+        }
+
+        #[test]
+        fn lines_differing_only_in_ignored_tokens_share_an_id() {
+            let ignore = IgnoreOptions {
+                whitespace: true,
+                ..Default::default()
+            };
+            let (s, t) = ids("let  a = 1;\n", "\tlet a=1;\n", &ignore);
+            assert_eq!(s, t);
+            let (s, t) = ids("let  a = 1;\n", "\tlet a=1;\n", &IgnoreOptions::default());
+            assert_ne!(s, t);
+        }
+
+        #[test]
+        fn colliding_hashes_keep_unequal_lines_apart() {
+            let hasher = BuildHasherDefault::<ConstHasher>::default();
+            let (s, t) = ids_with(
+                "a\nb\nc\n",
+                "c\nb\nd\n",
+                &IgnoreOptions::default(),
+                &hasher,
+                &AtomicBool::new(false),
+            )
+            .unwrap();
+            assert_eq!(s[1], t[1]);
+            assert_eq!(s[2], t[0]);
+            let mut all = [s[0], s[1], s[2], t[2]].to_vec();
+            all.sort();
+            all.dedup();
+            assert_eq!(all.len(), 4);
+        }
+
+        #[test]
+        fn cancelling_returns_none() {
+            let text = "x\n".repeat(INTERN_CANCEL_STRIDE * 2);
+            let hasher = BuildHasherDefault::<DefaultHasher>::default();
+            let cancel = AtomicBool::new(true);
+            assert!(ids_with(&text, &text, &IgnoreOptions::default(), &hasher, &cancel).is_none());
+        }
+    }
+
     fn distance_from_path(path: &[(i32, i32)]) -> usize {
         if path.is_empty() {
             return 0;
@@ -2603,9 +2835,6 @@ mod tests {
                 ignore: &IgnoreOptions,
             ) -> Vec<(String, String)> {
                 let (ts, tt) = (lex(source), lex(target));
-                let cmp = |a: &RawToken, b: &RawToken| {
-                    a.kind == b.kind && source[a.span.clone()] == target[b.span.clone()]
-                };
                 let text = |text: &str, tokens: &[RawToken], range: Range<usize>| -> String {
                     tokens[range]
                         .iter()
@@ -2616,7 +2845,7 @@ mod tests {
                     algorithm,
                     &ts,
                     &tt,
-                    cmp,
+                    text_key(source, target),
                     &ignore.mask(&ts, source, &tt, target),
                     Arc::new(AtomicBool::new(false)),
                 )
@@ -3323,7 +3552,8 @@ mod tests {
                             a.kind == b.kind && s1[a.span.clone()] == s2[b.span.clone()]
                         };
                         let (mask, cancel) = (IgnoreMask::default(), Arc::default());
-                        let hunks = line_diff(algorithm, &t1, &t2, cmp, &mask, Arc::clone(&cancel))
+                        let key = text_key(s1, s2);
+                        let hunks = line_diff(algorithm, &t1, &t2, key, &mask, Arc::clone(&cancel))
                             .unwrap();
                         let plain =
                             token_diff(algorithm, &t1, &t2, &hunks, cmp, &mask, cancel).unwrap();
