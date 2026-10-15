@@ -1,6 +1,7 @@
-use std::sync::{Arc, mpsc};
+use std::sync::Arc;
 
 use eframe::egui;
+use zcommon::job::Job;
 use zcommon::path::split_path;
 use zcommon_ui::pathbar::{PathBarAction, path_bar};
 use zdiff::universal_path::UniversalPath;
@@ -92,7 +93,7 @@ pub enum BrowserAction {
 type ListingResult = Result<Vec<BrowserEntry>, String>;
 
 enum Listing {
-    Loading(mpsc::Receiver<ListingResult>),
+    Loading,
     Done(ListingResult),
 }
 
@@ -100,20 +101,28 @@ pub struct FolderBrowser {
     folder: String,
     source: Arc<dyn FolderSource>,
     listing: Listing,
+    job: Job<ListingResult>,
 }
 
 impl FolderBrowser {
     pub fn open(ctx: &egui::Context, folder: String, source: Arc<dyn FolderSource>) -> Self {
-        let listing = load(ctx, &folder, &source);
-        Self {
-            folder,
+        let ctx = ctx.clone();
+        let mut browser = Self {
+            folder: String::new(),
             source,
-            listing,
-        }
+            listing: Listing::Loading,
+            job: Job::new(move || ctx.request_repaint()),
+        };
+        browser.navigate_to(folder);
+        browser
     }
 
-    pub fn navigate(&mut self, ctx: &egui::Context, folder: String) {
-        self.listing = load(ctx, &folder, &self.source);
+    pub fn navigate(&mut self, _ctx: &egui::Context, folder: String) {
+        self.navigate_to(folder);
+    }
+
+    fn navigate_to(&mut self, folder: String) {
+        self.load(&folder);
         self.folder = folder;
     }
 
@@ -128,18 +137,22 @@ impl FolderBrowser {
     }
 
     fn poll(&mut self) {
-        let Listing::Loading(rx) = &self.listing else {
+        if !matches!(self.listing, Listing::Loading) {
             return;
-        };
-        match rx.try_recv() {
-            Ok(result) => self.listing = Listing::Done(result),
-            Err(mpsc::TryRecvError::Empty) => {}
-            Err(mpsc::TryRecvError::Disconnected) => {
+        }
+        let mut results = self.job.poll();
+        if results.is_empty() && !self.job.is_running() {
+            results = self.job.poll();
+        }
+        match results.pop() {
+            Some(result) => self.listing = Listing::Done(result),
+            None if !self.job.is_running() => {
                 self.listing = Listing::Done(Err(format!(
                     "{}: listing stopped without a result",
                     self.folder
                 )))
             }
+            None => {}
         }
     }
 
@@ -187,7 +200,7 @@ impl FolderBrowser {
             target = Some(parent);
         }
         match &self.listing {
-            Listing::Loading(_) => {
+            Listing::Loading => {
                 ui.spinner();
             }
             Listing::Done(Err(error)) => {
@@ -228,28 +241,23 @@ impl FolderBrowser {
 
     #[cfg(test)]
     fn wait(&mut self) -> &ListingResult {
-        if let Listing::Loading(rx) = &self.listing {
-            self.listing = Listing::Done(rx.recv().expect("listing thread sends a result"));
+        while matches!(self.listing, Listing::Loading) {
+            self.poll();
+            std::thread::yield_now();
         }
         match &self.listing {
             Listing::Done(result) => result,
-            Listing::Loading(_) => unreachable!(),
+            Listing::Loading => unreachable!(),
         }
     }
-}
 
-fn load(ctx: &egui::Context, folder: &str, source: &Arc<dyn FolderSource>) -> Listing {
-    let (tx, rx) = mpsc::channel();
-    let (ctx, folder, source) = (ctx.clone(), folder.to_owned(), source.clone());
-    std::thread::Builder::new()
-        .name("folder listing".into())
-        .spawn(move || {
-            // Fails only when the browser moved on or closed and dropped the receiver.
-            let _ = tx.send(listing(&*source, &folder));
-            ctx.request_repaint();
-        })
-        .expect("spawn the folder listing thread");
-    Listing::Loading(rx)
+    fn load(&mut self, folder: &str) {
+        let (folder, source) = (folder.to_owned(), self.source.clone());
+        self.job.start(move |job| {
+            job.send(listing(&*source, &folder));
+        });
+        self.listing = Listing::Loading;
+    }
 }
 
 #[cfg(test)]
