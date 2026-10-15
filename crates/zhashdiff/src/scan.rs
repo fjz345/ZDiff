@@ -325,7 +325,7 @@ mod tests {
             .children()
             .expect("not a dir")
             .iter()
-            .map(|&id| model.get_node(id).unwrap().as_path().as_ref().to_path_buf())
+            .map(|&id| model.path(id))
             .collect();
         paths.sort();
         paths
