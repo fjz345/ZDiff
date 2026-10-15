@@ -5,6 +5,7 @@ use eframe::egui::{
     self, PopupCloseBehavior,
     containers::menu::{MenuButton, MenuConfig},
 };
+use zcommon::job::Job;
 use zcommon::vcs::git::{self, GitCommand, GitRef, RefKind};
 use zdiff::universal_path::{DepotRev, GitRev, UniversalPath};
 
@@ -119,13 +120,14 @@ enum Listing {
     },
 }
 
-type Loading = Arc<Mutex<Option<Result<Listing, String>>>>;
+type LoadResult = Result<Listing, String>;
 
 #[derive(Clone)]
 struct State {
     text: String,
     error: Option<String>,
-    listing: Loading,
+    job: Arc<Mutex<Job<LoadResult>>>,
+    listing: Option<Arc<LoadResult>>,
 }
 
 fn load_listing(path: &UniversalPath) -> Result<Listing, String> {
@@ -159,17 +161,17 @@ fn load_workspace(file: &Path) -> Result<Listing, String> {
 }
 
 fn start(ctx: &egui::Context, path: &UniversalPath) -> State {
-    let listing: Loading = Arc::default();
-    let (shared, path, ctx) = (listing.clone(), path.clone(), ctx.clone());
-    std::thread::spawn(move || {
-        let result = load_listing(&path);
-        *shared.lock().unwrap() = Some(result);
-        ctx.request_repaint();
+    let ctx = ctx.clone();
+    let mut job = Job::new(move || ctx.request_repaint());
+    let path = path.clone();
+    job.start(move |job_ctx| {
+        job_ctx.send(load_listing(&path));
     });
     State {
         text: String::new(),
         error: None,
-        listing,
+        job: Arc::new(Mutex::new(job)),
+        listing: None,
     }
 }
 
@@ -200,8 +202,12 @@ fn menu(ui: &mut egui::Ui, id: egui::Id, path: &UniversalPath) -> Option<Univers
         .unwrap_or_else(|| start(ui.ctx(), path));
     ui.set_min_width(260.0);
 
-    let listing = state.listing.lock().unwrap();
-    let (streams, workspace_depot): (&[P4Stream], Option<&str>) = match listing.as_ref() {
+    if let Some(result) = state.job.lock().unwrap().poll().pop() {
+        state.listing = Some(Arc::new(result));
+    }
+    let listing = state.listing.clone();
+    let listing = listing.as_deref();
+    let (streams, workspace_depot): (&[P4Stream], Option<&str>) = match listing {
         Some(Ok(Listing::Streams(streams))) => (streams, None),
         Some(Ok(Listing::Workspace { depot, streams })) => (streams, Some(depot)),
         _ => (&[], None),
@@ -257,7 +263,7 @@ fn menu(ui: &mut egui::Ui, id: egui::Id, path: &UniversalPath) -> Option<Univers
         );
     }
     ui.separator();
-    match listing.as_ref() {
+    match listing {
         None => {
             ui.horizontal(|ui| {
                 ui.spinner();
@@ -326,7 +332,6 @@ fn menu(ui: &mut egui::Ui, id: egui::Id, path: &UniversalPath) -> Option<Univers
     }
 
     let picked = pick.map(|pick| pick_revision(path, &pick, streams, workspace_depot));
-    drop(listing);
     let result = match picked {
         Some(Ok(new_path)) => {
             ui.close();
