@@ -2,6 +2,8 @@ use std::{collections::HashMap, hash::Hash};
 
 use eframe::egui::{self, Key, Modifiers};
 
+use super::shared_keymap::SharedAction;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Shortcut {
@@ -46,6 +48,9 @@ pub trait Action: Copy + Eq + Hash + 'static {
     fn defaults(self) -> &'static [Shortcut];
     fn typing_policy(self) -> TypingPolicy {
         TypingPolicy::CtrlOrAlt
+    }
+    fn shared(self) -> Option<SharedAction> {
+        None
     }
 }
 
@@ -128,6 +133,34 @@ impl<A: Action> Keymap<A> {
         by_shortcut.retain(|(_, actions)| actions.len() > 1);
         by_shortcut
     }
+
+    pub fn first_shortcut_text(&self, action: A) -> Option<String> {
+        self.shortcuts(action).first().map(Shortcut::format)
+    }
+
+    pub fn with_shortcut(&self, action: A, text: &str) -> String {
+        match self.first_shortcut_text(action) {
+            Some(shortcut) => format!("{text} ({shortcut})"),
+            None => text.to_owned(),
+        }
+    }
+}
+
+pub fn menu_item<A: Action>(
+    ui: &mut egui::Ui,
+    label: &str,
+    keymap: &Keymap<A>,
+    action: A,
+) -> egui::Response {
+    let mut button = egui::Button::new(label);
+    if let Some(text) = keymap.first_shortcut_text(action) {
+        button = button.shortcut_text(text);
+    }
+    let response = ui.add(button);
+    if response.clicked() {
+        ui.close();
+    }
+    response
 }
 
 #[cfg(feature = "serde")]
@@ -421,6 +454,42 @@ mod tests {
         assert_eq!(
             keymap.shortcuts(TestAction::NextConflict),
             TestAction::NextConflict.defaults()
+        );
+    }
+
+    #[test]
+    fn first_shortcut_text_follows_the_keymap() {
+        let mut keymap = Keymap::<TestAction>::default();
+        assert_eq!(
+            keymap.first_shortcut_text(TestAction::Find).as_deref(),
+            Some("Ctrl+F")
+        );
+        keymap.shortcuts_mut(TestAction::Find).insert(
+            0,
+            Shortcut {
+                key: Key::F5,
+                modifiers: Modifiers::CTRL,
+            },
+        );
+        assert_eq!(
+            keymap.first_shortcut_text(TestAction::Find).as_deref(),
+            Some("Ctrl+F5")
+        );
+        keymap.shortcuts_mut(TestAction::Find).clear();
+        assert_eq!(keymap.first_shortcut_text(TestAction::Find), None);
+    }
+
+    #[test]
+    fn with_shortcut_appends_the_first_shortcut_only_when_bound() {
+        let mut keymap = Keymap::<TestAction>::default();
+        assert_eq!(
+            keymap.with_shortcut(TestAction::Refresh, "Refresh"),
+            "Refresh (F5)"
+        );
+        keymap.shortcuts_mut(TestAction::Refresh).clear();
+        assert_eq!(
+            keymap.with_shortcut(TestAction::Refresh, "Refresh"),
+            "Refresh"
         );
     }
 }

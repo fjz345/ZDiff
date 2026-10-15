@@ -3,6 +3,7 @@ use zcommon::ui_egui::{
     common::show_custom_popup,
     keymap::{Action, Keymap, Shortcut},
     keymap_editor::KeymapEditor,
+    shared_keymap::SharedAction,
 };
 
 const CTRL: Modifiers = Modifiers {
@@ -14,6 +15,8 @@ const CTRL: Modifiers = Modifiers {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum FolderAction {
+    OpenFolder1,
+    OpenFolder2,
     NextDiff,
     PrevDiff,
     Refresh,
@@ -27,6 +30,8 @@ pub enum FolderAction {
 impl Action for FolderAction {
     fn all() -> &'static [Self] {
         &[
+            Self::OpenFolder1,
+            Self::OpenFolder2,
             Self::NextDiff,
             Self::PrevDiff,
             Self::Refresh,
@@ -40,6 +45,8 @@ impl Action for FolderAction {
 
     fn name(self) -> &'static str {
         match self {
+            Self::OpenFolder1 => "open_folder_1",
+            Self::OpenFolder2 => "open_folder_2",
             Self::NextDiff => "next_diff",
             Self::PrevDiff => "prev_diff",
             Self::Refresh => "refresh",
@@ -53,6 +60,8 @@ impl Action for FolderAction {
 
     fn label(self) -> &'static str {
         match self {
+            Self::OpenFolder1 => "Open Folder 1",
+            Self::OpenFolder2 => "Open Folder 2",
             Self::NextDiff => "Next differing file",
             Self::PrevDiff => "Previous differing file",
             Self::Refresh => "Refresh",
@@ -66,38 +75,13 @@ impl Action for FolderAction {
 
     fn defaults(self) -> &'static [Shortcut] {
         match self {
-            Self::NextDiff => &[
-                Shortcut {
-                    key: Key::Num2,
-                    modifiers: CTRL,
-                },
-                Shortcut {
-                    key: Key::ArrowDown,
-                    modifiers: Modifiers::ALT,
-                },
-            ],
-            Self::PrevDiff => &[
-                Shortcut {
-                    key: Key::Num1,
-                    modifiers: CTRL,
-                },
-                Shortcut {
-                    key: Key::ArrowUp,
-                    modifiers: Modifiers::ALT,
-                },
-            ],
-            Self::Refresh => &[Shortcut {
-                key: Key::F5,
-                modifiers: Modifiers::NONE,
-            }],
-            Self::OpenKeybindings => &[Shortcut {
-                key: Key::O,
-                modifiers: CTRL,
-            }],
-            Self::Find => &[Shortcut {
-                key: Key::F,
-                modifiers: CTRL,
-            }],
+            Self::OpenFolder1 => SharedAction::Open1.defaults(),
+            Self::OpenFolder2 => SharedAction::Open2.defaults(),
+            Self::NextDiff => SharedAction::NextDiff.defaults(),
+            Self::PrevDiff => SharedAction::PrevDiff.defaults(),
+            Self::Refresh => SharedAction::Refresh.defaults(),
+            Self::OpenKeybindings => SharedAction::OpenKeybindings.defaults(),
+            Self::Find => SharedAction::Find.defaults(),
             Self::KeepThis => &[Shortcut {
                 key: Key::K,
                 modifiers: CTRL,
@@ -112,6 +96,34 @@ impl Action for FolderAction {
             }],
         }
     }
+
+    fn shared(self) -> Option<SharedAction> {
+        match self {
+            Self::OpenFolder1 => Some(SharedAction::Open1),
+            Self::OpenFolder2 => Some(SharedAction::Open2),
+            Self::NextDiff => Some(SharedAction::NextDiff),
+            Self::PrevDiff => Some(SharedAction::PrevDiff),
+            Self::Refresh => Some(SharedAction::Refresh),
+            Self::OpenKeybindings => Some(SharedAction::OpenKeybindings),
+            Self::Find => Some(SharedAction::Find),
+            Self::KeepThis | Self::NextGroup | Self::PrevGroup => None,
+        }
+    }
+}
+
+// F5 was Refresh's default before Refresh was shared with zdiff.
+pub fn deserialize_keymap<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Keymap<FolderAction>, D::Error> {
+    let mut keymap = <Keymap<FolderAction> as serde::Deserialize>::deserialize(deserializer)?;
+    let old_default = [Shortcut {
+        key: Key::F5,
+        modifiers: Modifiers::NONE,
+    }];
+    if keymap.shortcuts(FolderAction::Refresh) == old_default {
+        *keymap.shortcuts_mut(FolderAction::Refresh) = FolderAction::Refresh.defaults().to_vec();
+    }
+    Ok(keymap)
 }
 
 #[derive(Default)]
@@ -200,19 +212,45 @@ mod tests {
     }
 
     #[test]
-    fn f5_refreshes_by_default() {
-        let f5 = Event::Key {
-            key: Key::F5,
+    fn ctrl_r_refreshes_by_default() {
+        let ctrl_r = Event::Key {
+            key: Key::R,
             physical_key: None,
             pressed: true,
             repeat: false,
-            modifiers: Modifiers::NONE,
+            modifiers: CTRL,
         };
         assert_eq!(
-            Keymap::<FolderAction>::default().dispatch(&[f5], false),
+            Keymap::<FolderAction>::default().dispatch(&[ctrl_r], false),
             [FolderAction::Refresh]
         );
-        assert_eq!(FolderAction::Refresh.defaults()[0].format(), "F5");
+    }
+
+    #[test]
+    fn every_shared_action_is_mapped_once_with_the_shared_defaults() {
+        for &shared in SharedAction::ALL {
+            let mapped: Vec<_> = FolderAction::all()
+                .iter()
+                .filter(|a| a.shared() == Some(shared))
+                .collect();
+            assert_eq!(mapped.len(), 1, "{shared:?}");
+            assert_eq!(mapped[0].defaults(), shared.defaults(), "{shared:?}");
+        }
+    }
+
+    #[test]
+    fn ctrl_f1_and_f2_open_the_folders_by_default() {
+        let press = |key| Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: CTRL,
+        };
+        assert_eq!(
+            Keymap::<FolderAction>::default().dispatch(&[press(Key::F1), press(Key::F2)], false),
+            [FolderAction::OpenFolder1, FolderAction::OpenFolder2]
+        );
     }
 
     #[test]

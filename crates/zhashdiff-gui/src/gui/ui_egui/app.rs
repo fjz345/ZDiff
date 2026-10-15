@@ -18,7 +18,8 @@ use zcommon::{
     logger::LogBuffer,
     ui_egui::{
         find_popup::{FindPopupEvent, find_popup},
-        keymap::Keymap,
+        keymap::{Keymap, menu_item},
+        shared_keymap::load_shared,
         style_window::StyleWindow,
     },
     universal_path::UniversalPath,
@@ -35,7 +36,7 @@ use zhashdiff::{
 
 use crate::ui_egui::{
     duplicate_files_pane::DuplicateFilesPane,
-    folder_keymap::{FolderAction, KeybindingsWindow},
+    folder_keymap::{self, FolderAction, KeybindingsWindow},
     fs_tree::{
         FileSystemView, FolderRole, HScrollLink, RowsId, VisibleRowTwoFolderDiff,
         apply_blueprint_results,
@@ -130,7 +131,7 @@ pub struct AppStateCtx {
     diff_config: DiffToolConfig,
     #[serde(skip)]
     tool_message: Option<ToolMessage>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "folder_keymap::deserialize_keymap")]
     keymap: Keymap<FolderAction>,
 }
 
@@ -794,10 +795,24 @@ impl ZApp {
             egui::MenuBar::new().ui(ui, |ui| {
                 ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
                 ui.menu_button("File", |ui| {
-                    if ui.button("Open Folder 1").clicked() {
+                    if menu_item(
+                        ui,
+                        "Open Folder 1",
+                        &app_ctx.keymap,
+                        FolderAction::OpenFolder1,
+                    )
+                    .clicked()
+                    {
                         self.open_dir_window_1 = true;
                     }
-                    if ui.button("Open Folder 2").clicked() {
+                    if menu_item(
+                        ui,
+                        "Open Folder 2",
+                        &app_ctx.keymap,
+                        FolderAction::OpenFolder2,
+                    )
+                    .clicked()
+                    {
                         self.open_dir_window_2 = true;
                     }
                 });
@@ -806,7 +821,14 @@ impl ZApp {
                     if ui.button("External Diff Tools").clicked() {
                         self.tools_window.open = true;
                     }
-                    if ui.button("Keybindings").clicked() {
+                    if menu_item(
+                        ui,
+                        "Keybindings",
+                        &app_ctx.keymap,
+                        FolderAction::OpenKeybindings,
+                    )
+                    .clicked()
+                    {
                         self.keybindings_window.open = true;
                     }
                     if ui.button("Style").clicked() {
@@ -878,10 +900,13 @@ impl ZApp {
                 // and widens the panel under it.
                 let shown = app_ctx.file_system_model_1_view.is_some()
                     || app_ctx.file_system_model_2_view.is_some();
-                let mut refresh = ui.add_enabled(shown, egui::Button::new("Refresh"));
-                if let Some(shortcut) = app_ctx.keymap.shortcuts(FolderAction::Refresh).first() {
-                    refresh = refresh.on_hover_text(shortcut.format());
-                }
+                let refresh = ui
+                    .add_enabled(shown, egui::Button::new("Refresh"))
+                    .on_hover_text(
+                        app_ctx
+                            .keymap
+                            .with_shortcut(FolderAction::Refresh, "Refresh"),
+                    );
                 if refresh.clicked() {
                     app_ctx.refresh();
                     ui.ctx().request_repaint();
@@ -907,6 +932,12 @@ impl ZApp {
         } else {
             ctx.input(|i| app_ctx.keymap.dispatch(&i.events, keyboard_taken))
         };
+        if actions.contains(&FolderAction::OpenFolder1) {
+            self.open_dir_window_1 = true;
+        }
+        if actions.contains(&FolderAction::OpenFolder2) {
+            self.open_dir_window_2 = true;
+        }
         if actions.contains(&FolderAction::OpenKeybindings) {
             self.keybindings_window.open = true;
         }
@@ -1198,8 +1229,9 @@ impl eframe::App for ZApp {
             .take()
             .expect("state should be valid before and after update()");
         app_state = match app_state {
-            AppState::Startup(state_ctx) => {
+            AppState::Startup(mut state_ctx) => {
                 self.startup(ctx, frame);
+                load_shared(&mut state_ctx.keymap);
                 log::info!("STARTUP COMPLETE, TRANSITIONING TO IDLE");
                 egui::CentralPanel::default().show(ctx, |ui| {
                     ui.centered_and_justified(|ui| {
@@ -1211,6 +1243,9 @@ impl eframe::App for ZApp {
             AppState::Idle(mut state) => {
                 let frame_start = Instant::now();
                 self.sync_zoom(ctx);
+                if ctx.input(|i| i.events.contains(&egui::Event::WindowFocused(true))) {
+                    load_shared(&mut state.keymap);
+                }
                 if self.is_path_diff() != self.diff_mode_path_diff {
                     if self.is_path_diff() {
                         self.set_path_diff_visible(false);
@@ -1304,7 +1339,10 @@ mod tests {
         time::{Duration, Instant},
     };
     use tempfile::{TempDir, tempdir};
-    use zcommon::{logger::LogBuffer, ui_egui::keymap::Keymap};
+    use zcommon::{
+        logger::LogBuffer,
+        ui_egui::keymap::{Action, Keymap, Shortcut},
+    };
     use zhashdiff::{
         comparison::{PairCompare, PairState},
         filter::{PathFilter, PatternList},
@@ -1429,6 +1467,37 @@ mod tests {
         let restored: AppStateCtx = serde_json::from_value(json).unwrap();
 
         assert_eq!(restored.keymap, Keymap::default());
+    }
+
+    #[test]
+    fn a_keymap_saved_with_the_old_f5_refresh_default_moves_to_the_new_default() {
+        let f5 = Shortcut {
+            key: egui::Key::F5,
+            modifiers: egui::Modifiers::NONE,
+        };
+        let custom = Shortcut {
+            key: egui::Key::F6,
+            modifiers: egui::Modifiers::NONE,
+        };
+        let restore = |refresh: Vec<Shortcut>| {
+            let mut state = AppStateCtx::default();
+            *state.keymap.shortcuts_mut(FolderAction::Refresh) = refresh;
+            let json = serde_json::to_string(&state).unwrap();
+            serde_json::from_str::<AppStateCtx>(&json).unwrap().keymap
+        };
+
+        assert_eq!(
+            restore(vec![f5]).shortcuts(FolderAction::Refresh),
+            FolderAction::Refresh.defaults()
+        );
+        assert_eq!(
+            restore(vec![custom]).shortcuts(FolderAction::Refresh),
+            [custom]
+        );
+        assert_eq!(
+            restore(vec![custom, f5]).shortcuts(FolderAction::Refresh),
+            [custom, f5]
+        );
     }
 
     #[test]

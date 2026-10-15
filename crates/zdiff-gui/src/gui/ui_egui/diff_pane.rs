@@ -10,7 +10,7 @@ use crate::{
     },
     diff_phases::{Marks, diff_marks_checkboxes, in_scopes},
     file::FileProcessor,
-    keybindings::{FileAction, with_shortcut},
+    keybindings::FileAction,
     revert::{self, RevertRequest, RevertTarget},
     ui_egui::{
         active_side::{ActiveSide, ActiveSideState, outline_stroke},
@@ -478,7 +478,7 @@ impl FileDiffPane {
         let mono_font = egui::TextStyle::Monospace.resolve(ui.style());
         let egui_ctx = ui.ctx().clone();
         let keymap = ctx.keymap;
-        let hint = |action: FileAction, text: &str| with_shortcut(keymap, action, text);
+        let hint = |action: FileAction, text: &str| keymap.with_shortcut(action, text);
         let action_hint = |action: FileAction| hint(action, action.label());
 
         ui.horizontal(|ui| {

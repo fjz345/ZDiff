@@ -15,8 +15,9 @@ use zcommon::presets::UserPresets;
 use zcommon::ui_egui::common::show_custom_popup;
 use zcommon::ui_egui::find_popup::{FindPopupEvent, find_popup};
 use zcommon::ui_egui::h_scroll::{self, WheelModifier};
-use zcommon::ui_egui::keymap::{Action, Shortcut};
+use zcommon::ui_egui::keymap::{Action, Shortcut, menu_item};
 use zcommon::ui_egui::keymap_editor::KeymapEditor;
+use zcommon::ui_egui::shared_keymap::load_shared;
 use zcommon::ui_egui::style_window::StyleWindow;
 use zdiff::{
     diff_builder::DiffBuilderOptions,
@@ -32,7 +33,7 @@ use crate::{
     diff_ctx::{DiffProcessor, UpdateDiffRowsInput},
     diff_phases::diff_phases_menu,
     file::{FileProcessor, LoadedFile},
-    keybindings::{FileAction, Keybindings, QuickDiffPaths, first_shortcut_text, ui_keybindings},
+    keybindings::{FileAction, Keybindings, QuickDiffPaths, ui_keybindings},
     language_icon::{emoji_renders, language_icon, show_language_icon},
     p4::{
         P4Command, P4Profiles, P4Runner, list_shelf, local_path_of_depot_file, set_p4_slot_profile,
@@ -548,6 +549,7 @@ impl<'a> ZApp {
         detected_languages: [Option<&str>; 2],
         h_scroll_modifier: &mut WheelModifier,
     ) {
+        let keymap = &keybindings.keymap;
         ui.horizontal(|ui| {
             egui::MenuBar::new()
                 .config(
@@ -556,12 +558,12 @@ impl<'a> ZApp {
                 .ui(ui, |ui| {
                     ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
                     ui.menu_button("File", |ui| {
-                        if menu_item(ui, "Open Source", keybindings, FileAction::OpenFileSource)
+                        if menu_item(ui, "Open Source", keymap, FileAction::OpenFileSource)
                             .clicked()
                         {
                             Self::open_file_picker(file_1.get_tx());
                         }
-                        if menu_item(ui, "Open Target", keybindings, FileAction::OpenFileTarget)
+                        if menu_item(ui, "Open Target", keymap, FileAction::OpenFileTarget)
                             .clicked()
                         {
                             Self::open_file_picker(file_2.get_tx());
@@ -570,7 +572,7 @@ impl<'a> ZApp {
                             self.open_merge_form.open = true;
                             ui.close();
                         }
-                        if menu_item(ui, "Swap Source/Target", keybindings, FileAction::SwapSides)
+                        if menu_item(ui, "Swap Source/Target", keymap, FileAction::SwapSides)
                             .clicked()
                         {
                             swap_sides(file_1, file_2, scroll_left, scroll_right, diff_processor);
@@ -578,17 +580,17 @@ impl<'a> ZApp {
                         if menu_item(
                             ui,
                             "Diff Shelved File Against Base",
-                            keybindings,
+                            keymap,
                             FileAction::DiffShelfBase,
                         )
                         .clicked()
                         {
                             run_diff_against_shelf_base(file_1, file_2);
                         }
-                        if menu_item(ui, "Find", keybindings, FileAction::Find).clicked() {
+                        if menu_item(ui, "Find", keymap, FileAction::Find).clicked() {
                             *find_open = true;
                         }
-                        if menu_item(ui, "Goto", keybindings, FileAction::Goto).clicked() {
+                        if menu_item(ui, "Goto", keymap, FileAction::Goto).clicked() {
                             *goto_open = true;
                         }
                     });
@@ -682,7 +684,7 @@ impl<'a> ZApp {
                             ui.radio_value(h_scroll_modifier, WheelModifier::Shift, "Shift+Wheel");
                             ui.radio_value(h_scroll_modifier, WheelModifier::Ctrl, "Ctrl+Wheel");
                         });
-                        if menu_item(ui, "P4Config", keybindings, FileAction::OpenUniversalPath)
+                        if menu_item(ui, "P4Config", keymap, FileAction::OpenUniversalPath)
                             .clicked()
                         {
                             self.open_universal_path_window = true;
@@ -690,7 +692,7 @@ impl<'a> ZApp {
                         if menu_item(
                             ui,
                             "Keyboard Shortcuts",
-                            keybindings,
+                            keymap,
                             FileAction::OpenKeybindings,
                         )
                         .clicked()
@@ -714,13 +716,8 @@ impl<'a> ZApp {
                             diff_processor.reset_ctx();
                             ui.close();
                         }
-                        if menu_item(
-                            ui,
-                            "Clear Cached Files",
-                            keybindings,
-                            FileAction::RefreshDiff,
-                        )
-                        .clicked()
+                        if menu_item(ui, "Clear Cached Files", keymap, FileAction::RefreshDiff)
+                            .clicked()
                         {
                             diff_processor.reset_ctx();
                             Self::refresh_file_contents(file_1, file_2);
@@ -728,7 +725,7 @@ impl<'a> ZApp {
                         if menu_item(
                             ui,
                             "Clear Diff Rows",
-                            keybindings,
+                            keymap,
                             FileAction::RefreshDiffRowsOnly,
                         )
                         .clicked()
@@ -1786,6 +1783,13 @@ impl eframe::App for ZApp {
             app_ctx.diff_processor.conflict_cursor.set_max(conflict_max);
         }
 
+        let state = self.state.as_mut().expect("State should always be valid during update");
+        if matches!(state, AppState::Startup(_))
+            || ctx.input(|i| i.events.contains(&egui::Event::WindowFocused(true)))
+        {
+            load_shared(&mut state.ctx_mut().keybindings.keymap);
+        }
+
         self.process_ctx_inputs(ctx, frame);
 
         let current_state = self
@@ -2078,23 +2082,6 @@ fn swap_sides(
     std::mem::swap(scroll_left, scroll_right);
 
     diff_processor.reset_ctx();
-}
-
-fn menu_item(
-    ui: &mut egui::Ui,
-    label: &str,
-    keybindings: &Keybindings,
-    action: FileAction,
-) -> egui::Response {
-    let mut button = egui::Button::new(label);
-    if let Some(text) = first_shortcut_text(&keybindings.keymap, action) {
-        button = button.shortcut_text(text);
-    }
-    let response = ui.add(button);
-    if response.clicked() {
-        ui.close();
-    }
-    response
 }
 
 fn toggle_all_options(

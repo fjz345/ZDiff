@@ -2,6 +2,7 @@ use eframe::egui::{self, Key, Modifiers};
 use zcommon::ui_egui::{
     keymap::{Action, Keymap, Shortcut, TypingPolicy},
     keymap_editor::KeymapEditor,
+    shared_keymap::SharedAction,
 };
 
 use crate::p4::{P4Profile, ui_p4_profile_combo};
@@ -197,58 +198,25 @@ impl Action for FileAction {
 
     fn defaults(self) -> &'static [Shortcut] {
         match self {
-            Self::OpenFileSource => &[Shortcut {
-                key: Key::F1,
-                modifiers: CTRL,
-            }],
-            Self::OpenFileTarget => &[Shortcut {
-                key: Key::F2,
-                modifiers: CTRL,
-            }],
-            Self::RefreshDiff => &[Shortcut {
-                key: Key::R,
-                modifiers: CTRL,
-            }],
+            Self::OpenFileSource => SharedAction::Open1.defaults(),
+            Self::OpenFileTarget => SharedAction::Open2.defaults(),
+            Self::RefreshDiff => SharedAction::Refresh.defaults(),
             Self::RefreshDiffRowsOnly => &[Shortcut {
                 key: Key::R,
                 modifiers: CTRL_ALT,
             }],
-            Self::OpenKeybindings => &[Shortcut {
-                key: Key::O,
-                modifiers: CTRL,
-            }],
+            Self::OpenKeybindings => SharedAction::OpenKeybindings.defaults(),
             Self::OpenUniversalPath => &[Shortcut {
                 key: Key::U,
                 modifiers: CTRL,
             }],
-            Self::Find => &[Shortcut {
-                key: Key::F,
-                modifiers: CTRL,
-            }],
+            Self::Find => SharedAction::Find.defaults(),
             Self::Goto => &[Shortcut {
                 key: Key::G,
                 modifiers: CTRL,
             }],
-            Self::NextConflict => &[
-                Shortcut {
-                    key: Key::Num2,
-                    modifiers: CTRL,
-                },
-                Shortcut {
-                    key: Key::ArrowDown,
-                    modifiers: Modifiers::ALT,
-                },
-            ],
-            Self::PrevConflict => &[
-                Shortcut {
-                    key: Key::Num1,
-                    modifiers: CTRL,
-                },
-                Shortcut {
-                    key: Key::ArrowUp,
-                    modifiers: Modifiers::ALT,
-                },
-            ],
+            Self::NextConflict => SharedAction::NextDiff.defaults(),
+            Self::PrevConflict => SharedAction::PrevDiff.defaults(),
             Self::NextFind => &[Shortcut {
                 key: Key::Enter,
                 modifiers: Modifiers::NONE,
@@ -354,6 +322,19 @@ impl Action for FileAction {
             _ => TypingPolicy::CtrlOrAlt,
         }
     }
+
+    fn shared(self) -> Option<SharedAction> {
+        match self {
+            Self::OpenFileSource => Some(SharedAction::Open1),
+            Self::OpenFileTarget => Some(SharedAction::Open2),
+            Self::NextConflict => Some(SharedAction::NextDiff),
+            Self::PrevConflict => Some(SharedAction::PrevDiff),
+            Self::RefreshDiff => Some(SharedAction::Refresh),
+            Self::Find => Some(SharedAction::Find),
+            Self::OpenKeybindings => Some(SharedAction::OpenKeybindings),
+            _ => None,
+        }
+    }
 }
 
 pub type QuickDiffSlot = (Option<Shortcut>, QuickDiffPaths);
@@ -379,17 +360,6 @@ impl Default for Keybindings {
                 })
                 .collect(),
         }
-    }
-}
-
-pub fn first_shortcut_text(keymap: &Keymap<FileAction>, action: FileAction) -> Option<String> {
-    keymap.shortcuts(action).first().map(Shortcut::format)
-}
-
-pub fn with_shortcut(keymap: &Keymap<FileAction>, action: FileAction, text: &str) -> String {
-    match first_shortcut_text(keymap, action) {
-        Some(shortcut) => format!("{text} ({shortcut})"),
-        None => text.to_owned(),
     }
 }
 
@@ -726,42 +696,15 @@ mod tests {
     }
 
     #[test]
-    fn first_shortcut_text_follows_the_keymap() {
-        let mut keymap = Keymap::<FileAction>::default();
-        assert_eq!(
-            first_shortcut_text(&keymap, FileAction::IgnoreWhitespace).as_deref(),
-            Some("Alt+W")
-        );
-        keymap.shortcuts_mut(FileAction::IgnoreWhitespace).insert(
-            0,
-            Shortcut {
-                key: Key::F5,
-                modifiers: Modifiers::CTRL,
-            },
-        );
-        assert_eq!(
-            first_shortcut_text(&keymap, FileAction::IgnoreWhitespace).as_deref(),
-            Some("Ctrl+F5")
-        );
-        keymap.shortcuts_mut(FileAction::IgnoreWhitespace).clear();
-        assert_eq!(
-            first_shortcut_text(&keymap, FileAction::IgnoreWhitespace),
-            None
-        );
-    }
-
-    #[test]
-    fn with_shortcut_appends_the_first_shortcut_only_when_bound() {
-        let mut keymap = Keymap::<FileAction>::default();
-        assert_eq!(
-            with_shortcut(&keymap, FileAction::WordWrap, "Word Wrap"),
-            "Word Wrap (Alt+Z)"
-        );
-        keymap.shortcuts_mut(FileAction::WordWrap).clear();
-        assert_eq!(
-            with_shortcut(&keymap, FileAction::WordWrap, "Word Wrap"),
-            "Word Wrap"
-        );
+    fn every_shared_action_is_mapped_once_with_the_shared_defaults() {
+        for &shared in SharedAction::ALL {
+            let mapped: Vec<_> = FileAction::all()
+                .iter()
+                .filter(|a| a.shared() == Some(shared))
+                .collect();
+            assert_eq!(mapped.len(), 1, "{shared:?}");
+            assert_eq!(mapped[0].defaults(), shared.defaults(), "{shared:?}");
+        }
     }
 
     #[test]

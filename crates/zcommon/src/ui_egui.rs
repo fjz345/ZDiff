@@ -6,6 +6,7 @@ pub mod keymap;
 pub mod keymap_editor;
 pub mod pathbar;
 pub mod presets;
+pub mod shared_keymap;
 pub mod style_window;
 pub mod table;
 pub mod toggle;

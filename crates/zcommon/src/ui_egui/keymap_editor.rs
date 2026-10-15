@@ -1,6 +1,7 @@
 use eframe::egui::{self, Key, RichText};
 
 use super::keymap::{Action, Keymap, Shortcut};
+use super::shared_keymap::save_shared;
 
 pub struct KeymapEditor<A> {
     capture: Option<(A, Option<usize>)>,
@@ -24,6 +25,19 @@ impl<A: Action> KeymapEditor<A> {
     /// While capturing, removes the frame's first key press from the input so later readers
     /// (an app's Esc to quit) don't act on it too. `extra_rows` draws into the same grid.
     pub fn ui(
+        &mut self,
+        ui: &mut egui::Ui,
+        keymap: &mut Keymap<A>,
+        extra_rows: impl FnOnce(&mut egui::Ui),
+    ) {
+        let before = keymap.clone();
+        self.keymap_ui(ui, keymap, extra_rows);
+        if *keymap != before {
+            save_shared(&before, keymap);
+        }
+    }
+
+    fn keymap_ui(
         &mut self,
         ui: &mut egui::Ui,
         keymap: &mut Keymap<A>,

@@ -697,7 +697,9 @@ impl DuplicateFilesPane {
                 }
                 FolderAction::NextGroup => true,
                 FolderAction::PrevGroup => false,
-                FolderAction::NextDiff
+                FolderAction::OpenFolder1
+                | FolderAction::OpenFolder2
+                | FolderAction::NextDiff
                 | FolderAction::PrevDiff
                 | FolderAction::Refresh
                 | FolderAction::OpenKeybindings
