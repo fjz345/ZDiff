@@ -120,7 +120,7 @@ mod tests {
     fn cached_file(contents: &str) -> CachedFile<RawToken> {
         CachedFile {
             path: UniversalPath::from("test"),
-            hash: String::new(),
+            hash: zcommon::hash::hash_contents(b""),
             contents: contents.to_string(),
             tokens: Lexer::new(contents).parse(),
             metadata: FileMetadata::new(contents),

@@ -11,16 +11,43 @@ use std::{
     time::Duration,
 };
 
-pub fn hash_contents(contents: &[u8]) -> String {
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Blake3Hash([u8; 32]);
+
+impl Blake3Hash {
+    pub fn as_bytes(&self) -> &[u8; 32] {
+        &self.0
+    }
+}
+
+impl From<blake3::Hash> for Blake3Hash {
+    fn from(hash: blake3::Hash) -> Self {
+        Self(*hash.as_bytes())
+    }
+}
+
+impl std::fmt::Display for Blake3Hash {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        blake3::Hash::from_bytes(self.0).to_hex().fmt(f)
+    }
+}
+
+impl std::fmt::Debug for Blake3Hash {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Blake3Hash({self})")
+    }
+}
+
+pub fn hash_contents(contents: &[u8]) -> Blake3Hash {
     let mut hasher = blake3::Hasher::new();
     hasher.update_rayon(contents);
-    hasher.finalize().to_hex().to_string()
+    hasher.finalize().into()
 }
 
 /// blake3 measures rayon helping from about 128 KiB.
 const RAYON_MIN_FILE_SIZE: u64 = 128 * 1024;
 
-pub fn hash_file_mmap(path: impl AsRef<Path>) -> io::Result<String> {
+pub fn hash_file_mmap(path: impl AsRef<Path>) -> io::Result<Blake3Hash> {
     let path = path.as_ref();
     let mut hasher = blake3::Hasher::new();
     if std::fs::metadata(path)?.len() >= RAYON_MIN_FILE_SIZE {
@@ -28,16 +55,14 @@ pub fn hash_file_mmap(path: impl AsRef<Path>) -> io::Result<String> {
     } else {
         hasher.update_mmap(path)?;
     }
-    Ok(hasher.finalize().to_hex().to_string())
+    Ok(hasher.finalize().into())
 }
 
 const WORKER_WAIT: Duration = Duration::from_millis(50);
 
-pub type HashRepresentation = String;
-
 #[derive(Debug, Clone)]
 pub struct HashServiceSnapshot {
-    pub hashes: HashMap<PathBuf, Option<HashRepresentation>>,
+    pub hashes: HashMap<PathBuf, Option<Blake3Hash>>,
     pub active_count: usize,
     pub queue_count: usize,
     pub num_workers: usize,
@@ -45,7 +70,7 @@ pub struct HashServiceSnapshot {
 
 #[derive(Debug)]
 pub struct HashService {
-    hashes: Arc<RwLock<HashMap<PathBuf, Option<HashRepresentation>>>>,
+    hashes: Arc<RwLock<HashMap<PathBuf, Option<Blake3Hash>>>>,
     tx: Sender<PathBuf>,
     rx: Arc<Mutex<Receiver<PathBuf>>>,
     queued: Arc<AtomicUsize>,
@@ -200,7 +225,7 @@ impl HashService {
     }
 
     // TODO: fix to get reference instead of clone
-    pub fn get_hash(&self, path: impl AsRef<Path>) -> Option<HashRepresentation> {
+    pub fn get_hash(&self, path: impl AsRef<Path>) -> Option<Blake3Hash> {
         let binding = self.hashes.read().unwrap();
         let hash = binding.get(path.as_ref().into()).and_then(|f| f.clone());
         hash
@@ -246,6 +271,16 @@ mod tests {
     use std::io::Write;
     use std::time::Instant;
     use tempfile::tempdir;
+
+    #[test]
+    fn display_matches_blake3_hex() {
+        for input in [&b""[..], b"abc", &[7u8; 300_000]] {
+            assert_eq!(
+                hash_contents(input).to_string(),
+                blake3::hash(input).to_hex().to_string()
+            );
+        }
+    }
 
     #[test]
     fn test_service_basic_hashing() {

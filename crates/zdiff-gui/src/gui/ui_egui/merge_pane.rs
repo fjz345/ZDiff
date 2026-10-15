@@ -186,7 +186,7 @@ fn text_file(path: UniversalPath, contents: String) -> CachedFile<RawToken> {
     let metadata = FileMetadata::new(&contents);
     CachedFile {
         path,
-        hash: String::new(),
+        hash: zcommon::hash::hash_contents(b""),
         contents,
         tokens,
         metadata,

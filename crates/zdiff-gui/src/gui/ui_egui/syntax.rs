@@ -86,7 +86,7 @@ pub fn detect_language(path: &UniversalPath, contents: &str) -> Option<&'static 
 
 #[derive(Debug, Default)]
 pub struct DetectedLanguage {
-    file: Option<(UniversalPath, String)>,
+    file: Option<(UniversalPath, zcommon::hash::Blake3Hash)>,
     language: Option<&'static str>,
 }
 
@@ -101,7 +101,7 @@ impl DetectedLanguage {
             .as_ref()
             .is_none_or(|(path, hash)| *path != file.path || *hash != file.hash)
         {
-            self.file = Some((file.path.clone(), file.hash.clone()));
+            self.file = Some((file.path.clone(), file.hash));
             self.language = detect_language(&file.path, &file.contents);
         }
         self.language

@@ -71,7 +71,7 @@ struct FrameLayout {
 fn cached_file(path: &str, contents: &str) -> CachedFile<RawToken> {
     CachedFile {
         path: UniversalPath::from(path),
-        hash: String::new(),
+        hash: zcommon::hash::hash_contents(b""),
         contents: contents.to_string(),
         tokens: Lexer::new(contents).parse(),
         metadata: FileMetadata::new(contents),

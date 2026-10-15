@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use eframe::egui;
 use serde::Deserialize;
 use serde::Serialize;
-use zcommon::hash::HashRepresentation;
+use zcommon::hash::Blake3Hash;
 use zcommon::hash::HashService;
 use zcommon_ui::common::show_custom_popup;
 use zcommon_ui::style_window::role_color;
@@ -69,13 +69,13 @@ struct DuplicateGroups {
     /// Group index and index into its paths.
     member_of: HashMap<FsNodeId, (usize, usize)>,
     duplicates_below: HashMap<FsNodeId, usize>,
-    hash_of: HashMap<FsNodeId, HashRepresentation>,
+    hash_of: HashMap<FsNodeId, Blake3Hash>,
 }
 
 fn duplicate_groups(
     view: &FileSystemView,
     filter: &PathFilter,
-    hashes: &HashMap<PathBuf, Option<HashRepresentation>>,
+    hashes: &HashMap<PathBuf, Option<Blake3Hash>>,
 ) -> DuplicateGroups {
     let model = &view.file_system;
     let hidden = tree_hidden(view, filter);
@@ -90,8 +90,8 @@ fn duplicate_groups(
                 return None;
             };
             node_of.insert(path.clone(), node_id);
-            hash_of.insert(node_id, hash.clone());
-            Some((path, node.size, hash.clone()))
+            hash_of.insert(node_id, *hash);
+            Some((path, node.size, hash.to_string()))
         })
         .collect();
     let groups = group_by_size_and_hash(files);
@@ -761,7 +761,7 @@ impl DuplicateFilesPane {
     fn regroup(
         &mut self,
         ctx: &mut DuplicateFilesPaneCtx,
-        hashes: &HashMap<PathBuf, Option<HashRepresentation>>,
+        hashes: &HashMap<PathBuf, Option<Blake3Hash>>,
     ) {
         let groups = ctx
             .path_diff_view
@@ -966,8 +966,9 @@ impl DuplicateFilesPane {
             };
             let mut hash_cell = |ui: &mut egui::Ui, node_id: FsNodeId| {
                 if let Some(hash) = groups.and_then(|groups| groups.hash_of.get(&node_id)) {
-                    ui.label(egui::RichText::new(hash).monospace())
-                        .on_hover_text(hash);
+                    let hash = hash.to_string();
+                    ui.label(egui::RichText::new(&hash).monospace())
+                        .on_hover_text(&hash);
                 }
             };
             let mut columns = vec![NodeColumn {
@@ -1226,7 +1227,7 @@ mod tests {
         fn regroup(
             &mut self,
             pane: &mut DuplicateFilesPane,
-            hashes: &HashMap<PathBuf, Option<HashRepresentation>>,
+            hashes: &HashMap<PathBuf, Option<Blake3Hash>>,
         ) {
             self.with_ctx(|ctx| pane.regroup(ctx, hashes))
         }
@@ -1305,7 +1306,7 @@ mod tests {
         (dir, FileSystemView::new(Arc::new(model)))
     }
 
-    fn hashes_of(paths: &[&Path]) -> HashMap<PathBuf, Option<HashRepresentation>> {
+    fn hashes_of(paths: &[&Path]) -> HashMap<PathBuf, Option<Blake3Hash>> {
         paths
             .iter()
             .map(|p| (p.to_path_buf(), Some(hash_file_mmap(p).unwrap())))
@@ -1313,7 +1314,7 @@ mod tests {
     }
 
     fn same_hash(dir: &Path) -> String {
-        hash_file_mmap(dir.join("a.txt")).unwrap()
+        hash_file_mmap(dir.join("a.txt")).unwrap().to_string()
     }
 
     #[test]

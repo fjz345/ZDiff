@@ -8,7 +8,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use zcommon::hash::hash_contents;
+use zcommon::hash::{Blake3Hash, hash_contents};
 use zdiff::{
     cached_file::CachedFile,
     diff_builder::{DiffRow, LineContent},
@@ -167,7 +167,7 @@ pub struct PlannedRevert {
     pub path: PathBuf,
     pub contents: String,
     /// Hash of the target bytes the plan was made from, for the stale check.
-    pub loaded_hash: String,
+    pub loaded_hash: Blake3Hash,
 }
 
 /// The path to write and its new contents. Plans against the files the rows were built from.
@@ -199,7 +199,7 @@ pub fn plan_hunk_revert(
     Ok(PlannedRevert {
         path,
         contents,
-        loaded_hash: target.hash.clone(),
+        loaded_hash: target.hash,
     })
 }
 
@@ -242,7 +242,7 @@ impl std::fmt::Display for WriteRefusal {
 pub fn write_guarded(
     path: &Path,
     contents: &[u8],
-    loaded_hash: &str,
+    loaded_hash: &Blake3Hash,
     temp_root: &Path,
 ) -> Result<Vec<u8>, WriteRefusal> {
     // Canonical paths, so a short (8.3) name of the temp dir still matches. The buttons only
@@ -258,7 +258,7 @@ pub fn write_guarded(
     // Same hash function as CachedFile, so an untouched file always matches. The hashed bytes
     // are the ones undo restores, read once so the check and the record can't disagree.
     let before = std::fs::read(path).map_err(not_found_is_stale)?;
-    if hash_contents(&before) != loaded_hash {
+    if hash_contents(&before) != *loaded_hash {
         return Err(WriteRefusal::Stale);
     }
     let permissions = std::fs::metadata(path)
@@ -953,7 +953,7 @@ mod tests {
             dir: tempfile::TempDir,
             temp_root: tempfile::TempDir,
             path: PathBuf,
-            loaded_hash: String,
+            loaded_hash: Blake3Hash,
         }
 
         impl Target {
@@ -1118,7 +1118,7 @@ mod tests {
                     PlannedRevert {
                         path: self.path.clone(),
                         contents: contents.to_string(),
-                        loaded_hash: self.loaded_hash.clone(),
+                        loaded_hash: self.loaded_hash,
                     }
                 }
 

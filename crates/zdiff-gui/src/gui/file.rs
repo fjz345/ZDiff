@@ -452,10 +452,10 @@ impl FileProcessor {
         self.loaded_file.clone()
     }
 
-    pub fn get_cached_file_hash(&mut self) -> Option<String> {
+    pub fn get_cached_file_hash(&mut self) -> Option<zcommon::hash::Blake3Hash> {
         self.get_cached_file()
             .as_ref()
-            .and_then(|f| Some(f.hash.clone()))
+            .and_then(|f| Some(f.hash))
     }
 }
 

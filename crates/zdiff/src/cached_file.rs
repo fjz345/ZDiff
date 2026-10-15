@@ -1,6 +1,6 @@
 use std::{io, ops::Range, path::Path};
 
-use zcommon::hash::{hash_contents, hash_file_mmap};
+use zcommon::hash::{Blake3Hash, hash_contents, hash_file_mmap};
 
 use crate::{
     lexer::{Lexer, RawTokenTrait},
@@ -41,7 +41,7 @@ impl FileMetadata {
 #[derive(Debug)]
 pub struct CachedFile<T: RawTokenTrait> {
     pub path: UniversalPath,
-    pub hash: String,
+    pub hash: Blake3Hash,
     pub contents: String,
     pub tokens: Vec<T>,
     pub metadata: FileMetadata,
@@ -82,7 +82,7 @@ impl<T: RawTokenTrait> CachedFile<T> {
         Self::build(display_path, contents, hash)
     }
 
-    fn build(display_path: UniversalPath, contents: String, hash: String) -> Self {
+    fn build(display_path: UniversalPath, contents: String, hash: Blake3Hash) -> Self {
         let tokens = Lexer::new(&contents).map(T::from).collect();
         let metadata = FileMetadata::new(&contents);
 
