@@ -165,6 +165,7 @@ pub enum VideoTab {
 }
 
 type Probed = Result<VideoMeta, String>;
+
 /// Probes both sides when the pair changes; a pair change cancels running probes and drops
 /// their results.
 #[derive(Debug)]

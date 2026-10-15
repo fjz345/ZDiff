@@ -11,8 +11,8 @@ use std::{
 };
 
 use eframe::egui::{self, Sense, Stroke, pos2, vec2};
-use zcommon::job::{Job, JobCtx};
 use zcommon::ffmpeg::{FfmpegError, FfmpegPaths, run_ffmpeg, scaled_frames_args};
+use zcommon::job::{Job, JobCtx};
 use zcommon_ui::style_window::role_color;
 
 use super::video_frames::{VideoTrack, end_time, format_time};
