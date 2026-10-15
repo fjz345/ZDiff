@@ -1,17 +1,10 @@
 //! Hex viewer: offset-aligned byte comparison computed off the UI thread, drawn as rows of
 //! 16 bytes (offset, hex, ASCII) per side. Rows are built only for the visible window.
 
-use std::{
-    cell::Cell,
-    ops::Range,
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-        mpsc,
-    },
-};
+use std::{cell::Cell, ops::Range};
 
 use eframe::egui::{self, Color32, FontId, text::LayoutJob};
+use zcommon::job::Job;
 use zcommon_ui::{style_window::role_color, table::SplitColumn};
 use zdiff::hex::{HexDiff, HexSide, hex_diff};
 
@@ -202,9 +195,7 @@ pub struct HexDiffProcessor {
     diff: Option<HexDiff>,
     change_spans: Vec<ChangeSpan>,
     in_progress: bool,
-    generation: u64,
-    cancel_flag: Arc<AtomicBool>,
-    channel: (mpsc::Sender<(u64, HexDiff)>, mpsc::Receiver<(u64, HexDiff)>),
+    job: Option<Job<HexDiff>>,
 
     /// One-shot, so going to the same offset again scrolls again.
     goto_offset: Option<usize>,
@@ -225,9 +216,7 @@ impl Default for HexDiffProcessor {
             diff: None,
             change_spans: Vec::new(),
             in_progress: false,
-            generation: 0,
-            cancel_flag: Arc::new(AtomicBool::new(false)),
-            channel: mpsc::channel(),
+            job: None,
             goto_offset: None,
             last_nav: None,
             highlight: None,
@@ -248,14 +237,21 @@ pub(super) fn is_same_side(a: &Option<LoadedFile>, b: &Option<LoadedFile>) -> bo
 impl HexDiffProcessor {
     /// No-op for the pair already requested. Returns whether the pair changed, which also resets
     /// navigation; the caller resets the conflict cursor.
-    pub fn request(&mut self, file_1: Option<LoadedFile>, file_2: Option<LoadedFile>) -> bool {
+    pub fn request(
+        &mut self,
+        ctx: &egui::Context,
+        file_1: Option<LoadedFile>,
+        file_2: Option<LoadedFile>,
+    ) -> bool {
         if is_same_side(&self.file_1, &file_1) && is_same_side(&self.file_2, &file_2) {
             return false;
         }
 
-        self.cancel_flag.store(true, Ordering::Release);
-        self.cancel_flag = Arc::new(AtomicBool::new(false));
-        self.generation += 1;
+        let job = self.job.get_or_insert_with(|| {
+            let ctx = ctx.clone();
+            Job::new(move || ctx.request_repaint())
+        });
+        job.cancel();
         self.diff = None;
         self.change_spans.clear();
         self.in_progress = false;
@@ -273,13 +269,10 @@ impl HexDiffProcessor {
                 file_2.path()
             );
             let (file_1, file_2) = (file_1.clone(), file_2.clone());
-            let cancel_flag = self.cancel_flag.clone();
-            let tx = self.channel.0.clone();
-            let generation = self.generation;
             self.in_progress = true;
-            std::thread::spawn(move || {
-                if let Some(diff) = hex_diff(file_1.bytes(), file_2.bytes(), &cancel_flag) {
-                    let _ = tx.send((generation, diff));
+            job.start(move |ctx| {
+                if let Some(diff) = hex_diff(file_1.bytes(), file_2.bytes(), ctx.cancel_flag()) {
+                    ctx.send(diff);
                 }
             });
         }
@@ -332,12 +325,13 @@ impl HexDiffProcessor {
     }
 
     pub fn poll(&mut self) {
-        while let Ok((generation, diff)) = self.channel.1.try_recv() {
-            if generation == self.generation {
-                self.change_spans = hex_change_spans(&diff);
-                self.diff = Some(diff);
-                self.in_progress = false;
-            }
+        let Some(job) = &mut self.job else {
+            return;
+        };
+        for diff in job.poll() {
+            self.change_spans = hex_change_spans(&diff);
+            self.diff = Some(diff);
+            self.in_progress = false;
         }
     }
 

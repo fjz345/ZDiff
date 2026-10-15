@@ -4,10 +4,10 @@
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
-    mpsc,
 };
 
 use eframe::egui;
+use zcommon::job::Job;
 use zdiff::{cached_file::CachedFile, lexer::RawToken};
 
 use super::hex::is_same_side;
@@ -162,34 +162,17 @@ struct StringsRequest {
 
 /// Extracts the strings of the current pair on a worker thread. A new request cancels the running
 /// one and drops the result of an older one.
+#[derive(Default)]
 pub struct HexStrings {
     request: Option<StringsRequest>,
     sides: Option<StringsPair>,
-    generation: u64,
-    cancel_flag: Arc<AtomicBool>,
-    channel: (
-        mpsc::Sender<(u64, StringsPair)>,
-        mpsc::Receiver<(u64, StringsPair)>,
-    ),
-}
-
-impl Default for HexStrings {
-    fn default() -> Self {
-        Self {
-            request: None,
-            sides: None,
-            generation: 0,
-            cancel_flag: Arc::new(AtomicBool::new(false)),
-            channel: mpsc::channel(),
-        }
-    }
+    job: Option<Job<StringsPair>>,
 }
 
 // The sides hold the strings text; input logging prints the app state.
 impl std::fmt::Debug for HexStrings {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("HexStrings")
-            .field("generation", &self.generation)
             .field("ready", &self.sides.is_some())
             .finish()
     }
@@ -205,41 +188,34 @@ impl HexStrings {
         {
             return;
         }
-        self.cancel();
-        self.generation += 1;
         self.sides = None;
         let work = files.clone();
         self.request = Some(StringsRequest { files, min_len });
 
-        let tx = self.channel.0.clone();
-        let generation = self.generation;
-        let cancel_flag = self.cancel_flag.clone();
-        let ctx = ctx.clone();
-        std::thread::spawn(move || {
+        let job = self.job.get_or_insert_with(|| {
+            let ctx = ctx.clone();
+            Job::new(move || ctx.request_repaint())
+        });
+        job.start(move |ctx| {
             let mut pair = StringsPair::default();
             for (slot, file) in pair.iter_mut().zip(&work) {
                 if let Some(file) = file {
-                    let Some(side) = strings_side(file, min_len, &cancel_flag) else {
+                    let Some(side) = strings_side(file, min_len, ctx.cancel_flag()) else {
                         return;
                     };
                     *slot = Some(side);
                 }
             }
-            let _ = tx.send((generation, pair));
-            ctx.request_repaint();
+            ctx.send(pair);
         });
     }
 
-    fn cancel(&mut self) {
-        self.cancel_flag.store(true, Ordering::Release);
-        self.cancel_flag = Arc::new(AtomicBool::new(false));
-    }
-
     pub fn poll(&mut self) {
-        while let Ok((generation, pair)) = self.channel.1.try_recv() {
-            if generation == self.generation {
-                self.sides = Some(pair);
-            }
+        let Some(job) = &mut self.job else {
+            return;
+        };
+        if let Some(pair) = job.poll().pop() {
+            self.sides = Some(pair);
         }
     }
 
@@ -250,8 +226,9 @@ impl HexStrings {
 
     pub fn clear(&mut self) {
         if self.request.is_some() {
-            self.cancel();
-            self.generation += 1;
+            if let Some(job) = &mut self.job {
+                job.cancel();
+            }
             self.request = None;
             self.sides = None;
         }
@@ -435,14 +412,13 @@ mod tests {
         let ctx = egui::Context::default();
         let files = [Some(binary(b"\0abcd\0efghij")), None];
         strings.request(&ctx, files.clone(), 4);
-        let first = strings.cancel_flag.clone();
-        assert!(!first.load(Ordering::Acquire));
         strings.request(&ctx, files.clone(), 5);
-        assert!(first.load(Ordering::Acquire));
-        assert!(!strings.cancel_flag.load(Ordering::Acquire));
-        let second = strings.cancel_flag.clone();
+        wait_for(&mut strings);
+        let [left, _] = strings.sides().unwrap();
+        assert_eq!(left.as_ref().unwrap().file.contents, "efghij");
+
         strings.clear();
-        assert!(second.load(Ordering::Acquire));
+        assert!(strings.sides().is_none());
     }
 
     #[test]

@@ -87,6 +87,14 @@ impl<M: Send + 'static> Job<M> {
     }
 }
 
+impl<M> std::fmt::Debug for Job<M> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Job")
+            .field("started", &self.run.is_some())
+            .finish()
+    }
+}
+
 impl<M> Drop for Job<M> {
     fn drop(&mut self) {
         if let Some(run) = self.run.take() {

@@ -1914,7 +1914,7 @@ impl eframe::App for ZApp {
                 let [hex_1, hex_2] = files_for(&resolution, ViewerKind::Hex);
                 let hex_files = [hex_1.clone(), hex_2.clone()];
                 // The cursor may hold the text diff's or the previous pair's stop.
-                if state.hex_processor.request(hex_1, hex_2)
+                if state.hex_processor.request(ctx, hex_1, hex_2)
                     && state.viewers == Some(Viewers::Pair(ViewerKind::Hex))
                 {
                     state.diff_processor.conflict_cursor.set(0);
