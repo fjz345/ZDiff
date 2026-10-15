@@ -159,6 +159,11 @@ pub fn recycle(path: &Path) -> Result<(), trash::Error> {
     trash::delete(path)
 }
 
+/// Whether recycling `path` can be undone. Unknown counts as no.
+pub fn recycle_is_undoable(_path: &Path) -> bool {
+    false
+}
+
 pub struct SizedFile {
     pub path: PathBuf,
     pub size: u64,

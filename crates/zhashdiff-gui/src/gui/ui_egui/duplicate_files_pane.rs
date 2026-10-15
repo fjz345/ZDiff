@@ -16,12 +16,12 @@ use zcommon_ui::common::show_custom_popup;
 use zcommon_ui::style_window::role_color;
 use zcommon_ui::toggle::toggle_button;
 use zhashdiff::conflict::DuplicateGroup;
-use zhashdiff::conflict::ResolutionSummary;
 use zhashdiff::conflict::SizedFile;
 use zhashdiff::conflict::execute_resolution;
 use zhashdiff::conflict::group_by_size_and_hash;
 use zhashdiff::conflict::plan_resolution;
 use zhashdiff::conflict::recycle;
+use zhashdiff::conflict::recycle_is_undoable;
 use zhashdiff::conflict::size_collisions;
 use zhashdiff::external_diff_tool::DiffToolConfig;
 use zhashdiff::filter::PathFilter;
@@ -238,14 +238,22 @@ fn group_jump(
 #[derive(Debug, PartialEq)]
 struct ResolvePreview {
     kept: Vec<PathBuf>,
-    removed: Vec<PathBuf>,
+    recyclable: Vec<PathBuf>,
+    permanent: Vec<PathBuf>,
     /// Groups without a keeper.
     skipped: usize,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum DeleteKind {
+    Recycle,
+    Permanent,
 }
 
 fn resolve_preview(
     conflict_map: &HashMap<String, Vec<PathBuf>>,
     keepers: &HashMap<String, PathBuf>,
+    undoable: impl Fn(&Path) -> bool,
 ) -> ResolvePreview {
     let mut hashes: Vec<&String> = conflict_map.keys().collect();
     hashes.sort();
@@ -253,15 +261,24 @@ fn resolve_preview(
         .iter()
         .filter_map(|hash| keeper_of(&conflict_map[*hash], keepers, hash).cloned())
         .collect();
+    let (recyclable, permanent) = plan_resolution(conflict_map, keepers)
+        .deletions
+        .into_iter()
+        .map(|deletion| deletion.path)
+        .partition(|path| undoable(path));
     ResolvePreview {
         skipped: conflict_map.len() - kept.len(),
         kept,
-        removed: plan_resolution(conflict_map, keepers)
-            .deletions
-            .into_iter()
-            .map(|deletion| deletion.path)
-            .collect(),
+        recyclable,
+        permanent,
     }
+}
+
+#[derive(Debug, Default, PartialEq)]
+struct ResolveReport {
+    recycled: Vec<PathBuf>,
+    permanently_deleted: Vec<PathBuf>,
+    failed: Vec<(PathBuf, String)>,
 }
 
 fn member_tooltip(
@@ -481,7 +498,10 @@ pub struct DuplicateFilesPane {
     last_regroup: Option<Instant>,
     /// Outcome of the last Resolve, shown until closed.
     #[serde(skip)]
-    resolution_summary: Option<ResolutionSummary>,
+    resolution_summary: Option<ResolveReport>,
+    /// Steps done while the confirm dialog is still open.
+    #[serde(skip)]
+    resolving: Option<ResolveReport>,
     #[serde(skip)]
     cursor: TreeCursor,
     /// Root of the view the cursor belongs to.
@@ -545,6 +565,7 @@ impl DuplicateFilesPane {
             was_hashing: false,
             last_regroup: None,
             resolution_summary: None,
+            resolving: None,
             cursor: TreeCursor::default(),
             cursor_root: None,
             tree_cache: None,
@@ -801,19 +822,47 @@ impl DuplicateFilesPane {
         self.groups = groups;
     }
 
-    /// Resolve: removes every non-keeper of the groups with a keeper through `delete`, then
-    /// forgets the conflicts and requests a rescan of the folder.
+    /// One Resolve step: removes the non-keepers of `kind` through `delete`. The other kind
+    /// stays for a second step; once none is left, or on `finish_resolve`, the conflicts are
+    /// forgotten and a rescan of the folder is requested.
     fn resolve_selected<E: Display>(
         &mut self,
         ctx: &mut DuplicateFilesPaneCtx,
+        kind: DeleteKind,
+        undoable: impl Fn(&Path) -> bool,
         delete: impl FnMut(&Path) -> Result<(), E>,
     ) {
-        let plan = plan_resolution(ctx.conflict_map, ctx.conflict_map_resolved);
+        let mut plan = plan_resolution(ctx.conflict_map, ctx.conflict_map_resolved);
+        let (this_kind, other_kind): (Vec<_>, Vec<_>) = plan
+            .deletions
+            .drain(..)
+            .partition(|deletion| (kind == DeleteKind::Recycle) == undoable(&deletion.path));
+        plan.deletions = this_kind;
         let summary = execute_resolution(&plan, delete);
 
         for path in &summary.removed {
             ctx.hash_service.remove(path);
         }
+        for paths in ctx.conflict_map.values_mut() {
+            paths.retain(|path| !summary.removed.contains(path));
+        }
+
+        let report = self.resolving.get_or_insert_with(ResolveReport::default);
+        match kind {
+            DeleteKind::Recycle => report.recycled.extend(summary.removed),
+            DeleteKind::Permanent => report.permanently_deleted.extend(summary.removed),
+        }
+        report.failed.extend(summary.failed);
+
+        if other_kind.is_empty() {
+            self.finish_resolve(ctx);
+        }
+    }
+
+    fn finish_resolve(&mut self, ctx: &mut DuplicateFilesPaneCtx) {
+        let Some(report) = self.resolving.take() else {
+            return;
+        };
         ctx.conflict_map.clear();
         ctx.conflict_map_resolved.clear();
 
@@ -821,7 +870,7 @@ impl DuplicateFilesPane {
             ctx.path_diff_view.file_system_1_scan.request_rescan();
         }
 
-        self.resolution_summary = Some(summary);
+        self.resolution_summary = Some(report);
     }
 
     pub fn ui(
@@ -1059,9 +1108,14 @@ impl DuplicateFilesPane {
         if !self.confirm_resolve {
             return;
         }
-        let preview = resolve_preview(ctx.conflict_map, ctx.conflict_map_resolved);
+        let preview = resolve_preview(
+            ctx.conflict_map,
+            ctx.conflict_map_resolved,
+            recycle_is_undoable,
+        );
         if preview.kept.is_empty() {
             self.confirm_resolve = false;
+            self.finish_resolve(ctx);
             return;
         }
         let root = view_root(ctx.path_diff_view.file_system_1_view.as_ref()).unwrap_or_default();
@@ -1073,7 +1127,7 @@ impl DuplicateFilesPane {
         };
         let rescanning = ctx.path_diff_view.file_system_1_scan.is_scanning();
         let mut is_open = true;
-        let mut confirmed = false;
+        let mut confirmed = None;
         let mut cancelled = false;
         show_custom_popup(ui.ctx(), &mut is_open, "Resolve Duplicates", true, |ui| {
             ui.label(format!("Keep {} files:", preview.kept.len()));
@@ -1085,22 +1139,39 @@ impl DuplicateFilesPane {
                         ui.label(egui::RichText::new(shown(path)).color(KEEPER_COLOR));
                     }
                 });
-            ui.separator();
-            ui.label(format!(
-                "Move {} files to the Recycle Bin:",
-                preview.removed.len()
-            ));
-            egui::ScrollArea::vertical()
-                .id_salt("resolve_removed")
-                .max_height(200.0)
-                .show(ui, |ui| {
-                    for path in &preview.removed {
-                        ui.label(
-                            egui::RichText::new(shown(path))
-                                .color(role_color(ui.ctx(), FolderRole::PendingDeletion)),
-                        );
-                    }
-                });
+            let pending_color = role_color(ui.ctx(), FolderRole::PendingDeletion);
+            if !preview.recyclable.is_empty() {
+                ui.separator();
+                ui.label(format!(
+                    "Move {} files to the Recycle Bin:",
+                    preview.recyclable.len()
+                ));
+                egui::ScrollArea::vertical()
+                    .id_salt("resolve_recyclable")
+                    .max_height(200.0)
+                    .show(ui, |ui| {
+                        for path in &preview.recyclable {
+                            ui.label(egui::RichText::new(shown(path)).color(pending_color));
+                        }
+                    });
+            }
+            if !preview.permanent.is_empty() {
+                ui.separator();
+                ui.label(format!(
+                    "Delete {} files permanently (cannot be undone):",
+                    preview.permanent.len()
+                ));
+                egui::ScrollArea::vertical()
+                    .id_salt("resolve_permanent")
+                    .max_height(200.0)
+                    .show(ui, |ui| {
+                        for path in &preview.permanent {
+                            ui.label(
+                                egui::RichText::new(shown(path)).color(ui.visuals().error_fg_color),
+                            );
+                        }
+                    });
+            }
             if preview.skipped > 0 {
                 ui.separator();
                 ui.label(format!(
@@ -1110,25 +1181,54 @@ impl DuplicateFilesPane {
             }
             ui.separator();
             ui.horizontal(|ui| {
-                if ui
-                    .add_enabled(
-                        !rescanning,
-                        egui::Button::new(format!("Recycle {} files", preview.removed.len())),
-                    )
-                    .clicked()
+                if !preview.recyclable.is_empty()
+                    && ui
+                        .add_enabled(
+                            !rescanning,
+                            egui::Button::new(format!(
+                                "Recycle {} files",
+                                preview.recyclable.len()
+                            )),
+                        )
+                        .clicked()
                 {
-                    confirmed = true;
+                    confirmed = Some(DeleteKind::Recycle);
+                }
+                if !preview.permanent.is_empty()
+                    && ui
+                        .add_enabled(
+                            !rescanning,
+                            egui::Button::new(format!(
+                                "Delete {} files permanently",
+                                preview.permanent.len()
+                            )),
+                        )
+                        .clicked()
+                {
+                    confirmed = Some(DeleteKind::Permanent);
                 }
                 if ui.button("Cancel").clicked() {
                     cancelled = true;
                 }
             });
         });
-        if confirmed {
+        match confirmed {
+            Some(DeleteKind::Recycle) => {
+                self.resolve_selected(ctx, DeleteKind::Recycle, recycle_is_undoable, recycle)
+            }
+            Some(DeleteKind::Permanent) => self.resolve_selected(
+                ctx,
+                DeleteKind::Permanent,
+                recycle_is_undoable,
+                |path: &Path| std::fs::remove_file(path),
+            ),
+            None => {}
+        }
+        if self.resolving.is_none() && confirmed.is_some() {
             self.confirm_resolve = false;
-            self.resolve_selected(ctx, recycle);
         } else if !is_open || cancelled {
             self.confirm_resolve = false;
+            self.finish_resolve(ctx);
         }
     }
 
@@ -1140,8 +1240,9 @@ impl DuplicateFilesPane {
         let mut close_clicked = false;
         show_custom_popup(ui.ctx(), &mut is_open, "Resolve Summary", true, |ui| {
             ui.label(format!(
-                "Recycled {} files, {} failed",
-                summary.removed.len(),
+                "Recycled {} files, permanently deleted {}, {} failed",
+                summary.recycled.len(),
+                summary.permanently_deleted.len(),
                 summary.failed.len()
             ));
             if !summary.failed.is_empty() {
@@ -2311,13 +2412,109 @@ mod tests {
         ]);
 
         assert_eq!(
-            resolve_preview(&conflict_map, &keepers(&[("h1", "b"), ("h3", "elsewhere")])),
+            resolve_preview(
+                &conflict_map,
+                &keepers(&[("h1", "b"), ("h3", "elsewhere")]),
+                |_| true
+            ),
             ResolvePreview {
                 kept: vec![PathBuf::from("b")],
-                removed: vec![PathBuf::from("a"), PathBuf::from("c")],
+                recyclable: vec![PathBuf::from("a"), PathBuf::from("c")],
+                permanent: vec![],
                 skipped: 2,
             }
         );
+    }
+
+    #[test]
+    fn the_resolve_preview_separates_permanent_deletes() {
+        let conflict_map = groups(&[("h1", &["a", "b", "c"])]);
+        let undoable = |path: &Path| path == Path::new("a");
+
+        assert_eq!(
+            resolve_preview(&conflict_map, &keepers(&[("h1", "b")]), undoable),
+            ResolvePreview {
+                kept: vec![PathBuf::from("b")],
+                recyclable: vec![PathBuf::from("a")],
+                permanent: vec![PathBuf::from("c")],
+                skipped: 0,
+            }
+        );
+        assert!(!recycle_is_undoable(Path::new("a")));
+    }
+
+    #[test]
+    fn a_permanent_step_waits_for_the_recycle_step_and_runs_the_pre_delete_check() {
+        let (dir, view) = duplicate_tree();
+        let root = dir.path();
+        let a = root.join("a.txt");
+        let b = root.join("b.txt");
+        let c = root.join("sub").join("c.txt");
+        let hashes = hashes_of(&[&a, &b, &c, &root.join("d.txt")]);
+        let mut state = PaneState::new(view);
+        for path in [&a, &b, &c] {
+            state.hash_service.request(path);
+        }
+        let mut pane = DuplicateFilesPane::new(None);
+        state.regroup(&mut pane, &hashes);
+        set_keeper(
+            &state.conflict_map,
+            &mut state.conflict_map_resolved,
+            &same_hash(root),
+            Some(&a),
+        );
+        let undoable = |path: &Path| path == b;
+
+        state.with_ctx(|ctx| {
+            pane.resolve_selected(ctx, DeleteKind::Recycle, undoable, |p: &Path| fs::remove_file(p))
+        });
+        assert!(!b.exists());
+        assert!(c.exists(), "the permanent file survives the first step");
+        assert!(pane.resolution_summary.is_none());
+        assert!(pane.resolving.is_some());
+
+        fs::write(&c, "changed after hashing").unwrap();
+        state.with_ctx(|ctx| {
+            pane.resolve_selected(ctx, DeleteKind::Permanent, undoable, |p: &Path| fs::remove_file(p))
+        });
+
+        let report = pane.resolution_summary.as_ref().unwrap();
+        assert_eq!(report.recycled, vec![b]);
+        assert!(report.permanently_deleted.is_empty());
+        assert_eq!(report.failed.len(), 1);
+        assert_eq!(report.failed[0].0, c);
+        assert!(c.exists(), "a changed file is kept");
+    }
+
+    #[test]
+    fn a_permanent_step_alone_deletes_and_reports_separately() {
+        let (dir, view) = duplicate_tree();
+        let root = dir.path();
+        let a = root.join("a.txt");
+        let b = root.join("b.txt");
+        let c = root.join("sub").join("c.txt");
+        let hashes = hashes_of(&[&a, &b, &c, &root.join("d.txt")]);
+        let mut state = PaneState::new(view);
+        for path in [&a, &b, &c] {
+            state.hash_service.request(path);
+        }
+        let mut pane = DuplicateFilesPane::new(None);
+        state.regroup(&mut pane, &hashes);
+        set_keeper(
+            &state.conflict_map,
+            &mut state.conflict_map_resolved,
+            &same_hash(root),
+            Some(&a),
+        );
+
+        state.with_ctx(|ctx| {
+            pane.resolve_selected(ctx, DeleteKind::Permanent, |_| false, |p: &Path| fs::remove_file(p))
+        });
+
+        let report = pane.resolution_summary.as_ref().unwrap();
+        assert!(report.recycled.is_empty());
+        assert_eq!(report.permanently_deleted.len(), 2);
+        assert!(a.exists() && !b.exists() && !c.exists());
     }
 
     /// Removes files for real, except `failing`, whose removal fails and leaves it in place.
@@ -2353,14 +2550,16 @@ mod tests {
             Some(&a),
         );
 
-        state.with_ctx(|ctx| pane.resolve_selected(ctx, remove_except(&c)));
+        state.with_ctx(|ctx| {
+            pane.resolve_selected(ctx, DeleteKind::Recycle, |_| true, remove_except(&c))
+        });
         state.finish_rescan();
 
         let summary = pane
             .resolution_summary
             .as_ref()
             .expect("resolve leaves a summary to show");
-        assert_eq!(summary.removed, vec![b.clone()]);
+        assert_eq!(summary.recycled, vec![b.clone()]);
         assert_eq!(
             summary.failed,
             vec![(c.clone(), "file is in use".to_string())]
@@ -2410,7 +2609,14 @@ mod tests {
             Some(&a),
         );
 
-        state.with_ctx(|ctx| pane.resolve_selected(ctx, remove_except(Path::new(""))));
+        state.with_ctx(|ctx| {
+            pane.resolve_selected(
+                ctx,
+                DeleteKind::Recycle,
+                |_| true,
+                remove_except(Path::new("")),
+            )
+        });
         state.finish_rescan();
 
         assert!(state.visible_rows.is_none());
