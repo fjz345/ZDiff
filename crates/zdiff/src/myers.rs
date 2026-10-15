@@ -657,37 +657,6 @@ where
     Some(hunks)
 }
 
-/// Line `a` of `source` and line `b` of `target` (token ranges) are equal under the line key:
-/// their tokens that aren't ignored, pairwise equal under `cmp`.
-pub(crate) fn lines_equal<T, F>(
-    source: &[T],
-    target: &[T],
-    a: &Range<usize>,
-    b: &Range<usize>,
-    cmp: &F,
-    ignore: &IgnoreMask,
-) -> bool
-where
-    F: Fn(&T, &T) -> bool,
-{
-    if ignore.is_empty() {
-        return a.len() == b.len()
-            && source[a.clone()]
-                .iter()
-                .zip(&target[b.clone()])
-                .all(|(a, b)| cmp(a, b));
-    }
-    let mut a_key = a.clone().filter(|&i| !ignore.source[i]);
-    let mut b_key = b.clone().filter(|&i| !ignore.target[i]);
-    loop {
-        match (a_key.next(), b_key.next()) {
-            (None, None) => return true,
-            (Some(i), Some(j)) if cmp(&source[i], &target[j]) => {}
-            _ => return false,
-        }
-    }
-}
-
 /// Token phase: Myers over each hunk's tokens, Equal for every token outside the hunks.
 /// Returns a unit-step path over the whole files.
 pub fn token_diff<T, F>(

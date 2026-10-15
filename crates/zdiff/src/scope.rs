@@ -12,8 +12,9 @@ use crate::{
     ignore::IgnoreMask,
     lexer::{RawTokenTrait, TokenKind},
     myers::{
-        DiffPhases, LineHunk, MyersDiffAlgorithm, MyersPath, Step, hunks_to_path, line_pairs_path,
-        lines_equal, path_steps, phases_path, raw_diff_path, slice_mask, split_lines,
+        DiffPhases, LineHunk, MyersDiffAlgorithm, MyersPath, Side, Step, hunks_to_path,
+        intern_lines, line_pairs_path, path_steps, phases_path, raw_diff_path, slice_mask,
+        split_lines,
     },
     trace::{PhaseTrace, add_time, run_local, span},
 };
@@ -46,12 +47,25 @@ where
         scope_units(target, target_text),
     );
     let (source_lines, target_lines) = (split_lines(source), split_lines(target));
+    let key = |side: Side, t: &T| {
+        let t = t.as_ref();
+        let text = match side {
+            Side::Source => source_text,
+            Side::Target => target_text,
+        };
+        (t.kind, &text.as_bytes()[t.span.clone()])
+    };
+    let (source_ids, target_ids) = intern_lines(
+        source,
+        target,
+        &source_lines,
+        &target_lines,
+        ignore,
+        key,
+        &cancel_flag,
+    )?;
     let unit_eq = |a: &Range<usize>, b: &Range<usize>| {
-        let (a, b) = (lines_in(&source_lines, a), lines_in(&target_lines, b));
-        a.len() == b.len()
-            && a.iter()
-                .zip(b)
-                .all(|(a, b)| lines_equal(source, target, a, b, cmp, ignore))
+        source_ids[lines_in(&source_lines, a)] == target_ids[lines_in(&target_lines, b)]
     };
     let unit_path = raw_diff_path(
         algorithm,
@@ -138,10 +152,10 @@ fn unit_hunks<T>(
 }
 
 /// The lines (token ranges) inside `unit`, which starts and ends on line boundaries.
-fn lines_in<'a>(lines: &'a [Range<usize>], unit: &Range<usize>) -> &'a [Range<usize>] {
+fn lines_in(lines: &[Range<usize>], unit: &Range<usize>) -> Range<usize> {
     let first = lines.partition_point(|l| l.start < unit.start);
     let end = lines.partition_point(|l| l.end <= unit.end);
-    &lines[first..end]
+    first..end
 }
 
 /// The top-level scopes and the stretches of text between them, covering every token in order.
