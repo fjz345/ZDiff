@@ -4,7 +4,6 @@
 use std::{
     path::{Path, PathBuf},
     sync::{
-        Arc,
         atomic::{AtomicBool, Ordering},
         mpsc,
     },
@@ -12,6 +11,7 @@ use std::{
 };
 
 use eframe::egui::{self, Sense, Stroke, pos2, vec2};
+use zcommon::job::{Job, JobCtx};
 use zcommon::ffmpeg::{FfmpegError, FfmpegPaths, run_ffmpeg, scaled_frames_args};
 use zcommon_ui::style_window::role_color;
 
@@ -142,35 +142,29 @@ fn decode_side(
 }
 
 /// Decodes both sides at once, so only a few frames are ever held, and sends one value per pair.
-fn run_job(
-    job: TimelineJob,
-    fps: f64,
-    cancel: Arc<AtomicBool>,
-    generation: u64,
-    tx: mpsc::Sender<JobMessage>,
-) {
+fn run_job(job: TimelineJob, fps: f64, ctx: &JobCtx<TimelineMessage>) {
     let size = timeline_size(&job.tracks[0]);
     let receivers = job.inputs.map(|input| {
         let (frames, receiver) = mpsc::sync_channel(FRAMES_IN_FLIGHT);
-        let (ffmpeg, cancel) = (job.ffmpeg.clone(), cancel.clone());
+        let (ffmpeg, cancel) = (job.ffmpeg.clone(), ctx.cancel_flag().clone());
         std::thread::spawn(move || decode_side(&ffmpeg, &input, size, fps, &cancel, frames));
         receiver
     });
     let [left, right] = receivers;
     let paired = pair_frames(left.into_iter(), right.into_iter(), |value| {
-        !cancel.load(Ordering::Relaxed)
-            && tx.send((generation, TimelineMessage::Value(value))).is_ok()
+        ctx.send(TimelineMessage::Value(value))
     });
     let result = match paired {
-        _ if cancel.load(Ordering::Relaxed) => Err(None),
-        Err(reason) => {
-            // Stops the other side's ffmpeg.
-            cancel.store(true, Ordering::Relaxed);
-            Err(Some(reason))
-        }
+        _ if ctx.is_cancelled() => Err(None),
+        Err(reason) => Err(Some(reason)),
         Ok(()) => Ok(()),
     };
-    let _ = tx.send((generation, TimelineMessage::Done(result)));
+    let failed = result.is_err();
+    ctx.send(TimelineMessage::Done(result));
+    if failed {
+        // Stops the other side's ffmpeg; after the send, which a set flag would drop.
+        ctx.cancel_flag().store(true, Ordering::Relaxed);
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -195,8 +189,6 @@ enum TimelineMessage {
     Done(Result<(), Option<String>>),
 }
 
-type JobMessage = (u64, TimelineMessage);
-
 /// One job per video pair, started once both sides are probed. A cancelled job keeps the samples
 /// it computed until it runs again.
 #[derive(Debug)]
@@ -206,9 +198,7 @@ pub struct VideoTimeline {
     fps: f64,
     expected: usize,
     values: Vec<f32>,
-    generation: u64,
-    cancel: Arc<AtomicBool>,
-    channel: (mpsc::Sender<JobMessage>, mpsc::Receiver<JobMessage>),
+    run_job: Job<TimelineMessage>,
 }
 
 impl Default for VideoTimeline {
@@ -219,16 +209,8 @@ impl Default for VideoTimeline {
             fps: 1.0,
             expected: 0,
             values: Vec::new(),
-            generation: 0,
-            cancel: Arc::new(AtomicBool::new(false)),
-            channel: mpsc::channel(),
+            run_job: Job::new(|| {}),
         }
-    }
-}
-
-impl Drop for VideoTimeline {
-    fn drop(&mut self) {
-        self.cancel.store(true, Ordering::Relaxed);
     }
 }
 
@@ -254,15 +236,12 @@ impl VideoTimeline {
         self.expected = expected_samples(&job.tracks, self.fps);
         self.values.clear();
         self.state = TimelineState::Running;
-        let (fps, cancel, generation) = (self.fps, self.cancel.clone(), self.generation);
-        let tx = self.channel.0.clone();
-        std::thread::spawn(move || run_job(job, fps, cancel, generation, tx));
+        let fps = self.fps;
+        self.run_job.start(move |ctx| run_job(job, fps, ctx));
     }
 
     fn stop(&mut self) {
-        self.cancel.store(true, Ordering::Relaxed);
-        self.cancel = Arc::new(AtomicBool::new(false));
-        self.generation += 1;
+        self.run_job.cancel();
     }
 
     pub fn clear(&mut self) {
@@ -294,10 +273,7 @@ impl VideoTimeline {
     }
 
     pub fn poll(&mut self) {
-        while let Ok((generation, message)) = self.channel.1.try_recv() {
-            if generation != self.generation {
-                continue;
-            }
+        for message in self.run_job.poll() {
             match message {
                 TimelineMessage::Value(value) => self.values.push(value),
                 TimelineMessage::Done(Ok(())) => self.state = TimelineState::Done,

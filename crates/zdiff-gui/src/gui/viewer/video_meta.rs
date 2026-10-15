@@ -1,17 +1,13 @@
 //! Video metadata table (ffprobe fields of both sides with differing values marked) and the
 //! video viewer's Frames / Audio / Metadata tabs.
 
-use std::{
-    path::Path,
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-        mpsc,
-    },
-};
+use std::path::Path;
 
 use eframe::egui;
-use zcommon::ffmpeg::{FfmpegPaths, MediaInfo, StreamKind, probe};
+use zcommon::{
+    ffmpeg::{FfmpegPaths, MediaInfo, StreamKind, probe},
+    job::Job,
+};
 
 use super::{
     audio::{self, AudioDiffProcessor, AudioSettings},
@@ -169,8 +165,6 @@ pub enum VideoTab {
 }
 
 type Probed = Result<VideoMeta, String>;
-type ProbeMessage = (u64, usize, Probed);
-
 /// Probes both sides when the pair changes; a pair change cancels running probes and drops
 /// their results.
 #[derive(Debug)]
@@ -178,10 +172,8 @@ pub struct VideoMetaProcessor {
     pub tab: VideoTab,
     files: [Option<LoadedFile>; 2],
     ffmpeg: Option<FfmpegPaths>,
-    generation: u64,
-    cancel: Arc<AtomicBool>,
     probes: [Option<Probed>; 2],
-    channel: (mpsc::Sender<ProbeMessage>, mpsc::Receiver<ProbeMessage>),
+    jobs: [Job<Probed>; 2],
 }
 
 impl Default for VideoMetaProcessor {
@@ -190,10 +182,8 @@ impl Default for VideoMetaProcessor {
             tab: VideoTab::default(),
             files: [None, None],
             ffmpeg: None,
-            generation: 0,
-            cancel: Arc::new(AtomicBool::new(false)),
             probes: [None, None],
-            channel: mpsc::channel(),
+            jobs: [Job::new(|| {}), Job::new(|| {})],
         }
     }
 }
@@ -211,12 +201,12 @@ impl VideoMetaProcessor {
         {
             return;
         }
-        self.cancel.store(true, Ordering::Relaxed);
-        self.cancel = Arc::new(AtomicBool::new(false));
-        self.generation += 1;
         self.files = files;
         self.ffmpeg = ffmpeg;
         self.probes = [None, None];
+        for job in &mut self.jobs {
+            job.cancel();
+        }
         let Some(ffmpeg) = &self.ffmpeg else {
             return;
         };
@@ -227,22 +217,20 @@ impl VideoMetaProcessor {
                 .as_path()
                 .map(Path::to_path_buf)
                 .ok_or_else(|| format!("{}: metadata needs a local file", file.path()));
-            let (tx, generation, cancel) =
-                (self.channel.0.clone(), self.generation, self.cancel.clone());
             let ffmpeg = ffmpeg.clone();
-            std::thread::spawn(move || {
+            self.jobs[index].start(move |ctx| {
                 let probed = path
-                    .and_then(|path| probe(&ffmpeg, &path, &cancel))
+                    .and_then(|path| probe(&ffmpeg, &path, ctx.cancel_flag()))
                     .and_then(|info| VideoMeta::from_probe(&info));
-                let _ = tx.send((generation, index, probed));
+                ctx.send(probed);
             });
         }
     }
 
     pub fn poll(&mut self) {
-        while let Ok((generation, index, probed)) = self.channel.1.try_recv() {
-            if generation == self.generation {
-                self.probes[index] = Some(probed);
+        for (probe, job) in self.probes.iter_mut().zip(&mut self.jobs) {
+            if let Some(probed) = job.poll().pop() {
+                *probe = Some(probed);
             }
         }
     }

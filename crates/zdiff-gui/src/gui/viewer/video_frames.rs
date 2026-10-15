@@ -3,15 +3,14 @@
 
 use std::{
     path::Path,
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-        mpsc,
-    },
+    sync::{Arc, atomic::AtomicBool},
 };
 
 use eframe::egui::{self, Align2, TextStyle, pos2, vec2};
-use zcommon::ffmpeg::{FfmpegPaths, MediaInfo, StreamKind, frame_at_args, probe, run_ffmpeg};
+use zcommon::{
+    ffmpeg::{FfmpegPaths, MediaInfo, StreamKind, frame_at_args, probe, run_ffmpeg},
+    job::Job,
+};
 
 use super::{
     hex::is_same_side,
@@ -172,7 +171,6 @@ enum JobResult {
     Frame(u64, Result<DecodedImage, String>),
 }
 
-type JobMessage = (u64, usize, JobResult);
 type ShownFrame = (u64, Result<Arc<DecodedImage>, String>);
 
 /// Probes each side when the pair changes, then keeps one frame per side: the nearest to the
@@ -181,13 +179,11 @@ type ShownFrame = (u64, Result<Arc<DecodedImage>, String>);
 pub struct VideoFrameProcessor {
     files: [Option<LoadedFile>; 2],
     ffmpeg: Option<FfmpegPaths>,
-    generation: u64,
-    cancel: Arc<AtomicBool>,
     probes: [Probe; 2],
     fetching: [Option<u64>; 2],
     frames: [Option<ShownFrame>; 2],
     time_secs: f64,
-    channel: (mpsc::Sender<JobMessage>, mpsc::Receiver<JobMessage>),
+    jobs: [Job<JobResult>; 2],
     image: ImageDiffProcessor,
     timeline: VideoTimeline,
 }
@@ -197,13 +193,11 @@ impl Default for VideoFrameProcessor {
         Self {
             files: [None, None],
             ffmpeg: None,
-            generation: 0,
-            cancel: Arc::new(AtomicBool::new(false)),
             probes: [Probe::Idle, Probe::Idle],
             fetching: [None, None],
             frames: [None, None],
             time_secs: 0.0,
-            channel: mpsc::channel(),
+            jobs: [Job::new(|| {}), Job::new(|| {})],
             image: ImageDiffProcessor::default(),
             timeline: VideoTimeline::default(),
         }
@@ -225,9 +219,9 @@ impl VideoFrameProcessor {
         {
             return;
         }
-        self.cancel.store(true, Ordering::Relaxed);
-        self.cancel = Arc::new(AtomicBool::new(false));
-        self.generation += 1;
+        for job in &mut self.jobs {
+            job.cancel();
+        }
         self.files = files;
         self.ffmpeg = ffmpeg;
         self.probes = [Probe::Idle, Probe::Idle];
@@ -259,26 +253,23 @@ impl VideoFrameProcessor {
         }
     }
 
-    fn spawn(&self, index: usize, job: impl FnOnce(&AtomicBool) -> JobResult + Send + 'static) {
-        let (tx, generation, cancel) =
-            (self.channel.0.clone(), self.generation, self.cancel.clone());
-        std::thread::spawn(move || {
-            let _ = tx.send((generation, index, job(&cancel)));
+    fn spawn(&mut self, index: usize, job: impl FnOnce(&AtomicBool) -> JobResult + Send + 'static) {
+        self.jobs[index].start(move |ctx| {
+            ctx.send(job(ctx.cancel_flag()));
         });
     }
 
     /// Takes finished jobs, fetches the frames the time now needs and hands the frames to the
     /// image viewer. `max_texture_side` is the renderer's limit.
     pub fn poll(&mut self, max_texture_side: usize) {
-        while let Ok((generation, index, result)) = self.channel.1.try_recv() {
-            if generation != self.generation {
-                continue;
-            }
-            match result {
-                JobResult::Probe(probed) => self.probes[index] = Probe::Done(probed),
-                JobResult::Frame(frame, fetched) => {
-                    self.fetching[index] = None;
-                    self.frames[index] = Some((frame, fetched.map(Arc::new)));
+        for index in 0..2 {
+            for result in self.jobs[index].poll() {
+                match result {
+                    JobResult::Probe(probed) => self.probes[index] = Probe::Done(probed),
+                    JobResult::Frame(frame, fetched) => {
+                        self.fetching[index] = None;
+                        self.frames[index] = Some((frame, fetched.map(Arc::new)));
+                    }
                 }
             }
         }
@@ -309,7 +300,7 @@ impl VideoFrameProcessor {
     }
 
     fn fetch_wanted(&mut self) {
-        let Some(ffmpeg) = &self.ffmpeg else {
+        let Some(ffmpeg) = self.ffmpeg.clone() else {
             return;
         };
         for index in 0..2 {
