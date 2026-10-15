@@ -1,4 +1,5 @@
 use std::{
+    ffi::OsStr,
     io,
     path::{Path, PathBuf},
     sync::atomic::{AtomicBool, AtomicUsize},
@@ -17,32 +18,21 @@ pub type FsIsDir = bool;
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum FsNodeKind {
-    File {
-        path: PathBuf,
-    },
-    Dir {
-        path: PathBuf,
-        children: Vec<FsNodeId>,
-    },
+    File,
+    Dir { children: Vec<FsNodeId> },
 }
 
 impl FsNodeKind {
-    pub fn new_file(path: impl AsRef<Path>) -> Self {
-        Self::File {
-            path: path.as_ref().into(),
-        }
+    pub fn new_file() -> Self {
+        Self::File
     }
-    pub fn new_empty_dir(path: impl AsRef<Path>) -> Self {
+    pub fn new_empty_dir() -> Self {
         Self::Dir {
-            path: path.as_ref().into(),
             children: Vec::new(),
         }
     }
-    pub fn new_dir(path: impl AsRef<Path>, children: Vec<FsNodeId>) -> Self {
-        Self::Dir {
-            path: path.as_ref().into(),
-            children,
-        }
+    pub fn new_dir(children: Vec<FsNodeId>) -> Self {
+        Self::Dir { children }
     }
 }
 
@@ -50,6 +40,7 @@ impl FsNodeKind {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct FsNode {
     pub parent: Option<FsNodeId>,
+    name: Box<OsStr>,
     pub kind: FsNodeKind,
     pub size: u64,
     pub modified: Option<SystemTime>,
@@ -59,38 +50,26 @@ pub struct FsNode {
 impl FsNode {
     pub fn is_dir(&self) -> bool {
         match self.kind {
-            FsNodeKind::File { .. } => false,
+            FsNodeKind::File => false,
             FsNodeKind::Dir { .. } => true,
         }
     }
     pub fn is_file(&self) -> bool {
         match self.kind {
-            FsNodeKind::File { .. } => true,
+            FsNodeKind::File => true,
             FsNodeKind::Dir { .. } => false,
         }
     }
 
     pub fn children(&self) -> Option<&Vec<FsNodeId>> {
         match &self.kind {
-            FsNodeKind::File { .. } => None,
+            FsNodeKind::File => None,
             FsNodeKind::Dir { children, .. } => Some(children),
         }
     }
 
-    pub fn as_path(&self) -> impl AsRef<Path> {
-        match &self.kind {
-            FsNodeKind::File { path } | FsNodeKind::Dir { path, .. } => path,
-        }
-    }
-
     pub fn name(&self) -> &str {
-        match &self.kind {
-            FsNodeKind::File { path } | FsNodeKind::Dir { path, .. } => path
-                .file_name()
-                .expect("failed to get file_name")
-                .to_str()
-                .expect("failed to get str"),
-        }
+        self.name.to_str().expect("failed to get str")
     }
 
     pub fn display_name(&self) -> &str {
@@ -215,7 +194,7 @@ impl FileSystemModel {
         self.nodes
             .iter()
             .enumerate()
-            .filter(|(_, n)| matches!(n.kind, FsNodeKind::File { .. }))
+            .filter(|(_, n)| matches!(n.kind, FsNodeKind::File))
             .map(|(id, _)| id)
     }
 
@@ -251,15 +230,14 @@ impl FileSystemModel {
 
     // Slow, avoid
     pub fn find_path(&self, path: impl AsRef<Path>) -> Option<FsNodeId> {
-        self.iter_nodes()
-            .find(|&id| self.nodes[id].as_path().as_ref() == path.as_ref())
+        self.iter_nodes().find(|&id| self.path(id) == path.as_ref())
     }
 
     pub fn total_files(&self) -> usize {
         self.nodes
             .iter()
             .filter(|n| match n.kind {
-                FsNodeKind::File { .. } => true,
+                FsNodeKind::File => true,
                 FsNodeKind::Dir { .. } => false,
             })
             .count()
@@ -269,27 +247,28 @@ impl FileSystemModel {
         self.nodes
             .iter()
             .filter(|n| match n.kind {
-                FsNodeKind::File { .. } => false,
+                FsNodeKind::File => false,
                 FsNodeKind::Dir { .. } => true,
             })
             .count()
     }
 
+    pub(crate) fn set_root_path(&mut self, root_path: PathBuf) {
+        self.root_path = root_path;
+    }
+
     pub(crate) fn push_node(
         &mut self,
         parent: Option<FsNodeId>,
+        name: &OsStr,
         kind: FsNodeKind,
         size: u64,
         modified: Option<SystemTime>,
         hash: Option<ContentHash>,
     ) -> FsNodeId {
-        if parent.is_none() {
-            self.root_path = match &kind {
-                FsNodeKind::File { path } | FsNodeKind::Dir { path, .. } => path.clone(),
-            };
-        }
         let new_node = FsNode {
             parent,
+            name: name.into(),
             kind,
             size,
             modified,
@@ -303,7 +282,7 @@ impl FileSystemModel {
     pub(crate) fn set_children(&mut self, dir_id: FsNodeId, new_children: Vec<FsNodeId>) {
         match &mut self.nodes[dir_id].kind {
             FsNodeKind::Dir { children, .. } => *children = new_children,
-            FsNodeKind::File { .. } => panic!("set_children on a file node {dir_id}"),
+            FsNodeKind::File => panic!("set_children on a file node {dir_id}"),
         }
     }
 
@@ -344,8 +323,8 @@ mod tests {
         let root = model.get_node(0).unwrap();
 
         match &root.kind {
-            FsNodeKind::Dir { path, children } => {
-                assert_eq!(path, dir.path());
+            FsNodeKind::Dir { children } => {
+                assert_eq!(model.path(0), dir.path());
                 assert!(children.is_empty());
             }
             _ => panic!("root is not a directory"),
@@ -378,9 +357,7 @@ mod tests {
             assert_eq!(node.parent, Some(0));
 
             match &node.kind {
-                FsNodeKind::File { path } => {
-                    file_names.push(path.file_name().unwrap().to_string_lossy().to_string());
-                }
+                FsNodeKind::File => file_names.push(node.name().to_string()),
                 _ => panic!("expected file"),
             }
         }
@@ -522,9 +499,7 @@ mod tests {
         assert_eq!(nested_node.parent, Some(subdir_id));
 
         match &nested_node.kind {
-            FsNodeKind::File { path } => {
-                assert_eq!(path.file_name().unwrap(), "nested.txt");
-            }
+            FsNodeKind::File => assert_eq!(nested_node.name(), "nested.txt"),
             _ => panic!("expected file"),
         }
     }

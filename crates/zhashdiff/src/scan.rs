@@ -1,5 +1,6 @@
 use std::{
     collections::HashMap,
+    ffi::OsStr,
     io,
     path::{Path, PathBuf},
     sync::atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -196,7 +197,9 @@ pub fn scan(
         skipped: Vec::new(),
         ancestors: vec![root.to_path_buf()],
     };
-    let root_id = scanner.push(None, FsNodeKind::new_empty_dir(root), 0, None, None);
+    scanner.model.set_root_path(root.to_path_buf());
+    let root_name = root.file_name().unwrap_or_default();
+    let root_id = scanner.push(None, root_name, FsNodeKind::new_empty_dir(), 0, None, None);
     assert_eq!(root_id, 0);
     scanner.add_children(root_id, listing)?;
 
@@ -204,6 +207,17 @@ pub fn scan(
         model: scanner.model,
         skipped: scanner.skipped,
     }))
+}
+
+fn entry_name(path: &Path) -> &OsStr {
+    // A depot root at the server level ("//depot") is a UNC prefix on Windows: its children have no file_name.
+    path.file_name().unwrap_or_else(|| {
+        let text = path
+            .as_os_str()
+            .to_str()
+            .expect("listing entry path is not UTF-8");
+        OsStr::new(text.rsplit(['/', '\\']).next().unwrap_or(text))
+    })
 }
 
 struct Scanner<'a> {
@@ -228,13 +242,15 @@ impl Scanner<'_> {
     fn push(
         &mut self,
         parent: Option<FsNodeId>,
+        name: &OsStr,
         kind: FsNodeKind,
         size: u64,
         modified: Option<SystemTime>,
         hash: Option<ContentHash>,
     ) -> FsNodeId {
         self.found.fetch_add(1, Ordering::Relaxed);
-        self.model.push_node(parent, kind, size, modified, hash)
+        self.model
+            .push_node(parent, name, kind, size, modified, hash)
     }
 
     fn add_children(
@@ -278,7 +294,8 @@ impl Scanner<'_> {
                 }
                 let id = self.push(
                     Some(dir_id),
-                    FsNodeKind::new_empty_dir(&entry.path),
+                    entry_name(&entry.path),
+                    FsNodeKind::new_empty_dir(),
                     entry.size,
                     entry.modified,
                     None,
@@ -290,7 +307,8 @@ impl Scanner<'_> {
             } else {
                 self.push(
                     Some(dir_id),
-                    FsNodeKind::new_file(&entry.path),
+                    entry_name(&entry.path),
+                    FsNodeKind::new_file(),
                     entry.size,
                     entry.modified,
                     entry.hash,
