@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use eframe::egui::{
-    self, PopupCloseBehavior, RichText, ScrollArea,
+    self, PopupCloseBehavior, RichText,
     containers::menu::{MenuButton, MenuConfig},
 };
 use serde::{Deserialize, Serialize};
@@ -227,38 +227,35 @@ impl PathDiffPane {
 
         ui.separator();
 
-        // Table scroll area
-        ScrollArea::vertical()
-            .id_salt(&"path_diff_table")
-            .show(ui, |ui| {
-                draw_ui_folder_tree(
-                    ui,
-                    &mut ctx.path_diff_view.file_system_1_view,
-                    &mut ctx.path_diff_view.file_system_2_view,
-                    ctx.path_diff_view.visible_rows.as_deref(),
-                    ctx.path_diff_view.rows_id,
-                    ctx.path_diff_view.file_system_1_root_path,
-                    ctx.path_diff_view.file_system_2_root_path,
-                    &mut self.open_dir_window_1,
-                    &mut self.open_dir_window_2,
-                    &ctx.diff_tool_config,
-                    ctx.tool_message,
-                    &mut self.cursor,
-                    &mut self.rows_cache,
-                    ctx.tree_sort,
-                    ctx.keyboard_taken,
-                    ctx.actions,
-                    *ctx.diff_filter,
-                    TreeMode::TwoFolder(TwoFolderTable {
-                        compare: ctx.tree_compare,
-                        likeness_bar: *ctx.likeness_bar,
-                        tolerance: ctx.tolerance,
-                        table: &mut self.table,
-                        linked: ctx.h_scroll_link.0,
-                        find: ctx.find,
-                    }),
-                );
-            });
+        // Not inside a ScrollArea: the table scrolls itself, and at fractional DPI an outer
+        // area overflows by a subpixel and lays its own bar over the table's.
+        draw_ui_folder_tree(
+            ui,
+            &mut ctx.path_diff_view.file_system_1_view,
+            &mut ctx.path_diff_view.file_system_2_view,
+            ctx.path_diff_view.visible_rows.as_deref(),
+            ctx.path_diff_view.rows_id,
+            ctx.path_diff_view.file_system_1_root_path,
+            ctx.path_diff_view.file_system_2_root_path,
+            &mut self.open_dir_window_1,
+            &mut self.open_dir_window_2,
+            &ctx.diff_tool_config,
+            ctx.tool_message,
+            &mut self.cursor,
+            &mut self.rows_cache,
+            ctx.tree_sort,
+            ctx.keyboard_taken,
+            ctx.actions,
+            *ctx.diff_filter,
+            TreeMode::TwoFolder(TwoFolderTable {
+                compare: ctx.tree_compare,
+                likeness_bar: *ctx.likeness_bar,
+                tolerance: ctx.tolerance,
+                table: &mut self.table,
+                linked: ctx.h_scroll_link.0,
+                find: ctx.find,
+            }),
+        );
 
         // Handle folder dialogs
         if self.open_dir_window_1 {

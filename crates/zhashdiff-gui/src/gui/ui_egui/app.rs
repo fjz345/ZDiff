@@ -2553,4 +2553,73 @@ mod tests {
             "scrolling frame took {scrolling:?}"
         );
     }
+
+    fn frame_texts(
+        ctx: &egui::Context,
+        app: &mut ZApp,
+        screen: egui::Vec2,
+        events: Vec<egui::Event>,
+    ) -> Vec<String> {
+        fn collect(shape: &egui::Shape, texts: &mut Vec<String>) {
+            match shape {
+                egui::Shape::Text(text) => texts.push(text.galley.text().to_owned()),
+                egui::Shape::Vec(shapes) => shapes.iter().for_each(|s| collect(s, texts)),
+                _ => {}
+            }
+        }
+        let mut frame = eframe::Frame::_new_kittest();
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, screen)),
+            events,
+            ..Default::default()
+        };
+        let output = ctx.run(input, |ctx| eframe::App::update(app, ctx, &mut frame));
+        let mut texts = Vec::new();
+        for clipped in &output.shapes {
+            collect(&clipped.shape, &mut texts);
+        }
+        texts
+    }
+
+    #[test]
+    fn pressing_the_folder_tree_scroll_bar_scrolls_at_a_fractional_zoom() {
+        let (left, right) = (tempdir().unwrap(), tempdir().unwrap());
+        let mut state = AppStateCtx {
+            file_system_1_root_path: Some(left.path().to_path_buf()),
+            file_system_2_root_path: Some(right.path().to_path_buf()),
+            file_system_model_1_view: Some(in_memory_view(left.path(), files_50k(1))),
+            file_system_model_2_view: Some(in_memory_view(right.path(), files_50k(2))),
+            ..Default::default()
+        };
+        finish_compare(&mut state);
+        let mut app = ZApp::new(LogBuffer::default());
+        app.state = Some(AppState::Idle(state));
+        let ctx = egui::Context::default();
+        ctx.set_zoom_factor(1.25);
+        let screen = egui::vec2(1600.0, 1000.0);
+        let bar = egui::pos2(screen.x - 10.0, screen.y / 2.0);
+        let shows_first_folder = |texts: &[String]| texts.iter().any(|t| t.ends_with("dir_00"));
+
+        for _ in 0..3 {
+            frame_texts(&ctx, &mut app, screen, Vec::new());
+        }
+        let before = frame_texts(&ctx, &mut app, screen, vec![egui::Event::PointerMoved(bar)]);
+        for pressed in [true, false] {
+            frame_texts(
+                &ctx,
+                &mut app,
+                screen,
+                vec![egui::Event::PointerButton {
+                    pos: bar,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: egui::Modifiers::NONE,
+                }],
+            );
+        }
+        let after = frame_texts(&ctx, &mut app, screen, Vec::new());
+
+        assert!(shows_first_folder(&before));
+        assert!(!shows_first_folder(&after));
+    }
 }
