@@ -5,11 +5,7 @@
 use std::{
     borrow::Cow,
     io::Cursor,
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-        mpsc,
-    },
+    sync::{Arc, OnceLock, atomic::{AtomicBool, Ordering}},
     time::{Duration, Instant},
 };
 
@@ -17,6 +13,7 @@ use eframe::egui::{
     self, Color32, ColorImage, Pos2, Rect, Sense, Stroke, StrokeKind, TextureFilter, TextureHandle,
     TextureOptions, Vec2, pos2, vec2,
 };
+use zcommon::job::Job;
 use zcommon_ui::style_window::role_color;
 use zdiff::pixel::{PixelDiff, PixelStats, RgbaBuffer, pixel_diff};
 
@@ -550,9 +547,8 @@ impl std::fmt::Debug for DiffMap {
     }
 }
 
-type DecodeResult = (usize, u64, Result<DecodedImage, String>);
+type DecodeResult = Result<DecodedImage, String>;
 type CompareResult = (
-    u64,
     CompareKey,
     PixelStats,
     ColorImage,
@@ -562,12 +558,11 @@ type CompareResult = (
 
 /// Decodes each side on a worker thread when its load changes. A result for an older load of the
 /// side is dropped. Decoding can't be interrupted; a stale decode just runs to its end.
-#[derive(Debug)]
 pub struct ImageDiffProcessor {
     files: [Option<LoadedFile>; 2],
     sides: [SideState; 2],
-    generations: [u64; 2],
-    channel: (mpsc::Sender<DecodeResult>, mpsc::Receiver<DecodeResult>),
+    decode_jobs: [Job<DecodeResult>; 2],
+    repaint: Arc<OnceLock<egui::Context>>,
     view: ImageView,
     /// Fit once both sides are done decoding, so the second side arriving doesn't move the view.
     fit_pending: bool,
@@ -584,10 +579,7 @@ pub struct ImageDiffProcessor {
     opacity: f32,
     /// What the current pair was last sent to compare with; `None` until both sides decode.
     compared: Option<CompareKey>,
-    compare_generation: u64,
-    /// Set when the pair or the tolerance changes, so a superseded comparison stops early.
-    compare_cancel: Arc<AtomicBool>,
-    compare_channel: (mpsc::Sender<CompareResult>, mpsc::Receiver<CompareResult>),
+    compare_job: Job<CompareResult>,
     /// Kept while another tolerance is compared, so dragging the slider doesn't blank the map.
     diff_map: Option<DiffMap>,
     /// Of the channel-filtered sides. Independent of the tolerance, so it is kept across comparisons
@@ -598,13 +590,31 @@ pub struct ImageDiffProcessor {
     texture_channel: ImageChannel,
 }
 
+impl std::fmt::Debug for ImageDiffProcessor {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ImageDiffProcessor")
+            .field("files", &self.files)
+            .field("sides", &self.sides)
+            .finish_non_exhaustive()
+    }
+}
+
 impl Default for ImageDiffProcessor {
     fn default() -> Self {
+        let repaint: Arc<OnceLock<egui::Context>> = Arc::default();
+        let wake = || {
+            let repaint = repaint.clone();
+            move || {
+                if let Some(ctx) = repaint.get() {
+                    ctx.request_repaint();
+                }
+            }
+        };
         Self {
             files: [None, None],
             sides: [SideState::Empty, SideState::Empty],
-            generations: [0, 0],
-            channel: mpsc::channel(),
+            decode_jobs: [Job::new(wake()), Job::new(wake())],
+            compare_job: Job::new(wake()),
             view: ImageView::default(),
             fit_pending: false,
             tolerance: 0,
@@ -614,13 +624,11 @@ impl Default for ImageDiffProcessor {
             swipe: 0.5,
             opacity: 0.5,
             compared: None,
-            compare_generation: 0,
-            compare_cancel: Arc::new(AtomicBool::new(false)),
-            compare_channel: mpsc::channel(),
             diff_map: None,
             histograms: None,
             texture_sampling: ImageSampling::default(),
             texture_channel: ImageChannel::default(),
+            repaint,
         }
     }
 }
@@ -632,21 +640,22 @@ impl ImageDiffProcessor {
             if is_same_side(&self.files[index], &file) {
                 continue;
             }
-            self.generations[index] += 1;
             self.fit_pending = true;
             self.sides[index] = match &file {
-                None => SideState::Empty,
+                None => {
+                    self.decode_jobs[index].cancel();
+                    SideState::Empty
+                }
                 Some(file) => {
                     log::info!("Image decode requested: {}", file.path());
-                    let (file, tx) = (file.clone(), self.channel.0.clone());
-                    let generation = self.generations[index];
-                    std::thread::spawn(move || {
+                    let file = file.clone();
+                    self.decode_jobs[index].start(move |job| {
                         let extension = path_extension(file.path());
                         let decoded =
                             decode_image(file.bytes(), extension.as_deref()).map_err(|e| {
                                 format!("{} can't be decoded as an image: {}", file.path(), e)
                             });
-                        let _ = tx.send((index, generation, decoded));
+                        job.send(decoded);
                     });
                     SideState::Decoding
                 }
@@ -657,9 +666,7 @@ impl ImageDiffProcessor {
     }
 
     fn reset_comparison(&mut self) {
-        self.compare_cancel.store(true, Ordering::Release);
-        self.compare_cancel = Arc::new(AtomicBool::new(false));
-        self.compare_generation += 1;
+        self.compare_job.cancel();
         self.compared = None;
         self.diff_map = None;
         self.histograms = None;
@@ -677,12 +684,7 @@ impl ImageDiffProcessor {
     /// Takes a finished comparison, and compares the pair again once both sides are decoded or
     /// the tolerance changed.
     fn compare(&mut self) {
-        while let Ok((generation, key, stats, mask, heat, histograms)) =
-            self.compare_channel.1.try_recv()
-        {
-            if generation != self.compare_generation {
-                continue;
-            }
+        for (key, stats, mask, heat, histograms) in self.compare_job.poll() {
             if let Some(histograms) = histograms {
                 self.histograms = Some((key.channel, Arc::new(histograms)));
             }
@@ -718,15 +720,14 @@ impl ImageDiffProcessor {
         self.histograms = histograms;
         self.compared = Some(wanted);
 
-        let generation = self.compare_generation;
         let (tolerance, channel) = (wanted.tolerance, wanted.channel);
         let make_histograms = wanted.histograms
             && !self
                 .histograms
                 .as_ref()
                 .is_some_and(|(cached, _)| *cached == channel);
-        let (cancel_flag, tx) = (self.compare_cancel.clone(), self.compare_channel.0.clone());
-        std::thread::spawn(move || {
+        self.compare_job.start(move |job| {
+            let cancel_flag: &AtomicBool = job.cancel_flag();
             let (first, second) = (first.buffer(), second.buffer());
             let (first_rgba, second_rgba) = (
                 apply_channel(first.rgba, channel),
@@ -740,11 +741,11 @@ impl ImageDiffProcessor {
                 rgba: &second_rgba,
                 ..second
             };
-            let Some(diff) = pixel_diff(first, second, tolerance, &cancel_flag) else {
+            let Some(diff) = pixel_diff(first, second, tolerance, cancel_flag) else {
                 return;
             };
             let heat = if wanted.heat {
-                let Some(heat) = heat_magnitudes(first, second, &cancel_flag) else {
+                let Some(heat) = heat_magnitudes(first, second, cancel_flag) else {
                     return;
                 };
                 Some(heat_image(&heat, tolerance))
@@ -754,17 +755,20 @@ impl ImageDiffProcessor {
             let mask = mask_image(&diff);
             let histograms =
                 make_histograms.then(|| [histogram(first.rgba), histogram(second.rgba)]);
-            let _ = tx.send((generation, wanted, diff.stats, mask, heat, histograms));
+            job.send((wanted, diff.stats, mask, heat, histograms));
         });
     }
 
     /// `max_texture_side` is the renderer's limit; a larger image can't be uploaded and fails
     /// like a decode error.
     pub fn poll(&mut self, max_texture_side: usize) {
-        while let Ok((index, generation, decoded)) = self.channel.1.try_recv() {
-            if generation != self.generations[index] {
-                continue;
-            }
+        let results: Vec<_> = (0..2)
+            .flat_map(|index| {
+                let decoded = self.decode_jobs[index].poll();
+                decoded.into_iter().map(move |decoded| (index, decoded))
+            })
+            .collect();
+        for (index, decoded) in results {
             let path = self.files[index].as_ref().map(|f| f.path().to_string());
             self.sides[index] = match decoded {
                 Ok(image) if image.width == 0 || image.height == 0 => {
@@ -908,6 +912,7 @@ pub fn show(
     settings: &mut ImageSettings,
     left_width: f32,
 ) {
+    let _ = processor.repaint.set(ui.ctx().clone());
     let mut fit = false;
     let mut actual_size = false;
     let mut blink_step = false;
