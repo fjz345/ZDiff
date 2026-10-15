@@ -1,18 +1,13 @@
 //! Audio metadata table: ffprobe fields of both sides with differing values marked, and
 //! integrated loudness (ffmpeg's ebur128 filter) measured on request.
 
-use std::{
-    ffi::OsString,
-    path::Path,
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-        mpsc,
-    },
-};
+use std::{ffi::OsString, path::Path, sync::atomic::AtomicBool};
 
 use eframe::egui;
-use zcommon::ffmpeg::{FfmpegPaths, MediaInfo, StreamKind, probe, run_ffmpeg};
+use zcommon::{
+    ffmpeg::{FfmpegPaths, MediaInfo, StreamKind, probe, run_ffmpeg},
+    job::Job,
+};
 
 use super::hex::is_same_side;
 use crate::file::LoadedFile;
@@ -148,32 +143,32 @@ fn local_path(file: &LoadedFile) -> Result<&Path, String> {
 
 type Probed = Result<AudioMeta, String>;
 type Measured = Result<f64, String>;
-type JobMessage = (u64, usize, JobResult);
 
 #[derive(Debug)]
-enum Job<T> {
+enum Slot<T> {
     Idle,
     Running,
     Done(T),
 }
 
-#[derive(Debug)]
-enum JobResult {
-    Probe(Probed),
-    Loudness(Measured),
-}
-
 /// Probes both sides when the pair changes; loudness runs only on request. A pair change
 /// cancels running jobs and drops their results.
-#[derive(Debug)]
 pub struct AudioMetaProcessor {
     files: [Option<LoadedFile>; 2],
     ffmpeg: Option<FfmpegPaths>,
-    generation: u64,
-    cancel: Arc<AtomicBool>,
-    probes: [Job<Probed>; 2],
-    loudness: [Job<Measured>; 2],
-    channel: (mpsc::Sender<JobMessage>, mpsc::Receiver<JobMessage>),
+    probe_jobs: [Job<Probed>; 2],
+    loudness_jobs: [Job<Measured>; 2],
+    probes: [Slot<Probed>; 2],
+    loudness: [Slot<Measured>; 2],
+}
+
+impl std::fmt::Debug for AudioMetaProcessor {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AudioMetaProcessor")
+            .field("probes", &self.probes)
+            .field("loudness", &self.loudness)
+            .finish()
+    }
 }
 
 impl Default for AudioMetaProcessor {
@@ -181,11 +176,10 @@ impl Default for AudioMetaProcessor {
         Self {
             files: [None, None],
             ffmpeg: None,
-            generation: 0,
-            cancel: Arc::new(AtomicBool::new(false)),
-            probes: [Job::Idle, Job::Idle],
-            loudness: [Job::Idle, Job::Idle],
-            channel: mpsc::channel(),
+            probe_jobs: std::array::from_fn(|_| Job::new(|| {})),
+            loudness_jobs: std::array::from_fn(|_| Job::new(|| {})),
+            probes: [Slot::Idle, Slot::Idle],
+            loudness: [Slot::Idle, Slot::Idle],
         }
     }
 }
@@ -203,25 +197,29 @@ impl AudioMetaProcessor {
         {
             return;
         }
-        self.cancel.store(true, Ordering::Relaxed);
-        self.cancel = Arc::new(AtomicBool::new(false));
-        self.generation += 1;
+        for job in &mut self.probe_jobs {
+            job.cancel();
+        }
+        for job in &mut self.loudness_jobs {
+            job.cancel();
+        }
         self.files = files;
         self.ffmpeg = ffmpeg;
-        self.loudness = [Job::Idle, Job::Idle];
-        self.probes = [Job::Idle, Job::Idle];
+        self.loudness = [Slot::Idle, Slot::Idle];
+        self.probes = [Slot::Idle, Slot::Idle];
         let Some(ffmpeg) = &self.ffmpeg else {
             return;
         };
         for index in 0..2 {
             let file = self.files[index].as_ref().expect("both sides requested");
-            self.probes[index] = Job::Running;
+            self.probes[index] = Slot::Running;
             let path = local_path(file).map(Path::to_path_buf);
-            self.spawn(index, ffmpeg.clone(), move |ffmpeg, cancel| {
-                JobResult::Probe(
-                    path.and_then(|path| probe(&ffmpeg, &path, cancel))
+            let ffmpeg = ffmpeg.clone();
+            self.probe_jobs[index].start(move |ctx| {
+                ctx.send(
+                    path.and_then(|path| probe(&ffmpeg, &path, ctx.cancel_flag()))
                         .and_then(|info| AudioMeta::from_probe(&info)),
-                )
+                );
             });
         }
     }
@@ -234,42 +232,29 @@ impl AudioMetaProcessor {
             let Some(file) = &self.files[index] else {
                 continue;
             };
-            self.loudness[index] = Job::Running;
+            self.loudness[index] = Slot::Running;
             let path = local_path(file).map(Path::to_path_buf);
-            self.spawn(index, ffmpeg.clone(), move |ffmpeg, cancel| {
-                JobResult::Loudness(path.and_then(|path| measure_loudness(&ffmpeg, &path, cancel)))
+            let ffmpeg = ffmpeg.clone();
+            self.loudness_jobs[index].start(move |ctx| {
+                ctx.send(path.and_then(|path| measure_loudness(&ffmpeg, &path, ctx.cancel_flag())));
             });
         }
     }
 
-    fn spawn(
-        &self,
-        index: usize,
-        ffmpeg: FfmpegPaths,
-        job: impl FnOnce(FfmpegPaths, &AtomicBool) -> JobResult + Send + 'static,
-    ) {
-        let (tx, generation, cancel) =
-            (self.channel.0.clone(), self.generation, self.cancel.clone());
-        std::thread::spawn(move || {
-            let _ = tx.send((generation, index, job(ffmpeg, &cancel)));
-        });
-    }
-
     pub fn poll(&mut self) {
-        while let Ok((generation, index, result)) = self.channel.1.try_recv() {
-            if generation != self.generation {
-                continue;
+        for index in 0..2 {
+            if let Some(probed) = self.probe_jobs[index].poll().pop() {
+                self.probes[index] = Slot::Done(probed);
             }
-            match result {
-                JobResult::Probe(probed) => self.probes[index] = Job::Done(probed),
-                JobResult::Loudness(measured) => self.loudness[index] = Job::Done(measured),
+            if let Some(measured) = self.loudness_jobs[index].poll().pop() {
+                self.loudness[index] = Slot::Done(measured);
             }
         }
     }
 
     fn is_running(&self) -> bool {
-        self.probes.iter().any(|j| matches!(j, Job::Running))
-            || self.loudness.iter().any(|j| matches!(j, Job::Running))
+        self.probes.iter().any(|j| matches!(j, Slot::Running))
+            || self.loudness.iter().any(|j| matches!(j, Slot::Running))
     }
 }
 
@@ -279,11 +264,11 @@ pub fn show(ui: &mut egui::Ui, processor: &mut AudioMetaProcessor) {
         ui.ctx().request_repaint();
     }
     let metas: [Option<AudioMeta>; 2] = std::array::from_fn(|index| {
-        let Job::Done(Ok(meta)) = &processor.probes[index] else {
+        let Slot::Done(Ok(meta)) = &processor.probes[index] else {
             return None;
         };
         let loudness_lufs = match &processor.loudness[index] {
-            Job::Done(Ok(lufs)) => Some(*lufs),
+            Slot::Done(Ok(lufs)) => Some(*lufs),
             _ => None,
         };
         Some(AudioMeta {
@@ -297,13 +282,13 @@ pub fn show(ui: &mut egui::Ui, processor: &mut AudioMetaProcessor) {
     for index in 0..2 {
         let side = ["Left", "Right"][index];
         match &processor.probes[index] {
-            Job::Running => {
+            Slot::Running => {
                 ui.label(format!("{side}: probing..."));
             }
-            Job::Done(Err(e)) => {
+            Slot::Done(Err(e)) => {
                 ui.colored_label(ui.visuals().warn_fg_color, format!("{side}: {e}"));
             }
-            Job::Idle | Job::Done(Ok(_)) => {}
+            Slot::Idle | Slot::Done(Ok(_)) => {}
         }
     }
     if let [Some(left), Some(right)] = &metas {
@@ -331,7 +316,10 @@ pub fn show(ui: &mut egui::Ui, processor: &mut AudioMetaProcessor) {
     }
 
     ui.horizontal(|ui| {
-        let measuring = processor.loudness.iter().any(|j| matches!(j, Job::Running));
+        let measuring = processor
+            .loudness
+            .iter()
+            .any(|j| matches!(j, Slot::Running));
         let button = ui.add_enabled(
             !measuring && processor.ffmpeg.is_some(),
             egui::Button::new("Measure loudness"),
@@ -344,7 +332,7 @@ pub fn show(ui: &mut egui::Ui, processor: &mut AudioMetaProcessor) {
         }
     });
     for index in 0..2 {
-        if let Job::Done(Err(e)) = &processor.loudness[index] {
+        if let Slot::Done(Err(e)) = &processor.loudness[index] {
             let side = ["Left", "Right"][index];
             ui.colored_label(ui.visuals().warn_fg_color, format!("{side} loudness: {e}"));
         }

@@ -6,7 +6,6 @@ use std::{
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
-        mpsc,
     },
     time::Duration,
 };
@@ -14,6 +13,7 @@ use std::{
 use eframe::egui::{
     self, Align2, Color32, ColorImage, Rect, TextureHandle, TextureOptions, pos2, vec2,
 };
+use zcommon::job::Job;
 
 use super::audio::{DecodedAudio, TimeView};
 
@@ -418,13 +418,13 @@ struct RenderKey {
     height: usize,
     settings: SpectrumSettings,
     colors: [Color32; 2],
-    generations: [u64; 2],
+    revisions: [u64; 2],
 }
 
 pub(super) const LANES: [&str; 3] = ["Left", "Right", "Difference"];
 const DIFF_NEUTRAL: Color32 = Color32::from_gray(24);
 
-type ComputeResult = (usize, u64, Result<Spectrogram, Option<String>>);
+type ComputeResult = Result<Spectrogram, Option<String>>;
 type RenderResult = (RenderKey, [ColorImage; 3]);
 
 /// Computes a side's spectrogram when it is decoded or the window changes, and renders the
@@ -432,11 +432,10 @@ type RenderResult = (RenderKey, [ColorImage; 3]);
 pub struct SpectrumProcessor {
     sides: [SideState; 2],
     windows: [Option<usize>; 2],
-    generations: [u64; 2],
-    cancels: [Arc<AtomicBool>; 2],
-    computed: (mpsc::Sender<ComputeResult>, mpsc::Receiver<ComputeResult>),
+    revisions: [u64; 2],
+    compute_jobs: [Job<ComputeResult>; 2],
     rendering: bool,
-    rendered: (mpsc::Sender<RenderResult>, mpsc::Receiver<RenderResult>),
+    render_job: Job<RenderResult>,
     textures: Option<(RenderKey, [TextureHandle; 3])>,
 }
 
@@ -444,7 +443,7 @@ impl std::fmt::Debug for SpectrumProcessor {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SpectrumProcessor")
             .field("windows", &self.windows)
-            .field("generations", &self.generations)
+            .field("revisions", &self.revisions)
             .finish()
     }
 }
@@ -454,20 +453,11 @@ impl Default for SpectrumProcessor {
         Self {
             sides: [SideState::Empty, SideState::Empty],
             windows: [None, None],
-            generations: [0, 0],
-            cancels: Default::default(),
-            computed: mpsc::channel(),
+            revisions: [0, 0],
+            compute_jobs: std::array::from_fn(|_| Job::new(|| {})),
             rendering: false,
-            rendered: mpsc::channel(),
+            render_job: Job::new(|| {}),
             textures: None,
-        }
-    }
-}
-
-impl Drop for SpectrumProcessor {
-    fn drop(&mut self) {
-        for cancel in &self.cancels {
-            cancel.store(true, Ordering::Relaxed);
         }
     }
 }
@@ -475,9 +465,8 @@ impl Drop for SpectrumProcessor {
 impl SpectrumProcessor {
     /// Drops the side's spectrogram and stops its computation; the audio it came from changed.
     pub fn reset(&mut self, index: usize) {
-        self.cancels[index].store(true, Ordering::Relaxed);
-        self.cancels[index] = Arc::new(AtomicBool::new(false));
-        self.generations[index] += 1;
+        self.compute_jobs[index].cancel();
+        self.revisions[index] += 1;
         self.windows[index] = None;
         self.sides[index] = SideState::Empty;
     }
@@ -493,31 +482,21 @@ impl SpectrumProcessor {
         self.reset(index);
         self.windows[index] = Some(window);
         self.sides[index] = SideState::Computing;
-        let (audio, cancel, tx) = (
-            audio.clone(),
-            self.cancels[index].clone(),
-            self.computed.0.clone(),
-        );
-        let generation = self.generations[index];
-        std::thread::spawn(move || {
-            let _ = tx.send((
-                index,
-                generation,
-                Spectrogram::compute(&audio, window, &cancel),
-            ));
+        let audio = audio.clone();
+        self.compute_jobs[index].start(move |ctx| {
+            ctx.send(Spectrogram::compute(&audio, window, ctx.cancel_flag()));
         });
     }
 
     pub fn poll(&mut self) {
-        while let Ok((index, generation, computed)) = self.computed.1.try_recv() {
-            if generation != self.generations[index] {
-                continue;
+        for index in 0..2 {
+            if let Some(computed) = self.compute_jobs[index].poll().pop() {
+                self.sides[index] = match computed {
+                    Ok(spectrogram) => SideState::Ready(Arc::new(spectrogram)),
+                    Err(Some(reason)) => SideState::Failed(reason),
+                    Err(None) => SideState::Empty,
+                };
             }
-            self.sides[index] = match computed {
-                Ok(spectrogram) => SideState::Ready(Arc::new(spectrogram)),
-                Err(Some(reason)) => SideState::Failed(reason),
-                Err(None) => SideState::Empty,
-            };
         }
     }
 
@@ -539,10 +518,9 @@ impl SpectrumProcessor {
     fn render(&mut self, key: RenderKey) {
         self.rendering = true;
         let spectra = [self.ready(0).cloned(), self.ready(1).cloned()];
-        let tx = self.rendered.0.clone();
-        std::thread::spawn(move || {
+        self.render_job.start(move |ctx| {
             let images = render_lanes(&spectra, &key);
-            let _ = tx.send((key, images));
+            ctx.send((key, images));
         });
     }
 }
@@ -640,7 +618,7 @@ pub fn show_lanes(
         processor.request(index, *audio, settings.window);
     }
     let status = sides.map(|(_, status)| status);
-    while let Ok((key, images)) = processor.rendered.1.try_recv() {
+    for (key, images) in processor.render_job.poll() {
         processor.rendering = false;
         let options = TextureOptions::LINEAR;
         let textures = match processor.textures.take() {
@@ -666,7 +644,7 @@ pub fn show_lanes(
         height: (lane_height * ppp).round().max(1.0) as usize,
         settings: settings.clone(),
         colors,
-        generations: processor.generations,
+        revisions: processor.revisions,
     };
     let computing = processor
         .sides
