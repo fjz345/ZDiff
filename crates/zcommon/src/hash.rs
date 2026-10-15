@@ -5,7 +5,7 @@ use std::{
     sync::{
         Arc, Mutex, RwLock,
         atomic::{AtomicBool, AtomicUsize, Ordering},
-        mpsc::{self, Receiver, Sender, TryRecvError},
+        mpsc::{self, Receiver, RecvTimeoutError, Sender},
     },
     thread,
     time::Duration,
@@ -31,6 +31,8 @@ pub fn hash_file_mmap(path: impl AsRef<Path>) -> io::Result<String> {
     Ok(hasher.finalize().to_hex().to_string())
 }
 
+const WORKER_WAIT: Duration = Duration::from_millis(50);
+
 pub type HashRepresentation = String;
 
 #[derive(Debug, Clone)]
@@ -48,6 +50,7 @@ pub struct HashService {
     rx: Arc<Mutex<Receiver<PathBuf>>>,
     queued: Arc<AtomicUsize>,
     in_progress: Arc<AtomicUsize>,
+    draining: Arc<AtomicUsize>,
     workers: Vec<WorkerHandle>,
 }
 
@@ -77,6 +80,7 @@ impl HashService {
             rx,
             queued: Arc::new(AtomicUsize::new(0)),
             in_progress,
+            draining: Arc::new(AtomicUsize::new(0)),
             workers: Vec::new(),
         };
 
@@ -89,6 +93,7 @@ impl HashService {
         let hashes = self.hashes.clone();
         let queued = self.queued.clone();
         let in_progress = self.in_progress.clone();
+        let draining = self.draining.clone();
         let stop_flag = Arc::new(AtomicBool::new(false));
         let thread_stop_flag = stop_flag.clone();
 
@@ -101,9 +106,16 @@ impl HashService {
                     break;
                 }
 
+                while draining.load(Ordering::SeqCst) > 0 {
+                    thread::sleep(Duration::from_millis(1));
+                }
+
                 let msg = {
                     let rx_guard = rx.lock().unwrap();
-                    rx_guard.try_recv()
+                    if thread_stop_flag.load(Ordering::SeqCst) {
+                        continue;
+                    }
+                    rx_guard.recv_timeout(WORKER_WAIT)
                 };
 
                 match msg {
@@ -114,11 +126,8 @@ impl HashService {
                         hashes.write().unwrap().insert(path, hash);
                         in_progress.fetch_sub(1, Ordering::SeqCst);
                     }
-                    Err(TryRecvError::Empty) => {
-                        thread::sleep(Duration::from_millis(50));
-                        continue;
-                    }
-                    Err(TryRecvError::Disconnected) => {
+                    Err(RecvTimeoutError::Timeout) => continue,
+                    Err(RecvTimeoutError::Disconnected) => {
                         log::info!("Worker {id} channel disconnected");
                         break;
                     }
@@ -174,11 +183,14 @@ impl HashService {
         // hashes before rx: request() holds hashes while sending, workers never hold rx
         // while waiting for hashes.
         let mut hashes = self.hashes.write().unwrap();
+        // Workers wait on rx and std mutexes are unfair: make them back off so this lock is won.
+        self.draining.fetch_add(1, Ordering::SeqCst);
         let rx = self.rx.lock().unwrap();
         while let Ok(path) = rx.try_recv() {
             self.queued.fetch_sub(1, Ordering::SeqCst);
             hashes.remove(&path);
         }
+        self.draining.fetch_sub(1, Ordering::SeqCst);
     }
 
     pub fn remove(&self, path: impl AsRef<Path>) {
@@ -218,6 +230,12 @@ impl HashService {
             queue_count: self.count_hash_queue(),
             num_workers: self.count_threads(),
         }
+    }
+}
+
+impl Drop for HashService {
+    fn drop(&mut self) {
+        self.resize_workers(0);
     }
 }
 
@@ -420,5 +438,60 @@ mod tests {
         service.request(&file_path);
 
         assert_eq!(service.snapshot().hashes.len(), 1);
+    }
+
+    #[test]
+    fn idle_workers_stop_promptly_on_resize_to_zero() {
+        let mut service = HashService::new(4);
+        thread::sleep(Duration::from_millis(100));
+
+        let start = Instant::now();
+        service.resize_workers(0);
+
+        assert!(start.elapsed() < Duration::from_millis(500));
+        assert_eq!(service.count_threads(), 0);
+    }
+
+    #[test]
+    fn dropping_an_idle_service_stops_its_workers_promptly() {
+        let service = HashService::new(4);
+        let rx = Arc::downgrade(&service.rx);
+        thread::sleep(Duration::from_millis(100));
+
+        let start = Instant::now();
+        drop(service);
+
+        assert!(start.elapsed() < Duration::from_millis(500));
+        assert!(rx.upgrade().is_none());
+    }
+
+    #[test]
+    fn a_request_after_an_idle_period_starts_at_once() {
+        let dir = tempdir().unwrap();
+        let paths = files(dir.path(), 1);
+        let service = HashService::new(2);
+        thread::sleep(Duration::from_millis(200));
+
+        let start = Instant::now();
+        service.request(&paths[0]);
+        while service.get_hash(&paths[0]).is_none() {
+            assert!(start.elapsed() < Duration::from_secs(5));
+            thread::sleep(Duration::from_millis(1));
+        }
+
+        assert!(start.elapsed() < Duration::from_millis(40));
+    }
+
+    #[test]
+    fn cancel_is_not_starved_by_idle_workers() {
+        let service = HashService::new(4);
+        thread::sleep(Duration::from_millis(100));
+
+        let start = Instant::now();
+        for _ in 0..10 {
+            service.cancel();
+        }
+
+        assert!(start.elapsed() < Duration::from_millis(500));
     }
 }
