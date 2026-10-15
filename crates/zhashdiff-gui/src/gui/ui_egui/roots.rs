@@ -181,7 +181,7 @@ mod tests {
         let mut root = None;
         set_root(&mut root, Side::Folder1, Path::new("src@git:origin/main")).unwrap();
         let root = root.unwrap();
-        let UniversalPath::Git(local, rev) = UniversalPath::from(root.as_path()) else {
+        let UniversalPath::Git(local, rev) = UniversalPath::from(&*root) else {
             panic!("not a git root: {}", root.display());
         };
         assert!(local.is_absolute());

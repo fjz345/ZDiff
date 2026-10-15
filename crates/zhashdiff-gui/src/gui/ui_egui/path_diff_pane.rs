@@ -98,7 +98,7 @@ impl PathDiffPane {
         file_system_2_view: Option<&FileSystemView>,
     ) {
         let root = |view: Option<&FileSystemView>| {
-            view.map(|view| view.file_system.get_root().as_path().as_ref().to_path_buf())
+            view.map(|view| view.file_system.path(view.file_system.get_root_node_id()))
         };
         let roots = (root(file_system_1_view), root(file_system_2_view));
         if roots != self.cursor_roots {

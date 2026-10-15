@@ -85,7 +85,7 @@ fn duplicate_groups(
         .iter_tree()
         .filter(|(node_id, node, _)| node.is_file() && !hidden[*node_id])
         .filter_map(|(node_id, node, _)| {
-            let path = node.as_path().as_ref().to_path_buf();
+            let path = model.path(node_id);
             let Some(Some(hash)) = hashes.get(&path) else {
                 return None;
             };
@@ -148,7 +148,7 @@ impl DuplicateGroups {
     ) -> Option<GroupCell<'_>> {
         if let Some(&(group_index, member_index)) = self.member_of.get(&node_id) {
             let group = &self.groups[group_index];
-            let path = group.paths[member_index].as_path();
+            let path = &group.paths[member_index];
             return Some(GroupCell::File {
                 id: group_index + 1,
                 group,
@@ -352,7 +352,7 @@ fn files_to_hash(view: &FileSystemView, hidden: &[bool]) -> Vec<PathBuf> {
                 .get_node(node_id)
                 .expect("iter_files yields valid node ids");
             SizedFile {
-                path: node.as_path().as_ref().to_path_buf(),
+                path: view.file_system.path(node_id),
                 size: node.size,
                 hidden: hidden[node_id],
             }
@@ -368,7 +368,7 @@ struct HashProgress {
 }
 
 fn view_root(view: Option<&FileSystemView>) -> Option<PathBuf> {
-    view.map(|view| view.file_system.get_root().as_path().as_ref().to_path_buf())
+    view.map(|view| view.file_system.path(view.file_system.get_root_node_id()))
 }
 
 fn non_disk_root_message(sides: [Option<(&Path, &ContentSource)>; 2]) -> Option<String> {
@@ -2037,14 +2037,7 @@ mod tests {
         let all: Vec<PathBuf> = view
             .file_system
             .iter_files()
-            .map(|id| {
-                view.file_system
-                    .get_node(id)
-                    .unwrap()
-                    .as_path()
-                    .as_ref()
-                    .to_path_buf()
-            })
+            .map(|id| view.file_system.path(id))
             .collect();
         let hashes = hashes_of(&all.iter().map(PathBuf::as_path).collect::<Vec<_>>());
         let groups = duplicate_groups(&view, &PathFilter::default(), &hashes);
@@ -2089,7 +2082,7 @@ mod tests {
         let first_in_tree = view
             .file_system
             .iter_tree()
-            .map(|(_, node, _)| node.as_path().as_ref().to_path_buf())
+            .map(|(id, _, _)| view.file_system.path(id))
             .find(|path| same_members.contains(path) || xx_members.contains(path))
             .unwrap();
         let expected = if same_members.contains(&first_in_tree) {

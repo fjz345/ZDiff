@@ -288,7 +288,7 @@ impl AppStateCtx {
         {
             let root = |view: &Option<FileSystemView>| {
                 view.as_ref()
-                    .map(|v| v.file_system.get_root().as_path().as_ref().to_path_buf())
+                    .map(|v| v.file_system.path(v.file_system.get_root_node_id()))
             };
             let roots = [
                 root(&self.file_system_model_1_view),
@@ -368,7 +368,7 @@ impl ScanJob {
         std::thread::Builder::new()
             .name("folder scan".into())
             .spawn(move || {
-                let p4 = P4Command::new(false).for_file(UniversalPath::from(thread_root.as_path()));
+                let p4 = P4Command::new(false).for_file(UniversalPath::from(&*thread_root));
                 let output = scan_side(
                     &GitCommand::default(),
                     &p4,
@@ -457,7 +457,7 @@ fn scan_action(
 }
 
 fn shown_root(view: Option<&FileSystemView>) -> Option<PathBuf> {
-    view.map(|view| view.file_system.get_root().as_path().as_ref().to_path_buf())
+    view.map(|view| view.file_system.path(view.file_system.get_root_node_id()))
 }
 
 /// A rescan of the shown root keeps the collapsed state of every path still present.
@@ -466,14 +466,7 @@ fn install_scanned(old: Option<&FileSystemView>, model: FileSystemModel) -> File
     let Some(old) = old.filter(|old| shown_root(Some(old)) == shown_root(Some(&view))) else {
         return view;
     };
-    let node_path = |model: &FileSystemModel, id: FsNodeId| {
-        model
-            .get_node(id)
-            .expect("iter_nodes yields valid node ids")
-            .as_path()
-            .as_ref()
-            .to_path_buf()
-    };
+    let node_path = |model: &FileSystemModel, id: FsNodeId| model.path(id);
     let old_ids: HashMap<PathBuf, FsNodeId> = old
         .file_system
         .iter_nodes()
@@ -2205,7 +2198,7 @@ mod tests {
 
     fn shown(view: &Option<FileSystemView>) -> Option<PathBuf> {
         view.as_ref()
-            .map(|view| view.file_system.get_root().as_path().as_ref().to_path_buf())
+            .map(|view| view.file_system.path(view.file_system.get_root_node_id()))
     }
 
     fn loaded(root_1: &Path, root_2: &Path) -> AppStateCtx {
