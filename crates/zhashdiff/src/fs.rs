@@ -83,7 +83,7 @@ impl FsNode {
         }
     }
 
-    pub fn display_name(&self) -> &str {
+    pub fn name(&self) -> &str {
         match &self.kind {
             FsNodeKind::File { path } | FsNodeKind::Dir { path, .. } => path
                 .file_name()
@@ -91,6 +91,10 @@ impl FsNode {
                 .to_str()
                 .expect("failed to get str"),
         }
+    }
+
+    pub fn display_name(&self) -> &str {
+        self.name()
     }
 }
 
@@ -136,6 +140,7 @@ impl<'a> Iterator for TreeIter<'a> {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct FileSystemModel {
     root_id: FsNodeId,
+    root_path: PathBuf,
     nodes: Vec<FsNode>,
     content: ContentSource,
 }
@@ -158,6 +163,7 @@ impl FileSystemModel {
     pub(crate) fn empty() -> Self {
         Self {
             root_id: 0,
+            root_path: PathBuf::new(),
             nodes: Vec::new(),
             content: ContentSource::Disk,
         }
@@ -231,16 +237,22 @@ impl FileSystemModel {
         (current - start) / std::mem::size_of::<FsNode>()
     }
 
+    pub fn path(&self, node_id: FsNodeId) -> PathBuf {
+        let mut names = Vec::new();
+        let mut current = node_id;
+        while let Some(parent) = self.nodes[current].parent {
+            names.push(self.nodes[current].name());
+            current = parent;
+        }
+        let mut path = self.root_path.clone();
+        path.extend(names.iter().rev());
+        path
+    }
+
     // Slow, avoid
     pub fn find_path(&self, path: impl AsRef<Path>) -> Option<FsNodeId> {
-        for node_id in self.iter_nodes() {
-            if let Some(node) = self.get_node(node_id) {
-                if node.as_path().as_ref() == path.as_ref() {
-                    return Some(node_id);
-                }
-            }
-        }
-        None
+        self.iter_nodes()
+            .find(|&id| self.nodes[id].as_path().as_ref() == path.as_ref())
     }
 
     pub fn total_files(&self) -> usize {
@@ -271,6 +283,11 @@ impl FileSystemModel {
         modified: Option<SystemTime>,
         hash: Option<ContentHash>,
     ) -> FsNodeId {
+        if parent.is_none() {
+            self.root_path = match &kind {
+                FsNodeKind::File { path } | FsNodeKind::Dir { path, .. } => path.clone(),
+            };
+        }
         let new_node = FsNode {
             parent,
             kind,
@@ -292,8 +309,10 @@ impl FileSystemModel {
 
     #[allow(dead_code)]
     pub fn assert_tree_consistency(model: &FileSystemModel) {
+        assert_eq!(model.path(model.root_id), model.root_path);
         for (id, node) in model.nodes.iter().enumerate() {
             if let Some(parent_id) = node.parent {
+                assert_eq!(model.path(id), model.path(parent_id).join(node.name()));
                 let parent = model.get_node(parent_id).unwrap();
                 match &parent.kind {
                     FsNodeKind::Dir { children, .. } => {
@@ -421,6 +440,33 @@ mod tests {
         let model = FileSystemModel::new(root).expect("Failed to create FileSystemModel");
 
         (temp, model)
+    }
+
+    #[test]
+    fn path_round_trips_on_nested_tree() {
+        let (temp, model) = build_large_test_tree();
+        assert_eq!(model.path(0), temp.path());
+        let mut files = 0;
+        for id in model.iter_files() {
+            let path = model.path(id);
+            assert!(path.is_file(), "{path:?}");
+            assert_eq!(model.find_path(&path), Some(id));
+            files += 1;
+        }
+        assert_eq!(files, 310);
+    }
+
+    #[test]
+    fn name_is_last_path_component() {
+        let (_temp, model) = build_large_test_tree();
+        for id in model.iter_nodes().skip(1) {
+            let node = model.get_node(id).unwrap();
+            assert_eq!(
+                Some(node.name()),
+                model.path(id).file_name().and_then(|n| n.to_str())
+            );
+            assert_eq!(node.display_name(), node.name());
+        }
     }
 
     #[test]
