@@ -26,7 +26,7 @@ use zdiff::{
 use crate::ui_egui::{
     active_side::{ActiveSide, ActiveSideState},
     diff_pane::{
-        CopyMarkerPlugin, FileDiffPane, measure_wrapped_rows, side_content_widths, text_rows,
+        CopyMarkerPlugin, FileDiffPane, RowCtx, measure_wrapped_rows, side_content_widths, text_rows,
         wrap_width, wrapped_row_heights,
     },
     occurrence::{OccurrenceState, RowFind},
@@ -412,20 +412,22 @@ impl CopyHarness {
                         }
                         FileDiffPane::render_side_row(
                             ui,
-                            ActiveSide::Left,
-                            index,
-                            &mut occurrences,
-                            Some(self.file_source.clone()),
-                            Some(self.file_target.clone()),
-                            &self.rows[index].left,
-                            SIDE_WIDTH,
-                            false,
-                            false,
-                            false,
-                            RowFind::default(),
-                            false,
-                            "rs",
-                            None,
+                            RowCtx {
+                                side: ActiveSide::Left,
+                                row_index: index,
+                                occurrences: &mut occurrences,
+                                file_source: Some(self.file_source.clone()),
+                                file_target: Some(self.file_target.clone()),
+                                content: &self.rows[index].left,
+                                width: SIDE_WIDTH,
+                                wrap: false,
+                                is_highlighted: false,
+                                accent_line_num: false,
+                                find: RowFind::default(),
+                                selectable: false,
+                                code_language: "rs",
+                                trace: None,
+                            },
                         );
                     },
                 );
@@ -523,20 +525,22 @@ impl CopyHarness {
                                     show_scrolled(ui, h_offset, |ui| {
                                         FileDiffPane::render_side_row(
                                             ui,
-                                            active_side_of(side),
-                                            row_index,
-                                            occurrences,
-                                            Some(file_source.clone()),
-                                            Some(file_target.clone()),
-                                            content,
-                                            side_width + h_offset,
-                                            wrap,
-                                            false,
-                                            false,
-                                            RowFind::default(),
-                                            active_side == active_side_of(side),
-                                            "rs",
-                                            None,
+                                            RowCtx {
+                                                side: active_side_of(side),
+                                                row_index,
+                                                occurrences,
+                                                file_source: Some(file_source.clone()),
+                                                file_target: Some(file_target.clone()),
+                                                content,
+                                                width: side_width + h_offset,
+                                                wrap,
+                                                is_highlighted: false,
+                                                accent_line_num: false,
+                                                find: RowFind::default(),
+                                                selectable: active_side == active_side_of(side),
+                                                code_language: "rs",
+                                                trace: None,
+                                            },
                                         );
                                     });
                                 });

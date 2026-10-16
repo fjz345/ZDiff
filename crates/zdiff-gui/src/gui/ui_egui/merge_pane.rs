@@ -22,7 +22,7 @@ use crate::{
     revert::{WriteRefusal, write_atomic},
     ui_egui::{
         active_side::ActiveSide,
-        diff_pane::FileDiffPane,
+        diff_pane::{FileDiffPane, RowCtx},
         occurrence::{OccurrenceState, RowFind},
         syntax::detect_language,
     },
@@ -577,20 +577,22 @@ fn draw_line(
     cell.set_clip_rect(rect.intersect(ui.clip_rect()));
     FileDiffPane::render_side_row(
         &mut cell,
-        side,
-        row,
-        occurrences,
-        file,
-        None,
-        content,
-        rect.width(),
-        false,
-        false,
-        false,
-        RowFind::default(),
-        false,
-        code_language,
-        None,
+        RowCtx {
+            side,
+            row_index: row,
+            occurrences,
+            file_source: file,
+            file_target: None,
+            content,
+            width: rect.width(),
+            wrap: false,
+            is_highlighted: false,
+            accent_line_num: false,
+            find: RowFind::default(),
+            selectable: false,
+            code_language,
+            trace: None,
+        },
     );
 }
 
