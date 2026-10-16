@@ -33,6 +33,7 @@ use crate::ui_egui::folder_keymap::FolderAction;
 use crate::ui_egui::fs_tree::CursorRowsCache;
 use crate::ui_egui::fs_tree::FileSystemView;
 use crate::ui_egui::fs_tree::FolderRole;
+use crate::ui_egui::fs_tree::FolderTreeCtx;
 use crate::ui_egui::fs_tree::NodeColumn;
 use crate::ui_egui::fs_tree::RowsId;
 use crate::ui_egui::fs_tree::TreeMode;
@@ -1049,22 +1050,24 @@ impl DuplicateFilesPane {
             };
             draw_ui_folder_tree(
                 ui,
-                ctx.path_diff_view.file_system_1_view,
-                &mut None,
-                Some(&cache.rows),
-                cache.id,
-                ctx.path_diff_view.file_system_1_root_path,
-                &mut None,
-                &mut self.open_dir_window,
-                &mut false,
-                ctx.diff_tool_config,
-                ctx.tool_message,
-                &mut self.cursor,
-                &mut self.cursor_rows,
-                ctx.tree_sort,
-                ctx.keyboard_taken,
-                &[],
-                ctx.duplicates_filter.diff_filter(),
+                FolderTreeCtx {
+                    file_system_1_view: ctx.path_diff_view.file_system_1_view,
+                    file_system_2_view: &mut None,
+                    visible_rows: Some(&cache.rows),
+                    rows_id: cache.id,
+                    root_1: ctx.path_diff_view.file_system_1_root_path,
+                    root_2: &mut None,
+                    open_dir_window_1: &mut self.open_dir_window,
+                    open_dir_window_2: &mut false,
+                    diff_tool_config: ctx.diff_tool_config,
+                    tool_message: ctx.tool_message,
+                    cursor: &mut self.cursor,
+                    rows_cache: &mut self.cursor_rows,
+                    sort: ctx.tree_sort,
+                    keyboard_taken: ctx.keyboard_taken,
+                    actions: &[],
+                    diff_filter: ctx.duplicates_filter.diff_filter(),
+                },
                 TreeMode::SingleSide {
                     pending_deletion: &pending_deletion,
                     columns,
@@ -2466,7 +2469,9 @@ mod tests {
         let undoable = |path: &Path| path == b;
 
         state.with_ctx(|ctx| {
-            pane.resolve_selected(ctx, DeleteKind::Recycle, undoable, |p: &Path| fs::remove_file(p))
+            pane.resolve_selected(ctx, DeleteKind::Recycle, undoable, |p: &Path| {
+                fs::remove_file(p)
+            })
         });
         assert!(!b.exists());
         assert!(c.exists(), "the permanent file survives the first step");
@@ -2475,7 +2480,9 @@ mod tests {
 
         fs::write(&c, "changed after hashing").unwrap();
         state.with_ctx(|ctx| {
-            pane.resolve_selected(ctx, DeleteKind::Permanent, undoable, |p: &Path| fs::remove_file(p))
+            pane.resolve_selected(ctx, DeleteKind::Permanent, undoable, |p: &Path| {
+                fs::remove_file(p)
+            })
         });
 
         let report = pane.resolution_summary.as_ref().unwrap();
@@ -2508,7 +2515,12 @@ mod tests {
         );
 
         state.with_ctx(|ctx| {
-            pane.resolve_selected(ctx, DeleteKind::Permanent, |_| false, |p: &Path| fs::remove_file(p))
+            pane.resolve_selected(
+                ctx,
+                DeleteKind::Permanent,
+                |_| false,
+                |p: &Path| fs::remove_file(p),
+            )
         });
 
         let report = pane.resolution_summary.as_ref().unwrap();
