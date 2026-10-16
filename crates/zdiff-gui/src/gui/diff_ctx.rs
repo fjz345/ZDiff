@@ -4,12 +4,12 @@ use std::{
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
-        mpsc::{self},
     },
     time::{Duration, Instant},
 };
 
 use zcommon::find::{FindError, FindQuery, Matcher};
+use zcommon::job::Job;
 use zdiff::universal_path::UniversalPath;
 use zdiff::{
     cached_file::CachedFile,
@@ -382,7 +382,7 @@ macro_rules! track_alloc {
 
 macro_rules! poll_ctx_channel {
     ($channel:expr, $inflight:expr, $ctx:expr, $transform:expr) => {
-        while let Ok(result) = $channel.try_recv() {
+        for result in $channel.poll() {
             match result {
                 Some(res) => {
                     if let Some(pending) = &$inflight {
@@ -412,18 +412,9 @@ pub struct DiffCtx {
     #[cfg(debug_assertions)]
     pub debug_file_2_path: UniversalPath,
 
-    channel_myers: (
-        mpsc::Sender<Option<MyersCtx>>,
-        mpsc::Receiver<Option<MyersCtx>>,
-    ),
-    channel_diff_ir: (
-        mpsc::Sender<Option<DiffIRCtx>>,
-        mpsc::Receiver<Option<DiffIRCtx>>,
-    ),
-    channel_diff_rows: (
-        mpsc::Sender<Option<DiffRowsCtx>>,
-        mpsc::Receiver<Option<DiffRowsCtx>>,
-    ),
+    myers_job: Job<Option<MyersCtx>>,
+    diff_ir_job: Job<Option<DiffIRCtx>>,
+    diff_rows_job: Job<Option<DiffRowsCtx>>,
 
     myers_inflight_input: Option<MyersCtxInput>,
     myers_ctx: Option<MyersCtx>,
@@ -457,10 +448,6 @@ pub enum OneSidedMode {
 impl DiffCtx {
     #[allow(dead_code)]
     pub fn new(input: UpdateDiffRowsInput) -> Self {
-        let (myers_tx, myers_rx) = mpsc::channel();
-        let (diff_ir_tx, diff_ir_rx) = mpsc::channel();
-        let (diff_rows_tx, diff_rows_rx) = mpsc::channel();
-
         Self {
             update_diff_rows_input: input.clone(),
             #[cfg(debug_assertions)]
@@ -475,9 +462,9 @@ impl DiffCtx {
                 .as_ref()
                 .map(|f| f.path.clone())
                 .unwrap_or_default(),
-            channel_myers: (myers_tx, myers_rx),
-            channel_diff_ir: (diff_ir_tx, diff_ir_rx),
-            channel_diff_rows: (diff_rows_tx, diff_rows_rx),
+            myers_job: Job::new(|| {}),
+            diff_ir_job: Job::new(|| {}),
+            diff_rows_job: Job::new(|| {}),
             myers_inflight_input: None,
             myers_ctx: None,
             diff_ir_inflight_input: None,
@@ -516,17 +503,19 @@ impl DiffCtx {
         self.update_diff_rows_input = input;
     }
 
-    /// A stage thread whose cancel flag is set exits without sending, so its in-flight input would
-    /// never clear and would block respawning the same input later. Results still arriving for a
-    /// forgotten input are dropped by `poll`.
-    pub fn forget_inflight(&mut self) {
+    /// A cancelled stage never sends, so its in-flight input would never clear and would block
+    /// restarting the same input later.
+    pub fn cancel_all(&mut self) {
+        self.myers_job.cancel();
+        self.diff_ir_job.cancel();
+        self.diff_rows_job.cancel();
         self.myers_inflight_input = None;
         self.diff_ir_inflight_input = None;
         self.diff_rows_inflight_input = None;
     }
 
     pub fn poll(&mut self) {
-        while let Ok(myers_res) = self.channel_myers.1.try_recv() {
+        for myers_res in self.myers_job.poll() {
             match myers_res {
                 Some(res) => {
                     if Some(&res.input) == self.myers_inflight_input.as_ref() {
@@ -538,7 +527,7 @@ impl DiffCtx {
             }
         }
 
-        while let Ok(ir_res) = self.channel_diff_ir.1.try_recv() {
+        for ir_res in self.diff_ir_job.poll() {
             match ir_res {
                 Some(res) => {
                     if Some(&res.input) == self.diff_ir_inflight_input.as_ref() {
@@ -550,7 +539,7 @@ impl DiffCtx {
             }
         }
 
-        while let Ok(rows_res) = self.channel_diff_rows.1.try_recv() {
+        for rows_res in self.diff_rows_job.poll() {
             match rows_res {
                 Some(res) => {
                     if Some(&res.input) == self.diff_rows_inflight_input.as_ref() {
@@ -563,14 +552,10 @@ impl DiffCtx {
         }
     }
 
-    pub fn request_myers(&mut self, cancel_flag: Arc<AtomicBool>) -> Option<&MyersCtx> {
+    pub fn request_myers(&mut self) -> Option<&MyersCtx> {
         let expected_input: MyersCtxInput = (&self.update_diff_rows_input).into();
 
-        poll_ctx_channel!(
-            self.channel_myers.1,
-            self.myers_inflight_input,
-            self.myers_ctx
-        );
+        poll_ctx_channel!(self.myers_job, self.myers_inflight_input, self.myers_ctx);
 
         if self
             .myers_ctx
@@ -586,145 +571,134 @@ impl DiffCtx {
 
         if self.myers_inflight_input.as_ref() != Some(&expected_input) {
             self.myers_inflight_input = Some(expected_input.clone());
-            let tx = self.channel_myers.0.clone();
             let input = expected_input;
-            let cancel = cancel_flag;
 
             log::info!("new request_myers");
-            std::thread::Builder::new()
-                .name("MyersCtxTHREAD".into())
-                .spawn(move || {
-                    let start = Instant::now();
-                    let (c1, c2, one_sided) = resolve_files(&input.file_1, &input.file_2);
-                    let cmp = |a: &RawToken, b: &RawToken| compare_tokens(a, b, c1, c2);
+            self.myers_job.start(move |job| {
+                let cancel = job.cancel_flag().clone();
+                let start = Instant::now();
+                let (c1, c2, one_sided) = resolve_files(&input.file_1, &input.file_2);
+                let cmp = |a: &RawToken, b: &RawToken| compare_tokens(a, b, c1, c2);
 
-                    let (t1, t2) = (&c1.tokens, &c2.tokens);
-                    let ignore = input.ignore.mask(t1, &c1.contents, t2, &c2.contents);
-                    let pins: &[Pin] = if one_sided.is_some() {
-                        &[]
-                    } else {
-                        &input.pins
-                    };
-                    let ignored_pins =
-                        validate_pins(pins, pin_line_count(t1), pin_line_count(t2)).err();
-                    if let Some(err) = &ignored_pins {
-                        log::warn!("Diffing without pins: {err}");
-                    }
-                    let pins: &[Pin] = if ignored_pins.is_some() { &[] } else { pins };
-                    let phases = input.phases;
-                    let mut trace = input.collect_trace.then(PhaseTrace::default);
-                    // The default phases without pins run as the driver does, but timed separately.
-                    let result = if pins.is_empty()
-                        && phases.line
-                        && phases.token
-                        && !phases.scope
-                        && trace.is_none()
-                    {
-                        line_diff(
+                let (t1, t2) = (&c1.tokens, &c2.tokens);
+                let ignore = input.ignore.mask(t1, &c1.contents, t2, &c2.contents);
+                let pins: &[Pin] = if one_sided.is_some() {
+                    &[]
+                } else {
+                    &input.pins
+                };
+                let ignored_pins =
+                    validate_pins(pins, pin_line_count(t1), pin_line_count(t2)).err();
+                if let Some(err) = &ignored_pins {
+                    log::warn!("Diffing without pins: {err}");
+                }
+                let pins: &[Pin] = if ignored_pins.is_some() { &[] } else { pins };
+                let phases = input.phases;
+                let mut trace = input.collect_trace.then(PhaseTrace::default);
+                // The default phases without pins run as the driver does, but timed separately.
+                let result = if pins.is_empty()
+                    && phases.line
+                    && phases.token
+                    && !phases.scope
+                    && trace.is_none()
+                {
+                    line_diff(
+                        input.algo,
+                        t1,
+                        t2,
+                        token_key(c1, c2),
+                        &ignore,
+                        cancel.clone(),
+                    )
+                    .and_then(|hunks| {
+                        let line_elapsed = start.elapsed();
+                        let start = Instant::now();
+                        let path =
+                            token_diff(input.algo, t1, t2, &hunks, &cmp, &ignore, cancel.clone())?;
+                        Some((path, line_elapsed, start.elapsed()))
+                    })
+                } else {
+                    myers_diff_path_traced(
+                        input.algo,
+                        t1,
+                        t2,
+                        &c1.contents,
+                        &c2.contents,
+                        cmp,
+                        &ignore,
+                        phases,
+                        pins,
+                        cancel.clone(),
+                        trace.as_mut(),
+                    )
+                    .map(|path| {
+                        if phases.token {
+                            (path, Duration::ZERO, start.elapsed())
+                        } else {
+                            (path, start.elapsed(), Duration::ZERO)
+                        }
+                    })
+                };
+                let result = result.and_then(|(path, line_elapsed, mut token_elapsed)| {
+                    let mut char_ranges = CharRanges::default();
+                    if phases.character {
+                        let start = Instant::now();
+                        char_ranges = character_diff_traced(
                             input.algo,
-                            t1,
-                            t2,
-                            token_key(c1, c2),
-                            &ignore,
-                            cancel.clone(),
-                        )
-                        .and_then(|hunks| {
-                            let line_elapsed = start.elapsed();
-                            let start = Instant::now();
-                            let path = token_diff(
-                                input.algo,
-                                t1,
-                                t2,
-                                &hunks,
-                                &cmp,
-                                &ignore,
-                                cancel.clone(),
-                            )?;
-                            Some((path, line_elapsed, start.elapsed()))
-                        })
-                    } else {
-                        myers_diff_path_traced(
-                            input.algo,
+                            &path,
                             t1,
                             t2,
                             &c1.contents,
                             &c2.contents,
-                            cmp,
                             &ignore,
-                            phases,
-                            pins,
                             cancel.clone(),
                             trace.as_mut(),
-                        )
-                        .map(|path| {
-                            if phases.token {
-                                (path, Duration::ZERO, start.elapsed())
-                            } else {
-                                (path, start.elapsed(), Duration::ZERO)
-                            }
-                        })
-                    };
-                    let result = result.and_then(|(path, line_elapsed, mut token_elapsed)| {
-                        let mut char_ranges = CharRanges::default();
-                        if phases.character {
-                            let start = Instant::now();
-                            char_ranges = character_diff_traced(
-                                input.algo,
-                                &path,
-                                t1,
-                                t2,
-                                &c1.contents,
-                                &c2.contents,
-                                &ignore,
-                                cancel.clone(),
-                                trace.as_mut(),
-                            )?;
-                            token_elapsed += start.elapsed();
-                        }
-                        Some((path, char_ranges, line_elapsed, token_elapsed))
-                    });
-                    if let Some((path, char_ranges, line_elapsed, token_elapsed)) = result {
-                        let change_unit = ChangeUnit::finest(phases);
-                        let num_add_delete = change_unit.map_or_else(Default::default, |unit| {
-                            count_changes(
-                                unit,
-                                &path,
-                                t1,
-                                t2,
-                                &c1.contents,
-                                &c2.contents,
-                                &char_ranges,
-                            )
-                        });
-                        let _ = tx.send(Some(MyersCtx {
-                            input,
-                            num_add_delete,
-                            change_unit,
-                            path,
-                            char_ranges: Arc::new(char_ranges),
-                            ignored_pins,
-                            phase_trace: trace.map(Arc::new),
-                            line_elapsed,
-                            token_elapsed,
-                        }));
-                    } else if !cancel.load(Ordering::Relaxed) {
-                        let _ = tx.send(None);
+                        )?;
+                        token_elapsed += start.elapsed();
                     }
-                })
-                .ok();
+                    Some((path, char_ranges, line_elapsed, token_elapsed))
+                });
+                if let Some((path, char_ranges, line_elapsed, token_elapsed)) = result {
+                    let change_unit = ChangeUnit::finest(phases);
+                    let num_add_delete = change_unit.map_or_else(Default::default, |unit| {
+                        count_changes(
+                            unit,
+                            &path,
+                            t1,
+                            t2,
+                            &c1.contents,
+                            &c2.contents,
+                            &char_ranges,
+                        )
+                    });
+                    job.send(Some(MyersCtx {
+                        input,
+                        num_add_delete,
+                        change_unit,
+                        path,
+                        char_ranges: Arc::new(char_ranges),
+                        ignored_pins,
+                        phase_trace: trace.map(Arc::new),
+                        line_elapsed,
+                        token_elapsed,
+                    }));
+                } else {
+                    job.send(None);
+                }
+            });
         }
         None
     }
 
-    pub fn request_diff_ir(&mut self, cancel_flag: Arc<AtomicBool>) -> Option<&DiffIRCtx> {
-        let myers_ctx = self.request_myers(cancel_flag.clone())?;
+    pub fn request_diff_ir(&mut self) -> Option<&DiffIRCtx> {
+        let myers_ctx = self.request_myers()?;
         let expected_input = DiffIRInput {
             myers_path: myers_ctx.path.clone(),
             char_ranges: myers_ctx.char_ranges.clone(),
         };
 
         poll_ctx_channel!(
-            self.channel_diff_ir.1,
+            self.diff_ir_job,
             self.diff_ir_inflight_input,
             self.diff_ir_ctx
         );
@@ -739,38 +713,32 @@ impl DiffCtx {
 
         if self.diff_ir_inflight_input.as_ref() != Some(&expected_input) {
             self.diff_ir_inflight_input = Some(expected_input.clone());
-            let tx = self.channel_diff_ir.0.clone();
             let input = expected_input;
-            let cancel = cancel_flag;
             let is_equal_left = !matches!(self.get_one_sided_mode(), OneSidedMode::OnlyRight);
 
             log::info!("new request_diff_ir");
-            std::thread::Builder::new()
-                .name("DiffIrTHREAD".into())
-                .spawn(move || {
-                    let start = Instant::now();
-                    let cancel_ref = cancel.clone();
-                    if let Some(mut diff_ir) = DiffIR::new(&input.myers_path, is_equal_left, cancel)
-                    {
-                        diff_ir.char_ranges = (*input.char_ranges).clone();
-                        let _ = tx.send(Some(DiffIRCtx {
-                            input,
-                            diff_ir: Arc::new(diff_ir),
-                            elapsed: start.elapsed(),
-                        }));
-                    } else if !cancel_ref.load(Ordering::Relaxed) {
-                        let _ = tx.send(None);
-                    }
-                })
-                .ok();
+            self.diff_ir_job.start(move |job| {
+                let start = Instant::now();
+                let cancel = job.cancel_flag().clone();
+                if let Some(mut diff_ir) = DiffIR::new(&input.myers_path, is_equal_left, cancel) {
+                    diff_ir.char_ranges = (*input.char_ranges).clone();
+                    job.send(Some(DiffIRCtx {
+                        input,
+                        diff_ir: Arc::new(diff_ir),
+                        elapsed: start.elapsed(),
+                    }));
+                } else {
+                    job.send(None);
+                }
+            });
         }
         None
     }
 
-    pub fn request_diff_rows(&mut self, cancel_flag: Arc<AtomicBool>) -> Option<&DiffRowsCtx> {
+    pub fn request_diff_rows(&mut self) -> Option<&DiffRowsCtx> {
         let file_1 = self.update_diff_rows_input.file_1.clone();
         let file_2 = self.update_diff_rows_input.file_2.clone();
-        let ir_ctx = self.request_diff_ir(cancel_flag.clone())?;
+        let ir_ctx = self.request_diff_ir()?;
         let expected_input = DiffRowsInput {
             file_1: file_1,
             file_2: file_2,
@@ -779,7 +747,7 @@ impl DiffCtx {
         };
 
         poll_ctx_channel!(
-            self.channel_diff_rows.1,
+            self.diff_rows_job,
             self.diff_rows_inflight_input,
             self.diff_rows_ctx,
             |res: Option<DiffRowsCtx>| res.map(Arc::new)
@@ -795,70 +763,63 @@ impl DiffCtx {
 
         if self.diff_rows_inflight_input.as_ref() != Some(&expected_input) {
             self.diff_rows_inflight_input = Some(expected_input.clone());
-            let tx = self.channel_diff_rows.0.clone();
             let input = expected_input;
-            let cancel = cancel_flag;
 
             log::info!("new request_diff_rows");
-            std::thread::Builder::new()
-                .name("DiffRowsTHREAD".into())
-                .spawn(move || {
-                    let start = Instant::now();
-                    let (c1, c2, _) = resolve_files(&input.file_1, &input.file_2);
-                    let diff_rows = build_diff_rows(
-                        (*input.diff_ir).clone(),
-                        Some(&c1.tokens),
-                        Some(&c2.tokens),
-                        &c1.contents,
-                        &c2.contents,
-                        &input.diff_options,
-                        c1.metadata.num_lines().max(c2.metadata.num_lines()),
+            self.diff_rows_job.start(move |job| {
+                let start = Instant::now();
+                let cancel = job.cancel_flag().clone();
+                let (c1, c2, _) = resolve_files(&input.file_1, &input.file_2);
+                let diff_rows = build_diff_rows(
+                    (*input.diff_ir).clone(),
+                    Some(&c1.tokens),
+                    Some(&c2.tokens),
+                    &c1.contents,
+                    &c2.contents,
+                    &input.diff_options,
+                    c1.metadata.num_lines().max(c2.metadata.num_lines()),
+                );
+
+                if cancel.load(Ordering::Relaxed) {
+                    return;
+                }
+
+                if let Some((rows, precomputed_diffs, collapsed_blocks)) =
+                    finalize_diff_rows(diff_rows, &input.diff_options, &cancel)
+                {
+                    let precomputed_file_rows = precompute_file_rows(
+                        &rows,
+                        c1.metadata.line_starts.len(),
+                        c2.metadata.line_starts.len(),
                     );
-
-                    if cancel.load(Ordering::Relaxed) {
-                        return;
-                    }
-
-                    if let Some((rows, precomputed_diffs, collapsed_blocks)) =
-                        finalize_diff_rows(diff_rows, &input.diff_options, &cancel)
-                    {
-                        let precomputed_file_rows = precompute_file_rows(
-                            &rows,
-                            c1.metadata.line_starts.len(),
-                            c2.metadata.line_starts.len(),
-                        );
-                        let row_blocks = unexpanded_row_blocks(&collapsed_blocks);
-                        let changed_scopes = changed_scope_lines(&rows, [c1, c2]);
-                        let _ = tx.send(Some(DiffRowsCtx {
-                            input,
-                            rows: Arc::new(rows),
-                            precomputed_diffs: Arc::new(precomputed_diffs),
-                            precomputed_file_rows: Arc::new(precomputed_file_rows),
-                            collapsed_blocks: Arc::new(collapsed_blocks),
-                            row_blocks: Arc::new(row_blocks),
-                            changed_scopes: Arc::new(changed_scopes),
-                            elapsed: start.elapsed(),
-                        }));
-                    } else if !cancel.load(Ordering::Relaxed) {
-                        let _ = tx.send(None);
-                    }
-                })
-                .ok();
+                    let row_blocks = unexpanded_row_blocks(&collapsed_blocks);
+                    let changed_scopes = changed_scope_lines(&rows, [c1, c2]);
+                    job.send(Some(DiffRowsCtx {
+                        input,
+                        rows: Arc::new(rows),
+                        precomputed_diffs: Arc::new(precomputed_diffs),
+                        precomputed_file_rows: Arc::new(precomputed_file_rows),
+                        collapsed_blocks: Arc::new(collapsed_blocks),
+                        row_blocks: Arc::new(row_blocks),
+                        changed_scopes: Arc::new(changed_scopes),
+                        elapsed: start.elapsed(),
+                    }));
+                } else {
+                    job.send(None);
+                }
+            });
         }
         None
     }
 
-    pub fn request_minimal_diff_ctx(
-        &mut self,
-        cancel_flag: Arc<AtomicBool>,
-    ) -> Option<MinimalDiffCtx> {
-        let myers_ctx = self.request_myers(cancel_flag.clone())?;
+    pub fn request_minimal_diff_ctx(&mut self) -> Option<MinimalDiffCtx> {
+        let myers_ctx = self.request_myers()?;
         let num_add_deletes = myers_ctx.num_add_delete;
         let change_unit = myers_ctx.change_unit;
         let ignored_pins = myers_ctx.ignored_pins.clone();
         let phase_trace = myers_ctx.phase_trace.clone();
         let (line_elapsed, token_elapsed) = (myers_ctx.line_elapsed, myers_ctx.token_elapsed);
-        let diff_row_ctx = self.request_diff_rows(cancel_flag)?;
+        let diff_row_ctx = self.request_diff_rows()?;
 
         let diff_rows = diff_row_ctx.rows.clone();
         let precomputed_diffs = diff_row_ctx.precomputed_diffs.clone();
@@ -908,7 +869,6 @@ impl DiffCtx {
 pub struct DiffProcessor {
     ctx: DiffCtx,
     pub in_progress_input: Option<UpdateDiffRowsInput>,
-    cancel_flag: Arc<AtomicBool>,
 
     // Active user state
     pub conflict_cursor: ClampedCursor,
@@ -942,7 +902,6 @@ impl Default for DiffProcessor {
             pins: Vec::new(),
             pin_paths: Default::default(),
             in_progress_input: None,
-            cancel_flag: Arc::new(AtomicBool::new(false)),
             find_cursor: ClampedCursor::default(),
             find_ctx: FindCtx::default(),
             goto_line_number: None,
@@ -977,8 +936,8 @@ impl DiffProcessor {
 
     pub fn cancel_in_progress(&mut self) {
         if self.is_in_progress() {
-            self.cancel_flag.store(true, Ordering::Release);
-            log::info!("Diff Processor sent cancel_flag: true");
+            self.ctx.cancel_all();
+            log::info!("Diff Processor cancelled the in-progress diff");
         }
     }
 
@@ -1006,8 +965,7 @@ impl DiffProcessor {
         input.pins = self.pins.clone();
 
         self.cancel_in_progress();
-        self.cancel_flag = Arc::new(AtomicBool::new(false));
-        self.ctx.forget_inflight();
+        self.ctx.cancel_all();
         self.in_progress_input = Some(input.clone());
         log::trace!(
             "Diff Processor new in_progress_input: {:?}",
@@ -1021,12 +979,7 @@ impl DiffProcessor {
 
         self.ctx.poll();
 
-        if self.is_in_progress()
-            && self
-                .ctx
-                .request_minimal_diff_ctx(self.cancel_flag.clone())
-                .is_some()
-        {
+        if self.is_in_progress() && self.ctx.request_minimal_diff_ctx().is_some() {
             self.in_progress_input = None;
             reset_ui = true;
         }
@@ -1171,9 +1124,7 @@ impl DiffProcessor {
         if self.is_in_progress() {
             return None;
         }
-        let mut ctx = self
-            .ctx
-            .request_minimal_diff_ctx(self.cancel_flag.clone())?;
+        let mut ctx = self.ctx.request_minimal_diff_ctx()?;
         if let Some(expansion) = &self.expansion {
             if Arc::ptr_eq(&expansion.base, &ctx.diff_rows) {
                 expansion.apply(&mut ctx);
