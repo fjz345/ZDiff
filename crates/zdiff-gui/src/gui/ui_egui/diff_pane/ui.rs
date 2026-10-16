@@ -1027,7 +1027,16 @@ impl FileDiffPane {
                                     changed: role_color(ui.ctx(), FileRole::RulerChanged),
                                 };
                                 if let Some(pos) = overview::show(
-                                    ui, ruler_id, strip, spans, ruler_bins, len, viewport, &colors,
+                                    ui,
+                                    overview::OverviewCtx {
+                                        id: ruler_id,
+                                        rect: strip,
+                                        spans,
+                                        bin_cache: ruler_bins,
+                                        len,
+                                        viewport,
+                                        colors: &colors,
+                                    },
                                 ) {
                                     ui.data_mut(|d| {
                                         d.insert_temp(ruler_id.with("scroll_to"), pos / row_unit)

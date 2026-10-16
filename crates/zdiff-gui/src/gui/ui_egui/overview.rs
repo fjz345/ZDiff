@@ -169,16 +169,26 @@ impl RulerColors {
 
 /// Draws the change bins of `len` rows in `rect` with the rows `viewport` (top, bottom as row
 /// positions) marked. Returns the row under a press or drag.
-pub fn show(
-    ui: &mut egui::Ui,
-    id: egui::Id,
-    rect: egui::Rect,
-    spans: &[ChangeSpan],
-    bin_cache: &mut BinCache,
-    len: usize,
-    viewport: (f32, f32),
-    colors: &RulerColors,
-) -> Option<usize> {
+pub struct OverviewCtx<'a> {
+    pub id: egui::Id,
+    pub rect: egui::Rect,
+    pub spans: &'a [ChangeSpan],
+    pub bin_cache: &'a mut BinCache,
+    pub len: usize,
+    pub viewport: (f32, f32),
+    pub colors: &'a RulerColors,
+}
+
+pub fn show(ui: &mut egui::Ui, ctx: OverviewCtx<'_>) -> Option<usize> {
+    let OverviewCtx {
+        id,
+        rect,
+        spans,
+        bin_cache,
+        len,
+        viewport,
+        colors,
+    } = ctx;
     let response = ui.interact(rect, id, egui::Sense::click_and_drag());
     let painter = ui.painter_at(rect);
     painter.rect_filled(rect, 0.0, ui.visuals().extreme_bg_color);
