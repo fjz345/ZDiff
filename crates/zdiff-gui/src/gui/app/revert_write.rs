@@ -1,0 +1,101 @@
+use super::{ZApp, state::AppStateCtx};
+use std::{path::Path, sync::mpsc};
+use zdiff::universal_path::UniversalPath;
+
+use crate::{
+    diff_ctx::DiffProcessor,
+    file::FileProcessor,
+    revert::{self, HistoryStep, RevertHistory, RevertRecord, RevertTarget, WriteRefusal},
+};
+
+impl ZApp {
+    pub(super) fn open_file_picker(tx: mpsc::Sender<UniversalPath>) {
+        std::thread::spawn(move || {
+            if let Some(path) = rfd::FileDialog::new().pick_file() {
+                if let Err(e) = tx.send(UniversalPath::from(path)) {
+                    log::error!("Failed to send path: {e}");
+                }
+            }
+        });
+    }
+
+    pub(super) fn refresh_file_contents(file_1: &mut FileProcessor, file_2: &mut FileProcessor) {
+        file_1.invalidate_cache_file();
+        file_2.invalidate_cache_file();
+    }
+
+    /// Records a written revert for undo and reloads both sides; reloads the target when it was
+    /// stale.
+    pub(super) fn finish_revert_write(
+        result: Result<RevertRecord, WriteRefusal>,
+        path: &Path,
+        target: RevertTarget,
+        revert_history: &mut RevertHistory,
+        diff_processor: &mut DiffProcessor,
+        file_1: &mut FileProcessor,
+        file_2: &mut FileProcessor,
+    ) {
+        match result {
+            Ok(record) => {
+                revert_history.record(record);
+                diff_processor.reset_ctx();
+                Self::refresh_file_contents(file_1, file_2);
+            }
+            Err(WriteRefusal::Stale) => {
+                log::error!(
+                    "Revert refused: {} changed on disk since it was loaded. Reloading it.",
+                    path.display()
+                );
+                diff_processor.reset_ctx();
+                match target {
+                    RevertTarget::Left => file_1.invalidate_cache_file(),
+                    RevertTarget::Right => file_2.invalidate_cache_file(),
+                }
+            }
+            Err(e) => log::error!("Revert refused for {}: {}", path.display(), e),
+        }
+    }
+
+    /// Undoes or redoes the latest revert in this diff. Both sides reload after a write, and
+    /// after a refusal for a file that changed on disk.
+    pub(super) fn step_revert_history(app_ctx: &mut AppStateCtx, step: HistoryStep) {
+        // A path picked or set by a Quick Diff since the last frame makes this another diff.
+        let (path_1, path_2) = (
+            app_ctx.file_1.get_full_path(),
+            app_ctx.file_2.get_full_path(),
+        );
+        app_ctx.revert_history.observe_pair(&path_1, &path_2);
+        let (name, since) = match step {
+            HistoryStep::Undo => ("Undo", "the revert"),
+            HistoryStep::Redo => ("Redo", "the undo"),
+        };
+        let stepped = app_ctx
+            .revert_history
+            .step(step, revert::write_history_step(&std::env::temp_dir()));
+        let reload = match stepped {
+            None => {
+                log::info!("{name}: no revert to {}", name.to_lowercase());
+                false
+            }
+            Some((path, Ok(()))) => {
+                log::info!("{name} of a revert written to {}", path.display());
+                true
+            }
+            Some((path, Err(WriteRefusal::Stale))) => {
+                log::error!(
+                    "{name} refused: {} changed on disk since {since}. Reloading it.",
+                    path.display()
+                );
+                true
+            }
+            Some((path, Err(e))) => {
+                log::error!("{name} refused for {}: {}", path.display(), e);
+                false
+            }
+        };
+        if reload {
+            app_ctx.diff_processor.reset_ctx();
+            Self::refresh_file_contents(&mut app_ctx.file_1, &mut app_ctx.file_2);
+        }
+    }
+}
