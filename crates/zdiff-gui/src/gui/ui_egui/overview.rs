@@ -167,8 +167,6 @@ impl RulerColors {
     }
 }
 
-/// Draws the change bins of `len` rows in `rect` with the rows `viewport` (top, bottom as row
-/// positions) marked. Returns the row under a press or drag.
 pub struct OverviewCtx<'a> {
     pub id: egui::Id,
     pub rect: egui::Rect,
@@ -179,6 +177,8 @@ pub struct OverviewCtx<'a> {
     pub colors: &'a RulerColors,
 }
 
+/// Draws the change bins of `len` rows in `rect` with the rows `viewport` (top, bottom as row
+/// positions) marked. Returns the row under a press or drag.
 pub fn show(ui: &mut egui::Ui, ctx: OverviewCtx<'_>) -> Option<usize> {
     let OverviewCtx {
         id,
