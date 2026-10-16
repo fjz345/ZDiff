@@ -1246,6 +1246,7 @@ impl eframe::App for ZApp {
                     }
                 }
                 state.update_scans(ctx);
+                state.tree_compare.set_repaint(ctx);
                 state.update_compare(Instant::now());
                 state.build_two_folder_diff_rows_if_stale();
                 if state.file_system_1_scan.is_scanning()

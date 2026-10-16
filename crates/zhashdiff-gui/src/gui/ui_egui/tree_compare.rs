@@ -6,13 +6,12 @@ use std::{
     sync::{
         Arc, Weak,
         atomic::{AtomicBool, AtomicUsize, Ordering},
-        mpsc,
     },
     time::{Duration, Instant, SystemTime},
 };
 
 use memmap2::Mmap;
-use zcommon::kinds::KindTable;
+use zcommon::{job::Job, kinds::KindTable};
 use zhashdiff::{
     comparison::{FileMeta, PairCompare, PairCompareCache, PairSide, PairState, compare_pair_with},
     fs::{FileSystemModel, FsNode},
@@ -213,89 +212,107 @@ pub struct PairResult {
 #[derive(Debug)]
 struct CompareJob {
     tasks: Arc<[PairTask]>,
-    cancel: Arc<AtomicBool>,
+    job: Job<(usize, PairResult)>,
     likeness: Arc<AtomicBool>,
-    results: mpsc::Receiver<(usize, PairResult)>,
     received: usize,
     started: Instant,
     patched: Instant,
     patch_interval: Duration,
     unpatched: bool,
+    #[cfg(test)]
+    inbox: Option<std::sync::mpsc::Receiver<(usize, PairResult)>>,
 }
 
 impl CompareJob {
+    /// The results so far, and whether no more will come.
+    fn drain(&mut self) -> (Vec<(usize, PairResult)>, bool) {
+        #[cfg(test)]
+        if let Some(inbox) = &self.inbox {
+            let mut results = Vec::new();
+            loop {
+                match inbox.try_recv() {
+                    Ok(result) => results.push(result),
+                    Err(std::sync::mpsc::TryRecvError::Empty) => return (results, false),
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => return (results, true),
+                }
+            }
+        }
+        // Read before polling, so everything sent before the worker finished is in the poll.
+        let finished = !self.job.is_running();
+        (self.job.poll(), finished)
+    }
+
     fn new(
         tasks: Vec<PairTask>,
         likeness: bool,
         now: Instant,
-    ) -> (Self, mpsc::Sender<(usize, PairResult)>) {
-        let (sender, results) = mpsc::channel();
-        let job = Self {
+        wake: impl Fn() + Send + Sync + 'static,
+    ) -> Self {
+        Self {
             tasks: tasks.into(),
-            cancel: Arc::new(AtomicBool::new(false)),
+            job: Job::new(wake),
             likeness: Arc::new(AtomicBool::new(likeness)),
-            results,
             received: 0,
             started: now,
             patched: now,
             patch_interval: ROWS_PATCH_INTERVAL,
             unpatched: false,
-        };
-        (job, sender)
+            #[cfg(test)]
+            inbox: None,
+        }
     }
 
-    fn start(tasks: Vec<PairTask>, likeness: bool, now: Instant) -> Self {
-        let (job, sender) = Self::new(tasks, likeness, now);
-        let next = Arc::new(AtomicUsize::new(0));
+    fn start(
+        tasks: Vec<PairTask>,
+        likeness: bool,
+        now: Instant,
+        wake: impl Fn() + Send + Sync + 'static,
+    ) -> Self {
+        let mut compare = Self::new(tasks, likeness, now, wake);
+        let (tasks, likeness) = (compare.tasks.clone(), compare.likeness.clone());
         let workers = std::thread::available_parallelism()
             .map_or(1, |n| n.get())
             .min(MAX_COMPARE_WORKERS)
-            .min(job.tasks.len());
-        for _ in 0..workers {
-            let (tasks, cancel, likeness, next, sender) = (
-                job.tasks.clone(),
-                job.cancel.clone(),
-                job.likeness.clone(),
-                next.clone(),
-                sender.clone(),
-            );
-            std::thread::Builder::new()
-                .name("folder compare".into())
-                .spawn(move || {
-                    let kinds = KindTable::default();
-                    while !cancel.load(Ordering::Relaxed) {
-                        let i = next.fetch_add(1, Ordering::Relaxed);
-                        let Some(task) = tasks.get(i) else {
-                            break;
-                        };
-                        let compare = task.compare.then(|| task.pair.compare());
-                        let measure = task.likeness
-                            && likeness.load(Ordering::Relaxed)
-                            && compare.as_ref().is_none_or(|c| {
-                                c.state == PairState::Different && c.error.is_none()
-                            });
-                        let likeness = if measure {
-                            let Some(result) = task.pair.likeness(&kinds, &cancel) else {
-                                break;
-                            };
-                            Some(result)
-                        } else {
-                            None
-                        };
-                        if sender.send((i, PairResult { compare, likeness })).is_err() {
-                            break;
-                        }
-                    }
-                })
-                .expect("failed to spawn a folder compare thread");
-        }
-        job
-    }
-}
-
-impl Drop for CompareJob {
-    fn drop(&mut self) {
-        self.cancel.store(true, Ordering::Relaxed);
+            .min(tasks.len());
+        compare.job.start(move |ctx| {
+            let next = AtomicUsize::new(0);
+            std::thread::scope(|scope| {
+                for _ in 0..workers {
+                    std::thread::Builder::new()
+                        .name("folder compare".into())
+                        .spawn_scoped(scope, || {
+                            let kinds = KindTable::default();
+                            while !ctx.is_cancelled() {
+                                let i = next.fetch_add(1, Ordering::Relaxed);
+                                let Some(task) = tasks.get(i) else {
+                                    break;
+                                };
+                                let compare = task.compare.then(|| task.pair.compare());
+                                let measure = task.likeness
+                                    && likeness.load(Ordering::Relaxed)
+                                    && compare.as_ref().is_none_or(|c| {
+                                        c.state == PairState::Different && c.error.is_none()
+                                    });
+                                let likeness = if measure {
+                                    let Some(result) =
+                                        task.pair.likeness(&kinds, ctx.cancel_flag())
+                                    else {
+                                        break;
+                                    };
+                                    Some(result)
+                                } else {
+                                    None
+                                };
+                                if !ctx.send((i, PairResult { compare, likeness })) {
+                                    break;
+                                }
+                            }
+                        })
+                        .expect("failed to spawn a folder compare thread");
+                }
+            });
+        });
+        compare
     }
 }
 
@@ -323,9 +340,25 @@ pub struct TreeCompare {
     job: Option<CompareJob>,
     cancelled: bool,
     compare_time: Option<Duration>,
+    repaint: Option<eframe::egui::Context>,
 }
 
 impl TreeCompare {
+    pub fn set_repaint(&mut self, ctx: &eframe::egui::Context) {
+        if self.repaint.is_none() {
+            self.repaint = Some(ctx.clone());
+        }
+    }
+
+    fn wake(&self) -> impl Fn() + Send + Sync + 'static + use<> {
+        let repaint = self.repaint.clone();
+        move || {
+            if let Some(ctx) = &repaint {
+                ctx.request_repaint();
+            }
+        }
+    }
+
     /// States, the job and a cancel belong to the models they were made for.
     pub fn retain_for(&mut self, views: [Option<&FileSystemView>; 2]) {
         let trees =
@@ -345,18 +378,8 @@ impl TreeCompare {
             return Some(*state);
         }
         // The cache keys on rel_path and meta only.
-        let left = cache_side(
-            rel_path,
-            Path::new(""),
-            nodes[0].size,
-            nodes[0].modified,
-        )?;
-        let right = cache_side(
-            rel_path,
-            Path::new(""),
-            nodes[1].size,
-            nodes[1].modified,
-        )?;
+        let left = cache_side(rel_path, Path::new(""), nodes[0].size, nodes[0].modified)?;
+        let right = cache_side(rel_path, Path::new(""), nodes[1].size, nodes[1].modified)?;
         self.cache.get(&left, &right)
     }
 
@@ -398,7 +421,7 @@ impl TreeCompare {
         let tasks = self.tasks(rows, views);
         let started = self.job.as_ref().map_or(now, |job| job.started);
         self.job = (!self.cancelled && !tasks.is_empty()).then(|| {
-            let mut job = CompareJob::start(tasks, self.measure_likeness, now);
+            let mut job = CompareJob::start(tasks, self.measure_likeness, now, self.wake());
             job.started = started;
             job
         });
@@ -453,8 +476,8 @@ impl TreeCompare {
 
     /// The rows keep their remaining pairs Pending.
     pub fn cancel(&mut self) {
-        if let Some(job) = &self.job {
-            job.cancel.store(true, Ordering::Relaxed);
+        if let Some(job) = &mut self.job {
+            job.job.cancel();
             self.cancelled = true;
         }
     }
@@ -477,33 +500,19 @@ impl TreeCompare {
         let Some(job) = &mut self.job else {
             return CompareUpdate::Idle;
         };
-        let mut disconnected = false;
-        loop {
-            match job.results.try_recv() {
-                Ok((i, result)) => {
-                    let pair = &job.tasks[i].pair;
-                    if let Some(compare) = result.compare {
-                        apply_result(&mut self.states, &mut self.cache, pair, compare);
-                        job.unpatched = true;
-                    }
-                    if let Some(likeness) = result.likeness {
-                        apply_likeness(
-                            &mut self.likeness,
-                            &mut self.likeness_cache,
-                            pair,
-                            likeness,
-                        );
-                        // A likeness tolerance can turn the row Similar.
-                        job.unpatched = true;
-                    }
-                    job.received += 1;
-                }
-                Err(mpsc::TryRecvError::Empty) => break,
-                Err(mpsc::TryRecvError::Disconnected) => {
-                    disconnected = true;
-                    break;
-                }
+        let (results, disconnected) = job.drain();
+        for (i, result) in results {
+            let pair = &job.tasks[i].pair;
+            if let Some(compare) = result.compare {
+                apply_result(&mut self.states, &mut self.cache, pair, compare);
+                job.unpatched = true;
             }
+            if let Some(likeness) = result.likeness {
+                apply_likeness(&mut self.likeness, &mut self.likeness_cache, pair, likeness);
+                // A likeness tolerance can turn the row Similar.
+                job.unpatched = true;
+            }
+            job.received += 1;
         }
         let total = job.tasks.len();
         if self.cancelled || disconnected || job.received == total {
@@ -590,15 +599,24 @@ fn apply_likeness(
 
 #[cfg(test)]
 impl TreeCompare {
-    pub fn pause(&mut self, now: Instant) -> (mpsc::Sender<(usize, PairResult)>, Vec<String>) {
+    pub fn pause(
+        &mut self,
+        now: Instant,
+    ) -> (std::sync::mpsc::Sender<(usize, PairResult)>, Vec<String>) {
         let running = self.job.take().expect("a running compare");
         let tasks = running.tasks.to_vec();
         let rel_paths = tasks
             .iter()
             .map(|task| task.pair.rel_path.clone())
             .collect();
-        let (mut job, sender) =
-            CompareJob::new(tasks, running.likeness.load(Ordering::Relaxed), now);
+        let (sender, results) = std::sync::mpsc::channel::<(usize, PairResult)>();
+        let mut job = CompareJob::new(
+            tasks,
+            running.likeness.load(Ordering::Relaxed),
+            now,
+            self.wake(),
+        );
+        job.inbox = Some(results);
         job.started = running.started;
         self.job = Some(job);
         (sender, rel_paths)
