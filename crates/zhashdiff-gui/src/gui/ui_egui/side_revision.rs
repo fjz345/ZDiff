@@ -3,6 +3,7 @@ use std::sync::{Arc, Mutex};
 
 use eframe::egui;
 use zcommon::{
+    job::Job,
     universal_path::{DepotRev, GitRev, UniversalPath},
     vcs::{
         git::{GitCommand, GitRef, RefKind, list_refs, locate},
@@ -148,7 +149,12 @@ enum Listing {
     },
 }
 
-type Loading = Arc<Mutex<Option<Result<Listing, String>>>>;
+struct Load {
+    job: Job<Result<Listing, String>>,
+    result: Option<Result<Listing, String>>,
+}
+
+type Loading = Arc<Mutex<Load>>;
 
 #[derive(Clone)]
 struct MenuState {
@@ -160,18 +166,13 @@ struct MenuState {
 
 impl MenuState {
     fn load(ctx: &egui::Context, folder: PathBuf, current: &SideRev) -> Self {
-        let listing: Loading = Arc::default();
-        let (shared, thread_folder, current, ctx) = (
-            listing.clone(),
-            folder.clone(),
-            current.clone(),
-            ctx.clone(),
-        );
-        std::thread::spawn(move || {
-            let result = load_listing(&thread_folder, &current);
-            *shared.lock().unwrap() = Some(result);
-            ctx.request_repaint();
+        let repaint = ctx.clone();
+        let mut job = Job::new(move || repaint.request_repaint());
+        let (job_folder, current) = (folder.clone(), current.clone());
+        job.start(move |ctx| {
+            ctx.send(load_listing(&job_folder, &current));
         });
+        let listing = Arc::new(Mutex::new(Load { job, result: None }));
         Self {
             folder,
             text: String::new(),
@@ -207,7 +208,7 @@ fn load_workspace(folder: &Path) -> Result<Listing, String> {
 }
 
 /// Some(root) when a revision was picked or typed. Refs and streams are listed on a background
-/// thread when the menu opens.
+/// job when the menu opens.
 pub fn revision_dropdown(
     ui: &mut egui::Ui,
     id_salt: usize,
@@ -251,7 +252,11 @@ fn menu_contents(
     root: &Path,
     current: &SideRev,
 ) -> Option<PathBuf> {
-    let listing = state.listing.lock().unwrap();
+    let mut load = state.listing.lock().unwrap();
+    if let Some(result) = load.job.poll().pop() {
+        load.result = Some(result);
+    }
+    let listing = &load.result;
     let workspace_depot = match listing.as_ref() {
         Some(Ok(Listing::Workspace { depot, .. })) => Some(depot.as_str()),
         _ => None,
@@ -349,7 +354,7 @@ fn menu_contents(
         }
     }
     let result = pick.map(|pick| pick_revision(root, &pick, streams, workspace_depot));
-    drop(listing);
+    drop(load);
     let picked = match result {
         Some(Ok(root)) => Some(root),
         Some(Err(e)) => {

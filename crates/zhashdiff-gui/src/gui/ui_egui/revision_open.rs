@@ -4,12 +4,14 @@ use std::{
     process::{self, Child},
     sync::{
         Mutex,
-        atomic::{AtomicU64, AtomicUsize, Ordering},
+        atomic::{AtomicU64, Ordering},
     },
-    thread,
 };
 
-use zcommon::vcs::{git::GitCommand, p4::P4Command};
+use zcommon::{
+    job::{Job, JobCtx},
+    vcs::{git::GitCommand, p4::P4Command},
+};
 use zhashdiff::{
     external_diff_tool::{DiffPair, DiffTool, folder_labels, open_diff_tool},
     revision_pair::{PairSource, remove_temp_dir, tool_paths},
@@ -26,9 +28,17 @@ pub struct RevisionOpen {
     pub warning: Option<String>,
 }
 
-static FETCHING: AtomicUsize = AtomicUsize::new(0);
+struct Open {
+    job: Job<ToolMessage>,
+    delivered: bool,
+}
+
 static OPENED: AtomicU64 = AtomicU64::new(0);
-static OUTCOME: Mutex<Option<ToolMessage>> = Mutex::new(None);
+static OPENS: Mutex<Vec<Open>> = Mutex::new(Vec::new());
+
+fn opens() -> std::sync::MutexGuard<'static, Vec<Open>> {
+    OPENS.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
 
 fn temp_root() -> PathBuf {
     env::temp_dir()
@@ -42,22 +52,32 @@ pub fn is_revision(content: &ContentSource) -> bool {
 
 pub fn spawn(job: RevisionOpen) {
     let dir = temp_root().join(OPENED.fetch_add(1, Ordering::Relaxed).to_string());
-    FETCHING.fetch_add(1, Ordering::Relaxed);
-    thread::spawn(move || run(job, dir));
+    let mut open = Job::new(|| {});
+    open.start(move |ctx| run(job, dir, ctx));
+    opens().push(Open {
+        job: open,
+        delivered: false,
+    });
 }
 
-/// Read this before `take_outcome`: an outcome is stored before the count drops, so a frame that
-/// saw no fetch in flight finds any result that is already there.
+/// Read this before `take_outcome`: a fetch counts until its outcome is taken, so a frame that
+/// saw no fetch in flight has already taken every result.
 pub fn is_fetching() -> bool {
-    FETCHING.load(Ordering::Relaxed) > 0
+    opens().iter().any(|open| !open.delivered)
 }
 
 /// `Some(ToolMessage::default())` is a clean open: it replaces the "Fetching" status.
 pub fn take_outcome() -> Option<ToolMessage> {
-    OUTCOME
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .take()
+    let mut opens = opens();
+    let mut outcome = None;
+    for open in opens.iter_mut() {
+        if let Some(message) = open.job.poll().pop() {
+            open.delivered = true;
+            outcome = Some(message);
+        }
+    }
+    opens.retain(|open| !open.delivered || open.job.is_running());
+    outcome
 }
 
 /// The tools still running lose their files.
@@ -65,7 +85,7 @@ pub fn remove_all() {
     remove_temp_dir(&temp_root());
 }
 
-fn run(job: RevisionOpen, dir: PathBuf) {
+fn run(job: RevisionOpen, dir: PathBuf, ctx: &JobCtx<ToolMessage>) {
     let (message, child) = match fetch_and_launch(&job, &dir) {
         Ok(child) => (
             ToolMessage {
@@ -86,10 +106,7 @@ fn run(job: RevisionOpen, dir: PathBuf) {
             )
         }
     };
-    *OUTCOME
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(message);
-    FETCHING.fetch_sub(1, Ordering::Relaxed);
+    ctx.send(message);
 
     if let Some(mut child) = child
         && let Err(err) = child.wait()
