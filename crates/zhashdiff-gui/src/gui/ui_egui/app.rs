@@ -6,14 +6,14 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         Arc,
-        atomic::{AtomicBool, AtomicUsize, Ordering},
-        mpsc,
+        atomic::{AtomicUsize, Ordering},
     },
     time::{Duration, Instant},
 };
 use zcommon::{
     find::{FindError, Matcher},
     hash::HashService,
+    job::Job,
     kinds::KindTable,
     logger::LogBuffer,
     universal_path::UniversalPath,
@@ -352,41 +352,32 @@ fn narrow_to_find(
 #[derive(Debug)]
 pub struct ScanJob {
     root: PathBuf,
-    cancel: Arc<AtomicBool>,
     started: Instant,
     found: Arc<AtomicUsize>,
-    result: mpsc::Receiver<Option<io::Result<ScanOutput>>>,
+    job: Job<Option<io::Result<ScanOutput>>>,
 }
 
 impl ScanJob {
     fn start(root: PathBuf, repaint: egui::Context) -> Self {
-        let cancel = Arc::new(AtomicBool::new(false));
         let found = Arc::new(AtomicUsize::new(0));
-        let (sender, result) = mpsc::channel();
-        let (thread_root, thread_cancel, thread_found) =
-            (root.clone(), cancel.clone(), found.clone());
-        std::thread::Builder::new()
-            .name("folder scan".into())
-            .spawn(move || {
-                let p4 = P4Command::new(false).for_file(UniversalPath::from(&*thread_root));
-                let output = scan_side(
-                    &GitCommand::default(),
-                    &p4,
-                    &thread_root,
-                    &thread_cancel,
-                    &thread_found,
-                );
-                // The job was dropped when the receiver is gone; nobody wants the result.
-                let _ = sender.send(output);
-                repaint.request_repaint();
-            })
-            .expect("failed to spawn the folder scan thread");
+        let mut job = Job::new(move || repaint.request_repaint());
+        let (work_root, work_found) = (root.clone(), found.clone());
+        job.start(move |ctx| {
+            let p4 = P4Command::new(false).for_file(UniversalPath::from(&*work_root));
+            let output = scan_side(
+                &GitCommand::default(),
+                &p4,
+                &work_root,
+                ctx.cancel_flag(),
+                &work_found,
+            );
+            ctx.send(output);
+        });
         Self {
             root,
             started: Instant::now(),
-            cancel,
             found,
-            result,
+            job,
         }
     }
 
@@ -396,12 +387,6 @@ impl ScanJob {
 
     pub fn found(&self) -> usize {
         self.found.load(Ordering::Relaxed)
-    }
-}
-
-impl Drop for ScanJob {
-    fn drop(&mut self) {
-        self.cancel.store(true, Ordering::Relaxed);
     }
 }
 
@@ -527,21 +512,20 @@ pub(crate) fn update_side_scan(
         }
     }
 
-    let Some(job) = &scan.job else {
+    let Some(job) = &mut scan.job else {
         return;
     };
-    let result = match job.result.try_recv() {
-        Ok(result) => result,
-        Err(mpsc::TryRecvError::Empty) => return,
-        Err(mpsc::TryRecvError::Disconnected) => {
+    let running = job.job.is_running();
+    let Some(result) = job.job.poll().pop() else {
+        if !running {
             log::error!(
                 "{side}: the scan of {} stopped without a result",
                 job.root.display()
             );
             scan.job = None;
             revert_root(side, root, view.as_ref());
-            return;
         }
+        return;
     };
     let job = scan.job.take().expect("checked above");
     match result {
