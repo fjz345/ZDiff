@@ -123,7 +123,7 @@ impl FileSystemView {
         kinds: &KindTable,
         tolerance: &Tolerance,
         mut pair_state: impl FnMut(&str, [&FsNode; 2]) -> (Option<PairState>, Option<f64>),
-        mut blueprint: impl FnMut(&Path, FileMeta) -> Option<bool>,
+        mut blueprint: impl FnMut(&dyn Fn() -> PathBuf, FileMeta) -> Option<bool>,
     ) -> io::Result<Vec<VisibleRowTwoFolderDiff>> {
         let mut entries_map: BTreeMap<
             String,
@@ -266,7 +266,8 @@ impl FileSystemView {
                         size: node.size,
                         modified,
                     };
-                    blueprints[i] = blueprint(&view.file_system.path(*id), meta).unwrap_or(false);
+                    let path = || view.file_system.path(*id);
+                    blueprints[i] = blueprint(&path, meta).unwrap_or(false);
                 }
             }
 

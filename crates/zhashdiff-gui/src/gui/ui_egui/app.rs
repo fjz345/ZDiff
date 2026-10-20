@@ -74,13 +74,18 @@ pub struct AppStateCtx {
     two_folder_diff_visible_rows: Option<Vec<VisibleRowTwoFolderDiff>>,
     #[serde(skip)]
     two_folder_diff_rows_id: RowsId,
-    /// The visible rows before find narrows them. Current only while the visible rows are set.
+    /// The visible rows before find narrows them, None without a query. Current only while the
+    /// visible rows are set.
     #[serde(skip)]
     two_folder_diff_arranged_rows: Option<Vec<VisibleRowTwoFolderDiff>>,
     #[serde(skip)]
     tree_compare: TreeCompare,
     #[serde(skip)]
     blueprint_detector: BlueprintDetector,
+    #[serde(skip)]
+    blueprint_results: Vec<(PathBuf, bool)>,
+    #[serde(skip)]
+    blueprints_applied: Option<Instant>,
     /// The filter `two_folder_diff_visible_rows` were built with.
     #[serde(skip)]
     two_folder_diff_rows_filter: PathFilter,
@@ -187,7 +192,10 @@ impl AppStateCtx {
         }
         if likeness_changed
             && measure_likeness
-            && let Some(rows) = &self.two_folder_diff_arranged_rows
+            && let Some(rows) = self
+                .two_folder_diff_arranged_rows
+                .as_ref()
+                .or(self.two_folder_diff_visible_rows.as_ref())
         {
             self.tree_compare.start(
                 rows,
@@ -202,14 +210,21 @@ impl AppStateCtx {
 
     fn narrow_rows_to_find(&mut self) {
         let flat = self.diff_filter.is_flat(self.tree_sort);
-        let (rows, matches) = self
+        let arranged = self
             .two_folder_diff_arranged_rows
-            .as_deref()
-            .map(|rows| narrow_to_find(rows, &self.find_applied, flat))
-            .unzip();
+            .take()
+            .or_else(|| self.two_folder_diff_visible_rows.take());
+        let (rows, arranged, matches) = match arranged {
+            Some(arranged) => {
+                let (rows, arranged, matches) = narrow_to_find(arranged, &self.find_applied, flat);
+                (Some(rows), arranged, matches)
+            }
+            None => (None, None, None),
+        };
         self.two_folder_diff_visible_rows = rows;
+        self.two_folder_diff_arranged_rows = arranged;
         self.two_folder_diff_rows_id = RowsId::next();
-        self.find_matches = matches.flatten();
+        self.find_matches = matches;
         self.two_folder_diff_rows_find = self.find_applied.clone();
     }
 
@@ -247,7 +262,7 @@ impl AppStateCtx {
             },
             |path, meta| {
                 check_blueprints
-                    .then(|| detector.check(path, meta))
+                    .then(|| detector.check(&path(), meta))
                     .flatten()
             },
         )
@@ -267,7 +282,10 @@ impl AppStateCtx {
                 let patch_start = Instant::now();
                 if self.two_folder_diff_visible_rows.is_some()
                     && let Some(fresh) = self.build_rows(false)
-                    && let Some(rows) = self.two_folder_diff_arranged_rows.as_mut()
+                    && let Some(rows) = self
+                        .two_folder_diff_arranged_rows
+                        .as_mut()
+                        .or(self.two_folder_diff_visible_rows.as_mut())
                 {
                     patch_row_states(rows, fresh);
                     self.narrow_rows_to_find();
@@ -279,25 +297,35 @@ impl AppStateCtx {
         }
     }
 
-    /// True while uasset checks are still pending.
-    fn poll_blueprint_detector(&mut self) -> bool {
-        let results = self.blueprint_detector.poll();
-        if self.two_folder_diff_visible_rows.is_some()
-            && let Some(rows) = self.two_folder_diff_arranged_rows.as_mut()
-            && !results.is_empty()
-        {
-            let root = |view: &Option<FileSystemView>| {
-                view.as_ref()
-                    .map(|v| v.file_system.path(v.file_system.get_root_node_id()))
-            };
-            let roots = [
-                root(&self.file_system_model_1_view),
-                root(&self.file_system_model_2_view),
-            ];
-            apply_blueprint_results(rows, [roots[0].as_deref(), roots[1].as_deref()], &results);
-            self.narrow_rows_to_find();
+    /// True while uasset checks are still pending or their results wait for the next apply.
+    fn poll_blueprint_detector(&mut self, now: Instant) -> bool {
+        self.blueprint_results
+            .extend(self.blueprint_detector.poll());
+        let due = self
+            .blueprints_applied
+            .is_none_or(|applied| now >= applied + BLUEPRINT_APPLY_INTERVAL);
+        if due && !self.blueprint_results.is_empty() {
+            self.blueprints_applied = Some(now);
+            let results = std::mem::take(&mut self.blueprint_results);
+            if self.two_folder_diff_visible_rows.is_some()
+                && let Some(rows) = self
+                    .two_folder_diff_arranged_rows
+                    .as_mut()
+                    .or(self.two_folder_diff_visible_rows.as_mut())
+            {
+                let root = |view: &Option<FileSystemView>| {
+                    view.as_ref()
+                        .map(|v| v.file_system.path(v.file_system.get_root_node_id()))
+                };
+                let roots = [
+                    root(&self.file_system_model_1_view),
+                    root(&self.file_system_model_2_view),
+                ];
+                apply_blueprint_results(rows, [roots[0].as_deref(), roots[1].as_deref()], &results);
+                self.narrow_rows_to_find();
+            }
         }
-        self.blueprint_detector.pending() > 0
+        self.blueprint_detector.pending() > 0 || !self.blueprint_results.is_empty()
     }
 
     fn refresh(&mut self) {
@@ -329,23 +357,28 @@ impl AppStateCtx {
     }
 }
 
-/// The rows `find` shows and its match count; all rows and None without a query.
+/// The rows `find` shows, the rows it narrowed and its match count; all rows, None and None
+/// without a query.
 fn narrow_to_find(
-    rows: &[VisibleRowTwoFolderDiff],
+    rows: Vec<VisibleRowTwoFolderDiff>,
     find: &FolderFind,
     flat: bool,
-) -> (Vec<VisibleRowTwoFolderDiff>, Option<usize>) {
+) -> (
+    Vec<VisibleRowTwoFolderDiff>,
+    Option<Vec<VisibleRowTwoFolderDiff>>,
+    Option<usize>,
+) {
     let Ok(matcher) = Matcher::new(&find.query) else {
-        return (rows.to_vec(), None);
+        return (rows, None, None);
     };
-    let mask = find_mask(rows, &matcher, find, flat);
-    let rows = rows
+    let mask = find_mask(&rows, &matcher, find, flat);
+    let shown = rows
         .iter()
         .zip(mask.hidden)
         .filter(|(_, hidden)| !hidden)
         .map(|(row, _)| row.clone())
         .collect();
-    (rows, Some(mask.matches))
+    (shown, Some(rows), Some(mask.matches))
 }
 
 /// One background scan of a side's root. Dropping it cancels the scan.
@@ -678,6 +711,7 @@ pub struct ZApp {
 
 const LONG_FRAME: Duration = Duration::from_millis(200);
 const SCAN_PROGRESS_INTERVAL: Duration = Duration::from_millis(100);
+const BLUEPRINT_APPLY_INTERVAL: Duration = Duration::from_millis(250);
 
 fn default_zoom() -> f32 {
     1.0
@@ -1264,7 +1298,7 @@ impl eframe::App for ZApp {
                 {
                     ctx.request_repaint_after(SCAN_PROGRESS_INTERVAL);
                 }
-                if state.poll_blueprint_detector() {
+                if state.poll_blueprint_detector(Instant::now()) {
                     ctx.request_repaint_after(Duration::from_millis(100));
                 }
                 let fetching = revision_open::is_fetching();

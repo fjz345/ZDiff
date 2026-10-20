@@ -1233,7 +1233,8 @@ fn rows_check_each_sides_uasset_files_and_carry_known_blueprints() {
         &Tolerance::default(),
         |_, _| (None, None),
         |path, meta| {
-            checked.push((path.to_path_buf(), meta.size));
+            let path = path();
+            checked.push((path.clone(), meta.size));
             (path == known_blueprint).then_some(true)
         },
     )
