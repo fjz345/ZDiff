@@ -1,4 +1,7 @@
-use std::ops::Range;
+use std::{
+    ops::Range,
+    sync::atomic::{AtomicBool, Ordering},
+};
 
 use rayon::prelude::*;
 
@@ -350,7 +353,7 @@ impl<'a, 'b, T: RawTokenTrait> DiffBuilder<'a, 'b, T> {
 
 /// `text_*` is the text a side's token spans index into; ignore patterns are matched on it.
 pub fn build_diff_rows<'a, T: RawTokenTrait>(
-    mut diff_ir: DiffIR,
+    diff_ir: DiffIR,
     tokens_source: Option<&'a [T]>,
     tokens_target: Option<&'a [T]>,
     text_source: &str,
@@ -358,6 +361,29 @@ pub fn build_diff_rows<'a, T: RawTokenTrait>(
     options: &DiffBuilderOptions,
     estimated_num_rows: usize,
 ) -> Vec<DiffRow> {
+    build_diff_rows_cancellable(
+        diff_ir,
+        tokens_source,
+        tokens_target,
+        text_source,
+        text_target,
+        options,
+        estimated_num_rows,
+        &AtomicBool::new(false),
+    )
+    .expect("never cancelled")
+}
+
+pub fn build_diff_rows_cancellable<'a, T: RawTokenTrait>(
+    mut diff_ir: DiffIR,
+    tokens_source: Option<&'a [T]>,
+    tokens_target: Option<&'a [T]>,
+    text_source: &str,
+    text_target: &str,
+    options: &DiffBuilderOptions,
+    estimated_num_rows: usize,
+    cancel_flag: &AtomicBool,
+) -> Option<Vec<DiffRow>> {
     let ignore = options.ignore.mask(
         tokens_source.unwrap_or_default(),
         text_source,
@@ -395,6 +421,7 @@ pub fn build_diff_rows<'a, T: RawTokenTrait>(
         options,
         estimated_num_rows,
         num_chunks,
+        cancel_flag,
     )
 }
 
@@ -409,7 +436,8 @@ fn build_diff_rows_chunked<T: RawTokenTrait>(
     options: &DiffBuilderOptions,
     estimated_num_rows: usize,
     num_chunks: usize,
-) -> Vec<DiffRow> {
+    cancel_flag: &AtomicBool,
+) -> Option<Vec<DiffRow>> {
     let ranges = chunk_ranges(entries, tokens_source, num_chunks);
     let build_chunk = |range: &Range<usize>| {
         let capacity = estimated_num_rows * range.len() / entries.len().max(1) + 1;
@@ -417,7 +445,10 @@ fn build_diff_rows_chunked<T: RawTokenTrait>(
             DiffBuilder::with_capacity(tokens_source, tokens_target, options, capacity);
         builder.dimmed = (&ignore.matched_source, &ignore.matched_target);
         builder.char_ranges = (&char_ranges.source, &char_ranges.target);
-        for diff_result in &entries[range.clone()] {
+        for (idx, diff_result) in entries[range.clone()].iter().enumerate() {
+            if idx % 4096 == 0 && cancel_flag.load(Ordering::Relaxed) {
+                return None;
+            }
             match &diff_result.operation {
                 DiffOp::Equal(_) => builder.handle_match(diff_result.clone()),
                 DiffOp::Delete => builder.handle_diff(diff_result.clone(), true),
@@ -432,13 +463,13 @@ fn build_diff_rows_chunked<T: RawTokenTrait>(
             );
             assert!(!left.active_diff && !right.active_diff);
         }
-        builder.finish_counted()
+        Some(builder.finish_counted())
     };
     if ranges.len() == 1 {
-        return build_chunk(&ranges[0]).0;
+        return build_chunk(&ranges[0]).map(|(rows, ..)| rows);
     }
 
-    let chunks: Vec<_> = ranges.par_iter().map(build_chunk).collect();
+    let chunks: Vec<_> = ranges.par_iter().map(build_chunk).collect::<Option<_>>()?;
     let mut rows = Vec::with_capacity(chunks.iter().map(|(rows, ..)| rows.len()).sum());
     let (mut left_offset, mut right_offset) = (0, 0);
     for (chunk_rows, left_lines, right_lines) in chunks {
@@ -450,7 +481,7 @@ fn build_diff_rows_chunked<T: RawTokenTrait>(
         left_offset += left_lines;
         right_offset += right_lines;
     }
-    rows
+    Some(rows)
 }
 
 /// A chunk's line numbers start at 1. Rows without a line (-1) keep it.
@@ -656,7 +687,9 @@ mod tests {
                         &options,
                         1,
                         num_chunks,
-                    );
+                        &AtomicBool::new(false),
+                    )
+                    .expect("not cancelled");
                     format!("{rows:#?}")
                 };
                 assert_eq!(build(1), reference, "{options:?}");
@@ -667,6 +700,52 @@ mod tests {
                         "{options:?}, {num_chunks} chunks"
                     );
                 }
+            }
+        }
+
+        #[test]
+        fn a_cancelled_build_returns_none_and_an_uncancelled_one_the_rows() {
+            let (t1, t2) = (lex(S1), lex(S2));
+            let options = DiffBuilderOptions::default();
+            let ir = diff_ir(&t1, &t2, &options);
+            let build = |cancelled: bool| {
+                build_diff_rows_cancellable(
+                    ir.clone(),
+                    Some(&t1[..]),
+                    Some(&t2[..]),
+                    S1,
+                    S2,
+                    &options,
+                    1,
+                    &AtomicBool::new(cancelled),
+                )
+            };
+            let rows = build_diff_rows(
+                ir.clone(),
+                Some(&t1[..]),
+                Some(&t2[..]),
+                S1,
+                S2,
+                &options,
+                1,
+            );
+
+            assert!(build(true).is_none());
+            assert_eq!(format!("{:#?}", build(false)), format!("{:#?}", Some(rows)));
+            let ignore = options.ignore.mask(&t1, S1, &t2, S2);
+            for num_chunks in [1, 4] {
+                let chunked = build_diff_rows_chunked(
+                    &ir.entries,
+                    Some(&t1[..]),
+                    Some(&t2[..]),
+                    &ignore,
+                    &ir.char_ranges,
+                    &options,
+                    1,
+                    num_chunks,
+                    &AtomicBool::new(true),
+                );
+                assert!(chunked.is_none(), "{num_chunks} chunks");
             }
         }
     }

@@ -482,7 +482,7 @@ impl Default for AudioDiffProcessor {
             ffmpeg: None,
             files: [None, None],
             sides: [SideState::Empty, SideState::Empty],
-            jobs: [repaint_job(&context), repaint_job(&context)],
+            jobs: std::array::from_fn(|_| repaint_job(&context).on_panic(|e| Err(Some(e)))),
             view: TimeView::default(),
             fit_pending: false,
             difference: SampleDiffProcessor::new(&context),

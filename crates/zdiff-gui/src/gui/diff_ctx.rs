@@ -9,6 +9,7 @@ use std::{
 };
 
 use eframe::egui;
+use rayon::prelude::*;
 use zcommon::find::{FindError, FindQuery, Matcher};
 use zcommon::job::Job;
 use zdiff::universal_path::UniversalPath;
@@ -16,7 +17,10 @@ use zdiff::{
     cached_file::CachedFile,
     change_count::{ChangeUnit, count_changes},
     char_diff::{CharRanges, character_diff_traced},
-    diff_builder::{DiffBuilderOptions, DiffRow, LineContent, RowBg, build_diff_rows},
+    diff_builder::{
+        DiffBuilderOptions, DiffRow, LineContent, RowBg, build_diff_rows,
+        build_diff_rows_cancellable,
+    },
     diff_ir::{DiffIR, DiffOp},
     ignore::IgnoreOptions,
     lexer::{RawToken, TokenKind},
@@ -82,36 +86,58 @@ pub struct FindCtx {
 }
 impl FindCtx {
     /// An empty query gives no hits; only an invalid regex is an error.
+    #[cfg(test)]
     pub fn new(query: &FindQuery, diff_ctx: &MinimalDiffCtx) -> Result<Self, FindError> {
-        let matcher = match Matcher::new(query) {
-            Ok(matcher) => Some(matcher),
-            Err(FindError::EmptyQuery) => None,
-            Err(e) => return Err(e),
+        let matcher = Self::compile(query)?;
+        let files = [&diff_ctx.input.file_1, &diff_ctx.input.file_2];
+        let find_ctx = Self::searched(
+            query.clone(),
+            matcher,
+            files,
+            &diff_ctx.precomputed_file_rows,
+            &AtomicBool::new(false),
+        );
+        Ok(find_ctx.expect("never cancelled"))
+    }
+
+    fn compile(query: &FindQuery) -> Result<Option<Matcher>, FindError> {
+        match Matcher::new(query) {
+            Ok(matcher) => Ok(Some(matcher)),
+            Err(FindError::EmptyQuery) => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
+    fn searched(
+        query: FindQuery,
+        matcher: Option<Matcher>,
+        files: [&Option<Arc<CachedFile<RawToken>>>; 2],
+        file_rows: &PrecomputedFileRows,
+        cancel: &AtomicBool,
+    ) -> Option<Self> {
+        let search = |side, file: &Option<Arc<CachedFile<RawToken>>>| match (file, &matcher) {
+            (Some(file), Some(matcher)) => Self::search(file, matcher, side, cancel),
+            _ => Vec::new(),
         };
-        let mut hits = Vec::new();
-        let files = [
-            (ActiveSide::Left, &diff_ctx.input.file_1),
-            (ActiveSide::Right, &diff_ctx.input.file_2),
-        ];
-        for (side, file) in files {
-            if let Some(file) = file
-                && let Some(matcher) = &matcher
-            {
-                hits.extend(Self::search(file, matcher, side));
-            }
+        let (left, right) = rayon::join(
+            || search(ActiveSide::Left, files[0]),
+            || search(ActiveSide::Right, files[1]),
+        );
+        if cancel.load(Ordering::Relaxed) {
+            return None;
         }
         let mut find_ctx = Self {
-            query: query.clone(),
+            query,
             matcher,
-            hits,
+            hits: [left, right].concat(),
         };
-        find_ctx.map_to_rows(&diff_ctx.precomputed_file_rows);
+        find_ctx.map_to_rows(file_rows);
         log::debug!(
             "create_find_ctx: {} hits for {:?}",
             find_ctx.hits.len(),
             find_ctx.query
         );
-        Ok(find_ctx)
+        Some(find_ctx)
     }
 
     #[cfg(test)]
@@ -128,29 +154,39 @@ impl FindCtx {
     }
 
     /// Searches each line as the pane's row text has it, so ordinals match what the pane paints.
-    fn search(file: &CachedFile<RawToken>, matcher: &Matcher, side: ActiveSide) -> Vec<FindHit> {
+    fn search(
+        file: &CachedFile<RawToken>,
+        matcher: &Matcher,
+        side: ActiveSide,
+        cancel: &AtomicBool,
+    ) -> Vec<FindHit> {
         let contents = &file.contents;
         // `line_starts` holds the index of each line's '\n', not of the byte after it.
         let starts = &file.metadata.line_starts;
-        let mut hits = Vec::new();
-        for (line, &start) in starts.iter().enumerate() {
-            let start = if line == 0 { start } else { start + 1 };
-            let end = starts.get(line + 1).copied().unwrap_or(contents.len());
-            let text = &contents[start..end];
-            let text = text.strip_suffix('\r').unwrap_or(text);
-            hits.extend(
+        (0..starts.len())
+            .into_par_iter()
+            .with_min_len(4096)
+            .flat_map_iter(|line| {
+                let cancelled = cancel.load(Ordering::Relaxed);
+                let start = if line == 0 {
+                    starts[0]
+                } else {
+                    starts[line] + 1
+                };
+                let end = starts.get(line + 1).copied().unwrap_or(contents.len());
+                let text = if cancelled { "" } else { &contents[start..end] };
+                let text = text.strip_suffix('\r').unwrap_or(text);
                 matcher
                     .find_iter(text)
                     .enumerate()
-                    .map(|(ordinal, _)| FindHit {
+                    .map(move |(ordinal, _)| FindHit {
                         side,
                         line,
                         ordinal,
                         row: 0,
-                    }),
-            );
-        }
-        hits
+                    })
+            })
+            .collect()
     }
 
     fn map_to_rows(&mut self, file_rows: &PrecomputedFileRows) {
@@ -782,7 +818,7 @@ impl DiffCtx {
                 let start = Instant::now();
                 let cancel = job.cancel_flag().clone();
                 let (c1, c2, _) = resolve_files(&input.file_1, &input.file_2);
-                let diff_rows = build_diff_rows(
+                let Some(diff_rows) = build_diff_rows_cancellable(
                     (*input.diff_ir).clone(),
                     Some(&c1.tokens),
                     Some(&c2.tokens),
@@ -790,11 +826,10 @@ impl DiffCtx {
                     &c2.contents,
                     &input.diff_options,
                     c1.metadata.num_lines().max(c2.metadata.num_lines()),
-                );
-
-                if cancel.load(Ordering::Relaxed) {
+                    &cancel,
+                ) else {
                     return;
-                }
+                };
 
                 if let Some((rows, precomputed_diffs, collapsed_blocks)) =
                     finalize_diff_rows(diff_rows, &input.diff_options, &cancel)
@@ -894,6 +929,7 @@ pub struct DiffProcessor {
     pin_paths: [Option<UniversalPath>; 2],
     pub find_cursor: ClampedCursor,
     pub find_ctx: FindCtx,
+    find_job: Job<(FindCtx, Arc<PrecomputedFileRows>)>,
     goto_line_number: Option<usize>,
     pub active_side: ActiveSide,
 
@@ -905,8 +941,10 @@ pub struct DiffProcessor {
 
 impl Default for DiffProcessor {
     fn default() -> Self {
+        let ctx = DiffCtx::default();
         Self {
-            ctx: Default::default(),
+            find_job: repaint_job(&ctx.repaint),
+            ctx,
             conflict_cursor: ClampedCursor::default(),
             active_highlights: Arc::default(),
             highlight_side: None,
@@ -993,6 +1031,10 @@ impl DiffProcessor {
     pub fn update(&mut self) {
         let mut reset_ui = false;
 
+        for (find_ctx, mapped_to) in self.find_job.poll() {
+            self.apply_find(find_ctx, &mapped_to);
+        }
+
         let shown_rows = self.ctx.diff_rows_ctx.clone();
         self.ctx.poll();
 
@@ -1016,6 +1058,7 @@ impl DiffProcessor {
     }
 
     pub fn update_find(&mut self, find_ctx: FindCtx) {
+        self.find_job.cancel();
         self.find_ctx = find_ctx;
         self.find_cursor
             .set_max(self.find_ctx.hits.len().saturating_sub(1));
@@ -1024,10 +1067,51 @@ impl DiffProcessor {
 
     /// Without a finished diff there is nothing to search and the query isn't checked.
     pub fn update_find_query(&mut self, query: &FindQuery) -> Result<(), FindError> {
-        if let Some(diff_ctx) = self.get_minimal_diff_ctx() {
-            self.update_find(FindCtx::new(query, &diff_ctx)?);
-        }
+        let Some(diff_ctx) = self.get_minimal_diff_ctx() else {
+            return Ok(());
+        };
+        let Some(matcher) = FindCtx::compile(query)? else {
+            self.update_find(FindCtx {
+                query: query.clone(),
+                ..FindCtx::default()
+            });
+            return Ok(());
+        };
+        let query = query.clone();
+        let files = [diff_ctx.input.file_1, diff_ctx.input.file_2];
+        let file_rows = diff_ctx.precomputed_file_rows;
+        self.find_job.start(move |job| {
+            let [file_1, file_2] = &files;
+            let cancel = job.cancel_flag();
+            let searched =
+                FindCtx::searched(query, Some(matcher), [file_1, file_2], &file_rows, cancel);
+            if let Some(find_ctx) = searched {
+                job.send((find_ctx, file_rows));
+            }
+        });
         Ok(())
+    }
+
+    fn apply_find(&mut self, mut find_ctx: FindCtx, mapped_to: &Arc<PrecomputedFileRows>) {
+        if let Some(diff_ctx) = self.get_minimal_diff_ctx()
+            && !Arc::ptr_eq(&diff_ctx.precomputed_file_rows, mapped_to)
+        {
+            find_ctx.map_to_rows(&diff_ctx.precomputed_file_rows);
+        }
+        self.update_find(find_ctx);
+    }
+
+    #[cfg(test)]
+    pub fn wait_for_find(&mut self) {
+        let start = Instant::now();
+        while self.find_job.is_running() {
+            assert!(
+                start.elapsed() < Duration::from_secs(10),
+                "find did not finish"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        self.update();
     }
 
     pub fn clear_results(&mut self) {
@@ -2471,6 +2555,7 @@ mod tests {
                 processor
                     .update_find_query(&plain("keep_10", true))
                     .unwrap();
+                processor.wait_for_find();
                 processor.conflict_cursor.set_max(2);
                 processor.conflict_cursor.set(1);
                 let expanded = processor.get_minimal_diff_ctx().expect("diff still shown");
@@ -2982,6 +3067,7 @@ mod tests {
                 let dir = tempfile::tempdir().unwrap();
                 let (mut processor, _) = foo_pair(dir.path());
                 processor.update_find_query(&plain("foo", true)).unwrap();
+                processor.wait_for_find();
                 processor.find_cursor.inc();
 
                 let result = processor.update_find_query(&regex("foo(", true));
@@ -2999,8 +3085,22 @@ mod tests {
                 processor.update_find_query(&plain("foo", true)).unwrap();
 
                 processor.update_find_query(&regex("", true)).unwrap();
+                processor.wait_for_find();
 
                 assert!(processor.find_ctx.hits().is_empty());
+            }
+
+            #[test]
+            fn a_superseded_query_never_replaces_the_latest_results() {
+                let dir = tempfile::tempdir().unwrap();
+                let (mut processor, _) = foo_pair(dir.path());
+                processor.update_find_query(&plain("foo", true)).unwrap();
+
+                processor.update_find_query(&plain("bar", true)).unwrap();
+                processor.wait_for_find();
+
+                assert_eq!(processor.find_ctx.query().text, "bar");
+                assert_eq!(processor.find_ctx.hits().len(), 2);
             }
         }
 

@@ -12,6 +12,7 @@ use serde::Deserialize;
 use serde::Serialize;
 use zcommon::hash::Blake3Hash;
 use zcommon::hash::HashService;
+use zcommon::job::Job;
 use zcommon_ui::common::show_custom_popup;
 use zcommon_ui::style_window::role_color;
 use zcommon_ui::toggle::toggle_button;
@@ -73,15 +74,19 @@ struct DuplicateGroups {
     hash_of: HashMap<FsNodeId, Blake3Hash>,
 }
 
+#[cfg(test)]
 fn duplicate_groups(
     view: &FileSystemView,
     filter: &PathFilter,
     hashes: &HashMap<PathBuf, Option<Blake3Hash>>,
 ) -> DuplicateGroups {
+    let files = hashed_files(visible_files(view, filter), hashes);
+    groups_of(&view.file_system, filter, files)
+}
+
+fn visible_files(view: &FileSystemView, filter: &PathFilter) -> Vec<(FsNodeId, PathBuf, u64)> {
     let model = &view.file_system;
     let hidden = tree_hidden(view, filter);
-    let mut node_of = HashMap::new();
-    let mut hash_of = HashMap::new();
     let mut files = Vec::new();
     let mut path = model.path(model.get_root_node_id());
     let mut path_depth = 0;
@@ -95,15 +100,38 @@ fn duplicate_groups(
             path.push(node.name());
             path_depth += 1;
         }
-        if !node.is_file() || hidden[node_id] {
-            continue;
+        if node.is_file() && !hidden[node_id] {
+            files.push((node_id, path.clone(), node.size));
         }
-        let Some(Some(hash)) = hashes.get(&path) else {
-            continue;
-        };
+    }
+    files
+}
+
+fn hashed_files(
+    files: Vec<(FsNodeId, PathBuf, u64)>,
+    hashes: &HashMap<PathBuf, Option<Blake3Hash>>,
+) -> Vec<(FsNodeId, PathBuf, u64, Blake3Hash)> {
+    files
+        .into_iter()
+        .filter_map(|(node_id, path, size)| {
+            let hash = (*hashes.get(&path)?)?;
+            Some((node_id, path, size, hash))
+        })
+        .collect()
+}
+
+fn groups_of(
+    model: &Arc<FileSystemModel>,
+    filter: &PathFilter,
+    hashed: Vec<(FsNodeId, PathBuf, u64, Blake3Hash)>,
+) -> DuplicateGroups {
+    let mut node_of = HashMap::new();
+    let mut hash_of = HashMap::new();
+    let mut files = Vec::with_capacity(hashed.len());
+    for (node_id, path, size, hash) in hashed {
         node_of.insert(path.clone(), node_id);
-        hash_of.insert(node_id, *hash);
-        files.push((path.clone(), node.size, *hash));
+        hash_of.insert(node_id, hash);
+        files.push((path, size, hash));
     }
     let groups = group_by_size_and_hash(files);
 
@@ -144,6 +172,14 @@ enum GroupCell<'a> {
     Folder {
         duplicates: usize,
     },
+}
+
+fn current_groups<'a>(
+    groups: &'a Option<DuplicateGroups>,
+    view: &FileSystemView,
+    filter: &PathFilter,
+) -> Option<&'a DuplicateGroups> {
+    groups.as_ref().filter(|groups| groups.is_for(view, filter))
 }
 
 impl DuplicateGroups {
@@ -568,6 +604,12 @@ pub struct DuplicateFilesPane {
     #[serde(skip)]
     groups: Option<DuplicateGroups>,
     #[serde(skip)]
+    group_job: Option<Job<DuplicateGroups>>,
+    #[serde(skip)]
+    grouped_for: Option<(Weak<FileSystemModel>, PathFilter)>,
+    #[serde(skip)]
+    final_regroup_due: bool,
+    #[serde(skip)]
     was_hashing: bool,
     #[serde(skip)]
     last_regroup: Option<Instant>,
@@ -639,6 +681,9 @@ impl DuplicateFilesPane {
             confirm_resolve: false,
             open_dir_window: false,
             groups: None,
+            group_job: None,
+            grouped_for: None,
+            final_regroup_due: false,
             was_hashing: false,
             last_regroup: None,
             resolution_summary: None,
@@ -730,7 +775,8 @@ impl DuplicateFilesPane {
                 Vec::new()
             });
             let diff_filter = duplicates_filter.diff_filter();
-            let member_of = self.groups.as_ref().map(|groups| &groups.member_of);
+            let member_of =
+                current_groups(&self.groups, view, filter).map(|groups| &groups.member_of);
             let rows = filter_rows(rows, diff_filter, |row| {
                 row.diff_state
                     .first()
@@ -778,7 +824,7 @@ impl DuplicateFilesPane {
             *ctx.duplicates_filter,
         );
         let rows = &self.tree_cache.as_ref().expect("built above").rows;
-        let Some(groups) = self.groups.as_ref() else {
+        let Some(groups) = current_groups(&self.groups, view, ctx.path_filter) else {
             return false;
         };
         let flat = ctx.duplicates_filter.diff_filter().is_flat(*ctx.tree_sort);
@@ -837,25 +883,88 @@ impl DuplicateFilesPane {
     /// hashing, and once after it, which sees the last hashes.
     fn update_groups(&mut self, ctx: &mut DuplicateFilesPaneCtx) {
         const REGROUP_INTERVAL: Duration = Duration::from_millis(500);
+        let job = self.group_job.get_or_insert_with(|| Job::new(|| {}));
+        let finished = job.poll();
+        let job_running = job.is_running();
+        for groups in finished {
+            let current = ctx
+                .path_diff_view
+                .file_system_1_view
+                .as_ref()
+                .is_some_and(|view| groups.is_for(view, ctx.path_filter));
+            if current {
+                self.set_groups(ctx, Some(groups));
+            }
+        }
+
         let hashing = self.hash_progress(ctx.hash_service).is_some();
         let was_hashing = std::mem::replace(&mut self.was_hashing, hashing);
-        let current = match (ctx.path_diff_view.file_system_1_view.as_ref(), &self.groups) {
-            (Some(view), Some(groups)) => groups.is_for(view, ctx.path_filter),
-            (None, None) => true,
-            _ => false,
+        self.final_regroup_due |= was_hashing && !hashing;
+        let Some(view) = ctx.path_diff_view.file_system_1_view.as_ref() else {
+            self.group_job.as_mut().unwrap().cancel();
+            self.grouped_for = None;
+            if self.groups.is_some() {
+                self.set_groups(ctx, None);
+            }
+            return;
         };
+        let current = self
+            .groups
+            .as_ref()
+            .is_some_and(|groups| groups.is_for(view, ctx.path_filter));
+        let requested = current
+            || self.grouped_for.as_ref().is_some_and(|(model, filter)| {
+                model.ptr_eq(&Arc::downgrade(&view.file_system)) && filter == ctx.path_filter
+            });
         let regrouped_recently = self
             .last_regroup
             .is_some_and(|at| at.elapsed() < REGROUP_INTERVAL);
-        if current && (hashing && regrouped_recently || !hashing && !was_hashing) {
+        let refresh_while_hashing = hashing && !regrouped_recently && !job_running;
+        if requested && !self.final_regroup_due && !refresh_while_hashing {
             return;
         }
-        let groups = ctx.path_diff_view.file_system_1_view.as_ref().map(|view| {
-            ctx.hash_service
-                .with_hashes(|hashes| duplicate_groups(view, ctx.path_filter, hashes))
-        });
-        self.set_groups(ctx, groups);
+
+        self.final_regroup_due = false;
         self.last_regroup = Some(Instant::now());
+        self.grouped_for = Some((Arc::downgrade(&view.file_system), ctx.path_filter.clone()));
+        let snapshot = FileSystemView {
+            file_system: Arc::clone(&view.file_system),
+            collapsed: view.collapsed.clone(),
+        };
+        let filter = ctx.path_filter.clone();
+        let hashes = ctx.hash_service.reader();
+        self.group_job.as_mut().unwrap().start(move |job| {
+            let files = visible_files(&snapshot, &filter);
+            let hashed = hashes.with_hashes(|hashes| hashed_files(files, hashes));
+            job.send(groups_of(&snapshot.file_system, &filter, hashed));
+        });
+    }
+
+    fn resolvable(&self, ctx: &DuplicateFilesPaneCtx) -> bool {
+        let Some(view) = ctx.path_diff_view.file_system_1_view.as_ref() else {
+            return false;
+        };
+        // While the folder is rescanned the tree may still list files a resolve removed.
+        let rescanning = ctx.path_diff_view.file_system_1_scan.is_scanning();
+        !rescanning
+            && current_groups(&self.groups, view, ctx.path_filter).is_some()
+            && can_resolve(ctx.conflict_map, ctx.conflict_map_resolved)
+    }
+
+    fn set_regroup_wake(&mut self, ctx: &egui::Context) {
+        if self.group_job.is_none() {
+            let ctx = ctx.clone();
+            self.group_job = Some(Job::new(move || ctx.request_repaint()));
+        }
+    }
+
+    #[cfg(test)]
+    fn wait_for_regroup(&self) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while self.group_job.as_ref().is_some_and(Job::is_running) {
+            assert!(Instant::now() < deadline, "regroup did not finish");
+            std::thread::sleep(Duration::from_millis(1));
+        }
     }
 
     #[cfg(test)]
@@ -893,7 +1002,9 @@ impl DuplicateFilesPane {
         });
         let same_members = match (&self.groups, &groups) {
             (Some(old), Some(new)) => {
-                old.member_of.len() == new.member_of.len()
+                old.model.ptr_eq(&new.model)
+                    && old.filter == new.filter
+                    && old.member_of.len() == new.member_of.len()
                     && new
                         .member_of
                         .keys()
@@ -966,6 +1077,7 @@ impl DuplicateFilesPane {
     ) -> egui_tiles::UiResponse {
         self.forget_cursor_of_other_root(ctx.path_diff_view.file_system_1_view.as_ref());
         self.hash_size_collisions(ctx);
+        self.set_regroup_wake(ui.ctx());
         self.update_groups(ctx);
         let scroll_to_cursor = self.apply_actions(ctx);
 
@@ -1009,18 +1121,13 @@ impl DuplicateFilesPane {
                     ctx.hash_service.resize_workers(slider_concurrent_hashes);
                 }
 
-                if ctx.path_diff_view.file_system_1_view.is_some() {
-                    // While the folder is rescanned the tree may still list files a resolve removed.
-                    let rescanning = ctx.path_diff_view.file_system_1_scan.is_scanning();
-                    let enabled =
-                        !rescanning && can_resolve(ctx.conflict_map, ctx.conflict_map_resolved);
-                    if ui
-                        .add_enabled(enabled, egui::Button::new("Resolve"))
+                if ctx.path_diff_view.file_system_1_view.is_some()
+                    && ui
+                        .add_enabled(self.resolvable(ctx), egui::Button::new("Resolve"))
                         .on_disabled_hover_text("Keep a file of a group first")
                         .clicked()
-                    {
-                        self.confirm_resolve = true;
-                    }
+                {
+                    self.confirm_resolve = true;
                 }
             });
 
@@ -1100,7 +1207,7 @@ impl DuplicateFilesPane {
             }
             let pending_deletion = self.pending_deletions.as_ref().expect("built above");
             let root = view_root(Some(view)).expect("a view has a root");
-            let groups = self.groups.as_ref();
+            let groups = current_groups(&self.groups, view, ctx.path_filter);
             let keepers = &*ctx.conflict_map_resolved;
             let mut group_cell = |ui: &mut egui::Ui, node_id: FsNodeId| {
                 let cell = groups
@@ -1168,7 +1275,9 @@ impl DuplicateFilesPane {
                     scroll_to_cursor,
                 },
             );
-            if let (Some(node_id), Some(groups)) = (keep_clicked, self.groups.as_ref()) {
+            let view = ctx.path_diff_view.file_system_1_view.as_ref();
+            let groups = view.and_then(|view| current_groups(&self.groups, view, ctx.path_filter));
+            if let (Some(node_id), Some(groups)) = (keep_clicked, groups) {
                 toggle_keep(groups, ctx.conflict_map, ctx.conflict_map_resolved, node_id);
             }
         } else {
@@ -1202,6 +1311,14 @@ impl DuplicateFilesPane {
     /// Rebuilt every frame, so what is recycled is the list shown.
     fn ui_resolve_confirm(&mut self, ui: &mut egui::Ui, ctx: &mut DuplicateFilesPaneCtx) {
         if !self.confirm_resolve {
+            return;
+        }
+        let stale = ctx
+            .path_diff_view
+            .file_system_1_view
+            .as_ref()
+            .is_some_and(|view| current_groups(&self.groups, view, ctx.path_filter).is_none());
+        if stale {
             return;
         }
         let preview = resolve_preview(
@@ -1434,6 +1551,8 @@ mod tests {
                 pane.hash_size_collisions(ctx);
                 pane.update_groups(ctx);
             });
+            pane.wait_for_regroup();
+            self.with_ctx(|ctx| pane.update_groups(ctx));
         }
 
         fn hash_frames(&mut self, pane: &mut DuplicateFilesPane) {
@@ -2193,6 +2312,57 @@ mod tests {
         state.path_filter = blacklist("*.txt");
         state.frame(&mut pane);
         assert!(state.conflict_map.is_empty());
+    }
+
+    #[test]
+    fn groups_of_an_old_filter_are_hidden_and_block_resolve_until_regrouped() {
+        let (dir, view) = duplicate_tree();
+        let root = dir.path();
+        let mut state = PaneState::new(view);
+        let mut pane = DuplicateFilesPane::new(None);
+        state.hash_frames(&mut pane);
+        set_keeper(
+            &state.conflict_map,
+            &mut state.conflict_map_resolved,
+            &same_hash(root),
+            Some(&root.join("a.txt")),
+        );
+        assert!(state.with_ctx(|ctx| pane.resolvable(ctx)));
+
+        state.path_filter = blacklist("b.txt");
+        state.with_ctx(|ctx| pane.update_groups(ctx));
+
+        let view = state.view_1.as_ref().unwrap();
+        assert!(current_groups(&pane.groups, view, &state.path_filter).is_none());
+        assert!(!state.with_ctx(|ctx| pane.resolvable(ctx)));
+        state.frame(&mut pane);
+        assert!(state.with_ctx(|ctx| pane.resolvable(ctx)));
+    }
+
+    #[test]
+    fn a_filter_change_while_grouping_applies_only_the_latest_filters_groups() {
+        let (dir, view) = duplicate_tree();
+        let root = dir.path();
+        let mut state = PaneState::new(view);
+        let mut pane = DuplicateFilesPane::new(None);
+        state.hash_frames(&mut pane);
+
+        state.path_filter = blacklist("b.txt");
+        state.with_ctx(|ctx| pane.update_groups(ctx));
+        state.path_filter = blacklist("a.txt");
+        state.frame(&mut pane);
+
+        assert_eq!(
+            state.conflict_map,
+            HashMap::from([(
+                same_hash(root),
+                vec![
+                    root.join("b.txt"),
+                    root.join("e.txt"),
+                    root.join("sub").join("c.txt"),
+                ]
+            )])
+        );
     }
 
     #[test]

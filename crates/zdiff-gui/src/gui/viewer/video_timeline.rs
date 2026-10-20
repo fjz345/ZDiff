@@ -209,7 +209,7 @@ impl Default for VideoTimeline {
             fps: 1.0,
             expected: 0,
             values: Vec::new(),
-            run_job: Job::new(|| {}),
+            run_job: Job::new(|| {}).on_panic(|e| TimelineMessage::Done(Err(Some(e)))),
         }
     }
 }

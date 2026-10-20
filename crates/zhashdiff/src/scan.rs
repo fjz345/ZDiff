@@ -7,6 +7,8 @@ use std::{
     time::SystemTime,
 };
 
+use rayon::prelude::*;
+
 use crate::fs::{FileSystemModel, FsNodeId, FsNodeKind};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -61,7 +63,7 @@ pub struct SkippedEntry {
     pub reason: String,
 }
 
-pub trait ListingSource {
+pub trait ListingSource: Sync {
     /// Outer error: `dir` itself could not be listed. Inner error: one entry could not be read.
     fn children(&self, dir: &Path) -> io::Result<Vec<Result<ListingEntry, SkippedEntry>>>;
 }
@@ -208,24 +210,34 @@ pub fn scan(
     if cancel.load(Ordering::Relaxed) {
         return None;
     }
+    found.fetch_add(1, Ordering::Relaxed);
 
-    let mut scanner = Scanner {
+    let lister = Lister {
         source,
         cancel,
         found,
+    };
+    // Its own pool: listing blocks on IO and would stall compute work on the global one.
+    let pool = rayon::ThreadPoolBuilder::new()
+        .thread_name(|i| format!("scan-{i}"))
+        .stack_size(8 << 20)
+        .build()
+        .expect("scan thread pool");
+    let listed = pool.install(|| lister.list(listing, &[root.to_path_buf()]))?;
+
+    let mut builder = ModelBuilder {
         model: FileSystemModel::empty(),
         skipped: Vec::new(),
-        ancestors: vec![root.to_path_buf()],
     };
-    scanner.model.set_root_path(root.to_path_buf());
+    builder.model.set_root_path(root.to_path_buf());
     let root_name = root.file_name().unwrap_or_default();
-    let root_id = scanner.push(None, root_name, FsNodeKind::new_empty_dir(), 0, None, None);
+    let root_id = builder.push(None, root_name, FsNodeKind::new_empty_dir(), 0, None, None);
     assert_eq!(root_id, 0);
-    scanner.add_children(root_id, listing)?;
+    builder.add_children(root_id, listed);
 
     Some(Ok(ScanOutput {
-        model: scanner.model,
-        skipped: scanner.skipped,
+        model: builder.model,
+        skipped: builder.skipped,
     }))
 }
 
@@ -240,25 +252,90 @@ fn entry_name(path: &Path) -> &OsStr {
     })
 }
 
-struct Scanner<'a> {
+enum Listed {
+    File(ListingEntry),
+    Dir {
+        entry: ListingEntry,
+        children: Vec<Listed>,
+    },
+    Skipped(SkippedEntry),
+}
+
+struct Lister<'a> {
     source: &'a dyn ListingSource,
     cancel: &'a AtomicBool,
     found: &'a AtomicUsize,
-    model: FileSystemModel,
-    skipped: Vec<SkippedEntry>,
-    ancestors: Vec<PathBuf>,
 }
 
-impl Scanner<'_> {
-    /// The folder being scanned above `link` that `link` resolves to. Following it would list the
-    /// same files again until the path gets too long.
-    fn looped_ancestor(&self, link: &Path) -> Option<&PathBuf> {
-        let real = link.canonicalize().ok()?;
-        self.ancestors
-            .iter()
-            .find(|ancestor| ancestor.canonicalize().is_ok_and(|a| a == real))
+impl Lister<'_> {
+    fn list(
+        &self,
+        listing: Vec<Result<ListingEntry, SkippedEntry>>,
+        ancestors: &[PathBuf],
+    ) -> Option<Vec<Listed>> {
+        listing
+            .into_par_iter()
+            .map(|entry| self.listed(entry, ancestors))
+            .collect()
     }
 
+    fn listed(
+        &self,
+        entry: Result<ListingEntry, SkippedEntry>,
+        ancestors: &[PathBuf],
+    ) -> Option<Listed> {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(skipped) => return Some(Listed::Skipped(skipped)),
+        };
+        if !entry.is_dir {
+            self.found.fetch_add(1, Ordering::Relaxed);
+            return Some(Listed::File(entry));
+        }
+        if entry.is_link
+            && let Some(ancestor) = looped_ancestor(&entry.path, ancestors)
+        {
+            let reason = format!("links back to {}", ancestor.display());
+            return Some(Listed::Skipped(SkippedEntry {
+                path: entry.path,
+                reason,
+            }));
+        }
+        // An unlistable folder is omitted rather than shown empty, so it can't compare as Same.
+        let sub_listing = match self.source.children(&entry.path) {
+            Ok(listing) => listing,
+            Err(e) => {
+                return Some(Listed::Skipped(SkippedEntry {
+                    path: entry.path,
+                    reason: e.to_string(),
+                }));
+            }
+        };
+        if self.cancel.load(Ordering::Relaxed) {
+            return None;
+        }
+        self.found.fetch_add(1, Ordering::Relaxed);
+        let ancestors = [ancestors, std::slice::from_ref(&entry.path)].concat();
+        let children = self.list(sub_listing, &ancestors)?;
+        Some(Listed::Dir { entry, children })
+    }
+}
+
+/// The folder being scanned above `link` that `link` resolves to. Following it would list the
+/// same files again until the path gets too long.
+fn looped_ancestor<'a>(link: &Path, ancestors: &'a [PathBuf]) -> Option<&'a PathBuf> {
+    let real = link.canonicalize().ok()?;
+    ancestors
+        .iter()
+        .find(|ancestor| ancestor.canonicalize().is_ok_and(|a| a == real))
+}
+
+struct ModelBuilder {
+    model: FileSystemModel,
+    skipped: Vec<SkippedEntry>,
+}
+
+impl ModelBuilder {
     fn push(
         &mut self,
         parent: Option<FsNodeId>,
@@ -268,76 +345,45 @@ impl Scanner<'_> {
         modified: Option<SystemTime>,
         hash: Option<ContentHash>,
     ) -> FsNodeId {
-        self.found.fetch_add(1, Ordering::Relaxed);
         self.model
             .push_node(parent, name, kind, size, modified, hash)
     }
 
-    fn add_children(
-        &mut self,
-        dir_id: FsNodeId,
-        listing: Vec<Result<ListingEntry, SkippedEntry>>,
-    ) -> Option<()> {
-        let mut children = Vec::with_capacity(listing.len());
-        for entry in listing {
-            let entry = match entry {
-                Ok(entry) => entry,
-                Err(skipped) => {
+    fn add_children(&mut self, dir_id: FsNodeId, listed: Vec<Listed>) {
+        let mut children = Vec::with_capacity(listed.len());
+        for item in listed {
+            let child_id = match item {
+                Listed::Skipped(skipped) => {
                     self.skipped.push(skipped);
                     continue;
                 }
-            };
-            let child_id = if entry.is_dir {
-                if entry.is_link
-                    && let Some(ancestor) = self.looped_ancestor(&entry.path)
-                {
-                    let reason = format!("links back to {}", ancestor.display());
-                    self.skipped.push(SkippedEntry {
-                        path: entry.path,
-                        reason,
-                    });
-                    continue;
+                Listed::Dir {
+                    entry,
+                    children: sub_listed,
+                } => {
+                    let id = self.push(
+                        Some(dir_id),
+                        entry_name(&entry.path),
+                        FsNodeKind::new_empty_dir(),
+                        entry.size,
+                        entry.modified,
+                        None,
+                    );
+                    self.add_children(id, sub_listed);
+                    id
                 }
-                // An unlistable folder is omitted rather than shown empty, so it can't compare as Same.
-                let sub_listing = match self.source.children(&entry.path) {
-                    Ok(listing) => listing,
-                    Err(e) => {
-                        self.skipped.push(SkippedEntry {
-                            path: entry.path,
-                            reason: e.to_string(),
-                        });
-                        continue;
-                    }
-                };
-                if self.cancel.load(Ordering::Relaxed) {
-                    return None;
-                }
-                let id = self.push(
-                    Some(dir_id),
-                    entry_name(&entry.path),
-                    FsNodeKind::new_empty_dir(),
-                    entry.size,
-                    entry.modified,
-                    None,
-                );
-                self.ancestors.push(entry.path);
-                self.add_children(id, sub_listing)?;
-                self.ancestors.pop();
-                id
-            } else {
-                self.push(
+                Listed::File(entry) => self.push(
                     Some(dir_id),
                     entry_name(&entry.path),
                     FsNodeKind::new_file(),
                     entry.size,
                     entry.modified,
                     entry.hash,
-                )
+                ),
             };
             children.push(child_id);
         }
         self.model.set_children(dir_id, children);
-        Some(())
     }
 }
 

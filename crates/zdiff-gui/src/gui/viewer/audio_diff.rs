@@ -119,7 +119,7 @@ impl SampleDiffProcessor {
             inputs: None,
             resampled_to: None,
             state: DiffState::Empty,
-            job: repaint_job(context),
+            job: repaint_job(context).on_panic(|e| Err(Some(e))),
         }
     }
 

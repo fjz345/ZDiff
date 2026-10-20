@@ -1,8 +1,11 @@
+use std::any::Any;
+use std::panic::AssertUnwindSafe;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::Arc;
 
 type Wake = Arc<dyn Fn() + Send + Sync>;
+type OnPanic<M> = Arc<dyn Fn(String) -> M + Send + Sync>;
 
 struct Run<M> {
     cancel: Arc<AtomicBool>,
@@ -12,6 +15,7 @@ struct Run<M> {
 
 pub struct Job<M> {
     wake: Wake,
+    on_panic: Option<OnPanic<M>>,
     run: Option<Run<M>>,
 }
 
@@ -37,8 +41,14 @@ impl<M: Send + 'static> Job<M> {
     pub fn new(wake: impl Fn() + Send + Sync + 'static) -> Self {
         Self {
             wake: Arc::new(wake),
+            on_panic: None,
             run: None,
         }
+    }
+
+    pub fn on_panic(mut self, message: impl Fn(String) -> M + Send + Sync + 'static) -> Self {
+        self.on_panic = Some(Arc::new(message));
+        self
     }
 
     pub fn start(&mut self, work: impl FnOnce(&JobCtx<M>) + Send + 'static) {
@@ -60,9 +70,13 @@ impl<M: Send + 'static> Job<M> {
             running,
             rx,
         });
+        let on_panic = self.on_panic.clone();
         std::thread::spawn(move || {
             let _guard = guard;
-            work(&ctx);
+            let panicked = std::panic::catch_unwind(AssertUnwindSafe(|| work(&ctx)));
+            if let (Err(payload), Some(on_panic)) = (panicked, on_panic) {
+                ctx.send(on_panic(panic_message(payload.as_ref())));
+            }
         });
     }
 
@@ -84,6 +98,16 @@ impl<M: Send + 'static> Job<M> {
         self.run
             .as_ref()
             .is_some_and(|run| run.running.load(Ordering::SeqCst))
+    }
+}
+
+fn panic_message(payload: &(dyn Any + Send)) -> String {
+    if let Some(message) = payload.downcast_ref::<&str>() {
+        message.to_string()
+    } else if let Some(message) = payload.downcast_ref::<String>() {
+        message.clone()
+    } else {
+        "worker panicked".to_string()
     }
 }
 
@@ -256,5 +280,16 @@ mod tests {
         job.start(|_| panic!("worker panic (expected by test)"));
         wait_until("wake after panic", || count.load(Ordering::SeqCst) >= 1);
         assert!(!job.is_running());
+    }
+
+    #[test]
+    fn a_panicking_worker_sends_the_on_panic_message() {
+        let mut job: Job<Result<u32, String>> = Job::new(|| {}).on_panic(Err);
+        job.start(|_| panic!("worker panic (expected by test)"));
+        wait_until("not running", || !job.is_running());
+        assert_eq!(
+            job.poll(),
+            vec![Err("worker panic (expected by test)".to_string())]
+        );
     }
 }

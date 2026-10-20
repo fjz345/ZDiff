@@ -3,6 +3,8 @@ use std::{
     sync::atomic::{AtomicBool, Ordering},
 };
 
+use rayon::prelude::*;
+
 /// A straight (not premultiplied) RGBA8 image, row-major.
 #[derive(Debug, Clone, Copy)]
 pub struct RgbaBuffer<'a> {
@@ -77,32 +79,43 @@ pub fn pixel_diff(
     );
     // Everything outside the overlap stays changed.
     let mut mask = vec![true; width * height];
-    let mut changed = 0;
-    let mut bounds: Option<PixelBounds> = None;
-    for y in 0..height {
-        if cancel_flag.load(Ordering::Acquire) {
-            return None;
-        }
-        let row = &mut mask[y * width..(y + 1) * width];
-        if y < overlap_height {
-            let a = overlap_row(&first, y, overlap_width);
-            let b = overlap_row(&second, y, overlap_width);
-            // Equal rows (most of them, in a typical edit) skip the per-pixel walk.
-            if a == b {
-                row[..overlap_width].fill(false);
-            } else {
-                for (x, (a, b)) in a.chunks_exact(4).zip(b.chunks_exact(4)).enumerate() {
-                    row[x] = a.iter().zip(b).any(|(a, b)| a.abs_diff(*b) > tolerance);
+    let changed_rows: Vec<Option<(u64, usize, usize)>> = mask
+        .par_chunks_mut(width.max(1))
+        .enumerate()
+        .with_min_len(16)
+        .map(|(y, row)| {
+            if cancel_flag.load(Ordering::Acquire) {
+                return None;
+            }
+            if y < overlap_height {
+                let a = overlap_row(&first, y, overlap_width);
+                let b = overlap_row(&second, y, overlap_width);
+                // Equal rows (most of them, in a typical edit) skip the per-pixel walk.
+                if a == b {
+                    row[..overlap_width].fill(false);
+                } else {
+                    for (x, (a, b)) in a.chunks_exact(4).zip(b.chunks_exact(4)).enumerate() {
+                        row[x] = a.iter().zip(b).any(|(a, b)| a.abs_diff(*b) > tolerance);
+                    }
                 }
             }
-        }
+            let (Some(first_x), Some(last_x)) =
+                (row.iter().position(|&c| c), row.iter().rposition(|&c| c))
+            else {
+                return Some(None);
+            };
+            let count = row.iter().filter(|&&c| c).count() as u64;
+            Some(Some((count, first_x, last_x)))
+        })
+        .collect::<Option<_>>()?;
 
-        let (Some(first_x), Some(last_x)) =
-            (row.iter().position(|&c| c), row.iter().rposition(|&c| c))
-        else {
+    let mut changed = 0;
+    let mut bounds: Option<PixelBounds> = None;
+    for (y, row) in changed_rows.into_iter().enumerate() {
+        let Some((count, first_x, last_x)) = row else {
             continue;
         };
-        changed += row.iter().filter(|&&c| c).count() as u64;
+        changed += count;
         let (x, y) = (first_x as u32..last_x as u32 + 1, y as u32);
         bounds = Some(match bounds {
             None => PixelBounds { x, y: y..y + 1 },

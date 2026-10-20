@@ -16,6 +16,7 @@ use eframe::egui::{
     self, Color32, ColorImage, Pos2, Rect, Sense, Stroke, StrokeKind, TextureFilter, TextureHandle,
     TextureOptions, Vec2, pos2, vec2,
 };
+use rayon::prelude::*;
 use zcommon::job::Job;
 use zcommon_ui::style_window::role_color;
 use zdiff::pixel::{PixelDiff, PixelStats, RgbaBuffer, pixel_diff};
@@ -240,14 +241,15 @@ pub fn apply_channel(rgba: &[u8], channel: ImageChannel) -> Cow<'_, [u8]> {
             }
         }
     };
-    Cow::Owned(
-        rgba.chunks_exact(4)
-            .flat_map(|pixel| {
-                let value = gray(pixel);
-                [value, value, value, 255]
-            })
-            .collect(),
-    )
+    let mut grays = vec![0; rgba.len() / 4 * 4];
+    grays
+        .par_chunks_exact_mut(4)
+        .zip(rgba.par_chunks_exact(4))
+        .for_each(|(out, pixel)| {
+            let value = gray(pixel);
+            out.copy_from_slice(&[value, value, value, 255]);
+        });
+    Cow::Owned(grays)
 }
 
 /// The union canvas of two images, aligned at the top-left corner.
@@ -278,28 +280,35 @@ pub fn heat_magnitudes(
         let start = y * image.width as usize * 4;
         &image.rgba[start..start + width * 4]
     }
-    for y in 0..overlap_height {
-        if cancel_flag.load(Ordering::Acquire) {
-            return None;
-        }
-        let (a, b) = (
-            row_bytes(first, y, overlap_width),
-            row_bytes(second, y, overlap_width),
-        );
-        let row = &mut magnitude[y * width..y * width + overlap_width];
-        if a == b {
-            row.fill(0);
-        } else {
-            for (value, (a, b)) in row.iter_mut().zip(a.chunks_exact(4).zip(b.chunks_exact(4))) {
-                *value = a
-                    .iter()
-                    .zip(b)
-                    .map(|(a, b)| a.abs_diff(*b))
-                    .max()
-                    .unwrap_or(0);
+    magnitude
+        .par_chunks_mut(width.max(1))
+        .take(overlap_height)
+        .enumerate()
+        .with_min_len(16)
+        .try_for_each(|(y, row)| {
+            if cancel_flag.load(Ordering::Acquire) {
+                return None;
             }
-        }
-    }
+            let (a, b) = (
+                row_bytes(first, y, overlap_width),
+                row_bytes(second, y, overlap_width),
+            );
+            let row = &mut row[..overlap_width];
+            if a == b {
+                row.fill(0);
+            } else {
+                for (value, (a, b)) in row.iter_mut().zip(a.chunks_exact(4).zip(b.chunks_exact(4)))
+                {
+                    *value = a
+                        .iter()
+                        .zip(b)
+                        .map(|(a, b)| a.abs_diff(*b))
+                        .max()
+                        .unwrap_or(0);
+                }
+            }
+            Some(())
+        })?;
     if cancel_flag.load(Ordering::Acquire) {
         return None;
     }
@@ -346,7 +355,7 @@ fn heat_color(magnitude: u8, tolerance: u8) -> Color32 {
 fn heat_image(heat: &HeatMap, tolerance: u8) -> ColorImage {
     let pixels = heat
         .magnitude
-        .iter()
+        .par_iter()
         .map(|&magnitude| heat_color(magnitude, tolerance))
         .collect();
     ColorImage::new([heat.width as usize, heat.height as usize], pixels)
@@ -356,13 +365,28 @@ fn heat_image(heat: &HeatMap, tolerance: u8) -> ColorImage {
 pub type Histogram = [[u32; 256]; 4];
 
 pub fn histogram(rgba: &[u8]) -> Histogram {
-    let mut bins = [[0; 256]; 4];
-    for pixel in rgba.chunks_exact(4) {
-        for (channel, &value) in pixel.iter().enumerate() {
-            bins[channel][value as usize] += 1;
-        }
-    }
-    bins
+    const PIXELS_PER_TASK: usize = 1 << 16;
+    rgba.par_chunks(PIXELS_PER_TASK * 4)
+        .map(|chunk| {
+            let mut bins = [[0; 256]; 4];
+            for pixel in chunk.chunks_exact(4) {
+                for (channel, &value) in pixel.iter().enumerate() {
+                    bins[channel][value as usize] += 1;
+                }
+            }
+            bins
+        })
+        .reduce(
+            || [[0; 256]; 4],
+            |mut sum, bins| {
+                for (sum, bins) in sum.iter_mut().zip(&bins) {
+                    for (sum, count) in sum.iter_mut().zip(bins) {
+                        *sum += count;
+                    }
+                }
+                sum
+            },
+        )
 }
 
 /// The histograms drawn for a channel filter: a label and the index into a `Histogram`. A single
@@ -482,7 +506,7 @@ fn overlay_tint(opacity: f32) -> Color32 {
 fn mask_image(diff: &PixelDiff) -> ColorImage {
     let pixels = diff
         .mask
-        .iter()
+        .par_iter()
         .map(|&changed| {
             if changed {
                 Color32::WHITE
@@ -627,7 +651,10 @@ impl Default for ImageDiffProcessor {
         Self {
             files: [None, None],
             sides: [SideState::Empty, SideState::Empty],
-            decode_jobs: [Job::new(wake()), Job::new(wake())],
+            decode_jobs: [
+                Job::new(wake()).on_panic(Err),
+                Job::new(wake()).on_panic(Err),
+            ],
             compare_job: Job::new(wake()),
             view: ImageView::default(),
             fit_pending: false,

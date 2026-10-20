@@ -10,6 +10,8 @@ use std::{
     time::Instant,
 };
 
+use rayon::prelude::*;
+
 use crate::{
     ignore::IgnoreMask,
     lexer::{RawTokenTrait, TokenKind},
@@ -726,17 +728,27 @@ where
     T: RawTokenTrait,
     F: Fn(&T, &T) -> bool + Sync,
 {
-    hunks_to_path(source, target, hunks, &cmp, ignore, &cancel_flag, |hunk| {
-        let (s, t) = (&source[hunk.source.clone()], &target[hunk.target.clone()]);
-        if s.is_empty() || t.is_empty() {
-            return Some(replace_path(s.len(), t.len()));
-        }
-        let local = raw_diff_path(algorithm, s, t, &cmp, cancel_flag.clone())?;
-        if cancel_flag.load(Ordering::Relaxed) {
-            return None;
-        }
-        let is_line_end = |t: &T| t.as_ref().kind == TokenKind::Newline;
-        Some(align_runs_to_line_ends(&local, s, t, &cmp, is_line_end))
+    let locals: Vec<Option<MyersPath>> = hunks
+        .par_iter()
+        .map(|hunk| {
+            if cancel_flag.load(Ordering::Relaxed) {
+                return None;
+            }
+            let (s, t) = (&source[hunk.source.clone()], &target[hunk.target.clone()]);
+            if s.is_empty() || t.is_empty() {
+                return Some(replace_path(s.len(), t.len()));
+            }
+            let local = raw_diff_path(algorithm, s, t, &cmp, cancel_flag.clone())?;
+            if cancel_flag.load(Ordering::Relaxed) {
+                return None;
+            }
+            let is_line_end = |t: &T| t.as_ref().kind == TokenKind::Newline;
+            Some(align_runs_to_line_ends(&local, s, t, &cmp, is_line_end))
+        })
+        .collect();
+    let mut locals = locals.into_iter();
+    hunks_to_path(source, target, hunks, &cmp, ignore, &cancel_flag, |_| {
+        locals.next().expect("one local path per hunk")
     })
 }
 

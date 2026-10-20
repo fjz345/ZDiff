@@ -68,6 +68,18 @@ pub struct HashServiceSnapshot {
     pub num_workers: usize,
 }
 
+#[derive(Debug, Clone)]
+pub struct HashesReader(Arc<RwLock<HashMap<PathBuf, Option<Blake3Hash>>>>);
+
+impl HashesReader {
+    pub fn with_hashes<R>(
+        &self,
+        read: impl FnOnce(&HashMap<PathBuf, Option<Blake3Hash>>) -> R,
+    ) -> R {
+        read(&self.0.read().unwrap())
+    }
+}
+
 #[derive(Debug)]
 pub struct HashService {
     hashes: Arc<RwLock<HashMap<PathBuf, Option<Blake3Hash>>>>,
@@ -253,6 +265,10 @@ impl HashService {
         read: impl FnOnce(&HashMap<PathBuf, Option<Blake3Hash>>) -> R,
     ) -> R {
         read(&self.hashes.read().unwrap())
+    }
+
+    pub fn reader(&self) -> HashesReader {
+        HashesReader(Arc::clone(&self.hashes))
     }
 
     pub fn snapshot(&self) -> HashServiceSnapshot {

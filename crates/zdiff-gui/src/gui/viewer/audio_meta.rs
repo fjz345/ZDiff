@@ -176,8 +176,8 @@ impl Default for AudioMetaProcessor {
         Self {
             files: [None, None],
             ffmpeg: None,
-            probe_jobs: std::array::from_fn(|_| Job::new(|| {})),
-            loudness_jobs: std::array::from_fn(|_| Job::new(|| {})),
+            probe_jobs: std::array::from_fn(|_| Job::new(|| {}).on_panic(Err)),
+            loudness_jobs: std::array::from_fn(|_| Job::new(|| {}).on_panic(Err)),
             probes: [Slot::Idle, Slot::Idle],
             loudness: [Slot::Idle, Slot::Idle],
         }

@@ -39,6 +39,7 @@ image = { version = "0.25.9", default-features = false, features = ["png", "jpeg
 serde = { version = "1.0.48", features = ["derive"], optional = true}
 serde_json = { version = "1.0.48", optional = true }
 log = "0.4.27"
+rayon = "1.12.0"
 rfd = "0.17.1"
 color-backtrace = { version = "0.7.2", optional = true }
 stats_alloc = { version = "0.1", optional = true }

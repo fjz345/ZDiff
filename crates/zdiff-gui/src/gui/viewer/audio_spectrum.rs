@@ -13,6 +13,7 @@ use std::{
 use eframe::egui::{
     self, Align2, Color32, ColorImage, Rect, TextureHandle, TextureOptions, pos2, vec2,
 };
+use rayon::prelude::*;
 use zcommon::job::Job;
 
 use super::audio::{DecodedAudio, TimeView};
@@ -233,30 +234,43 @@ impl Spectrogram {
                     "its spectrogram of {columns} x {bins} levels doesn't fit in memory"
                 ))
             })?;
+        levels.resize(columns * bins, 0);
         let gain = 2.0 / taper.iter().sum::<f32>();
         let mix = 1.0 / channels as f32;
-        let mut input = vec![0.0; window];
-        let mut spectrum = vec![Complex::default(); bins];
-        for column in 0..columns {
-            if column % 64 == 0 && cancel.load(Ordering::Relaxed) {
-                return Err(None);
-            }
-            let first = (column * hop) as isize - (window / 2) as isize;
-            for (i, value) in input.iter_mut().enumerate() {
-                let frame = first + i as isize;
-                *value = if (0..frames as isize).contains(&frame) {
-                    let at = frame as usize * channels;
-                    audio.samples[at..at + channels].iter().sum::<f32>() * mix * taper[i]
-                } else {
-                    0.0
-                };
-            }
-            fft.forward(&input, &mut spectrum);
-            levels.extend(
-                spectrum
-                    .iter()
-                    .map(|bin| to_level(20.0 * (bin.abs() * gain).max(1e-7).log10())),
+        const COLUMNS_PER_TASK: usize = 64;
+        let completed = levels
+            .par_chunks_mut(COLUMNS_PER_TASK * bins)
+            .enumerate()
+            .try_for_each_init(
+                || (vec![0.0; window], vec![Complex::default(); bins]),
+                |(input, spectrum), (task, task_levels)| {
+                    if cancel.load(Ordering::Relaxed) {
+                        return None;
+                    }
+                    for (offset, column_levels) in task_levels.chunks_exact_mut(bins).enumerate() {
+                        let column = task * COLUMNS_PER_TASK + offset;
+                        let first = (column * hop) as isize - (window / 2) as isize;
+                        for (i, value) in input.iter_mut().enumerate() {
+                            let frame = first + i as isize;
+                            *value = if (0..frames as isize).contains(&frame) {
+                                let at = frame as usize * channels;
+                                audio.samples[at..at + channels].iter().sum::<f32>()
+                                    * mix
+                                    * taper[i]
+                            } else {
+                                0.0
+                            };
+                        }
+                        fft.forward(input, spectrum);
+                        for (level, bin) in column_levels.iter_mut().zip(spectrum.iter()) {
+                            *level = to_level(20.0 * (bin.abs() * gain).max(1e-7).log10());
+                        }
+                    }
+                    Some(())
+                },
             );
+        if completed.is_none() {
+            return Err(None);
         }
         Ok(Spectrogram {
             sample_rate: audio.sample_rate,
@@ -454,7 +468,7 @@ impl Default for SpectrumProcessor {
             sides: [SideState::Empty, SideState::Empty],
             windows: [None, None],
             revisions: [0, 0],
-            compute_jobs: std::array::from_fn(|_| Job::new(|| {})),
+            compute_jobs: std::array::from_fn(|_| Job::new(|| {}).on_panic(|e| Err(Some(e)))),
             rendering: false,
             render_job: Job::new(|| {}),
             textures: None,

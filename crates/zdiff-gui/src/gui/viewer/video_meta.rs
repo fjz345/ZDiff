@@ -184,7 +184,7 @@ impl Default for VideoMetaProcessor {
             files: [None, None],
             ffmpeg: None,
             probes: [None, None],
-            jobs: [Job::new(|| {}), Job::new(|| {})],
+            jobs: [Job::new(|| {}).on_panic(Err), Job::new(|| {}).on_panic(Err)],
         }
     }
 }
