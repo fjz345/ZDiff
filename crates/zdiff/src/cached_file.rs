@@ -1,6 +1,6 @@
 use std::{io, ops::Range, path::Path};
 
-use zcommon::hash::{Blake3Hash, hash_contents, hash_file_mmap};
+use zcommon::hash::{Blake3Hash, hash_contents};
 
 use crate::{
     lexer::{Lexer, RawTokenTrait},
@@ -73,8 +73,7 @@ impl<T: RawTokenTrait> CachedFile<T> {
 impl<T: RawTokenTrait> CachedFile<T> {
     pub fn new(display_path: UniversalPath, physical_path: impl AsRef<Path>) -> io::Result<Self> {
         let contents = read_file_contents(&physical_path)?;
-        let hash = hash_file_mmap(&physical_path)?;
-        Ok(Self::build(display_path, contents, hash))
+        Ok(Self::from_contents(display_path, contents))
     }
 
     pub fn from_contents(display_path: UniversalPath, contents: String) -> Self {
