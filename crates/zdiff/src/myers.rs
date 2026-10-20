@@ -1,6 +1,6 @@
 use std::{
     cell::RefCell,
-    collections::{HashMap, hash_map::DefaultHasher},
+    collections::HashMap,
     hash::{BuildHasher, BuildHasherDefault, Hash, Hasher},
     ops::Range,
     sync::{
@@ -486,6 +486,60 @@ pub enum Side {
 const INTERN_CANCEL_STRIDE: usize = 1024;
 const NO_ID: u32 = u32::MAX;
 
+#[derive(Default)]
+struct FxHasher(u64);
+
+impl FxHasher {
+    fn add(&mut self, word: u64) {
+        self.0 = (self.0.rotate_left(5) ^ word).wrapping_mul(0x517c_c1b7_2722_0a95);
+    }
+}
+
+impl Hasher for FxHasher {
+    fn write(&mut self, bytes: &[u8]) {
+        let mut chunks = bytes.chunks_exact(8);
+        for chunk in &mut chunks {
+            self.add(u64::from_le_bytes(chunk.try_into().unwrap()));
+        }
+        let rest = chunks.remainder();
+        if !rest.is_empty() {
+            let mut word = [0; 8];
+            word[..rest.len()].copy_from_slice(rest);
+            self.add(u64::from_le_bytes(word));
+        }
+    }
+
+    fn write_u64(&mut self, n: u64) {
+        self.add(n);
+    }
+
+    fn write_usize(&mut self, n: usize) {
+        self.add(n as u64);
+    }
+
+    // The multiply leaves the low bits weakly mixed; the identity-hashed heads bucket on them.
+    fn finish(&self) -> u64 {
+        self.0.rotate_left(26)
+    }
+}
+
+#[derive(Default)]
+struct IdentityHasher(u64);
+
+impl Hasher for IdentityHasher {
+    fn write(&mut self, _: &[u8]) {
+        unreachable!("IdentityHasher only hashes u64 keys");
+    }
+
+    fn write_u64(&mut self, n: u64) {
+        self.0 = n;
+    }
+
+    fn finish(&self) -> u64 {
+        self.0
+    }
+}
+
 /// One id per line of each side; two lines get the same id exactly when their tokens that aren't
 /// ignored are pairwise equal in `key` (kind and bytes).
 pub fn intern_lines<'k, T, K>(
@@ -508,7 +562,7 @@ where
         ignore,
         key,
         cancel_flag,
-        &BuildHasherDefault::<DefaultHasher>::default(),
+        &BuildHasherDefault::<FxHasher>::default(),
     )
 }
 
@@ -538,7 +592,7 @@ where
             .map(move |i| key(side, &tokens[i]))
     };
 
-    let mut heads: HashMap<u64, u32, BuildHasherDefault<DefaultHasher>> = HashMap::default();
+    let mut heads: HashMap<u64, u32, BuildHasherDefault<IdentityHasher>> = HashMap::default();
     let mut next: Vec<u32> = Vec::new();
     let mut reps: Vec<(Side, Range<usize>)> = Vec::new();
     let mut seen = 0usize;
@@ -1797,6 +1851,7 @@ mod tests {
     mod interning {
         use super::*;
         use crate::ignore::IgnoreOptions;
+        use std::hash::DefaultHasher;
 
         #[derive(Default)]
         struct ConstHasher;
