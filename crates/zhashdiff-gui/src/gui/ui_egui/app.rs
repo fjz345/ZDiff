@@ -706,6 +706,8 @@ pub struct ZApp {
     style_window: StyleWindow,
     #[serde(skip)]
     find_open: bool,
+    #[serde(skip)]
+    title: String,
 }
 
 const LONG_FRAME: Duration = Duration::from_millis(200);
@@ -759,6 +761,7 @@ impl ZApp {
             keybindings_window: KeybindingsWindow::default(),
             style_window: StyleWindow::default(),
             find_open: false,
+            title: String::new(),
         }
     }
 
@@ -1094,26 +1097,12 @@ impl ZApp {
                             target_path.display()
                         );
 
-                        ctx.send_viewport_cmd(egui::ViewportCommand::Title(new_title));
-
-                        break;
-                    }
-                    if let Tile::Pane(Pane::DuplicateFiles(_file_explorer)) = tile {
-                        let out_ctx = behavior.create_duplicate_files_ctx();
-                        let count_files_and_folders = out_ctx
-                            .path_diff_view
-                            .file_system_1_view
-                            .as_ref()
-                            .and_then(|f| Some(f.file_system.total_files_and_folders()))
-                            .unwrap_or_default();
-
-                        let active = out_ctx.hash_service.count_active_hashes();
-                        let total_pending = out_ctx.hash_service.count_hash_queue() + active;
-                        let waiting = total_pending.saturating_sub(active);
-                        ctx.send_viewport_cmd(egui::ViewportCommand::Title(format!(
-                            "ZHashDiff - {} files/folders ({} active, {} queued)",
-                            count_files_and_folders, active, waiting
-                        )));
+                        // Every viewport command requests a repaint, so an unchanged title
+                        // would keep the app redrawing while idle.
+                        if new_title != self.title {
+                            ctx.send_viewport_cmd(egui::ViewportCommand::Title(new_title.clone()));
+                            self.title = new_title;
+                        }
 
                         break;
                     }
@@ -1269,6 +1258,7 @@ impl eframe::App for ZApp {
                         ui.label("Loading...");
                     });
                 });
+                ctx.request_repaint();
                 AppState::Idle(state_ctx)
             }
             AppState::Idle(mut state) => {
@@ -1371,6 +1361,7 @@ mod tests {
         time::{Duration, Instant},
     };
     use tempfile::{TempDir, tempdir};
+    use zcommon::hash::HashService;
     use zcommon::logger::LogBuffer;
     use zcommon_ui::keymap::{Action, Keymap, Shortcut};
     use zhashdiff::{
@@ -2743,5 +2734,76 @@ mod tests {
 
         assert!(shows_first_folder(&before));
         assert!(!shows_first_folder(&after));
+    }
+
+    fn repaint_delay(ctx: &egui::Context, app: &mut ZApp) -> Duration {
+        let mut frame = eframe::Frame::_new_kittest();
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1200.0, 800.0),
+            )),
+            ..Default::default()
+        };
+        let output = ctx.run(input, |ctx| eframe::App::update(app, ctx, &mut frame));
+        output.viewport_output[&egui::ViewportId::ROOT].repaint_delay
+    }
+
+    fn settled_repaint_delay(app: &mut ZApp) -> Duration {
+        let ctx = egui::Context::default();
+        for _ in 0..5 {
+            repaint_delay(&ctx, app);
+        }
+        repaint_delay(&ctx, app)
+    }
+
+    fn shown_app(hash_service: HashService) -> (TempDir, TempDir, ZApp) {
+        let (left, right) = (tempdir().unwrap(), tempdir().unwrap());
+        for root in [left.path(), right.path()] {
+            fs::write(root.join("a.txt"), "same size").unwrap();
+            fs::write(root.join("b.txt"), "same_size").unwrap();
+        }
+        let mut state = AppStateCtx {
+            hash_service,
+            file_system_1_root_path: Some(left.path().to_path_buf()),
+            file_system_2_root_path: Some(right.path().to_path_buf()),
+            file_system_model_1_view: load_view(left.path()),
+            file_system_model_2_view: load_view(right.path()),
+            ..Default::default()
+        };
+        finish_compare(&mut state);
+        let mut app = ZApp::new(LogBuffer::default());
+        app.state = Some(AppState::Idle(state));
+        (left, right, app)
+    }
+
+    #[test]
+    fn an_idle_folder_diff_stops_repainting() {
+        let (_left, _right, mut app) = shown_app(HashService::new(0));
+
+        assert_eq!(settled_repaint_delay(&mut app), Duration::MAX);
+    }
+
+    #[test]
+    fn a_queued_hash_keeps_the_duplicate_tab_polling() {
+        let (_left, _right, mut app) = shown_app(HashService::new(0));
+        app.diff_mode_path_diff = false;
+
+        assert!(settled_repaint_delay(&mut app) <= Duration::from_millis(100));
+    }
+
+    #[test]
+    fn an_idle_duplicate_tab_stops_repainting() {
+        let (_left, _right, mut app) = shown_app(HashService::new(1));
+        app.diff_mode_path_diff = false;
+        let ctx = egui::Context::default();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while repaint_delay(&ctx, &mut app) != Duration::MAX {
+            assert!(
+                Instant::now() < deadline,
+                "the duplicate tab kept repainting"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
     }
 }
