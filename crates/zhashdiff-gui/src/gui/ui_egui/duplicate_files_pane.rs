@@ -481,7 +481,6 @@ fn pending_node_ids(model: &FileSystemModel, pending: &HashSet<PathBuf>) -> Hash
         .collect()
 }
 
-/// Valid while the keepers and the groups they keep are unchanged: no other group is deleted from.
 struct PendingDeletions {
     model: Weak<FileSystemModel>,
     keepers: HashMap<String, PathBuf>,

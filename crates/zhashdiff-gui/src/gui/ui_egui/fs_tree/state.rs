@@ -765,7 +765,6 @@ pub fn aggregate_folder_state(
     state
 }
 
-/// Per path, the aggregate of every entry below it, with placeholder ids.
 pub(super) fn descendant_states<'a>(
     entries_map: &'a BTreeMap<
         String,

@@ -74,7 +74,6 @@ pub struct AppStateCtx {
     two_folder_diff_rows_id: RowsId,
     #[serde(skip)]
     row_counts: Option<(RowsId, RowCounts)>,
-    /// Pre-find visible rows, None without a query. Current only while the visible rows are set.
     #[serde(skip)]
     two_folder_diff_arranged_rows: Option<Vec<VisibleRowTwoFolderDiff>>,
     #[serde(skip)]
@@ -296,8 +295,7 @@ impl AppStateCtx {
         }
     }
 
-    /// True while uasset checks are still pending or their results wait for the next apply.
-    fn poll_blueprint_detector(&mut self, now: Instant) -> bool {
+    fn poll_blueprints_pending(&mut self, now: Instant) -> bool {
         self.blueprint_results
             .extend(self.blueprint_detector.poll());
         let due = self
@@ -1298,7 +1296,7 @@ impl eframe::App for ZApp {
                 {
                     ctx.request_repaint_after(SCAN_PROGRESS_INTERVAL);
                 }
-                if state.poll_blueprint_detector(Instant::now()) {
+                if state.poll_blueprints_pending(Instant::now()) {
                     ctx.request_repaint_after(Duration::from_millis(100));
                 }
                 let fetching = revision_open::is_fetching();
