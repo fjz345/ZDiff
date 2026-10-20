@@ -52,7 +52,7 @@ pub struct PendingPair {
     sizes: [u64; 2],
     modified: [Option<SystemTime>; 2],
     hashes: [Option<ContentHash>; 2],
-    sources: [ContentSource; 2],
+    sources: Arc<[ContentSource; 2]>,
 }
 
 impl PendingPair {
@@ -60,7 +60,7 @@ impl PendingPair {
         rel_path: &str,
         nodes: [&FsNode; 2],
         paths: [PathBuf; 2],
-        sources: [&ContentSource; 2],
+        sources: Arc<[ContentSource; 2]>,
     ) -> Self {
         Self {
             rel_path: rel_path.to_owned(),
@@ -68,7 +68,7 @@ impl PendingPair {
             sizes: nodes.map(|node| node.size),
             modified: nodes.map(|node| node.modified),
             hashes: nodes.map(|node| node.hash.clone()),
-            sources: sources.map(Clone::clone),
+            sources,
         }
     }
 
@@ -182,10 +182,10 @@ pub fn pending_pairs(
                     views[0]?.file_system.path(l_id),
                     views[1]?.file_system.path(r_id),
                 ],
-                [
-                    views[0]?.file_system.content(),
-                    views[1]?.file_system.content(),
-                ],
+                Arc::new([
+                    views[0]?.file_system.content().clone(),
+                    views[1]?.file_system.content().clone(),
+                ]),
             )),
             _ => None,
         })
@@ -442,7 +442,11 @@ impl TreeCompare {
         rows: &[VisibleRowTwoFolderDiff],
         views: [Option<&FileSystemView>; 2],
     ) -> Vec<PairTask> {
-        let node = |side: usize, id| views[side]?.file_system.get_node(id);
+        let [Some(left), Some(right)] = views else {
+            return Vec::new();
+        };
+        let models = [&left.file_system, &right.file_system];
+        let sources = Arc::new(models.map(|model| model.content().clone()));
         rows.iter()
             .filter(|row| !row.is_dir)
             .filter_map(|row| {
@@ -452,9 +456,7 @@ impl TreeCompare {
                 else {
                     return None;
                 };
-                let nodes = [node(0, l_id)?, node(1, r_id)?];
-                let models = [&views[0]?.file_system, &views[1]?.file_system];
-                let sources = models.map(|model| model.content());
+                let nodes = [models[0].get_node(l_id)?, models[1].get_node(r_id)?];
                 // Rows patched less often than results arrive can still be Pending.
                 let state = match row.diff_state {
                     DiffState::Pending(..) => self.state_of(&row.rel_path, nodes),
@@ -468,14 +470,14 @@ impl TreeCompare {
                     && state != Some(PairState::Same)
                     && nodes.iter().all(|node| node.is_file())
                     // Likeness maps the files from disk.
-                    && sources.iter().all(|source| **source == ContentSource::Disk)
+                    && sources.iter().all(|source| *source == ContentSource::Disk)
                     && self.likeness_of(&row.rel_path, nodes).is_none();
                 (compare || likeness).then(|| PairTask {
                     pair: PendingPair::new(
                         &row.rel_path,
                         nodes,
                         [models[0].path(l_id), models[1].path(r_id)],
-                        sources,
+                        sources.clone(),
                     ),
                     compare,
                     likeness,
