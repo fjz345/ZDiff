@@ -41,7 +41,9 @@ use crate::ui_egui::{
     path_diff_pane::{FilterPresets, PathDiffPane},
     revision_open,
     roots::{LaunchArgs, Side, apply_launch_args, clear_root, set_root},
-    status_line::{ScanSummary, ToolMessage, ui_status_summary, ui_tool_message},
+    status_line::{
+        RowCounts, ScanSummary, ToolMessage, count_rows, ui_status_summary, ui_tool_message,
+    },
     tools_window::ToolsWindow,
     tree_compare::{CompareUpdate, PairLikeness, TreeCompare, patch_row_states},
     tree_filter::{DiffFilter, DuplicatesFilter, arrange_two_folder_rows},
@@ -70,6 +72,8 @@ pub struct AppStateCtx {
     two_folder_diff_visible_rows: Option<Vec<VisibleRowTwoFolderDiff>>,
     #[serde(skip)]
     two_folder_diff_rows_id: RowsId,
+    #[serde(skip)]
+    row_counts: Option<(RowsId, RowCounts)>,
     /// The visible rows before find narrows them, None without a query. Current only while the
     /// visible rows are set.
     #[serde(skip)]
@@ -994,10 +998,22 @@ impl ZApp {
                 ui_tool_message(ui, app_ctx.tool_message.as_ref());
             });
         } else if shown {
+            if let Some(rows) = app_ctx.two_folder_diff_visible_rows.as_deref()
+                && app_ctx
+                    .row_counts
+                    .as_ref()
+                    .is_none_or(|(counted, _)| *counted != app_ctx.two_folder_diff_rows_id)
+            {
+                app_ctx.row_counts = Some((app_ctx.two_folder_diff_rows_id, count_rows(rows)));
+            }
+            let row_counts = app_ctx
+                .two_folder_diff_visible_rows
+                .as_ref()
+                .and(app_ctx.row_counts.as_ref().map(|(_, counts)| counts));
             egui::TopBottomPanel::bottom("status_line").show(ctx, |ui| {
                 ui_status_summary(
                     ui,
-                    app_ctx.two_folder_diff_visible_rows.as_deref(),
+                    row_counts,
                     [
                         app_ctx.file_system_1_scan.shown(),
                         app_ctx.file_system_2_scan.shown(),

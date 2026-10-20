@@ -62,15 +62,15 @@ fn counts_text(counts: &RowCounts, tolerance_on: bool) -> String {
 
 pub fn ui_status_summary(
     ui: &mut egui::Ui,
-    rows: Option<&[VisibleRowTwoFolderDiff]>,
+    counts: Option<&RowCounts>,
     scans: [Option<&ScanSummary>; 2],
     compare_time: Option<Duration>,
     tolerance_on: bool,
 ) {
     let sides = [Side::Folder1, Side::Folder2];
     ui.horizontal(|ui| {
-        if let Some(rows) = rows {
-            ui.label(counts_text(&count_rows(rows), tolerance_on));
+        if let Some(counts) = counts {
+            ui.label(counts_text(counts, tolerance_on));
             ui.separator();
         }
         let mut times: Vec<String> = sides
