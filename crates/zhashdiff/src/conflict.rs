@@ -1,7 +1,9 @@
 use std::{
     collections::{BTreeMap, HashMap},
     fmt::Display,
-    fs, io,
+    fs,
+    hash::Hash,
+    io,
     path::{Path, PathBuf},
 };
 
@@ -191,20 +193,22 @@ pub struct DuplicateGroup {
 }
 
 /// A group's id is its index: groups keep the input (tree) order of their first file.
-pub fn group_by_size_and_hash(
-    files: impl IntoIterator<Item = (PathBuf, u64, String)>,
+pub fn group_by_size_and_hash<H: Eq + Hash + Display>(
+    files: impl IntoIterator<Item = (PathBuf, u64, H)>,
 ) -> Vec<DuplicateGroup> {
     let mut groups: Vec<DuplicateGroup> = Vec::new();
-    let mut group_of: HashMap<(u64, String), usize> = HashMap::new();
+    let mut group_of: HashMap<(u64, H), usize> = HashMap::new();
     for (path, size, hash) in files {
-        let index = *group_of.entry((size, hash.clone())).or_insert_with(|| {
-            groups.push(DuplicateGroup {
-                size,
-                hash,
-                paths: Vec::new(),
+        let index = *group_of
+            .entry((size, hash))
+            .or_insert_with_key(|(size, hash)| {
+                groups.push(DuplicateGroup {
+                    size: *size,
+                    hash: hash.to_string(),
+                    paths: Vec::new(),
+                });
+                groups.len() - 1
             });
-            groups.len() - 1
-        });
         groups[index].paths.push(path);
     }
     groups.retain(|group| group.paths.len() > 1);

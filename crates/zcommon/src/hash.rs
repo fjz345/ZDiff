@@ -248,6 +248,13 @@ impl HashService {
         self.queued.load(Ordering::SeqCst)
     }
 
+    pub fn with_hashes<R>(
+        &self,
+        read: impl FnOnce(&HashMap<PathBuf, Option<Blake3Hash>>) -> R,
+    ) -> R {
+        read(&self.hashes.read().unwrap())
+    }
+
     pub fn snapshot(&self) -> HashServiceSnapshot {
         HashServiceSnapshot {
             hashes: self.hashes.read().unwrap().clone(),

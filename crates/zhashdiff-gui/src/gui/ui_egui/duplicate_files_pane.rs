@@ -82,19 +82,29 @@ fn duplicate_groups(
     let hidden = tree_hidden(view, filter);
     let mut node_of = HashMap::new();
     let mut hash_of = HashMap::new();
-    let files: Vec<_> = model
-        .iter_tree()
-        .filter(|(node_id, node, _)| node.is_file() && !hidden[*node_id])
-        .filter_map(|(node_id, node, _)| {
-            let path = model.path(node_id);
-            let Some(Some(hash)) = hashes.get(&path) else {
-                return None;
-            };
-            node_of.insert(path.clone(), node_id);
-            hash_of.insert(node_id, *hash);
-            Some((path, node.size, hash.to_string()))
-        })
-        .collect();
+    let mut files = Vec::new();
+    let mut path = model.path(model.get_root_node_id());
+    let mut path_depth = 0;
+    // Pre-order, so popping `path` to the node's depth leaves its parent's path.
+    for (node_id, node, depth) in model.iter_tree() {
+        if depth > 0 {
+            while path_depth >= depth {
+                path.pop();
+                path_depth -= 1;
+            }
+            path.push(node.name());
+            path_depth += 1;
+        }
+        if !node.is_file() || hidden[node_id] {
+            continue;
+        }
+        let Some(Some(hash)) = hashes.get(&path) else {
+            continue;
+        };
+        node_of.insert(path.clone(), node_id);
+        hash_of.insert(node_id, *hash);
+        files.push((path.clone(), node.size, *hash));
+    }
     let groups = group_by_size_and_hash(files);
 
     let mut member_of = HashMap::new();
@@ -838,13 +848,15 @@ impl DuplicateFilesPane {
         if current && (hashing && regrouped_recently || !hashing && !was_hashing) {
             return;
         }
-        let snapshot = ctx.hash_service.snapshot();
-        self.regroup(ctx, &snapshot.hashes);
+        let groups = ctx.path_diff_view.file_system_1_view.as_ref().map(|view| {
+            ctx.hash_service
+                .with_hashes(|hashes| duplicate_groups(view, ctx.path_filter, hashes))
+        });
+        self.set_groups(ctx, groups);
         self.last_regroup = Some(Instant::now());
     }
 
-    /// Keepers survive only as members of their group, so a resolve can't recycle a file
-    /// the user no longer sees.
+    #[cfg(test)]
     fn regroup(
         &mut self,
         ctx: &mut DuplicateFilesPaneCtx,
@@ -855,6 +867,12 @@ impl DuplicateFilesPane {
             .file_system_1_view
             .as_ref()
             .map(|view| duplicate_groups(view, ctx.path_filter, hashes));
+        self.set_groups(ctx, groups);
+    }
+
+    /// Keepers survive only as members of their group, so a resolve can't recycle a file
+    /// the user no longer sees.
+    fn set_groups(&mut self, ctx: &mut DuplicateFilesPaneCtx, groups: Option<DuplicateGroups>) {
         *ctx.conflict_map = groups
             .iter()
             .flat_map(|groups| &groups.groups)
