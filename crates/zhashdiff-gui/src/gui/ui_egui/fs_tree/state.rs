@@ -220,6 +220,7 @@ impl FileSystemView {
                 Some((rel_path.as_str(), state))
             })
             .collect();
+        let descendant_states = descendant_states(&entries_map, &file_states);
 
         for (rel_path, (left, right)) in &entries_map {
             let depth = left.map(|l| l.2).or(right.map(|r| r.2)).unwrap_or(0);
@@ -230,9 +231,10 @@ impl FileSystemView {
                 .unwrap_or(false);
 
             let diff_state = match (left, right) {
-                (Some((_, l_node, _)), Some(_)) => {
+                (Some((l_id, l_node, _)), Some((r_id, _, _))) => {
                     if l_node.is_dir() {
-                        folder_diff_state(rel_path, &entries_map, &file_states)
+                        let below = descendant_states.get(rel_path.as_str()).cloned();
+                        aggregate_folder_state(*l_id, *r_id, below)
                     } else {
                         file_states[rel_path.as_str()].clone()
                     }
@@ -739,9 +741,9 @@ pub fn aggregate_folder_state(
     state
 }
 
-pub(super) fn folder_diff_state(
-    parent_path: &str,
-    entries_map: &BTreeMap<
+/// Per path, the aggregate of every entry below it, with placeholder ids.
+pub(super) fn descendant_states<'a>(
+    entries_map: &'a BTreeMap<
         String,
         (
             Option<(FsNodeId, &FsNode, FsNodeDepth)>,
@@ -749,30 +751,28 @@ pub(super) fn folder_diff_state(
         ),
     >,
     file_states: &HashMap<&str, DiffState>,
-) -> DiffState {
-    let (current_left, current_right) = entries_map
-        .get(parent_path)
-        .cloned()
-        .unwrap_or((None, None));
-    let l_id = current_left.map(|l| l.0).unwrap_or(0);
-    let r_id = current_right.map(|r| r.0).unwrap_or(0);
-
-    let prefix = if parent_path.is_empty() {
-        String::new()
-    } else {
-        format!("{}/", parent_path)
-    };
-
-    // Over all descendant entries, which gives the same result as the rule applied bottom-up.
-    let descendants = entries_map
-        .range(prefix.clone()..)
-        .take_while(|(path, _)| path.starts_with(&prefix))
-        .filter(|(path, _)| path.as_str() != parent_path)
-        .filter_map(|(path, (left, right))| match (left, right) {
+) -> HashMap<&'a str, DiffState> {
+    let mut below: HashMap<&str, DiffState> = HashMap::new();
+    // A path sorts before every path it prefixes, so in reverse its descendants come first.
+    for (path, (left, right)) in entries_map.iter().rev() {
+        let parent = match path.rsplit_once('/') {
+            Some((parent, _)) => parent,
+            None if path.is_empty() => continue,
+            None => "",
+        };
+        let own = match (left, right) {
             (Some((li, _, _)), None) => Some(DiffState::OnlyInFirst(*li)),
             (None, Some((ri, _, _))) => Some(DiffState::OnlyInSecond(*ri)),
             (Some((_, ln, _)), Some(_)) if !ln.is_dir() => Some(file_states[path.as_str()].clone()),
             _ => None,
-        });
-    aggregate_folder_state(l_id, r_id, descendants)
+        };
+        let states = [
+            below.get(parent).cloned(),
+            own,
+            below.get(path.as_str()).cloned(),
+        ];
+        let joined = aggregate_folder_state(0, 0, states.into_iter().flatten());
+        below.insert(parent, joined);
+    }
+    below
 }
