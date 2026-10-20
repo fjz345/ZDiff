@@ -13,10 +13,30 @@ use crate::fs::{FileSystemModel, FsNodeId, FsNodeKind};
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum HashKind {
     GitBlob,
-    P4Digest,
+    P4Digest(P4Recipe),
 }
 
-/// Only comparable with a hash of the same kind.
+impl HashKind {
+    pub fn compares_with(self, other: HashKind) -> bool {
+        matches!(
+            (self, other),
+            (HashKind::GitBlob, HashKind::GitBlob) | (HashKind::P4Digest(_), HashKind::P4Digest(_))
+        )
+    }
+}
+
+/// How a p4 digest (MD5) is reproduced from a local file's bytes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum P4Recipe {
+    Raw,
+    /// Server content has LF line endings; the local copy may have CRLF.
+    Text,
+    /// Keyword expansion or charset translation: only a print reproduces the local bytes.
+    ServerOnly,
+}
+
+/// Only comparable with a hash of a kind it `compares_with`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ContentHash {

@@ -18,6 +18,7 @@ image = { version = "0.25.9", default-features = false, features = ["png", "jpeg
 # Apartment-threaded COM init: the GUI thread is already an OLE STA (winit drag and
 # drop), where a multithreaded init fails and trash panics.
 trash = { version = "5.2.9", default-features = false, features = ["coinit_apartmentthreaded"] }
+md-5 = "0.11.0"
 
 [dev-dependencies]
 zcommon = { path = "../zcommon", features = ["test-util"] }

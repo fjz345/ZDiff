@@ -4,7 +4,9 @@ use std::io::{self, Read};
 use std::path::Path;
 use std::time::SystemTime;
 
-use crate::scan::ContentHash;
+use md5::{Digest, Md5};
+
+use crate::scan::{ContentHash, HashKind, P4Recipe};
 
 const PAIR_CHUNK_SIZE: usize = 64 * 1024;
 
@@ -75,9 +77,17 @@ fn compare_pair_bytes(
     right: &PairSide,
 ) -> io::Result<bool> {
     if let (Some(left_hash), Some(right_hash)) = (left.hash, right.hash)
-        && left_hash.kind == right_hash.kind
+        && left_hash.kind.compares_with(right_hash.kind)
     {
         return Ok(left_hash.value == right_hash.value);
+    }
+    let p4_match = match (left.hash, right.hash) {
+        (Some(digest), None) => matches_p4_digest(right_reader, right, digest, left.meta.size)?,
+        (None, Some(digest)) => matches_p4_digest(left_reader, left, digest, right.meta.size)?,
+        _ => None,
+    };
+    if let Some(same) = p4_match {
+        return Ok(same);
     }
     if left.meta.size != right.meta.size {
         return Ok(false);
@@ -101,6 +111,75 @@ fn compare_pair_bytes(
     }
 }
 
+/// `None` when the digest can't be reproduced from `local`'s bytes.
+fn matches_p4_digest(
+    reader: &impl FileReader,
+    local: &PairSide,
+    digest: &ContentHash,
+    digest_size: u64,
+) -> io::Result<Option<bool>> {
+    let HashKind::P4Digest(recipe) = digest.kind else {
+        return Ok(None);
+    };
+    let local_digests = match recipe {
+        P4Recipe::ServerOnly => return Ok(None),
+        P4Recipe::Raw if local.meta.size != digest_size => return Ok(Some(false)),
+        P4Recipe::Raw => local_md5s(reader.open(local.path)?, false)?,
+        P4Recipe::Text => local_md5s(reader.open(local.path)?, true)?,
+    };
+    Ok(Some(
+        local_digests
+            .iter()
+            .any(|local| local.eq_ignore_ascii_case(&digest.value)),
+    ))
+}
+
+/// MD5 of the bytes and, with `crlf_as_lf`, also of the bytes with each CRLF read as LF.
+fn local_md5s(mut file: impl Read, crlf_as_lf: bool) -> io::Result<Vec<String>> {
+    let mut raw = Md5::new();
+    let mut lf = crlf_as_lf.then(Md5::new);
+    let mut buf = vec![0u8; PAIR_CHUNK_SIZE];
+    let mut normalized = Vec::with_capacity(PAIR_CHUNK_SIZE);
+    // A CR at a chunk end may pair with an LF at the next chunk's start.
+    let mut held_cr = false;
+    loop {
+        let n = read_full(&mut file, &mut buf)?;
+        let chunk = &buf[..n];
+        raw.update(chunk);
+        if let Some(lf) = &mut lf {
+            normalized.clear();
+            for &byte in chunk {
+                if held_cr && byte != b'\n' {
+                    normalized.push(b'\r');
+                }
+                held_cr = byte == b'\r';
+                if !held_cr {
+                    normalized.push(byte);
+                }
+            }
+            lf.update(&normalized);
+        }
+        if n < PAIR_CHUNK_SIZE {
+            break;
+        }
+    }
+    let hex = |hasher: Md5| -> String {
+        hasher
+            .finalize()
+            .iter()
+            .map(|byte| format!("{byte:02X}"))
+            .collect()
+    };
+    let mut digests = vec![hex(raw)];
+    if let Some(mut lf) = lf {
+        if held_cr {
+            lf.update(b"\r");
+        }
+        digests.push(hex(lf));
+    }
+    Ok(digests)
+}
+
 fn read_full(file: &mut impl Read, buf: &mut [u8]) -> io::Result<usize> {
     let mut filled = 0;
     while filled < buf.len() {
@@ -114,21 +193,29 @@ fn read_full(file: &mut impl Read, buf: &mut [u8]) -> io::Result<usize> {
     Ok(filled)
 }
 
+type SideVersion = (FileMeta, Option<ContentHash>);
+
+fn side_version(side: &PairSide) -> SideVersion {
+    (side.meta, side.hash.cloned())
+}
+
 #[derive(Debug, Default)]
 pub struct PairCompareCache {
-    entries: HashMap<(String, String), (FileMeta, FileMeta, PairState)>,
+    entries: HashMap<(String, String), (SideVersion, SideVersion, PairState)>,
 }
 
 impl PairCompareCache {
     pub fn get(&self, left: &PairSide, right: &PairSide) -> Option<PairState> {
         let key = (left.rel_path.to_owned(), right.rel_path.to_owned());
-        let (left_meta, right_meta, state) = self.entries.get(&key)?;
-        (*left_meta == left.meta && *right_meta == right.meta).then_some(*state)
+        let (left_version, right_version, state) = self.entries.get(&key)?;
+        (*left_version == side_version(left) && *right_version == side_version(right))
+            .then_some(*state)
     }
 
     pub fn insert(&mut self, left: &PairSide, right: &PairSide, state: PairState) {
         let key = (left.rel_path.to_owned(), right.rel_path.to_owned());
-        self.entries.insert(key, (left.meta, right.meta, state));
+        self.entries
+            .insert(key, (side_version(left), side_version(right), state));
     }
 
     /// Read errors are not cached, so the next compare of the pair retries it.
@@ -152,7 +239,6 @@ impl PairCompareCache {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::scan::HashKind;
     use std::cell::Cell;
     use std::path::PathBuf;
     use std::rc::Rc;
@@ -367,7 +453,7 @@ mod tests {
         let right = CountingReader::with(&[("a", vec![2; 10])]);
         let git = blob("aaaa");
         let p4 = ContentHash {
-            kind: HashKind::P4Digest,
+            kind: HashKind::P4Digest(P4Recipe::Raw),
             value: "aaaa".into(),
         };
         let result =
@@ -375,6 +461,153 @@ mod tests {
         assert_eq!(result.state, PairState::Different);
         assert_eq!(left.reads(), (1, 10));
         assert_eq!(right.reads(), (1, 10));
+    }
+
+    fn p4(recipe: P4Recipe, content: &[u8]) -> ContentHash {
+        ContentHash {
+            kind: HashKind::P4Digest(recipe),
+            value: Md5::digest(content)
+                .iter()
+                .map(|b| format!("{b:02X}"))
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn a_local_file_matching_a_raw_p4_digest_is_same_without_reading_the_depot_side() {
+        let depot = CountingReader::default();
+        let local = CountingReader::with(&[("a", vec![3; 10])]);
+        let digest = p4(P4Recipe::Raw, &[3; 10]);
+        let result = compare_pair_with(
+            &depot,
+            &local,
+            &hashed("a", 10, &digest),
+            &side("a", 10, time(1)),
+        );
+        assert_eq!(result.state, PairState::Same);
+        assert!(result.error.is_none());
+        assert_eq!(depot.reads(), (0, 0));
+        assert_eq!(local.reads(), (1, 10));
+    }
+
+    #[test]
+    fn a_local_file_differing_from_a_raw_p4_digest_is_different_without_reading_the_depot_side() {
+        let local = CountingReader::with(&[("a", vec![3; 10])]);
+        let depot = CountingReader::default();
+        let digest = p4(P4Recipe::Raw, &[4; 10]);
+        let result = compare_pair_with(
+            &local,
+            &depot,
+            &side("a", 10, time(1)),
+            &hashed("a", 10, &digest),
+        );
+        assert_eq!(result.state, PairState::Different);
+        assert!(result.error.is_none());
+        assert_eq!(depot.reads(), (0, 0));
+    }
+
+    #[test]
+    fn a_raw_p4_digest_of_another_size_is_different_without_reading() {
+        let local = CountingReader::with(&[("a", vec![3; 10])]);
+        let depot = CountingReader::default();
+        let digest = p4(P4Recipe::Raw, &[3; 10]);
+        let result = compare_pair_with(
+            &local,
+            &depot,
+            &side("a", 10, time(1)),
+            &hashed("a", 11, &digest),
+        );
+        assert_eq!(result.state, PairState::Different);
+        assert_eq!((local.reads(), depot.reads()), ((0, 0), (0, 0)));
+    }
+
+    #[test]
+    fn a_crlf_local_file_matches_the_lf_text_digest_of_another_size() {
+        let local = CountingReader::with(&[("a", b"a\r\nb\r\n".to_vec())]);
+        let depot = CountingReader::default();
+        let digest = p4(P4Recipe::Text, b"a\nb\n");
+        let result = compare_pair_with(
+            &local,
+            &depot,
+            &side("a", 6, time(1)),
+            &hashed("a", 4, &digest),
+        );
+        assert_eq!(result.state, PairState::Same);
+        assert_eq!(depot.reads(), (0, 0));
+    }
+
+    #[test]
+    fn a_text_digest_of_crlf_content_matches_the_local_file_as_is() {
+        let local = CountingReader::with(&[("a", b"a\r\n".to_vec())]);
+        let depot = CountingReader::default();
+        let digest = p4(P4Recipe::Text, b"a\r\n");
+        let result = compare_pair_with(
+            &local,
+            &depot,
+            &side("a", 3, time(1)),
+            &hashed("a", 3, &digest),
+        );
+        assert_eq!(result.state, PairState::Same);
+    }
+
+    #[test]
+    fn a_crlf_split_across_read_chunks_is_still_one_line_ending() {
+        let mut crlf = vec![b'x'; PAIR_CHUNK_SIZE - 1];
+        let mut lf = crlf.clone();
+        crlf.extend(b"\r\ny");
+        lf.extend(b"\ny");
+        let local = CountingReader::with(&[("a", crlf.clone())]);
+        let depot = CountingReader::default();
+        let digest = p4(P4Recipe::Text, &lf);
+        let result = compare_pair_with(
+            &local,
+            &depot,
+            &side("a", crlf.len(), time(1)),
+            &hashed("a", lf.len(), &digest),
+        );
+        assert_eq!(result.state, PairState::Same);
+    }
+
+    #[test]
+    fn a_lone_cr_is_not_a_line_ending_for_a_text_digest() {
+        let local = CountingReader::with(&[("a", b"a\rb\r".to_vec())]);
+        let depot = CountingReader::default();
+        let (dropped, kept) = (p4(P4Recipe::Text, b"ab"), p4(P4Recipe::Text, b"a\rb\r"));
+        let compare = |digest| {
+            compare_pair_with(
+                &local,
+                &depot,
+                &side("a", 4, time(1)),
+                &hashed("a", 4, digest),
+            )
+            .state
+        };
+        assert_eq!(compare(&dropped), PairState::Different);
+        assert_eq!(compare(&kept), PairState::Same);
+    }
+
+    #[test]
+    fn a_server_only_p4_digest_compares_content() {
+        let local = CountingReader::with(&[("a", vec![3; 10])]);
+        let depot = CountingReader::with(&[("a", vec![3; 10])]);
+        let digest = p4(P4Recipe::ServerOnly, &[3; 10]);
+        let result = compare_pair_with(
+            &local,
+            &depot,
+            &side("a", 10, time(1)),
+            &hashed("a", 10, &digest),
+        );
+        assert_eq!(result.state, PairState::Same);
+        assert_eq!((local.reads(), depot.reads()), ((1, 10), (1, 10)));
+    }
+
+    #[test]
+    fn p4_digests_of_different_recipes_compare_by_value() {
+        let reader = CountingReader::default();
+        let (raw, text) = (p4(P4Recipe::Raw, b"a"), p4(P4Recipe::Text, b"a"));
+        let result = compare_pair(&reader, &hashed("a", 1, &raw), &hashed("b", 1, &text));
+        assert_eq!(result.state, PairState::Same);
+        assert_eq!(reader.reads(), (0, 0));
     }
 
     #[test]
@@ -470,6 +703,21 @@ mod tests {
         cache.compare(&reader, &side("a", 10, time(1)), &side("b", 10, time(1)));
         let result = cache.compare(&reader, &side("a", 10, time(1)), &side("c", 10, time(1)));
         assert_eq!(result.state, PairState::Different);
+    }
+
+    #[test]
+    fn cache_tells_hashed_sides_apart_by_hash() {
+        let reader = CountingReader::with(&[("a", vec![1; 10]), ("b", vec![1; 10])]);
+        let mut cache = PairCompareCache::default();
+        let (old, new) = (p4(P4Recipe::Raw, &[1; 10]), p4(P4Recipe::Raw, &[2; 10]));
+        let local = side("a", 10, time(1));
+        cache.insert(&local, &hashed("b", 10, &old), PairState::Same);
+        assert_eq!(
+            cache.get(&local, &hashed("b", 10, &old)),
+            Some(PairState::Same)
+        );
+        assert_eq!(cache.get(&local, &hashed("b", 10, &new)), None);
+        assert_eq!(reader.reads(), (0, 0));
     }
 
     #[test]

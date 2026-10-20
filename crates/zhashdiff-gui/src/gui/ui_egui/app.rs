@@ -575,11 +575,7 @@ fn ui_scan_progress(
     let Some(job) = scan.job() else {
         return;
     };
-    let progress = format!(
-        "Scanning {side}: {} entries in {}",
-        job.found(),
-        job.root().display()
-    );
+    let progress = scan_progress_text(side, job.root(), job.found());
     let cancelled = ui
         .horizontal(|ui| {
             ui.spinner();
@@ -589,6 +585,19 @@ fn ui_scan_progress(
         .inner;
     if cancelled {
         cancel_scan(side, root, view, scan);
+    }
+}
+
+fn scan_progress_text(side: Side, root: &Path, found: usize) -> String {
+    let lister = match UniversalPath::from(root) {
+        UniversalPath::Depot(..) => Some("p4"),
+        UniversalPath::Git(..) => Some("git"),
+        UniversalPath::Local(_) => None,
+    };
+    match lister {
+        // A listing is one command, so nothing is found until it returns.
+        Some(lister) if found == 0 => format!("Listing {side} from {lister}: {}", root.display()),
+        _ => format!("Scanning {side}: {found} entries in {}", root.display()),
     }
 }
 
@@ -1295,7 +1304,7 @@ impl eframe::App for ZApp {
 mod tests {
     use super::{
         AppState, AppStateCtx, ScanAction, ZApp, cancel_scan, finish_side_scan, scan_action,
-        update_side_scan,
+        scan_progress_text, update_side_scan,
     };
     use crate::ui_egui::folder_keymap::FolderAction;
     use crate::ui_egui::fs_tree::{DiffState, FileSystemView, HScrollLink};
@@ -2482,6 +2491,29 @@ mod tests {
         assert_ne!(sub(views[0], left.path()), old_sub);
         assert!(views[0].is_collapsed(sub(views[0], left.path())));
         assert!(!views[1].is_collapsed(sub(views[1], right.path())));
+    }
+
+    #[test]
+    fn a_vcs_scan_with_nothing_found_yet_says_it_is_listing() {
+        let depot = Path::new("//depot/main@12");
+        let git = Path::new(r"D:\repo\src@git:main");
+        let local = Path::new(r"D:\repo\src");
+        assert_eq!(
+            scan_progress_text(Side::Folder1, depot, 0),
+            "Listing Folder 1 from p4: //depot/main@12"
+        );
+        assert_eq!(
+            scan_progress_text(Side::Folder2, git, 0),
+            r"Listing Folder 2 from git: D:\repo\src@git:main"
+        );
+        assert_eq!(
+            scan_progress_text(Side::Folder1, depot, 7),
+            "Scanning Folder 1: 7 entries in //depot/main@12"
+        );
+        assert_eq!(
+            scan_progress_text(Side::Folder1, local, 0),
+            r"Scanning Folder 1: 0 entries in D:\repo\src"
+        );
     }
 
     #[test]

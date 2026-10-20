@@ -118,33 +118,44 @@ impl PendingPair {
                 &self.paths[0],
                 self.sizes[0],
                 self.modified[0],
+                self.hashes[0].as_ref(),
             )?,
             cache_side(
                 &self.rel_path,
                 &self.paths[1],
                 self.sizes[1],
                 self.modified[1],
+                self.hashes[1].as_ref(),
             )?,
         ])
     }
 }
 
-/// None without a modification time: the cache could not tell that the file changed.
+/// None without a modification time or hash: the cache could not tell that the file changed.
 fn cache_side<'a>(
     rel_path: &'a str,
     path: &'a Path,
     size: u64,
     modified: Option<SystemTime>,
+    hash: Option<&'a ContentHash>,
 ) -> Option<PairSide<'a>> {
+    if modified.is_none() && hash.is_none() {
+        return None;
+    }
     Some(PairSide {
         rel_path,
         path,
         meta: FileMeta {
             size,
-            modified: modified?,
+            modified: modified.unwrap_or(SystemTime::UNIX_EPOCH),
         },
-        hash: None,
+        hash,
     })
+}
+
+fn node_cache_side<'a>(rel_path: &'a str, node: &'a FsNode) -> Option<PairSide<'a>> {
+    let hash = node.hash.as_ref();
+    cache_side(rel_path, Path::new(""), node.size, node.modified, hash)
 }
 
 fn file_meta(size: u64, modified: Option<SystemTime>) -> Option<FileMeta> {
@@ -377,10 +388,9 @@ impl TreeCompare {
         if let Some(state) = self.states.get(rel_path) {
             return Some(*state);
         }
-        // The cache keys on rel_path and meta only.
-        let left = cache_side(rel_path, Path::new(""), nodes[0].size, nodes[0].modified)?;
-        let right = cache_side(rel_path, Path::new(""), nodes[1].size, nodes[1].modified)?;
-        self.cache.get(&left, &right)
+        // The cache keys on rel_path, meta and hash only.
+        let side = |node| node_cache_side(rel_path, node);
+        self.cache.get(&side(nodes[0])?, &side(nodes[1])?)
     }
 
     pub fn likeness_of(&self, rel_path: &str, nodes: [&FsNode; 2]) -> Option<&PairLikeness> {
@@ -645,7 +655,10 @@ mod tests {
         fs::{self, File},
         io,
         path::Path,
-        sync::Arc,
+        sync::{
+            Arc,
+            atomic::{AtomicBool, AtomicUsize},
+        },
         time::{Duration, Instant, SystemTime},
     };
     use tempfile::{TempDir, tempdir};
@@ -655,6 +668,7 @@ mod tests {
         filter::PathFilter,
         fs::FileSystemModel,
         likeness::{Likeness, Measure},
+        scan::{ContentHash, FlatEntry, FlatListing, HashKind, P4Recipe, scan},
     };
 
     fn write_files(root: &Path, files: &[(&str, &str)]) {
@@ -796,6 +810,54 @@ mod tests {
         );
         let rows = build(&mut compare, &left, &right);
         assert_eq!(state_at(&rows, "b.txt"), "Different");
+    }
+
+    fn depot_view(root: &Path, digest: &str) -> FileSystemView {
+        let files = vec![FlatEntry {
+            rel_path: "a.txt".into(),
+            size: 6,
+            hash: Some(ContentHash {
+                kind: HashKind::P4Digest(P4Recipe::Raw),
+                value: digest.into(),
+            }),
+        }];
+        let listing = FlatListing::new(root, files, Vec::new());
+        let output = scan(
+            &listing,
+            root,
+            &AtomicBool::new(false),
+            &AtomicUsize::new(0),
+        )
+        .unwrap()
+        .unwrap();
+        FileSystemView::new(Arc::new(output.model))
+    }
+
+    #[test]
+    fn a_rescan_compares_a_depot_pair_again_only_when_its_digest_changed() {
+        let local_dir = tempdir().unwrap();
+        write_files(local_dir.path(), &[("a.txt", "same a")]);
+        let local = load_view(local_dir.path());
+        let depot_root = Path::new("//depot/main/...");
+        let mut compare = TreeCompare::default();
+
+        let depot = depot_view(depot_root, "AAAA");
+        let rows = build(&mut compare, &local, &depot);
+        assert_eq!(
+            compare_pending(&mut compare, &rows, &local, &depot),
+            ["a.txt"]
+        );
+
+        let depot = depot_view(depot_root, "AAAA");
+        let rows = build(&mut compare, &local, &depot);
+        assert!(compare_pending(&mut compare, &rows, &local, &depot).is_empty());
+
+        let depot = depot_view(depot_root, "BBBB");
+        let rows = build(&mut compare, &local, &depot);
+        assert_eq!(
+            compare_pending(&mut compare, &rows, &local, &depot),
+            ["a.txt"]
+        );
     }
 
     #[test]

@@ -1,6 +1,9 @@
+use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command};
-use std::{env, str};
+use std::process::{Child, Command, Output, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
+use std::{env, str, thread};
 
 use crate::universal_path::UniversalPath;
 
@@ -126,6 +129,10 @@ pub trait P4Runner {
     fn run_bytes(&self, args: &[&str]) -> Result<Vec<u8>, String> {
         self.run(args).map(String::into_bytes)
     }
+
+    fn run_cancellable(&self, args: &[&str], _cancel: &AtomicBool) -> Result<String, String> {
+        self.run(args)
+    }
 }
 
 impl P4Runner for P4Command {
@@ -135,6 +142,11 @@ impl P4Runner for P4Command {
 
     fn run_bytes(&self, args: &[&str]) -> Result<Vec<u8>, String> {
         self.output_bytes(args)
+    }
+
+    fn run_cancellable(&self, args: &[&str], cancel: &AtomicBool) -> Result<String, String> {
+        let output = self.output_bytes_cancellable(args, cancel)?;
+        Ok(String::from_utf8_lossy(&output).into_owned())
     }
 }
 
@@ -276,16 +288,21 @@ pub fn local_path_of_depot_file(
 
 /// The `key value` fields of each record in tagged output; the value is the rest of the line.
 fn ztag_records(ztag: &str) -> Vec<Vec<(&str, &str)>> {
-    let mut records = Vec::new();
+    ztag_record_iter(ztag).collect()
+}
+
+fn ztag_record_iter(ztag: &str) -> impl Iterator<Item = Vec<(&str, &str)>> {
     let mut fields = Vec::new();
-    for line in ztag.lines().chain([""]) {
+    ztag.lines().chain([""]).filter_map(move |line| {
         if let Some(field) = line.strip_prefix("... ") {
             fields.push(field.split_once(' ').unwrap_or((field, "")));
+            None
         } else if line.trim().is_empty() && !fields.is_empty() {
-            records.push(std::mem::take(&mut fields));
+            Some(std::mem::take(&mut fields))
+        } else {
+            None
         }
-    }
-    records
+    })
 }
 
 fn ztag_field<'a>(record: &[(&str, &'a str)], key: &str) -> Option<&'a str> {
@@ -328,6 +345,7 @@ pub struct P4Stream {
 pub struct P4FileDigest {
     pub depot_file: String,
     pub rev: u32,
+    pub file_type: Option<String>,
     pub size: Option<u64>,
     pub digest: Option<String>,
 }
@@ -337,6 +355,7 @@ pub struct P4ShelvedFile {
     pub depot_file: String,
     pub action: String,
     pub base_rev: Option<u32>,
+    pub file_type: Option<String>,
     pub size: Option<u64>,
     pub digest: Option<String>,
 }
@@ -387,25 +406,25 @@ pub fn parse_streams(ztag: &str) -> Result<Vec<P4Stream>, String> {
 }
 
 pub fn parse_fstat_digests(ztag: &str) -> Result<Vec<P4FileDigest>, String> {
-    ztag_records(ztag)
-        .iter()
+    ztag_record_iter(ztag)
         // Without a headAction the file is only opened for add in the client.
         .filter(|record| {
             let head_action = ztag_field(record, "headAction");
             head_action.is_some() && !is_delete_action(head_action)
         })
         .map(|record| {
-            let depot_file = ztag_field(record, "depotFile")
+            let depot_file = ztag_field(&record, "depotFile")
                 .ok_or_else(|| format!("a file without depotFile: {record:?}"))?;
-            let rev =
-                ztag_field(record, "headRev").ok_or_else(|| format!("{depot_file}: no headRev"))?;
+            let rev = ztag_field(&record, "headRev")
+                .ok_or_else(|| format!("{depot_file}: no headRev"))?;
             Ok(P4FileDigest {
                 depot_file: depot_file.to_owned(),
                 rev: parse_number(rev, "headRev", depot_file)?,
-                size: ztag_field(record, "fileSize")
+                file_type: ztag_field(&record, "headType").map(str::to_owned),
+                size: ztag_field(&record, "fileSize")
                     .map(|size| parse_number(size, "fileSize", depot_file))
                     .transpose()?,
-                digest: ztag_field(record, "digest").map(str::to_owned),
+                digest: ztag_field(&record, "digest").map(str::to_owned),
             })
         })
         .collect()
@@ -414,7 +433,7 @@ pub fn parse_fstat_digests(ztag: &str) -> Result<Vec<P4FileDigest>, String> {
 /// `p4 describe` output is one record whose files are numbered fields (`depotFile0`, `rev0`, ...)
 /// after a `desc` that can contain blank lines, so fields are gathered by number, not by record.
 pub fn parse_shelf(ztag: &str) -> Result<Vec<P4ShelvedFile>, String> {
-    let mut files: std::collections::BTreeMap<u32, [Option<&str>; 5]> = Default::default();
+    let mut files: std::collections::BTreeMap<u32, [Option<&str>; 6]> = Default::default();
     for (key, value) in ztag_fields(ztag) {
         let name = key.trim_end_matches(|c: char| c.is_ascii_digit());
         let slot = match name {
@@ -423,6 +442,7 @@ pub fn parse_shelf(ztag: &str) -> Result<Vec<P4ShelvedFile>, String> {
             "rev" => 2,
             "fileSize" => 3,
             "digest" => 4,
+            "type" => 5,
             _ => continue,
         };
         let Ok(index) = key[name.len()..].parse::<u32>() else {
@@ -432,25 +452,28 @@ pub fn parse_shelf(ztag: &str) -> Result<Vec<P4ShelvedFile>, String> {
     }
     files
         .into_iter()
-        .map(|(index, [depot_file, action, rev, size, digest])| {
-            let depot_file = depot_file.ok_or_else(|| format!("no depotFile{index}"))?;
-            let action = action.ok_or_else(|| format!("{depot_file}: no action{index}"))?;
-            let rev = rev.ok_or_else(|| format!("{depot_file}: no rev{index}"))?;
-            // A new file's rev is the one it will get, not one the depot path has.
-            let base_rev = match action {
-                "add" | "move/add" | "branch" | "import" => None,
-                _ => Some(parse_number(rev, "rev", depot_file)?),
-            };
-            Ok(P4ShelvedFile {
-                depot_file: depot_file.to_owned(),
-                action: action.to_owned(),
-                base_rev,
-                size: size
-                    .map(|size| parse_number(size, "fileSize", depot_file))
-                    .transpose()?,
-                digest: digest.map(str::to_owned),
-            })
-        })
+        .map(
+            |(index, [depot_file, action, rev, size, digest, file_type])| {
+                let depot_file = depot_file.ok_or_else(|| format!("no depotFile{index}"))?;
+                let action = action.ok_or_else(|| format!("{depot_file}: no action{index}"))?;
+                let rev = rev.ok_or_else(|| format!("{depot_file}: no rev{index}"))?;
+                // A new file's rev is the one it will get, not one the depot path has.
+                let base_rev = match action {
+                    "add" | "move/add" | "branch" | "import" => None,
+                    _ => Some(parse_number(rev, "rev", depot_file)?),
+                };
+                Ok(P4ShelvedFile {
+                    depot_file: depot_file.to_owned(),
+                    action: action.to_owned(),
+                    base_rev,
+                    file_type: file_type.map(str::to_owned),
+                    size: size
+                        .map(|size| parse_number(size, "fileSize", depot_file))
+                        .transpose()?,
+                    digest: digest.map(str::to_owned),
+                })
+            },
+        )
         .collect()
 }
 
@@ -476,14 +499,20 @@ pub fn list_streams(p4: &impl P4Runner) -> Result<Vec<P4Stream>, String> {
     )
 }
 
+const FSTAT_FIELDS: &str = "depotFile,headAction,headRev,headType,fileSize,digest";
+
 /// Files under `depot_folder` at `revision` (`""` for head, or `@change`), deleted ones left out.
 pub fn list_files_with_digests(
     p4: &impl P4Runner,
     depot_folder: &str,
     revision: &str,
+    cancel: &AtomicBool,
 ) -> Result<Vec<P4FileDigest>, String> {
     let files = format!("{}/...{revision}", depot_folder.trim_end_matches('/'));
-    run_parsed(p4, &["-ztag", "fstat", "-Ol", &files], parse_fstat_digests)
+    let args = ["-ztag", "fstat", "-Ol", "-T", FSTAT_FIELDS, &files];
+    p4.run_cancellable(&args, cancel)
+        .and_then(|out| parse_fstat_digests(&out))
+        .map_err(|e| command_error(&args, e))
 }
 
 pub fn list_shelf(p4: &impl P4Runner, change: u32) -> Result<Vec<P4ShelvedFile>, String> {
@@ -512,6 +541,21 @@ fn failure_text(stderr: &[u8], stdout: &[u8], status: impl std::fmt::Display) ->
         message.push_str("\nRun `p4 login` to authenticate.");
     }
     message
+}
+
+const CANCEL_POLL_INTERVAL: Duration = Duration::from_millis(20);
+
+fn checked_stdout(args: &[&str], output: Output) -> Result<Vec<u8>, String> {
+    if output.status.success() {
+        // p4 exits 0 on some warnings ("no such file(s)", "not in client view").
+        let warnings = String::from_utf8_lossy(&output.stderr);
+        if !warnings.trim().is_empty() {
+            log::warn!("p4 {}: {}", args.join(" "), warnings.trim());
+        }
+        Ok(output.stdout)
+    } else {
+        Err(failure_text(&output.stderr, &output.stdout, output.status))
+    }
 }
 
 pub struct P4Command {
@@ -578,17 +622,56 @@ impl P4Command {
             .args(args)
             .output()
             .map_err(|e| format!("{}: {e}", self.exe_path))?;
+        checked_stdout(args, output)
+    }
 
-        if output.status.success() {
-            // p4 exits 0 on some warnings ("no such file(s)", "not in client view").
-            let warnings = String::from_utf8_lossy(&output.stderr);
-            if !warnings.trim().is_empty() {
-                log::warn!("p4 {}: {}", args.join(" "), warnings.trim());
+    /// Kills p4 as soon as `cancel` is set, so the server stops working on an abandoned query.
+    pub fn output_bytes_cancellable(
+        &self,
+        args: &[&str],
+        cancel: &AtomicBool,
+    ) -> Result<Vec<u8>, String> {
+        let mut child = self
+            .prepare_cmd()
+            .args(args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|e| format!("{}: {e}", self.exe_path))?;
+        let read_all = |mut pipe: Box<dyn Read + Send>| {
+            thread::spawn(move || {
+                let mut bytes = Vec::new();
+                pipe.read_to_end(&mut bytes).map(|_| bytes)
+            })
+        };
+        let stdout = read_all(Box::new(child.stdout.take().expect("stdout is piped")));
+        let stderr = read_all(Box::new(child.stderr.take().expect("stderr is piped")));
+        let status = loop {
+            if cancel.load(Ordering::Relaxed) {
+                // The readers end once the killed child's pipes close.
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err("cancelled".to_string());
             }
-            Ok(output.stdout)
-        } else {
-            Err(failure_text(&output.stderr, &output.stdout, output.status))
-        }
+            match child.try_wait() {
+                Ok(Some(status)) => break status,
+                Ok(None) => thread::sleep(CANCEL_POLL_INTERVAL),
+                Err(e) => return Err(format!("{}: {e}", self.exe_path)),
+            }
+        };
+        let joined = |reader: thread::JoinHandle<std::io::Result<Vec<u8>>>| {
+            reader
+                .join()
+                .expect("a p4 output reader panicked")
+                .map_err(|e| format!("{}: {e}", self.exe_path))
+        };
+        let output = Output {
+            status,
+            stdout: joined(stdout)?,
+            stderr: joined(stderr)?,
+        };
+        checked_stdout(args, output)
     }
 
     pub fn spawn(&self, args: &[&str]) -> Result<Child, String> {
@@ -668,6 +751,7 @@ impl<F: Fn(&[&str]) -> Result<String, String>> P4Runner for FakeP4<F> {
 mod tests {
     use crate::universal_path::DepotRev;
     use std::ffi::OsStr;
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     use super::*;
 
@@ -1266,10 +1350,17 @@ mod tests {
                          ... headChange 1000\n\
                          \n";
 
-    fn digest(depot_file: &str, rev: u32, size: Option<u64>, digest: Option<&str>) -> P4FileDigest {
+    fn digest(
+        depot_file: &str,
+        rev: u32,
+        file_type: &str,
+        size: Option<u64>,
+        digest: Option<&str>,
+    ) -> P4FileDigest {
         P4FileDigest {
             depot_file: depot_file.into(),
             rev,
+            file_type: Some(file_type.into()),
             size,
             digest: digest.map(str::to_owned),
         }
@@ -1281,16 +1372,18 @@ mod tests {
             digest(
                 "//depot/main/a b.txt",
                 4,
+                "text",
                 Some(1234),
                 Some("0CC175B9C0F1B6A831C399E269772661"),
             ),
             digest(
                 "//depot/main/opened_for_delete.txt",
                 1,
+                "binary",
                 Some(0),
                 Some("D41D8CD98F00B204E9800998ECF8427E"),
             ),
-            digest("//depot/main/archived.bin", 9, None, None),
+            digest("//depot/main/archived.bin", 9, "binary+S", None, None),
         ];
         assert_eq!(parse_fstat_digests(FSTAT), Ok(files.clone()));
         assert_eq!(
@@ -1380,6 +1473,7 @@ mod tests {
             depot_file: depot_file.into(),
             action: action.into(),
             base_rev,
+            file_type: Some("text".into()),
             size: None,
             digest: None,
         }
@@ -1435,14 +1529,15 @@ mod tests {
             _ => panic!("unexpected {args:?}"),
         });
         assert_eq!(list_streams(&p4).unwrap().len(), 3);
+        let running = AtomicBool::new(false);
         assert_eq!(
-            list_files_with_digests(&p4, "//depot/main/", "@1234")
+            list_files_with_digests(&p4, "//depot/main/", "@1234", &running)
                 .unwrap()
                 .len(),
             3
         );
         assert_eq!(
-            list_files_with_digests(&p4, "//depot/main", "")
+            list_files_with_digests(&p4, "//depot/main", "", &running)
                 .unwrap()
                 .len(),
             3
@@ -1452,11 +1547,48 @@ mod tests {
             p4.calls(),
             vec![
                 args(&["-ztag", "streams", "-T", "Stream,Name,Parent,Type"]),
-                args(&["-ztag", "fstat", "-Ol", "//depot/main/...@1234"]),
-                args(&["-ztag", "fstat", "-Ol", "//depot/main/..."]),
+                args(&[
+                    "-ztag",
+                    "fstat",
+                    "-Ol",
+                    "-T",
+                    "depotFile,headAction,headRev,headType,fileSize,digest",
+                    "//depot/main/...@1234"
+                ]),
+                args(&[
+                    "-ztag",
+                    "fstat",
+                    "-Ol",
+                    "-T",
+                    "depotFile,headAction,headRev,headType,fileSize,digest",
+                    "//depot/main/..."
+                ]),
                 args(&["-ztag", "describe", "-S", "-s", "1234"]),
             ]
         );
+    }
+
+    struct CancellableOnly;
+
+    impl P4Runner for CancellableOnly {
+        fn run(&self, args: &[&str]) -> Result<String, String> {
+            panic!("ran without the cancel flag: {args:?}")
+        }
+
+        fn run_cancellable(&self, _: &[&str], cancel: &AtomicBool) -> Result<String, String> {
+            match cancel.load(Ordering::Relaxed) {
+                true => Err("killed".into()),
+                false => Ok(FSTAT.into()),
+            }
+        }
+    }
+
+    #[test]
+    fn the_file_listing_runs_with_the_cancel_flag() {
+        let listed = list_files_with_digests(&CancellableOnly, "//depot/main", "", &false.into());
+        assert_eq!(listed.unwrap().len(), 3);
+        let cancelled = list_files_with_digests(&CancellableOnly, "//depot/main", "", &true.into());
+        assert!(cancelled.unwrap_err().contains("killed"));
     }
 
     #[test]

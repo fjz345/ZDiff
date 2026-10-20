@@ -3,7 +3,7 @@ use std::{
     fs::File,
     io::{self, Cursor, Read},
     path::{Path, PathBuf},
-    sync::atomic::{AtomicBool, AtomicUsize},
+    sync::atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 
 use zcommon::{
@@ -17,7 +17,8 @@ use zcommon::{
 use crate::{
     comparison::FileReader,
     scan::{
-        ContentHash, FlatEntry, FlatListing, HashKind, LocalDisk, ScanOutput, SkippedEntry, scan,
+        ContentHash, FlatEntry, FlatListing, HashKind, LocalDisk, P4Recipe, ScanOutput,
+        SkippedEntry, scan,
     },
 };
 
@@ -75,12 +76,13 @@ pub fn scan_side(
         UniversalPath::Git(local, rev) => list_git(git, root, &local, &rev)
             .map(|(listing, content)| (listing, ContentSource::Git(content)))
             .map_err(io::Error::other),
-        UniversalPath::Depot(folder, rev) => list_depot(p4, root, &folder, rev)
+        UniversalPath::Depot(folder, rev) => list_depot(p4, root, &folder, rev, cancel)
             .map(|(listing, content)| (listing, ContentSource::Depot(content)))
             .map_err(io::Error::other),
     };
     let (listing, content) = match listed {
         Ok(listed) => listed,
+        Err(_) if cancel.load(Ordering::Relaxed) => return None,
         Err(e) => return Some(Err(e)),
     };
     scan(&listing, root, cancel, found).map(|output| {
@@ -163,12 +165,13 @@ fn list_depot(
     model_root: &Path,
     folder: &str,
     rev: Option<DepotRev>,
+    cancel: &AtomicBool,
 ) -> Result<(FlatListing, DepotContent), String> {
     let folder = folder.trim_end_matches('/');
     let (files, skipped, revisions) = match rev {
-        None => list_depot_files(p4, model_root, folder, "")?,
+        None => list_depot_files(p4, model_root, folder, "", cancel)?,
         Some(DepotRev::Change(change)) => {
-            list_depot_files(p4, model_root, folder, &format!("@{change}"))?
+            list_depot_files(p4, model_root, folder, &format!("@{change}"), cancel)?
         }
         Some(DepotRev::Shelf(change)) => list_shelf_files(p4, model_root, folder, change)?,
         Some(DepotRev::Rev(rev)) => {
@@ -191,10 +194,11 @@ fn list_depot_files(
     model_root: &Path,
     folder: &str,
     revision: &str,
+    cancel: &AtomicBool,
 ) -> Result<DepotFiles, String> {
     let prefix = format!("{folder}/");
     let (mut files, mut skipped, mut revisions) = (Vec::new(), Vec::new(), HashMap::new());
-    for file in p4::list_files_with_digests(p4, folder, revision)? {
+    for file in p4::list_files_with_digests(p4, folder, revision, cancel)? {
         let Some(rel) = file.depot_file.strip_prefix(&prefix) else {
             skipped.push(SkippedEntry {
                 path: PathBuf::from(&file.depot_file),
@@ -202,6 +206,14 @@ fn list_depot_files(
             });
             continue;
         };
+        // The listing is decoded lossily; such a name can't be read back or paired.
+        if rel.contains(char::REPLACEMENT_CHARACTER) {
+            skipped.push(SkippedEntry {
+                path: join_rel(model_root, rel),
+                reason: "the name is not UTF-8 (set P4CHARSET?)".to_string(),
+            });
+            continue;
+        }
         let Some(size) = file.size else {
             skipped.push(SkippedEntry {
                 path: join_rel(model_root, rel),
@@ -213,7 +225,7 @@ fn list_depot_files(
         files.push(FlatEntry {
             rel_path: rel.to_owned(),
             size,
-            hash: p4_hash(file.digest),
+            hash: p4_hash(file.digest, file.file_type.as_deref()),
         });
     }
     Ok((files, skipped, DepotRevisions::Files(revisions)))
@@ -243,7 +255,7 @@ fn list_shelf_files(
         files.push(FlatEntry {
             rel_path: rel.to_owned(),
             size,
-            hash: p4_hash(file.digest),
+            hash: p4_hash(file.digest, file.file_type.as_deref()),
         });
     }
     Ok((files, skipped, DepotRevisions::Shelf(change)))
@@ -259,11 +271,26 @@ fn shelf_files_under(
         .filter(move |file| file.depot_file.starts_with(&prefix))
 }
 
-fn p4_hash(digest: Option<String>) -> Option<ContentHash> {
+fn p4_hash(digest: Option<String>, file_type: Option<&str>) -> Option<ContentHash> {
     digest.map(|value| ContentHash {
-        kind: HashKind::P4Digest,
+        kind: HashKind::P4Digest(p4_recipe(file_type)),
         value,
     })
+}
+
+fn p4_recipe(file_type: Option<&str>) -> P4Recipe {
+    let Some(file_type) = file_type else {
+        return P4Recipe::ServerOnly;
+    };
+    let (base, modifiers) = file_type.split_once('+').unwrap_or((file_type, ""));
+    if modifiers.contains('k') {
+        return P4Recipe::ServerOnly;
+    }
+    match base {
+        "binary" | "ubinary" | "xbinary" | "uxbinary" | "tempobj" | "xtempobj" => P4Recipe::Raw,
+        "text" | "xtext" | "ltext" | "xltext" | "ctext" | "cxtext" => P4Recipe::Text,
+        _ => P4Recipe::ServerOnly,
+    }
 }
 
 /// The shelved files of a `//depot/folder@=<shelf>` root at the revisions they were shelved
@@ -636,12 +663,14 @@ mod tests {
 
     const FSTAT: &str = "... depotFile //depot/main/a.txt\n\
                          ... headAction edit\n\
+                         ... headType text\n\
                          ... headRev 4\n\
                          ... fileSize 5\n\
                          ... digest 0CC175B9C0F1B6A831C399E269772661\n\
                          \n\
                          ... depotFile //depot/main/src/run.sh\n\
                          ... headAction add\n\
+                         ... headType binary+l\n\
                          ... headRev 1\n\
                          ... fileSize 12\n\
                          ... digest 92EB5FFEE6AE2FEC3AD71C777531578F\n\
@@ -664,11 +693,54 @@ mod tests {
                          ... fileSize 1\n\
                          \n";
 
-    fn digest(value: &str) -> Option<ContentHash> {
+    fn digest(recipe: P4Recipe, value: &str) -> Option<ContentHash> {
         Some(ContentHash {
-            kind: HashKind::P4Digest,
+            kind: HashKind::P4Digest(recipe),
             value: value.into(),
         })
+    }
+
+    #[test]
+    fn a_file_type_picks_how_a_local_file_reproduces_its_digest() {
+        for (file_type, recipe) in [
+            ("binary", P4Recipe::Raw),
+            ("binary+l", P4Recipe::Raw),
+            ("binary+Fl", P4Recipe::Raw),
+            ("ubinary", P4Recipe::Raw),
+            ("xbinary", P4Recipe::Raw),
+            ("text", P4Recipe::Text),
+            ("text+x", P4Recipe::Text),
+            ("text+wS3", P4Recipe::Text),
+            ("xtext", P4Recipe::Text),
+            ("text+k", P4Recipe::ServerOnly),
+            ("text+ko", P4Recipe::ServerOnly),
+            ("ktext", P4Recipe::ServerOnly),
+            ("binary+k", P4Recipe::ServerOnly),
+            ("utf8", P4Recipe::ServerOnly),
+            ("utf16", P4Recipe::ServerOnly),
+            ("unicode", P4Recipe::ServerOnly),
+            ("symlink", P4Recipe::ServerOnly),
+            ("apple", P4Recipe::ServerOnly),
+        ] {
+            assert_eq!(p4_recipe(Some(file_type)), recipe, "{file_type}");
+        }
+        assert_eq!(p4_recipe(None), P4Recipe::ServerOnly);
+    }
+
+    #[test]
+    fn a_cancelled_depot_listing_is_no_result() {
+        let p4 = FakeP4::new(|_: &[&str]| Err("killed".to_string()));
+        let no_git = FakeGit::new("");
+
+        let output = scan_side(
+            &no_git,
+            &p4,
+            Path::new("//depot/main"),
+            &AtomicBool::new(true),
+            &AtomicUsize::new(0),
+        );
+
+        assert!(output.is_none());
     }
 
     fn fstat_p4() -> FakeP4<impl Fn(&[&str]) -> Result<String, String>> {
@@ -693,9 +765,12 @@ mod tests {
         FileSystemModel::assert_tree_consistency(model);
         assert_eq!(model.total_files(), 2);
         let a = node(model, &root.join("a.txt"));
-        assert_eq!((a.size, &a.hash), (5, &digest(DIGEST_A)));
+        assert_eq!((a.size, &a.hash), (5, &digest(P4Recipe::Text, DIGEST_A)));
         let run = node(model, &root.join("src").join("run.sh"));
-        assert_eq!((run.size, &run.hash), (12, &digest(DIGEST_B)));
+        assert_eq!(
+            (run.size, &run.hash),
+            (12, &digest(P4Recipe::Raw, DIGEST_B))
+        );
         assert!(model.find_path(root.join("gone.txt")).is_none());
         assert!(
             model
@@ -714,7 +789,14 @@ mod tests {
         );
         assert_eq!(
             p4.calls(),
-            vec![args(&["-ztag", "fstat", "-Ol", "//depot/main/..."])]
+            vec![args(&[
+                "-ztag",
+                "fstat",
+                "-Ol",
+                "-T",
+                "depotFile,headAction,headRev,headType,fileSize,digest",
+                "//depot/main/..."
+            ])]
         );
     }
 
@@ -738,6 +820,35 @@ mod tests {
     }
 
     #[test]
+    fn a_depot_file_whose_name_is_not_utf8_is_skipped_with_a_reason() {
+        let p4 = FakeP4::new(|_: &[&str]| {
+            Ok("... depotFile //depot/main/caf\u{FFFD}.txt\n\
+                ... headAction add\n\
+                ... headRev 1\n\
+                ... fileSize 3\n\
+                \n\
+                ... depotFile //depot/main/ok.txt\n\
+                ... headAction add\n\
+                ... headRev 1\n\
+                ... fileSize 3\n"
+                .to_string())
+        });
+        let root = PathBuf::from("//depot/main");
+
+        let output = scan_depot(&p4, &root).unwrap();
+
+        assert_eq!(output.model.total_files(), 1);
+        assert!(output.model.find_path(root.join("ok.txt")).is_some());
+        assert_eq!(output.skipped.len(), 1);
+        assert_eq!(output.skipped[0].path, root.join("caf\u{FFFD}.txt"));
+        assert!(
+            output.skipped[0].reason.contains("UTF-8"),
+            "{}",
+            output.skipped[0].reason
+        );
+    }
+
+    #[test]
     fn a_depot_folder_at_a_changelist_lists_that_change() {
         let p4 = fstat_p4();
         let root = PathBuf::from("//depot/main@1234");
@@ -747,7 +858,14 @@ mod tests {
         assert!(output.model.find_path(root.join("a.txt")).is_some());
         assert_eq!(
             p4.calls(),
-            vec![args(&["-ztag", "fstat", "-Ol", "//depot/main/...@1234"])]
+            vec![args(&[
+                "-ztag",
+                "fstat",
+                "-Ol",
+                "-T",
+                "depotFile,headAction,headRev,headType,fileSize,digest",
+                "//depot/main/...@1234"
+            ])]
         );
     }
 
@@ -767,7 +885,14 @@ mod tests {
         assert_eq!(a.size, 5);
         assert_eq!(
             p4.calls(),
-            vec![args(&["-ztag", "fstat", "-Ol", "//depot/..."])]
+            vec![args(&[
+                "-ztag",
+                "fstat",
+                "-Ol",
+                "-T",
+                "depotFile,headAction,headRev,headType,fileSize,digest",
+                "//depot/..."
+            ])]
         );
     }
 
@@ -792,7 +917,9 @@ mod tests {
         let mut out =
             String::from("... change 1234\n... desc a shelf\n\nwith a blank line\n... shelved \n");
         for (i, (path, action, rev, size)) in files.iter().enumerate() {
-            out += &format!("... depotFile{i} {path}\n... action{i} {action}\n... rev{i} {rev}\n");
+            out += &format!(
+                "... depotFile{i} {path}\n... action{i} {action}\n... type{i} binary\n... rev{i} {rev}\n"
+            );
             if let Some(size) = size {
                 out += &format!("... fileSize{i} {size}\n... digest{i} {DIGEST_A}\n");
             }
@@ -828,7 +955,7 @@ mod tests {
         FileSystemModel::assert_tree_consistency(model);
         assert_eq!(model.total_files(), 3);
         let a = node(model, &root.join("a.txt"));
-        assert_eq!((a.size, &a.hash), (120, &digest(DIGEST_A)));
+        assert_eq!((a.size, &a.hash), (120, &digest(P4Recipe::Raw, DIGEST_A)));
         assert!(model.find_path(root.join("new.txt")).is_some());
         assert!(model.find_path(root.join("src").join("c.txt")).is_some());
         for absent in ["old.txt", "nosize.txt"] {
