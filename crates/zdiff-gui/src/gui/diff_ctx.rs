@@ -993,11 +993,16 @@ impl DiffProcessor {
     pub fn update(&mut self) {
         let mut reset_ui = false;
 
+        let shown_rows = self.ctx.diff_rows_ctx.clone();
         self.ctx.poll();
 
         if self.is_in_progress() && self.ctx.request_minimal_diff_ctx().is_some() {
             self.in_progress_input = None;
-            reset_ui = true;
+            // Render-only option changes are served from the rows cache: same rows, same UI state.
+            reset_ui = !matches!(
+                (&shown_rows, &self.ctx.diff_rows_ctx),
+                (Some(old), Some(new)) if Arc::ptr_eq(old, new)
+            );
         }
 
         if reset_ui {
@@ -2458,6 +2463,32 @@ mod tests {
                     format!("{:?}", collapsed.diff_rows)
                 );
                 assert_eq!(back.row_blocks, collapsed.row_blocks);
+            }
+
+            #[test]
+            fn toggling_highlight_rows_keeps_the_rows_expansion_find_and_conflict_cursor() {
+                let dir = tempfile::tempdir().unwrap();
+                let pair = gap_pair(dir.path());
+                let mut current = diff_only(&pair, 2);
+                let (mut processor, collapsed) = opened(&current);
+                processor.set_block_expanded(only_block(&collapsed), true);
+                processor
+                    .update_find_query(&plain("keep_10", true))
+                    .unwrap();
+                processor.conflict_cursor.set_max(2);
+                processor.conflict_cursor.set(1);
+                let expanded = processor.get_minimal_diff_ctx().expect("diff still shown");
+                let hits = processor.find_ctx.hits().to_vec();
+                assert!(!hits.is_empty());
+
+                current.options.highlight_rows = !current.options.highlight_rows;
+                open(&mut processor, &current);
+                let toggled = settle(&mut processor).expect("highlight toggle never completed");
+
+                assert!(toggled.input == current);
+                assert!(Arc::ptr_eq(&toggled.diff_rows, &expanded.diff_rows));
+                assert_eq!(processor.find_ctx.hits(), hits);
+                assert_eq!(processor.conflict_cursor.get(), 1);
             }
 
             #[test]
