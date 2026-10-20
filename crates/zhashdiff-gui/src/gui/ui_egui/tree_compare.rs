@@ -15,7 +15,7 @@ use zcommon::{job::Job, kinds::KindTable};
 use zhashdiff::{
     comparison::{FileMeta, PairCompare, PairCompareCache, PairSide, PairState, compare_pair_with},
     fs::{FileSystemModel, FsNode},
-    likeness::{Likeness, likeness},
+    likeness::{Likeness, LikenessReason, likeness},
     scan::ContentHash,
     vcs_source::ContentSource,
 };
@@ -195,13 +195,14 @@ pub fn pending_pairs(
 /// Copies the states of `fresh` onto the rows with the same path, keeping the rows and their
 /// order.
 pub fn patch_row_states(rows: &mut [VisibleRowTwoFolderDiff], fresh: Vec<VisibleRowTwoFolderDiff>) {
-    let mut fresh: HashMap<String, DiffState> = fresh
+    let mut fresh: HashMap<String, VisibleRowTwoFolderDiff> = fresh
         .into_iter()
-        .map(|row| (row.rel_path, row.diff_state))
+        .map(|row| (row.rel_path.clone(), row))
         .collect();
     for row in rows {
-        if let Some(state) = fresh.remove(&row.rel_path) {
-            row.diff_state = state;
+        if let Some(fresh) = fresh.remove(&row.rel_path) {
+            row.diff_state = fresh.diff_state;
+            row.folder_likeness = fresh.folder_likeness;
         }
     }
 }
@@ -384,6 +385,21 @@ impl TreeCompare {
         }
     }
 
+    /// Keeps the states and likeness, which don't depend on the side order. Drops the running
+    /// job, whose pairs are in the old order; the next `start` queues what it left.
+    pub fn swap_sides(&mut self) {
+        self.trees.swap(0, 1);
+        self.cache.swap_sides();
+        for likeness in self.likeness.values_mut() {
+            swap_likeness_sides(likeness);
+        }
+        for (metas, likeness) in self.likeness_cache.values_mut() {
+            metas.swap(0, 1);
+            swap_likeness_sides(likeness);
+        }
+        self.job = None;
+    }
+
     pub fn state_of(&self, rel_path: &str, nodes: [&FsNode; 2]) -> Option<PairState> {
         if let Some(state) = self.states.get(rel_path) {
             return Some(*state);
@@ -560,6 +576,16 @@ impl TreeCompare {
             job.patched = end;
             job.patch_interval = ROWS_PATCH_INTERVAL.max(cost * PATCH_COST_FACTOR);
         }
+    }
+}
+
+fn swap_likeness_sides(likeness: &mut PairLikeness) {
+    if let PairLikeness::Measured(Likeness {
+        reason: Some(LikenessReason::DimensionsDiffer { left, right }),
+        ..
+    }) = likeness
+    {
+        std::mem::swap(left, right);
     }
 }
 

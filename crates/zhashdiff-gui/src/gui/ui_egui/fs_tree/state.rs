@@ -15,6 +15,7 @@ pub struct VisibleRowTwoFolderDiff {
     pub diff_state: DiffState,
     pub file_kinds: [Option<FileKind>; 2],
     pub blueprints: [bool; 2],
+    pub folder_likeness: Option<FolderLikeness>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -195,6 +196,7 @@ impl FileSystemView {
         let initial_capacity = num_files_and_folders_1.max(num_files_and_folders_2);
         let mut out_rows = Vec::with_capacity(initial_capacity);
 
+        let mut pair_likeness: HashMap<&str, LikenessSum> = HashMap::new();
         let file_states: HashMap<&str, DiffState> = entries_map
             .iter()
             .filter_map(|(rel_path, (left, right))| {
@@ -202,17 +204,21 @@ impl FileSystemView {
                 if l_node.is_dir() {
                     return None;
                 }
-                let state = file_diff_state(
+                let (state, likeness) = file_diff_state(
                     rel_path,
                     (*l_id, l_node),
                     (*r_id, r_node),
                     tolerance,
                     &mut pair_state,
                 );
+                if let Some(likeness) = likeness {
+                    pair_likeness.insert(rel_path.as_str(), likeness);
+                }
                 Some((rel_path.as_str(), state))
             })
             .collect();
         let descendant_states = descendant_states(&entries_map, &file_states);
+        let descendant_likeness = descendant_likeness(&entries_map, &pair_likeness);
 
         for (rel_path, (left, right)) in &entries_map {
             let depth = left.map(|l| l.2).or(right.map(|r| r.2)).unwrap_or(0);
@@ -265,6 +271,14 @@ impl FileSystemView {
                 }
             }
 
+            let both_dirs = [left, right]
+                .iter()
+                .all(|side| side.is_some_and(|(_, node, _)| node.is_dir()));
+            let folder_likeness = both_dirs
+                .then(|| descendant_likeness.get(rel_path.as_str()))
+                .flatten()
+                .and_then(|sum| sum.folder_likeness());
+
             out_rows.push(VisibleRowTwoFolderDiff {
                 rel_path: rel_path.clone(),
                 is_dir,
@@ -272,6 +286,7 @@ impl FileSystemView {
                 diff_state,
                 file_kinds,
                 blueprints,
+                folder_likeness,
             });
         }
 
@@ -728,20 +743,23 @@ pub(super) fn file_diff_state(
     right: (FsNodeId, &FsNode),
     tolerance: &Tolerance,
     pair_state: &mut impl FnMut(&str, [&FsNode; 2]) -> (Option<PairState>, Option<f64>),
-) -> DiffState {
+) -> (DiffState, Option<LikenessSum>) {
     if right.1.is_dir() {
-        return DiffState::Different(left.0, right.0);
+        let likeness = LikenessSum::one_sided(left.1.size);
+        return (DiffState::Different(left.0, right.0), Some(likeness));
     }
     let (exact, likeness) = pair_state(rel_path, [left.1, right.1]);
     let sides = [left.1, right.1].map(|node| Some(SideMeta::of(node)));
-    if tolerance.is_similar(sides, exact, likeness) {
-        return DiffState::Similar(left.0, right.0);
-    }
-    match exact {
+    let similar = tolerance.is_similar(sides, exact, likeness);
+    let sizes = [left.1.size, right.1.size];
+    let likeness_sum = LikenessSum::pair(exact, likeness, similar, sizes);
+    let state = match exact {
+        _ if similar => DiffState::Similar(left.0, right.0),
         Some(PairState::Same) => DiffState::Same(left.0, right.0),
         Some(PairState::Different) => DiffState::Different(left.0, right.0),
         None => DiffState::Pending(left.0, right.0),
-    }
+    };
+    (state, likeness_sum)
 }
 
 pub fn aggregate_folder_state(
@@ -796,6 +814,44 @@ pub(super) fn descendant_states<'a>(
         ];
         let joined = aggregate_folder_state(0, 0, states.into_iter().flatten());
         below.insert(parent, joined);
+    }
+    below
+}
+
+pub(super) fn descendant_likeness<'a>(
+    entries_map: &'a BTreeMap<
+        String,
+        (
+            Option<(FsNodeId, &FsNode, FsNodeDepth)>,
+            Option<(FsNodeId, &FsNode, FsNodeDepth)>,
+        ),
+    >,
+    pairs: &HashMap<&str, LikenessSum>,
+) -> HashMap<&'a str, LikenessSum> {
+    let file_size = |side: Option<(FsNodeId, &FsNode, FsNodeDepth)>| {
+        side.filter(|(_, node, _)| !node.is_dir())
+            .map(|(_, node, _)| node.size)
+    };
+    let mut below: HashMap<&str, LikenessSum> = HashMap::new();
+    // As in descendant_states: in reverse, a folder's descendants come before it.
+    for (path, (left, right)) in entries_map.iter().rev() {
+        let parent = match path.rsplit_once('/') {
+            Some((parent, _)) => parent,
+            None if path.is_empty() => continue,
+            None => "",
+        };
+        let own = match (left, right) {
+            (Some((_, ln, _)), Some(_)) if !ln.is_dir() => pairs.get(path.as_str()).copied(),
+            (Some(_), Some(_)) => file_size(*right).map(LikenessSum::one_sided),
+            _ => file_size(*left)
+                .or(file_size(*right))
+                .map(LikenessSum::one_sided),
+        };
+        let mut sum = below.get(path.as_str()).copied().unwrap_or_default();
+        if let Some(own) = own {
+            sum.add(own);
+        }
+        below.entry(parent).or_default().add(sum);
     }
     below
 }

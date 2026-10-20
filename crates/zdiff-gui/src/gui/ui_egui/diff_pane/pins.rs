@@ -60,19 +60,7 @@ pub(super) fn pins_ui(
     let entered =
         (left.lost_focus() || right.lost_focus()) && ui.input(|i| i.key_pressed(egui::Key::Enter));
     if ui.button("Add pin").clicked() || entered {
-        let added = parse_pin(&input.left, &input.right).and_then(|pin| {
-            let counts = diff_ctx
-                .and_then(|d| pin_line_counts(&d.input))
-                .ok_or("pins need both files loaded")?;
-            insert_pin(pins, pin, counts).map_err(|err| err.to_string())
-        });
-        match added {
-            Ok(pins) => {
-                *pins_request = Some(pins);
-                *input = PinInput::default();
-            }
-            Err(reason) => input.error = Some(reason),
-        }
+        add_pin(input, pins, pins_request, diff_ctx);
     }
     if !pins.is_empty() {
         ui.menu_button(format!("{} pinned", pins.len()), |ui| {
@@ -97,6 +85,27 @@ pub(super) fn pins_ui(
         ui.colored_label(ui.visuals().warn_fg_color, reason);
     } else if let Some(err) = ignored {
         ui.colored_label(ui.visuals().warn_fg_color, format!("Pins ignored: {err}"));
+    }
+}
+
+pub(super) fn add_pin(
+    input: &mut PinInput,
+    pins: &[Pin],
+    pins_request: &mut Option<Vec<Pin>>,
+    diff_ctx: Option<&MinimalDiffCtx>,
+) {
+    let added = parse_pin(&input.left, &input.right).and_then(|pin| {
+        let counts = diff_ctx
+            .and_then(|d| pin_line_counts(&d.input))
+            .ok_or("pins need both files loaded")?;
+        insert_pin(pins, pin, counts).map_err(|err| err.to_string())
+    });
+    match added {
+        Ok(pins) => {
+            *pins_request = Some(pins);
+            *input = PinInput::default();
+        }
+        Err(reason) => input.error = Some(reason),
     }
 }
 

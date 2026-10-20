@@ -437,7 +437,9 @@ pub fn draw_ui_folder_tree(
                             });
                         }
                         CenterSlot::Likeness => {
-                            ui.label("%").on_hover_text("Likeness of the two files");
+                            ui.label("%").on_hover_text(
+                                "Likeness of the two files, or of the files below a folder",
+                            );
                         }
                         CenterSlot::Tag(_) => {}
                     }),

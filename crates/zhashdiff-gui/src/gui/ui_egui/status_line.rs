@@ -126,7 +126,7 @@ mod tests {
 
     use super::{RowCounts, count_rows, counts_text};
     use crate::ui_egui::fs_tree::{DiffState, FileSystemView, VisibleRowTwoFolderDiff};
-    use crate::ui_egui::tree_filter::{DiffFilter, arrange_two_folder_rows};
+    use crate::ui_egui::tree_filter::{DiffFilter, StateFilter, arrange_two_folder_rows};
     use crate::ui_egui::tree_sort::TreeSort;
     use crate::ui_egui::tree_tolerance::{SizeDelta, Tolerance};
 
@@ -138,6 +138,7 @@ mod tests {
             diff_state,
             file_kinds: [None, None],
             blueprints: [false, false],
+            folder_likeness: None,
         }
     }
 
@@ -183,7 +184,7 @@ mod tests {
             }
         );
         let diff_only = DiffFilter {
-            diff_only: true,
+            states: StateFilter::Diff,
             ..Default::default()
         };
         assert_eq!(
@@ -198,7 +199,7 @@ mod tests {
             }
         );
         let files_only = DiffFilter {
-            diff_only: true,
+            states: StateFilter::Diff,
             show_parents: false,
         };
         assert_eq!(

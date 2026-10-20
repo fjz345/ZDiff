@@ -1,4 +1,3 @@
-
 use crate::ui_egui::fs_tree::apply_path_bar;
 use crate::ui_egui::fs_tree::{
     ContentWidths, CursorRowsCache, DiffState, EXPANDER_WIDTH, FileSystemView, RowLayout, RowsId,
@@ -10,8 +9,9 @@ use crate::ui_egui::roots::{InvalidRoot, Side};
 use crate::ui_egui::status_line::ToolMessage;
 use crate::ui_egui::tree_compare::pending_pairs;
 use crate::ui_egui::tree_cursor::{CursorRequest, TreeCursor};
-use crate::ui_egui::tree_filter::{DiffFilter, arrange_two_folder_rows};
+use crate::ui_egui::tree_filter::{DiffFilter, StateFilter, arrange_two_folder_rows};
 use crate::ui_egui::tree_guides::tree_guides;
+use crate::ui_egui::tree_likeness::FolderLikeness;
 use crate::ui_egui::tree_sort::{SortKey, TreeSort, sort_two_folder_rows};
 use crate::ui_egui::tree_tolerance::{SizeDelta, Tolerance};
 use eframe::egui;
@@ -445,11 +445,174 @@ fn a_folder_of_same_and_similar_files_is_similar_and_hidden_by_diff_only() {
         ]
     );
     let diff_only = DiffFilter {
-        diff_only: true,
+        states: StateFilter::Diff,
         show_parents: true,
     };
     let shown = arrange_two_folder_rows(rows, diff_only, TreeSort::default());
     assert_eq!(rows_with_kinds(&shown), [("", "Similar")]);
+}
+
+fn build_with_likeness(
+    left: &FileSystemView,
+    right: &FileSystemView,
+    pairs: &[(&str, PairState, Option<f64>)],
+    tolerance: &Tolerance,
+) -> Vec<VisibleRowTwoFolderDiff> {
+    FileSystemView::build_two_folder_diff_rows(
+        Some(left),
+        Some(right),
+        &PathFilter::default(),
+        &KindTable::default(),
+        tolerance,
+        |rel_path, _| {
+            pairs
+                .iter()
+                .find(|(path, ..)| *path == rel_path)
+                .map_or((None, None), |(_, state, likeness)| {
+                    (Some(*state), *likeness)
+                })
+        },
+        |_, _| None,
+    )
+    .unwrap()
+}
+
+fn folder_likeness_at(rows: &[VisibleRowTwoFolderDiff], rel_path: &str) -> Option<FolderLikeness> {
+    rows.iter()
+        .find(|r| r.rel_path == rel_path)
+        .unwrap()
+        .folder_likeness
+}
+
+#[test]
+fn a_folder_likeness_is_the_size_weighted_mean_of_the_files_below_it() {
+    let (left_dir, right_dir) = (tempdir().unwrap(), tempdir().unwrap());
+    let same = "s".repeat(10);
+    let top = "t".repeat(50);
+    write_files(
+        left_dir.path(),
+        &[
+            ("sub/same.txt", &same),
+            ("sub/diff.txt", &"l".repeat(30)),
+            ("sub/gone.txt", &"g".repeat(10)),
+            ("top.txt", &top),
+            ("left_only/x.txt", "x"),
+        ],
+    );
+    write_files(
+        right_dir.path(),
+        &[
+            ("sub/same.txt", &same),
+            ("sub/diff.txt", &"r".repeat(20)),
+            ("top.txt", &top),
+        ],
+    );
+    let (left, right) = (load_view(left_dir.path()), load_view(right_dir.path()));
+
+    let rows = build_with_likeness(
+        &left,
+        &right,
+        &[
+            ("sub/same.txt", PairState::Same, None),
+            ("sub/diff.txt", PairState::Different, Some(0.5)),
+            ("top.txt", PairState::Same, None),
+        ],
+        &Tolerance::default(),
+    );
+
+    assert_eq!(
+        folder_likeness_at(&rows, "sub"),
+        Some(FolderLikeness::Known(0.5))
+    );
+    assert_eq!(
+        folder_likeness_at(&rows, ""),
+        Some(FolderLikeness::Known(75.0 / 101.0))
+    );
+    assert_eq!(folder_likeness_at(&rows, "sub/diff.txt"), None);
+    assert_eq!(folder_likeness_at(&rows, "left_only"), None);
+}
+
+#[test]
+fn a_folder_with_an_unmeasured_pair_has_an_unknown_likeness() {
+    let (left_dir, right_dir) = (tempdir().unwrap(), tempdir().unwrap());
+    write_files(
+        left_dir.path(),
+        &[("sub/a.txt", "same"), ("sub/b.txt", "left")],
+    );
+    write_files(
+        right_dir.path(),
+        &[("sub/a.txt", "same"), ("sub/b.txt", "right")],
+    );
+    let (left, right) = (load_view(left_dir.path()), load_view(right_dir.path()));
+
+    for b_state in [None, Some(PairState::Different)] {
+        let pairs: Vec<_> = [("sub/a.txt", Some(PairState::Same)), ("sub/b.txt", b_state)]
+            .into_iter()
+            .filter_map(|(path, state)| Some((path, state?, None)))
+            .collect();
+        let rows = build_with_likeness(&left, &right, &pairs, &Tolerance::default());
+        assert_eq!(
+            folder_likeness_at(&rows, "sub"),
+            Some(FolderLikeness::Unknown)
+        );
+    }
+}
+
+#[test]
+fn a_pair_similar_before_its_compare_is_left_out_of_the_folder_likeness() {
+    let (left_dir, right_dir) = (tempdir().unwrap(), tempdir().unwrap());
+    write_files(
+        left_dir.path(),
+        &[("sub/a.txt", "same"), ("sub/b.txt", "left")],
+    );
+    write_files(
+        right_dir.path(),
+        &[("sub/a.txt", "same"), ("sub/b.txt", "rite")],
+    );
+    let modified = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
+    for root in [left_dir.path(), right_dir.path()] {
+        set_modified(root, "sub/b.txt", modified);
+    }
+    let (left, right) = (load_view(left_dir.path()), load_view(right_dir.path()));
+    let tolerance = Tolerance {
+        enabled: true,
+        size: false,
+        same_size_and_time: true,
+        ..Tolerance::default()
+    };
+
+    let rows = build_with_likeness(
+        &left,
+        &right,
+        &[("sub/a.txt", PairState::Same, None)],
+        &tolerance,
+    );
+
+    assert_eq!(kind_at(&rows, "sub/b.txt"), "Similar");
+    assert_eq!(
+        folder_likeness_at(&rows, "sub"),
+        Some(FolderLikeness::Known(1.0))
+    );
+}
+
+#[test]
+fn a_folder_of_empty_files_averages_the_files() {
+    let (left_dir, right_dir) = (tempdir().unwrap(), tempdir().unwrap());
+    write_files(left_dir.path(), &[("sub/a.txt", ""), ("sub/gone.txt", "")]);
+    write_files(right_dir.path(), &[("sub/a.txt", "")]);
+    let (left, right) = (load_view(left_dir.path()), load_view(right_dir.path()));
+
+    let rows = build_with_likeness(
+        &left,
+        &right,
+        &[("sub/a.txt", PairState::Same, None)],
+        &Tolerance::default(),
+    );
+
+    assert_eq!(
+        folder_likeness_at(&rows, "sub"),
+        Some(FolderLikeness::Known(0.5))
+    );
 }
 
 #[test]
@@ -2025,6 +2188,7 @@ fn next_and_prev_diff_skip_similar_files() {
         diff_state,
         file_kinds: [None, None],
         blueprints: [false, false],
+        folder_likeness: None,
     };
     let rows = [
         row("", DiffState::Different(0, 0)),
@@ -2052,6 +2216,7 @@ fn next_and_prev_diff_skip_pending_files() {
         diff_state,
         file_kinds: [None, None],
         blueprints: [false, false],
+        folder_likeness: None,
     };
     let rows = [
         row("", true, DiffState::Different(0, 0)),
@@ -2127,11 +2292,11 @@ fn next_and_prev_diff_reach_every_differing_file_in_every_option_combination() {
     let flat_order = ["b.txt", "left_only.txt", "right_only.txt", "sub/deep/e.txt"];
     let list_order = ["b.txt", "sub/deep/e.txt", "left_only.txt", "right_only.txt"];
 
-    for diff_only in [false, true] {
+    for states in [StateFilter::All, StateFilter::Diff] {
         for show_parents in [true, false] {
             for flat in [false, true] {
                 let filter = DiffFilter {
-                    diff_only,
+                    states,
                     show_parents,
                 };
                 let sort = TreeSort {

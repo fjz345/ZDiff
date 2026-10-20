@@ -1,5 +1,6 @@
 use eframe::egui;
 use zhashdiff::{
+    comparison::PairState,
     fs::FsNode,
     likeness::{Likeness, LikenessReason, Measure},
 };
@@ -11,19 +12,96 @@ use crate::ui_egui::{
 
 const BAR_COLOR: egui::Color32 = egui::Color32::from_rgb(0x2E, 0x6B, 0x8F);
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum FolderLikeness {
+    Known(f64),
+    Unknown,
+}
+
+/// The likeness of the files below a folder, each weighted by its larger side's size.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct LikenessSum {
+    weighted: f64,
+    weight: u64,
+    ratios: f64,
+    files: usize,
+    unknown: bool,
+}
+
+impl LikenessSum {
+    pub fn file(ratio: Option<f64>, weight: u64) -> Self {
+        let ratio_or_0 = ratio.unwrap_or(0.0);
+        Self {
+            weighted: ratio_or_0 * weight as f64,
+            weight,
+            ratios: ratio_or_0,
+            files: 1,
+            unknown: ratio.is_none(),
+        }
+    }
+
+    pub fn one_sided(size: u64) -> Self {
+        Self::file(Some(0.0), size)
+    }
+
+    /// `None` leaves the pair out: Similar before its compare, its content is never read.
+    pub fn pair(
+        exact: Option<PairState>,
+        likeness: Option<f64>,
+        similar: bool,
+        sizes: [u64; 2],
+    ) -> Option<Self> {
+        let ratio = match (exact, likeness) {
+            (Some(PairState::Same), _) => Some(1.0),
+            (_, Some(ratio)) => Some(ratio),
+            (None, None) if similar => return None,
+            _ => None,
+        };
+        Some(Self::file(ratio, sizes[0].max(sizes[1])))
+    }
+
+    pub fn add(&mut self, other: LikenessSum) {
+        self.weighted += other.weighted;
+        self.weight += other.weight;
+        self.ratios += other.ratios;
+        self.files += other.files;
+        self.unknown |= other.unknown;
+    }
+
+    pub fn folder_likeness(self) -> Option<FolderLikeness> {
+        if self.files == 0 {
+            return None;
+        }
+        if self.unknown {
+            return Some(FolderLikeness::Unknown);
+        }
+        if self.weight == 0 {
+            return Some(FolderLikeness::Known(self.ratios / self.files as f64));
+        }
+        Some(FolderLikeness::Known(self.weighted / self.weight as f64))
+    }
+}
+
 pub enum LikenessCell<'a> {
     Empty,
     Waiting,
     Same,
     Known(&'a PairLikeness),
+    Folder(f64),
 }
 
-/// Only file rows present on both sides get a likeness.
+/// Only rows present on both sides get a likeness.
 pub fn likeness_cell<'a>(
     entry: &VisibleRowTwoFolderDiff,
     nodes: [Option<&FsNode>; 2],
     compare: &'a TreeCompare,
 ) -> LikenessCell<'a> {
+    match entry.folder_likeness {
+        Some(FolderLikeness::Known(ratio)) => return LikenessCell::Folder(ratio),
+        Some(FolderLikeness::Unknown) if compare.is_comparing() => return LikenessCell::Waiting,
+        Some(FolderLikeness::Unknown) => return LikenessCell::Empty,
+        None => {}
+    }
     let [Some(left), Some(right)] = nodes else {
         return LikenessCell::Empty;
     };
@@ -67,6 +145,13 @@ pub fn ui_likeness_cell(ui: &mut egui::Ui, cell: LikenessCell, row_height: f32) 
         }
         LikenessCell::Known(PairLikeness::Measured(likeness)) => {
             bar(ui, likeness.ratio, row_height).on_hover_text(tooltip(likeness));
+        }
+        LikenessCell::Folder(ratio) => {
+            bar(ui, ratio, row_height).on_hover_text(format!(
+                "{} % of the content below alike: the files' likeness weighted by size, \
+                 one-sided files 0 %",
+                percent(ratio)
+            ));
         }
         LikenessCell::Known(PairLikeness::Failed(error)) => {
             ui.add(egui::Label::new("?").selectable(false))

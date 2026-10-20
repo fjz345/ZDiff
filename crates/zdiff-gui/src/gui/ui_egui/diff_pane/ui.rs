@@ -774,7 +774,7 @@ impl FileDiffPane {
                                                         find = row_find(matcher, hit, ActiveSide::Right, u.row, &rows[u.row].right);
                                                     }
                                                     let width = ui.max_rect().width();
-                                                    Self::render_row(
+                                                    let hit = Self::render_row(
                                                         ui,
                                                         RowCtx {
                                                             side: u.side,
@@ -807,6 +807,20 @@ impl FileDiffPane {
                                                         },
                                                         row_marks(u.side, content),
                                                     );
+                                                    if let (Some(hit), Some(diff_ctx), Some(at)) =
+                                                        (hit, text_diff, MenuLine::of(u.side, content, u.row))
+                                                    {
+                                                        hit.context_menu(|ui| {
+                                                            line_menu(ui, at, LineMenuCtx {
+                                                                diff_ctx,
+                                                                pins: ctx.pins,
+                                                                pin_input: &mut *pin_input,
+                                                                pins_request: &mut *ctx.pins_request,
+                                                                revert_request: &mut *ctx.revert_request,
+                                                                temp_root: &temp_root,
+                                                            })
+                                                        });
+                                                    }
                                                     if is_pinned(shown_pins, u.side, content) {
                                                         let cell_ui = ui.new_child(
                                                             UiBuilder::new().max_rect(unscrolled_cell(ui)),
@@ -875,7 +889,7 @@ impl FileDiffPane {
                                                         (true, _) => Gutter::Offset(None),
                                                         (false, _) => Gutter::Single,
                                                     };
-                                                        Self::render_row(
+                                                        let hit = Self::render_row(
                                                             ui,
                                                             RowCtx {
                                                                 side,
@@ -906,6 +920,20 @@ impl FileDiffPane {
                                                             gutter,
                                                             row_marks(side, content),
                                                         );
+                                                    if let (Some(hit), Some(diff_ctx), Some(at)) =
+                                                        (hit, text_diff, MenuLine::of(side, content, row_index))
+                                                    {
+                                                        hit.context_menu(|ui| {
+                                                            line_menu(ui, at, LineMenuCtx {
+                                                                diff_ctx,
+                                                                pins: ctx.pins,
+                                                                pin_input: &mut *pin_input,
+                                                                pins_request: &mut *ctx.pins_request,
+                                                                revert_request: &mut *ctx.revert_request,
+                                                                temp_root: &temp_root,
+                                                            })
+                                                        });
+                                                    }
                                                     let pinned = is_pinned(shown_pins, side, content);
                                                     if pinned || overlay.is_some() {
                                                         let cell_ui = ui.new_child(

@@ -176,6 +176,7 @@ mod tests {
             diff_state,
             file_kinds: [None, None],
             blueprints: [false, false],
+            folder_likeness: None,
         }
     }
 

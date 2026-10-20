@@ -411,6 +411,10 @@ pub fn show(
         if ui.button(">").on_hover_text("Next frame").clicked() {
             processor.step(true);
         }
+        // A pair seeks on the timeline graph instead.
+        if processor.files.iter().all(Option::is_some) {
+            return;
+        }
         ui.spacing_mut().slider_width = ui.available_width().max(50.0);
         let mut time = processor.time_secs;
         let slider = ui.add_enabled(

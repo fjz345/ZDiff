@@ -1,32 +1,70 @@
 use std::collections::HashSet;
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::ui_egui::{
     fs_tree::{DiffState, VisibleRowTwoFolderDiff},
     tree_sort::{TreeSort, sort_file_list, sort_two_folder_rows},
 };
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum StateFilter {
+    #[default]
+    All,
+    Diff,
+    Equal,
+}
+
+impl StateFilter {
+    pub fn next(self) -> Self {
+        match self {
+            StateFilter::All => StateFilter::Diff,
+            StateFilter::Diff => StateFilter::Equal,
+            StateFilter::Equal => StateFilter::All,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct DiffFilter {
-    pub diff_only: bool,
-    /// Only applies with `diff_only`.
+    #[serde(alias = "diff_only", deserialize_with = "deserialize_states")]
+    pub states: StateFilter,
+    /// Only applies when `states` filters.
     pub show_parents: bool,
 }
 
 impl Default for DiffFilter {
     fn default() -> Self {
         Self {
-            diff_only: false,
+            states: StateFilter::All,
             show_parents: true,
         }
     }
 }
 
+/// Also reads the `diff_only` bool saved before `states` existed.
+fn deserialize_states<'de, D: Deserializer<'de>>(deserializer: D) -> Result<StateFilter, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Saved {
+        DiffOnly(bool),
+        States(StateFilter),
+    }
+    Ok(match Saved::deserialize(deserializer)? {
+        Saved::DiffOnly(true) => StateFilter::Diff,
+        Saved::DiffOnly(false) => StateFilter::All,
+        Saved::States(states) => states,
+    })
+}
+
 impl DiffFilter {
+    pub fn filters(self) -> bool {
+        self.states != StateFilter::All
+    }
+
     pub fn lists_files(self) -> bool {
-        self.diff_only && !self.show_parents
+        self.filters() && !self.show_parents
     }
 
     /// The rows show no hierarchy, so folding doesn't apply.
@@ -57,7 +95,11 @@ impl Default for DuplicatesFilter {
 impl DuplicatesFilter {
     pub fn diff_filter(self) -> DiffFilter {
         DiffFilter {
-            diff_only: self.duplicates_only,
+            states: if self.duplicates_only {
+                StateFilter::Diff
+            } else {
+                StateFilter::All
+            },
             show_parents: self.show_parents,
         }
     }
@@ -69,26 +111,31 @@ pub fn filter_diff_rows(
     rows: Vec<VisibleRowTwoFolderDiff>,
     filter: DiffFilter,
 ) -> Vec<VisibleRowTwoFolderDiff> {
-    filter_rows(rows, filter, |row| {
-        !matches!(row.diff_state, DiffState::Same(..) | DiffState::Similar(..))
-    })
+    let equal = |row: &VisibleRowTwoFolderDiff| {
+        matches!(row.diff_state, DiffState::Same(..) | DiffState::Similar(..))
+    };
+    match filter.states {
+        StateFilter::All => rows,
+        StateFilter::Diff => filter_rows(rows, filter, |row| !equal(row)),
+        StateFilter::Equal => filter_rows(rows, filter, equal),
+    }
 }
 
-/// `filter_diff_rows` with `differs` deciding which rows are kept.
+/// `filter_diff_rows` with `keep` deciding which rows are kept.
 pub fn filter_rows(
     mut rows: Vec<VisibleRowTwoFolderDiff>,
     filter: DiffFilter,
-    differs: impl Fn(&VisibleRowTwoFolderDiff) -> bool,
+    keep: impl Fn(&VisibleRowTwoFolderDiff) -> bool,
 ) -> Vec<VisibleRowTwoFolderDiff> {
-    if !filter.diff_only {
+    if !filter.filters() {
         return rows;
     }
     if filter.lists_files() {
-        rows.retain(|row| row.rel_path.is_empty() || (!row.is_dir && differs(row)));
+        rows.retain(|row| row.rel_path.is_empty() || (!row.is_dir && keep(row)));
         return rows;
     }
     let mut ancestors: HashSet<String> = HashSet::new();
-    for row in rows.iter().filter(|row| differs(row)) {
+    for row in rows.iter().filter(|row| keep(row)) {
         let mut path = row.rel_path.as_str();
         while let Some((parent, _)) = path.rsplit_once('/') {
             if !ancestors.insert(parent.to_owned()) {
@@ -97,7 +144,7 @@ pub fn filter_rows(
             path = parent;
         }
     }
-    rows.retain(|row| row.rel_path.is_empty() || differs(row) || ancestors.contains(&row.rel_path));
+    rows.retain(|row| row.rel_path.is_empty() || keep(row) || ancestors.contains(&row.rel_path));
     rows
 }
 
@@ -116,7 +163,7 @@ pub fn arrange_two_folder_rows(
 
 #[cfg(test)]
 mod tests {
-    use super::{DiffFilter, arrange_two_folder_rows, filter_diff_rows};
+    use super::{DiffFilter, StateFilter, arrange_two_folder_rows, filter_diff_rows};
     use crate::ui_egui::fs_tree::{DiffState, VisibleRowTwoFolderDiff};
     use crate::ui_egui::tree_sort::{SortKey, TreeSort};
 
@@ -128,6 +175,7 @@ mod tests {
             diff_state,
             file_kinds: [None, None],
             blueprints: [false, false],
+            folder_likeness: None,
         }
     }
 
@@ -156,20 +204,59 @@ mod tests {
     }
 
     const DIFF_ONLY: DiffFilter = DiffFilter {
-        diff_only: true,
+        states: StateFilter::Diff,
         show_parents: true,
     };
     const FILE_LIST: DiffFilter = DiffFilter {
-        diff_only: true,
+        states: StateFilter::Diff,
         show_parents: false,
     };
+    const EQUAL: DiffFilter = DiffFilter {
+        states: StateFilter::Equal,
+        show_parents: true,
+    };
+    const EQUAL_FILE_LIST: DiffFilter = DiffFilter {
+        states: StateFilter::Equal,
+        show_parents: false,
+    };
+
+    #[test]
+    fn the_state_filter_cycles_all_diff_equal() {
+        assert_eq!(StateFilter::All.next(), StateFilter::Diff);
+        assert_eq!(StateFilter::Diff.next(), StateFilter::Equal);
+        assert_eq!(StateFilter::Equal.next(), StateFilter::All);
+    }
+
+    #[test]
+    fn equal_with_parents_keeps_same_rows_and_their_ancestors() {
+        assert_eq!(
+            paths(&filter_diff_rows(rows(), EQUAL)),
+            [
+                "",
+                "a",
+                "a/same.txt",
+                "equal",
+                "equal/deep",
+                "equal/deep/e.txt",
+                "same.txt",
+            ]
+        );
+    }
+
+    #[test]
+    fn equal_without_parents_lists_only_equal_files_and_the_root() {
+        assert_eq!(
+            paths(&filter_diff_rows(rows(), EQUAL_FILE_LIST)),
+            ["", "a/same.txt", "equal/deep/e.txt", "same.txt"]
+        );
+    }
 
     #[test]
     fn without_diff_only_every_row_is_kept_whatever_show_parents_says() {
         let all = paths(&rows()).len();
         for show_parents in [true, false] {
             let filter = DiffFilter {
-                diff_only: false,
+                states: StateFilter::All,
                 show_parents,
             };
             assert_eq!(filter_diff_rows(rows(), filter).len(), all);
@@ -276,6 +363,10 @@ mod tests {
         };
         assert_eq!(paths(&filter_diff_rows(rows(), DIFF_ONLY)), ["", "far.txt"]);
         assert_eq!(paths(&filter_diff_rows(rows(), FILE_LIST)), ["", "far.txt"]);
+        assert_eq!(
+            paths(&filter_diff_rows(rows(), EQUAL)),
+            ["", "near", "near/a.txt", "near/b.txt", "near.txt"]
+        );
     }
 
     #[test]
@@ -358,13 +449,14 @@ mod tests {
         let tree = TreeSort::default();
         let flat = TreeSort { flat: true, ..tree };
         let no_diff_only_no_parents = DiffFilter {
-            diff_only: false,
+            states: StateFilter::All,
             show_parents: false,
         };
         assert!(!DiffFilter::default().is_flat(tree));
         assert!(!DIFF_ONLY.is_flat(tree));
         assert!(!no_diff_only_no_parents.is_flat(tree));
         assert!(FILE_LIST.is_flat(tree));
+        assert!(EQUAL_FILE_LIST.is_flat(tree));
         assert!(DiffFilter::default().is_flat(flat));
     }
 }

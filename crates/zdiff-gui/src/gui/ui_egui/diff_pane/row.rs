@@ -22,7 +22,7 @@ impl FileDiffPane {
         ui: &mut egui::Ui,
         row: RowCtx<T>,
     ) {
-        Self::render_row(
+        let _ = Self::render_row(
             ui,
             row,
             Gutter::Single,
@@ -41,7 +41,7 @@ impl FileDiffPane {
         row: RowCtx<T>,
         gutter: Gutter,
         marks: Marks,
-    ) {
+    ) -> Option<egui::Response> {
         let RowCtx {
             side,
             row_index,
@@ -69,6 +69,7 @@ impl FileDiffPane {
         let (rect, _) = ui.allocate_at_least(egui::vec2(width, cell_h), egui::Sense::hover());
         let mut extended_rect = rect.clone();
         extended_rect.extend_with_x(9999999.0);
+        let mut code_hit = None;
 
         match content {
             LineContent::Code {
@@ -201,6 +202,7 @@ impl FileDiffPane {
                         );
                         let (hit_rect, response) =
                             ui.allocate_exact_size(hit_size, egui::Sense::click_and_drag());
+                        code_hit = Some(response.clone());
                         let text_color = ui.style().visuals.text_color();
                         if selectable {
                             let marker = if tokens.iter().all(|(_, _, is_ghost)| *is_ghost) {
@@ -385,6 +387,7 @@ impl FileDiffPane {
                 });
             }
         }
+        code_hit
     }
 }
 

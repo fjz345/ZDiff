@@ -140,6 +140,14 @@ pub fn hunk_starting_at(spans: &[DiffSpan], row: usize) -> Option<usize> {
         .ok()
 }
 
+pub fn hunk_containing(spans: &[DiffSpan], row: usize) -> Option<usize> {
+    let index = spans.partition_point(|span| *span.rows().end() < row);
+    spans
+        .get(index)
+        .filter(|span| span.rows().contains(&row))
+        .map(|_| index)
+}
+
 /// A target inside `temp_root` is a throwaway copy (e.g. one p4 made for an external diff).
 pub fn check_revert(
     ctx: &MinimalDiffCtx,
@@ -943,6 +951,28 @@ mod tests {
             );
         }
         assert!(ctx.precomputed_diffs[0].rows().count() > 1);
+    }
+
+    #[test]
+    fn every_row_of_a_hunk_finds_that_hunk() {
+        let pair = Pair::new(
+            "s\nold 1\nold 2\ns\ns\nold 3\ns\n",
+            "s\nnew 1\nnew 2\ns\ns\nnew 3\ns\n",
+        );
+        let ctx = pair.diff();
+        for row in 0..ctx.diff_rows.len() {
+            let expected = ctx
+                .precomputed_diffs
+                .iter()
+                .position(|span| span.rows().contains(&row));
+            assert_eq!(
+                hunk_containing(&ctx.precomputed_diffs, row),
+                expected,
+                "row {row}"
+            );
+        }
+        assert!(hunk_containing(&ctx.precomputed_diffs, 0).is_none());
+        assert!(hunk_containing(&ctx.precomputed_diffs, 2).is_some());
     }
 
     mod guarded_write {

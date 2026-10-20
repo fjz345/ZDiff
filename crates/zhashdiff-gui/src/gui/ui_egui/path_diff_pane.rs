@@ -6,7 +6,10 @@ use eframe::egui::{
 };
 use serde::{Deserialize, Serialize};
 use zcommon::presets::{BuiltinPreset, UserPresets};
-use zcommon_ui::{presets::presets_menu, toggle::toggle_button};
+use zcommon_ui::{
+    presets::presets_menu,
+    toggle::{TOGGLE_BUTTON_SIZE, toggle_button},
+};
 use zhashdiff::{
     external_diff_tool::DiffToolConfig,
     filter::{PathFilter, PatternList},
@@ -23,7 +26,7 @@ use crate::ui_egui::{
     status_line::ToolMessage,
     tree_compare::TreeCompare,
     tree_cursor::TreeCursor,
-    tree_filter::DiffFilter,
+    tree_filter::{DiffFilter, StateFilter},
     tree_find::TreeFindView,
     tree_sort::TreeSort,
     tree_tolerance::{SizeDelta, Tolerance},
@@ -181,18 +184,13 @@ impl PathDiffPane {
                 RichText::new("F").strong(),
                 "Flat: list all entries by depth, then by the sorted column",
             );
-            toggle_button(
-                ui,
-                &mut ctx.diff_filter.diff_only,
-                RichText::new("D").strong(),
-                "Diff only: hide entries that are the same on both sides",
-            );
-            ui.add_enabled_ui(ctx.diff_filter.diff_only, |ui| {
+            state_filter_button(ui, &mut ctx.diff_filter.states);
+            ui.add_enabled_ui(ctx.diff_filter.filters(), |ui| {
                 toggle_button(
                     ui,
                     &mut ctx.diff_filter.show_parents,
                     RichText::new("P").strong(),
-                    "Show parent folders: off lists only the differing files (needs Diff only)",
+                    "Show parent folders: off lists only the matching files (needs Diff or Equal)",
                 );
             });
             toggle_button(
@@ -370,6 +368,24 @@ impl FilterField {
 
 /// Only edits the filter: the app rebuilds the rows on the next update when it changed, so the
 /// table drawn below still has this frame's rows.
+fn state_filter_button(ui: &mut egui::Ui, states: &mut StateFilter) {
+    let (label, shown) = match states {
+        StateFilter::All => ("D", "all entries"),
+        StateFilter::Diff => ("D", "Diff only: entries that differ"),
+        StateFilter::Equal => ("=", "Equal only: entries that are the same or similar"),
+    };
+    let button =
+        egui::Button::new(RichText::new(label).strong()).selected(*states != StateFilter::All);
+    let tooltip = format!("Showing {shown}. Click cycles All, Diff only, Equal only");
+    if ui
+        .add_sized(TOGGLE_BUTTON_SIZE, button)
+        .on_hover_text(tooltip)
+        .clicked()
+    {
+        *states = states.next();
+    }
+}
+
 fn draw_tolerance_settings(ui: &mut egui::Ui, tolerance: &mut Tolerance) {
     ui.checkbox(&mut tolerance.enabled, "Tolerance");
     ui.add_enabled_ui(tolerance.enabled, |ui| {

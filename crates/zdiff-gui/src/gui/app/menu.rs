@@ -260,20 +260,19 @@ impl ZApp {
                                             diff_processor: &mut DiffProcessor,
                                             p1: &str,
                                             p2: &str| {
-                                if ui.button(label).clicked() {
+                                let base = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+                                let (p1, p2) = (base.join(p1), base.join(p2));
+                                let missing = [&p1, &p2].into_iter().find(|p| !p.exists());
+                                let button = ui
+                                    .add_enabled(missing.is_none(), egui::Button::new(label))
+                                    .on_disabled_hover_text(format!(
+                                        "Missing fixture {}",
+                                        missing
+                                            .map(|p| p.display().to_string())
+                                            .unwrap_or_default()
+                                    ));
+                                if button.clicked() {
                                     ui.close();
-                                    let base = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-                                    let (p1, p2) = (base.join(p1), base.join(p2));
-                                    if let Some(missing) =
-                                        [&p1, &p2].into_iter().find(|p| !p.exists())
-                                    {
-                                        log::warn!(
-                                            "{label}: missing fixture {}",
-                                            missing.display()
-                                        );
-                                        return;
-                                    }
-
                                     file_1.set_root("".into());
                                     file_2.set_root("".into());
                                     file_1.set_path(UniversalPath::from(p1));
