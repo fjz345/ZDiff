@@ -71,10 +71,10 @@ impl ZApp {
                     log::info!("Action triggered: {}", action.label());
                     match action {
                         FileAction::OpenFileSource => {
-                            Self::open_file_picker(app_state_ctx.file_1.get_tx())
+                            Self::open_file_picker(app_state_ctx.file_1.get_tx(), ctx.clone())
                         }
                         FileAction::OpenFileTarget => {
-                            Self::open_file_picker(app_state_ctx.file_2.get_tx())
+                            Self::open_file_picker(app_state_ctx.file_2.get_tx(), ctx.clone())
                         }
                         FileAction::RefreshDiff => {
                             app_state_ctx.diff_processor.reset_ctx();

@@ -83,6 +83,8 @@ pub struct ZApp {
     /// Read by main once the window closed: the exit code of the last closed merge view.
     #[serde(skip)]
     exit_code: Arc<AtomicU8>,
+    #[serde(skip)]
+    window_title: Option<String>,
 }
 
 fn default_zoom() -> f32 {
@@ -172,6 +174,7 @@ impl ZApp {
             merge: None,
             open_merge_form: OpenMergeForm::default(),
             exit_code: Arc::default(),
+            window_title: None,
         }
     }
 
@@ -292,8 +295,13 @@ impl eframe::App for ZApp {
             .expect("State should always be valid during update");
 
         let next_state = match current_state {
-            AppState::Startup(state_ctx) => {
+            AppState::Startup(mut state_ctx) => {
                 self.startup(ctx, frame);
+                state_ctx.file_1.set_repaint(ctx);
+                state_ctx.file_2.set_repaint(ctx);
+                state_ctx.diff_processor.set_repaint(ctx);
+                // Nothing else schedules the first Idle frame, which starts the loads.
+                ctx.request_repaint();
                 egui::CentralPanel::default().show(ctx, |ui| {
                     ui.centered_and_justified(|ui| ui.label("Loading..."));
                 });

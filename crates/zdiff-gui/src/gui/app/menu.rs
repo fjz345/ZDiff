@@ -75,12 +75,12 @@ impl ZApp {
                         if menu_item(ui, "Open Source", keymap, FileAction::OpenFileSource)
                             .clicked()
                         {
-                            Self::open_file_picker(file_1.get_tx());
+                            Self::open_file_picker(file_1.get_tx(), ui.ctx().clone());
                         }
                         if menu_item(ui, "Open Target", keymap, FileAction::OpenFileTarget)
                             .clicked()
                         {
-                            Self::open_file_picker(file_2.get_tx());
+                            Self::open_file_picker(file_2.get_tx(), ui.ctx().clone());
                         }
                         if ui.button("Open Merge...").clicked() {
                             self.open_merge_form.open = true;

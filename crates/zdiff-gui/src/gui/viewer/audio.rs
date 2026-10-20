@@ -448,9 +448,9 @@ pub struct AudioSettings {
 type DecodeResult = Result<DecodedAudio, Option<String>>;
 
 /// Repaints the UI when a job posts; the context arrives after the jobs are created.
-pub(super) type RepaintContext = Arc<OnceLock<egui::Context>>;
+pub(crate) type RepaintContext = Arc<OnceLock<egui::Context>>;
 
-pub(super) fn repaint_job<M: Send + 'static>(context: &RepaintContext) -> Job<M> {
+pub(crate) fn repaint_job<M: Send + 'static>(context: &RepaintContext) -> Job<M> {
     let context = context.clone();
     Job::new(move || {
         if let Some(context) = context.get() {

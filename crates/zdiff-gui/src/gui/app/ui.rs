@@ -532,13 +532,45 @@ impl ZApp {
                     } else {
                         format!("+{}/-{}{}", total_adds, total_deletes, unit)
                     };
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Title(format!(
-                        "zdiff [{}] - {}, {}",
-                        counts, source, target
-                    )));
+                    send_title(
+                        ctx,
+                        &mut self.window_title,
+                        format!("zdiff [{}] - {}, {}", counts, source, target),
+                    );
                     break;
                 }
             }
         });
+    }
+}
+
+// Every viewport command requests a repaint, so sending one each frame never lets the app idle.
+fn send_title(ctx: &egui::Context, sent: &mut Option<String>, title: String) {
+    if sent.as_ref() != Some(&title) {
+        ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
+        *sent = Some(title);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_unchanged_window_title_lets_the_app_idle() {
+        let ctx = egui::Context::default();
+        let mut sent = None;
+        let mut pass = |title: &str| {
+            let output = ctx.run(egui::RawInput::default(), |ctx| {
+                send_title(ctx, &mut sent, title.to_owned());
+            });
+            output.viewport_output[&egui::ViewportId::ROOT].repaint_delay
+        };
+        for _ in 0..4 {
+            pass("zdiff [+1/-1] - a, b");
+        }
+        assert_eq!(pass("zdiff [+1/-1] - a, b"), std::time::Duration::MAX);
+        assert_eq!(pass("zdiff [+2/-1] - a, b"), std::time::Duration::ZERO);
+        assert_eq!(sent.as_deref(), Some("zdiff [+2/-1] - a, b"));
     }
 }

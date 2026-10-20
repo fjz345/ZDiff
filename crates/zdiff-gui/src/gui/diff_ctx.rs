@@ -8,6 +8,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use eframe::egui;
 use zcommon::find::{FindError, FindQuery, Matcher};
 use zcommon::job::Job;
 use zdiff::universal_path::UniversalPath;
@@ -28,7 +29,12 @@ use zdiff::{
     trace::PhaseTrace,
 };
 
-use crate::{clamped_cursor::ClampedCursor, scope, ui_egui::active_side::ActiveSide};
+use crate::{
+    clamped_cursor::ClampedCursor,
+    scope,
+    ui_egui::active_side::ActiveSide,
+    viewer::audio::{RepaintContext, repaint_job},
+};
 
 #[derive(Debug, Default, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -424,17 +430,22 @@ pub struct DiffCtx {
 
     diff_rows_inflight_input: Option<DiffRowsInput>,
     diff_rows_ctx: Option<Arc<DiffRowsCtx>>,
+
+    repaint: RepaintContext,
 }
 impl Default for DiffCtx {
     fn default() -> Self {
-        Self::new(UpdateDiffRowsInput {
-            file_1: None,
-            file_2: None,
-            options: Default::default(),
-            myers_diff_algorithm: Default::default(),
-            pins: Vec::new(),
-            collect_trace: false,
-        })
+        Self::new(
+            UpdateDiffRowsInput {
+                file_1: None,
+                file_2: None,
+                options: Default::default(),
+                myers_diff_algorithm: Default::default(),
+                pins: Vec::new(),
+                collect_trace: false,
+            },
+            RepaintContext::default(),
+        )
     }
 }
 
@@ -447,7 +458,7 @@ pub enum OneSidedMode {
 
 impl DiffCtx {
     #[allow(dead_code)]
-    pub fn new(input: UpdateDiffRowsInput) -> Self {
+    pub fn new(input: UpdateDiffRowsInput, repaint: RepaintContext) -> Self {
         Self {
             update_diff_rows_input: input.clone(),
             #[cfg(debug_assertions)]
@@ -462,15 +473,16 @@ impl DiffCtx {
                 .as_ref()
                 .map(|f| f.path.clone())
                 .unwrap_or_default(),
-            myers_job: Job::new(|| {}),
-            diff_ir_job: Job::new(|| {}),
-            diff_rows_job: Job::new(|| {}),
+            myers_job: repaint_job(&repaint),
+            diff_ir_job: repaint_job(&repaint),
+            diff_rows_job: repaint_job(&repaint),
             myers_inflight_input: None,
             myers_ctx: None,
             diff_ir_inflight_input: None,
             diff_ir_ctx: None,
             diff_rows_inflight_input: None,
             diff_rows_ctx: None,
+            repaint,
         }
     }
 
@@ -915,8 +927,12 @@ impl Default for DiffProcessor {
 
 impl DiffProcessor {
     pub fn reset_ctx(&mut self) {
-        self.ctx = DiffCtx::default();
+        self.ctx = DiffCtx::new(UpdateDiffRowsInput::default(), self.ctx.repaint.clone());
         self.reset_ui();
+    }
+
+    pub fn set_repaint(&mut self, ctx: &egui::Context) {
+        let _ = self.ctx.repaint.set(ctx.clone());
     }
     pub fn reset_ui(&mut self) {
         self.update_find(FindCtx::default());
@@ -2053,6 +2069,31 @@ mod tests {
             );
             let ctx = settle(&mut processor).expect("ignore toggle never completed");
             assert!(ctx.input == current, "diff shows {:?}", ctx.input);
+        }
+
+        #[test]
+        fn a_finished_diff_wakes_the_ui_after_a_ctx_reset_too() {
+            let dir = tempfile::tempdir().unwrap();
+            let a = (
+                load(&write_source(&dir.path().join("a1.rs"), 300, 1)),
+                load(&write_source(&dir.path().join("a2.rs"), 300, 2)),
+            );
+            let repaint = egui::Context::default();
+            for _ in 0..3 {
+                let _ = repaint.run(egui::RawInput::default(), |_| {});
+            }
+            let mut processor = DiffProcessor::default();
+            processor.set_repaint(&repaint);
+            processor.reset_ctx();
+            assert!(!repaint.has_requested_repaint());
+
+            open(&mut processor, &input(&a.0, &a.1));
+            settle(&mut processor).expect("diff never completed");
+            let start = Instant::now();
+            while !repaint.has_requested_repaint() {
+                assert!(start.elapsed() < SETTLE_TIMEOUT, "no repaint requested");
+                std::thread::yield_now();
+            }
         }
 
         #[test]

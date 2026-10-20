@@ -2,6 +2,7 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, mpsc};
 
+use eframe::egui;
 use zcommon::job::Job;
 use zcommon::vcs::git::{self, GitCommand, GitRunner};
 use zdiff::cached_file::CachedFile;
@@ -9,6 +10,7 @@ use zdiff::lexer::RawToken;
 use zdiff::universal_path::{DepotRev, GitRev, UniversalPath};
 
 use crate::p4::{P4Command, P4Runner, print_file};
+use crate::viewer::audio::{RepaintContext, repaint_job};
 use crate::viewer::{ViewerKind, sniff_viewer_kind};
 
 /// A file whose content was sniffed as not text, kept as raw bytes for the Hex viewer.
@@ -163,10 +165,6 @@ fn default_channel() -> (mpsc::Sender<UniversalPath>, mpsc::Receiver<UniversalPa
 }
 type LoadResult = Result<LoadedFile, String>;
 
-fn default_load_job() -> Job<LoadResult> {
-    Job::new(|| {})
-}
-
 fn default_file_path() -> UniversalPath {
     UniversalPath::new("")
 }
@@ -188,8 +186,11 @@ pub struct FileProcessor {
     #[cfg_attr(feature = "serde", serde(skip))]
     cached_file_path: Option<UniversalPath>, // only process once the path
 
-    #[cfg_attr(feature = "serde", serde(skip, default = "default_load_job"))]
-    load_job: Job<LoadResult>,
+    // Made on the first load: serde defaults each skipped field alone, so it couldn't share `repaint`.
+    #[cfg_attr(feature = "serde", serde(skip))]
+    load_job: Option<Job<LoadResult>>,
+    #[cfg_attr(feature = "serde", serde(skip))]
+    repaint: RepaintContext,
     #[cfg_attr(feature = "serde", serde(skip))]
     loading_path: Option<UniversalPath>,
     #[cfg_attr(feature = "serde", serde(skip))]
@@ -206,7 +207,8 @@ impl Default for FileProcessor {
             loaded_file: None,
             cached_file_path: None,
             root_path: None,
-            load_job: default_load_job(),
+            load_job: None,
+            repaint: RepaintContext::default(),
             loading_path: None,
             label: None,
             load_error: None,
@@ -218,6 +220,9 @@ impl Default for FileProcessor {
 impl FileProcessor {
     pub fn new() -> Self {
         Self::default()
+    }
+    pub fn set_repaint(&mut self, ctx: &egui::Context) {
+        let _ = self.repaint.set(ctx.clone());
     }
     pub fn get_tx(&self) -> mpsc::Sender<UniversalPath> {
         self.channel.0.clone()
@@ -403,7 +408,7 @@ impl FileProcessor {
     }
 
     pub fn get_loaded_file(&mut self) -> Option<LoadedFile> {
-        for loaded in self.load_job.poll() {
+        for loaded in self.load_job.as_mut().map(Job::poll).unwrap_or_default() {
             (self.loaded_file, self.load_error) = match loaded {
                 Ok(file) => (Some(file), None),
                 Err(e) => (None, Some(e)),
@@ -423,7 +428,10 @@ impl FileProcessor {
 
             let path_clone = path.clone();
 
-            self.load_job.start(move |ctx| {
+            let load_job = self
+                .load_job
+                .get_or_insert_with(|| repaint_job(&self.repaint));
+            load_job.start(move |ctx| {
                 let loaded = match &path_clone {
                     UniversalPath::Local(p) => load_file(path_clone.clone(), p)
                         .map_err(|e| format!("Cannot load file {}, Error: {e}", p.display())),
@@ -448,9 +456,7 @@ impl FileProcessor {
     }
 
     pub fn get_cached_file_hash(&mut self) -> Option<zcommon::hash::Blake3Hash> {
-        self.get_cached_file()
-            .as_ref()
-            .and_then(|f| Some(f.hash))
+        self.get_cached_file().as_ref().and_then(|f| Some(f.hash))
     }
 }
 
@@ -873,5 +879,28 @@ mod tests {
 
         file.set_path(UniversalPath::new("other.rs"));
         assert_eq!(file.load_error(), None);
+    }
+
+    #[test]
+    fn a_finished_load_wakes_the_ui() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.rs");
+        std::fs::write(&path, "fn a() {}\n").unwrap();
+        let repaint = egui::Context::default();
+        for _ in 0..3 {
+            let _ = repaint.run(egui::RawInput::default(), |_| {});
+        }
+        let mut file = FileProcessor::new();
+        file.set_repaint(&repaint);
+        file.set_path(UniversalPath::from(path));
+        assert!(!repaint.has_requested_repaint());
+        assert!(file.get_loaded_file().is_none());
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !repaint.has_requested_repaint() {
+            assert!(std::time::Instant::now() < deadline, "no repaint requested");
+            std::thread::yield_now();
+        }
+        assert!(file.get_cached_file().is_some());
     }
 }
