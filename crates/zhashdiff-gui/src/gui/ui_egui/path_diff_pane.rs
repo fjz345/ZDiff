@@ -119,12 +119,7 @@ impl PathDiffPane {
                 ctx.path_diff_view.file_system_2_view.as_mut(),
             ];
 
-            let is_anything_collapsed = views.iter().flatten().any(|v| {
-                v.file_system
-                    .get_root()
-                    .children()
-                    .map_or(false, |children| v.is_anything_collapsed_slice(children))
-            });
+            let is_anything_collapsed = views.iter().flatten().any(|v| v.is_anything_collapsed());
 
             let button_text = if is_anything_collapsed {
                 "Expand All"

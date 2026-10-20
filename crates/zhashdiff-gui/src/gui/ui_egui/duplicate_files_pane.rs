@@ -979,10 +979,7 @@ impl DuplicateFilesPane {
                 }
 
                 if let Some(fs_view) = &mut ctx.path_diff_view.file_system_1_view {
-                    let nodes_considered_for_collapse =
-                        &fs_view.file_system.get_root().children().unwrap().clone();
-                    let is_anything_collapsed =
-                        fs_view.is_anything_collapsed_slice(nodes_considered_for_collapse);
+                    let is_anything_collapsed = fs_view.is_anything_collapsed();
                     let button_text = if is_anything_collapsed {
                         "Collapse All"
                     } else {
@@ -990,6 +987,8 @@ impl DuplicateFilesPane {
                     };
 
                     if ui.button(button_text).clicked() {
+                        let nodes_considered_for_collapse =
+                            &fs_view.file_system.get_root().children().unwrap().clone();
                         fs_view.recursive_collapse_slice(
                             nodes_considered_for_collapse,
                             !is_anything_collapsed,

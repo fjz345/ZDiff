@@ -46,25 +46,17 @@ impl FileSystemView {
         self.file_system.iter_subtree(start_id)
     }
 
-    pub fn is_anything_collapsed(&self, node_id: FsNodeId) -> bool {
-        if let Some(node) = self.file_system.get_node(node_id) {
-            if !node.is_dir() {
-                return false;
-            }
-            let is_collapsed = self.collapsed.get(&node_id).copied().unwrap_or(false);
-            if is_collapsed {
-                return true;
-            }
-            if let Some(children) = node.children() {
-                return self.is_anything_collapsed_slice(children);
-            }
-        }
-
-        false
-    }
-
-    pub fn is_anything_collapsed_slice(&self, nodes: &[FsNodeId]) -> bool {
-        nodes.iter().any(|&id| self.is_anything_collapsed(id))
+    // Expand Diffs Only also marks files collapsed; only folders below the root count.
+    pub fn is_anything_collapsed(&self) -> bool {
+        let root = self.file_system.get_root_node_id();
+        self.collapsed.iter().any(|(&id, &collapsed)| {
+            collapsed
+                && id != root
+                && self
+                    .file_system
+                    .get_node(id)
+                    .is_some_and(|node| node.is_dir())
+        })
     }
 
     pub fn is_collapsed(&self, node_id: FsNodeId) -> bool {
