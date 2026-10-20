@@ -103,12 +103,13 @@ pub fn draw_ui_folder_tree(
 
     // Every frame rather than at each rebuild or collapse: filter, rescan, the collapse
     // buttons and the expander arrows all change the rows, and this sees all of them.
-    *cursor = cursor.resolve(rows_cache.update(
+    rows_cache.update(
         [file_system_1_view.as_ref(), file_system_2_view.as_ref()],
         visible_rows,
         rows_id,
         flat,
-    ));
+    );
+    rows_cache.resolve(cursor);
 
     // Scroll only when the keys moved the cursor, so manual scrolling isn't fought.
     let mut scroll_to_cursor = false;
@@ -189,14 +190,11 @@ pub fn draw_ui_folder_tree(
         rows_id,
         flat,
     );
-    let cursor_rows = rows_cache.cursor_rows();
+    let selected_row = rows_cache.selected_row(cursor);
 
     // Only drawn rows go to the table: it places row i at i * row height, both when
     // virtualizing and when scrolling to a row.
     let drawn_rows = rows_cache.drawn();
-    let selected_row = drawn_rows
-        .iter()
-        .position(|&i| cursor.is_at(&cursor_rows[i].rel_path));
     scroll_to_cursor |= matches!(
         mode,
         TreeMode::SingleSide {

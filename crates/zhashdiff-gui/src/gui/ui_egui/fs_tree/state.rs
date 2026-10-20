@@ -448,6 +448,8 @@ pub struct CursorRowsCache {
     drawn: Vec<usize>,
     guides: [TreeGuides; 2],
     generation: u64,
+    resolved: Option<(u64, TreeCursor)>,
+    selected: Option<(u64, TreeCursor, Option<usize>)>,
     #[cfg(test)]
     pub(super) builds: usize,
 }
@@ -507,8 +509,38 @@ impl CursorRowsCache {
         &self.cursor_rows
     }
 
+    #[cfg(test)]
     pub fn cursor_rows(&self) -> &[CursorRow] {
         &self.cursor_rows
+    }
+
+    // A resolved cursor resolves to itself, so an unchanged one on unchanged rows is skipped.
+    pub fn resolve(&mut self, cursor: &mut TreeCursor) {
+        let unchanged = self
+            .resolved
+            .as_ref()
+            .is_some_and(|(generation, resolved)| {
+                *generation == self.generation && resolved == cursor
+            });
+        if !unchanged {
+            *cursor = cursor.resolve(&self.cursor_rows);
+            self.resolved = Some((self.generation, cursor.clone()));
+        }
+    }
+
+    pub fn selected_row(&mut self, cursor: &TreeCursor) -> Option<usize> {
+        if let Some((generation, at, selected)) = &self.selected
+            && *generation == self.generation
+            && at == cursor
+        {
+            return *selected;
+        }
+        let selected = self
+            .drawn
+            .iter()
+            .position(|&i| cursor.is_at(&self.cursor_rows[i].rel_path));
+        self.selected = Some((self.generation, cursor.clone(), selected));
+        selected
     }
 
     pub fn drawn(&self) -> &[usize] {
