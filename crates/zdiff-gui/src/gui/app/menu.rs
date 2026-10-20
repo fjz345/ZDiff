@@ -1,4 +1,4 @@
-use super::{ZApp, launch::swap_sides, quickdiff::run_diff_against_shelf_base};
+use super::{ZApp, quickdiff::run_diff_against_shelf_base};
 use eframe::egui::{self, containers::menu::MenuConfig};
 use std::env;
 use zcommon_ui::common::show_custom_popup;
@@ -28,8 +28,7 @@ pub(super) struct MenuCtx<'a> {
     pub diff_processor: &'a mut DiffProcessor,
     pub find_open: &'a mut bool,
     pub goto_open: &'a mut bool,
-    pub scroll_left: &'a mut f32,
-    pub scroll_right: &'a mut f32,
+    pub sides_swapped: &'a mut bool,
     pub keybindings: &'a mut Keybindings,
     pub p4_profiles: &'a mut P4Profiles,
     pub kinds: &'a mut SharedKinds,
@@ -50,8 +49,7 @@ impl ZApp {
             diff_processor,
             find_open,
             goto_open,
-            scroll_left,
-            scroll_right,
+            sides_swapped,
             keybindings,
             p4_profiles,
             kinds,
@@ -89,7 +87,7 @@ impl ZApp {
                         if menu_item(ui, "Swap Source/Target", keymap, FileAction::SwapSides)
                             .clicked()
                         {
-                            swap_sides(file_1, file_2, scroll_left, scroll_right, diff_processor);
+                            *sides_swapped = !*sides_swapped;
                         }
                         if menu_item(
                             ui,

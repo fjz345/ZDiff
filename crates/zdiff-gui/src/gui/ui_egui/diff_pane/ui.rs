@@ -31,6 +31,12 @@ impl FileDiffPane {
             _ => None,
         };
         let single_side = unified.as_ref().and_then(|view| view.mode.single_side());
+        let shown = shown_sides(ctx.sides_swapped);
+        let data_column = |column: SplitColumn| match column {
+            SplitColumn::Center => SplitColumn::Center,
+            SplitColumn::Left => [SplitColumn::Left, SplitColumn::Right][shown[0]],
+            SplitColumn::Right => [SplitColumn::Left, SplitColumn::Right][shown[1]],
+        };
         let column_gutter = if single_side.is_some() {
             Gutter::Single
         } else {
@@ -657,11 +663,11 @@ impl FileDiffPane {
                                     );
                                 } else if unified.is_some() {
                                     ui.columns(2, |columns| {
-                                        header(SplitColumn::Left, &mut columns[0]);
-                                        header(SplitColumn::Right, &mut columns[1]);
+                                        header(data_column(SplitColumn::Left), &mut columns[0]);
+                                        header(data_column(SplitColumn::Right), &mut columns[1]);
                                     });
                                 } else {
-                                    header(column, ui);
+                                    header(data_column(column), ui);
                                 }
                             };
                             let header_only = ctx.image_view.is_some()
@@ -675,10 +681,14 @@ impl FileDiffPane {
                             // Wrapped text fits its column, so nothing scrolls sideways. Hex rows
                             // have a fixed width, images pan.
                             if !(wrap || header_only || ctx.hex_view.is_some()) {
+                                let column_widths = match unified {
+                                    Some(_) => content_widths,
+                                    None => shown.map(|side| content_widths[side]),
+                                };
                                 table = table.h_scroll(
                                     &mut offsets,
                                     *ctx.h_scroll_linked,
-                                    content_widths,
+                                    column_widths,
                                 );
                             }
                             let mut ruler_tops: &[f32] = &[];
@@ -701,7 +711,7 @@ impl FileDiffPane {
                                     ),
                                     None => (
                                         ctx.diff_ctx.map(|d| &d.diff_rows),
-                                        side_widths.map(|width| side_gutter.text_width(width)),
+                                        shown.map(|column| side_gutter.text_width(side_widths[column])),
                                         diff_rows_len,
                                     ),
                                 };
@@ -753,6 +763,7 @@ impl FileDiffPane {
                                         .filter(|_| ctx.phase_overlay && !strings)
                                         .and_then(|d| d.phase_trace.as_deref());
                                     let cell = |row_index: usize, column: SplitColumn, ui: &mut egui::Ui| {
+                                            let column = if unified.is_some() { column } else { data_column(column) };
                                             if let Some(hex_view) = &ctx.hex_view {
                                                 hex::cell(ui, hex_view, row_index, column);
                                                 return;
@@ -818,6 +829,7 @@ impl FileDiffPane {
                                                                 pins_request: &mut *ctx.pins_request,
                                                                 revert_request: &mut *ctx.revert_request,
                                                                 temp_root: &temp_root,
+                                                                shown_sides: shown,
                                                             })
                                                         });
                                                     }
@@ -931,6 +943,7 @@ impl FileDiffPane {
                                                                 pins_request: &mut *ctx.pins_request,
                                                                 revert_request: &mut *ctx.revert_request,
                                                                 temp_root: &temp_root,
+                                                                shown_sides: shown,
                                                             })
                                                         });
                                                     }
@@ -977,7 +990,9 @@ impl FileDiffPane {
                                                     if let Some(block) = block {
                                                         block_toggle_buttons(ui, block, [expand_slot, toggle_slot], &mut *ctx.block_toggle_request);
                                                     }
-                                                    revert_button(ui, left_slot, RevertTarget::Left, "<", "Replace this hunk in the left file with the right side");
+                                                    let [left_target, right_target] =
+                                                        shown.map(|side| [RevertTarget::Left, RevertTarget::Right][side]);
+                                                    revert_button(ui, left_slot, left_target, "<", "Replace this hunk in the left file with the right side");
                                                     if let Some((symbol, color)) =
                                                         row_symbol(diff_row, symbol_colors).filter(|_| marks.any())
                                                     {
@@ -987,7 +1002,7 @@ impl FileDiffPane {
                                                                 .selectable(false),
                                                         );
                                                     }
-                                                    revert_button(ui, right_slot, RevertTarget::Right, ">", "Replace this hunk in the right file with the left side");
+                                                    revert_button(ui, right_slot, right_target, ">", "Replace this hunk in the right file with the left side");
                                                 }
                                                 }
                                             }
@@ -1085,14 +1100,14 @@ impl FileDiffPane {
                             if ctx.image_view.is_some() || ctx.video_frames.is_some() {
                                 image_left_width = Some(output.side_rects[0].width());
                             } else if !header_only {
-                                side_rects = output.side_rects;
+                                side_rects = shown.map(|column| output.side_rects[column]);
                             }
                             if let (Some(image_view), Some(image_cfg), Some(left_width)) = (
                                 ctx.image_view.as_deref_mut(),
                                 ctx.image_settings.as_deref_mut(),
                                 image_left_width,
                             ) {
-                                image::show(ui, image_view, image_cfg, left_width);
+                                image::show(ui, image_view, image_cfg, left_width, shown);
                             }
                             if let (Some(meta), Some(frames), Some(image_cfg), Some(left_width)) = (
                                 ctx.video_meta.as_deref_mut(),
@@ -1104,7 +1119,7 @@ impl FileDiffPane {
                                     .audio_view
                                     .as_mut()
                                     .map(|(processor, settings)| (&mut **processor, &mut **settings));
-                                video_meta::show(ui, meta, frames, image_cfg, left_width, audio);
+                                video_meta::show(ui, meta, frames, image_cfg, left_width, shown, audio);
                             } else if let Some((processor, settings)) = ctx.audio_view.as_mut() {
                                 audio::show(ui, processor, settings);
                             } else if let Some(kind) = ctx.media_view {
@@ -1128,7 +1143,8 @@ impl FileDiffPane {
                                     .unwrap_or(0);
                                 let (highlights, code_language) =
                                     (ctx.active_highlights, ctx.code_language[text_side]);
-                                side_viewers::show(ui, sides, output.side_rects, |ui, row| {
+                                let side_columns = shown.map(|column| output.side_rects[column]);
+                                side_viewers::show(ui, sides, side_columns, |ui, row| {
                                     let Some(text) = text else {
                                         return;
                                     };

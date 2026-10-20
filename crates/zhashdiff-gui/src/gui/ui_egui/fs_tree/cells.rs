@@ -542,6 +542,7 @@ pub(super) fn render_center_cell(
     center: &CenterLayout,
     compare: &TreeCompare,
     tolerance: &Tolerance,
+    shown_sides: [usize; 2],
 ) -> CenterCell {
     let RowCell {
         views,
@@ -576,7 +577,8 @@ pub(super) fn render_center_cell(
             ui.multiply_opacity(0.5);
         }
         match slot {
-            CenterSlot::Tag(side) => {
+            CenterSlot::Tag(column) => {
+                let side = shown_sides[column];
                 if let Some(kind) = entry.file_kinds[side] {
                     let (text, color) = if entry.blueprints[side] {
                         ("BP", role_color(ui.ctx(), FolderRole::BlueprintTag))

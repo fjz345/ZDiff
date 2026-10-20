@@ -405,6 +405,7 @@ pub fn show(
     processor: &mut VideoFrameProcessor,
     image_settings: &mut ImageSettings,
     left_width: f32,
+    shown_sides: [usize; 2],
 ) {
     if processor.busy() {
         // Jobs finish on workers; keep frames coming until they are polled.
@@ -453,13 +454,19 @@ pub fn show(
         ui.painter().text(
             pos2(x, row.center().y),
             Align2::LEFT_CENTER,
-            processor.readout(index),
+            processor.readout(shown_sides[index]),
             font.clone(),
             color,
         );
     }
 
-    image::show(ui, &mut processor.image, image_settings, left_width);
+    image::show(
+        ui,
+        &mut processor.image,
+        image_settings,
+        left_width,
+        shown_sides,
+    );
 }
 
 #[cfg(test)]

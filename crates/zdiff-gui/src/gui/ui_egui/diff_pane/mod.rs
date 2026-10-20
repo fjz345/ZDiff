@@ -49,7 +49,7 @@ use crate::{
     keybindings::FileAction,
     revert::{self, RevertRequest, RevertTarget},
     ui_egui::{
-        active_side::{ActiveSide, ActiveSideState, outline_stroke},
+        active_side::{ActiveSide, ActiveSideState, outline_stroke, shown_sides},
         file_role::FileRole,
         occurrence::{OccurrenceState, RowFind, find_ranges},
         overview::{
@@ -180,6 +180,7 @@ pub struct FileDiffPaneCtx<'a> {
     /// Why the pair isn't in the viewer it asked for, if it isn't.
     pub viewer_fallback: Option<&'a str>,
     pub phase_overlay: bool,
+    pub sides_swapped: bool,
     pub keymap: &'a Keymap<FileAction>,
 }
 

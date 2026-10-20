@@ -1,6 +1,6 @@
 use super::{
     ZApp,
-    launch::{swap_sides, toggle_all_options, toggle_option},
+    launch::{toggle_all_options, toggle_option},
     quickdiff::{
         LocalFileRefusal, apply_quick_diff, diff_against_local_file, run_diff_against_shelf_base,
     },
@@ -169,13 +169,9 @@ impl ZApp {
                         FileAction::Redo => history_step = Some(HistoryStep::Redo),
                         FileAction::DiffLocalFile => diff_local_file = true,
                         FileAction::DiffShelfBase => diff_shelf_base = true,
-                        FileAction::SwapSides => swap_sides(
-                            &mut app_state_ctx.file_1,
-                            &mut app_state_ctx.file_2,
-                            &mut app_state_ctx.scroll_left,
-                            &mut app_state_ctx.scroll_right,
-                            &mut app_state_ctx.diff_processor,
-                        ),
+                        FileAction::SwapSides => {
+                            app_state_ctx.sides_swapped = !app_state_ctx.sides_swapped
+                        }
                         FileAction::IgnoreWhitespace
                         | FileAction::IgnoreComments
                         | FileAction::IgnoreRegex

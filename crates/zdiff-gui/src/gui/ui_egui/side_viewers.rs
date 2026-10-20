@@ -95,7 +95,7 @@ pub fn show(
                     sides.image.as_deref_mut(),
                     sides.image_settings.as_deref_mut(),
                 ) {
-                    image::show(&mut half, processor, settings, rect.width());
+                    image::show(&mut half, processor, settings, rect.width(), [0, 1]);
                 }
             }
             ViewerKind::Audio => {
@@ -108,7 +108,7 @@ pub fn show(
                     sides.video.as_deref_mut(),
                     sides.image_settings.as_deref_mut(),
                 ) {
-                    video_frames::show(&mut half, processor, settings, rect.width());
+                    video_frames::show(&mut half, processor, settings, rect.width(), [0, 1]);
                 }
             }
         }

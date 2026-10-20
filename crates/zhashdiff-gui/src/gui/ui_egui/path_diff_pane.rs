@@ -43,6 +43,7 @@ pub struct PathDiffPaneCtx<'a, 'b> {
     pub tree_sort: &'a mut TreeSort,
     pub diff_filter: &'a mut DiffFilter,
     pub likeness_bar: &'a mut bool,
+    pub sides_swapped: bool,
     pub tolerance: &'a mut Tolerance,
     pub tree_compare: &'a TreeCompare,
     pub h_scroll_link: &'a mut HScrollLink,
@@ -246,6 +247,7 @@ impl PathDiffPane {
                 tolerance: ctx.tolerance,
                 table: &mut self.table,
                 linked: ctx.h_scroll_link.0,
+                swapped: ctx.sides_swapped,
                 find: ctx.find,
             }),
         );

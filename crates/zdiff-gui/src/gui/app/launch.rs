@@ -4,7 +4,6 @@ use zdiff::diff_builder::DiffBuilderOptions;
 
 use crate::{
     cli::{self, LaunchRequest},
-    diff_ctx::DiffProcessor,
     file::FileProcessor,
     keybindings::FileAction,
     toggle_all::{OptionSet, ToggleAll},
@@ -70,19 +69,6 @@ pub(super) fn apply_launch(
     LaunchOutcome::Opened
 }
 
-pub(super) fn swap_sides(
-    file_1: &mut FileProcessor,
-    file_2: &mut FileProcessor,
-    scroll_left: &mut f32,
-    scroll_right: &mut f32,
-    diff_processor: &mut DiffProcessor,
-) {
-    std::mem::swap(file_1, file_2);
-    std::mem::swap(scroll_left, scroll_right);
-
-    diff_processor.reset_ctx();
-}
-
 pub(super) fn toggle_all_options(
     toggle_all: &mut ToggleAll,
     options: &mut DiffBuilderOptions,
@@ -131,28 +117,6 @@ pub(super) fn toggle_option(ctx: &mut AppStateCtx, action: FileAction) {
 mod tests {
     use super::*;
     use zdiff::{ignore::IgnorePatterns, universal_path::UniversalPath};
-
-    #[test]
-    fn swap_sides_swaps_the_files_and_their_scroll() {
-        let mut ctx = AppStateCtx::default();
-        let (a, b) = (UniversalPath::from("a.txt"), UniversalPath::from("b.txt"));
-        ctx.file_1.set_path(a.clone());
-        ctx.file_2.set_path(b.clone());
-        ctx.scroll_left = 1.0;
-        ctx.scroll_right = 2.0;
-        ctx.diff_processor.conflict_cursor.set(3);
-        swap_sides(
-            &mut ctx.file_1,
-            &mut ctx.file_2,
-            &mut ctx.scroll_left,
-            &mut ctx.scroll_right,
-            &mut ctx.diff_processor,
-        );
-        assert_eq!(ctx.file_1.get_full_path(), b);
-        assert_eq!(ctx.file_2.get_full_path(), a);
-        assert_eq!((ctx.scroll_left, ctx.scroll_right), (2.0, 1.0));
-        assert_eq!(ctx.diff_processor.conflict_cursor.get(), 0);
-    }
 
     #[test]
     fn each_toggle_action_flips_its_option_and_back() {

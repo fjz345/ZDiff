@@ -1030,6 +1030,7 @@ pub fn show(
     processor: &mut ImageDiffProcessor,
     settings: &mut ImageSettings,
     left_width: f32,
+    shown_sides: [usize; 2],
 ) {
     let _ = processor.repaint.set(ui.ctx().clone());
     let mut fit = false;
@@ -1149,6 +1150,7 @@ pub fn show(
             ),
         ]
     };
+    let columns = shown_sides.map(|column| columns[column]);
     let image_rects =
         columns.map(|c| Rect::from_min_max(pos2(c.left(), c.top() + info_height), c.max));
     // Fit for the narrower side, so the canvas fits in both. An empty side may have no column.
@@ -1281,7 +1283,11 @@ pub fn show(
             }
             SideState::Decoded { image, texture } => {
                 // In one view the second side's info goes on the right, where its image is shown.
-                let (info_pos, info_align) = if combined && index == 1 {
+                let info_side = match settings.mode {
+                    ImageMode::Swipe => shown_sides[index],
+                    _ => index,
+                };
+                let (info_pos, info_align) = if combined && info_side == 1 {
                     (columns[index].right_top(), egui::Align2::RIGHT_TOP)
                 } else {
                     (columns[index].min, egui::Align2::LEFT_TOP)
@@ -1312,7 +1318,8 @@ pub fn show(
                     vec2(image.width as f32, image.height as f32),
                 );
                 // Swipe shows each side only on its side of the divider.
-                let painter = ui.painter_at(swipe.map_or(image_rect, |clips| clips[index]));
+                let painter =
+                    ui.painter_at(swipe.map_or(image_rect, |clips| clips[shown_sides[index]]));
                 let uv = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
                 let tint = match (&diff_overlay, overlay_opacity) {
                     // Dimmed under the difference map, so the highlight stands out.

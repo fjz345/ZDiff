@@ -114,6 +114,8 @@ pub struct AppStateCtx {
     pub word_wrap: bool,
     #[cfg_attr(feature = "serde", serde(default))]
     pub text_mode: TextMode,
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub sides_swapped: bool,
 
     #[cfg_attr(feature = "serde", serde(skip))]
     pub goto_open: bool,
@@ -163,6 +165,7 @@ impl Default for AppStateCtx {
             h_scroll_modifier: WheelModifier::Shift,
             word_wrap: false,
             text_mode: Default::default(),
+            sides_swapped: false,
             goto_open: Default::default(),
             find_open: Default::default(),
             goto_input: Default::default(),
@@ -237,6 +240,29 @@ mod tests {
     use zcommon_ui::keymap::Action;
     use zdiff::ignore::IgnorePatterns;
     use zdiff::{myers::DiffPhases, universal_path::UniversalPath};
+
+    #[test]
+    fn swapped_sides_survive_a_restart() {
+        let state = AppStateCtx {
+            sides_swapped: true,
+            ..Default::default()
+        };
+
+        let json = serde_json::to_string(&state).unwrap();
+        let restored: AppStateCtx = serde_json::from_str(&json).unwrap();
+
+        assert!(restored.sides_swapped);
+    }
+
+    #[test]
+    fn a_state_saved_before_the_swap_existed_loads_unswapped() {
+        let mut json = serde_json::to_value(AppStateCtx::default()).unwrap();
+        json.as_object_mut().unwrap().remove("sides_swapped");
+
+        let restored: AppStateCtx = serde_json::from_value(json).unwrap();
+
+        assert!(!restored.sides_swapped);
+    }
 
     #[test]
     fn an_old_viewer_map_is_read_and_saved_again_until_migrated() {

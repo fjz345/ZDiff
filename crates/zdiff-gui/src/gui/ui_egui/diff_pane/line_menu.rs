@@ -30,6 +30,7 @@ pub(super) struct LineMenuCtx<'a> {
     pub(super) pins_request: &'a mut Option<Vec<Pin>>,
     pub(super) revert_request: &'a mut Option<RevertRequest>,
     pub(super) temp_root: &'a Path,
+    pub(super) shown_sides: [usize; 2],
 }
 
 fn other(side: ActiveSide) -> ActiveSide {
@@ -39,11 +40,8 @@ fn other(side: ActiveSide) -> ActiveSide {
     }
 }
 
-fn side_name(side: ActiveSide) -> &'static str {
-    match side {
-        ActiveSide::Left => "left",
-        ActiveSide::Right => "right",
-    }
+fn side_name(side: ActiveSide, shown_sides: [usize; 2]) -> &'static str {
+    ["left", "right"][shown_sides[side as usize]]
 }
 
 fn pin_field(input: &mut PinInput, side: ActiveSide) -> &mut String {
@@ -94,7 +92,8 @@ pub(super) fn line_text<'a>(
 }
 
 pub(super) fn line_menu(ui: &mut egui::Ui, at: MenuLine, ctx: LineMenuCtx) {
-    let (name, other_name) = (side_name(at.side), side_name(other(at.side)));
+    let name_of = |side| side_name(side, ctx.shown_sides);
+    let (name, other_name) = (name_of(at.side), name_of(other(at.side)));
     let shown = at.line + 1;
 
     if let Some(partner) = pending_partner(ctx.pin_input, at.side)
@@ -149,17 +148,16 @@ pub(super) fn line_menu(ui: &mut egui::Ui, at: MenuLine, ctx: LineMenuCtx) {
         return;
     };
     let targets = [
-        (
-            RevertTarget::Left,
-            "Replace this hunk in the left file with the right side",
-        ),
-        (
-            RevertTarget::Right,
-            "Replace this hunk in the right file with the left side",
-        ),
+        (RevertTarget::Left, ActiveSide::Left),
+        (RevertTarget::Right, ActiveSide::Right),
     ];
     let mut separated = false;
-    for (target, label) in targets {
+    for (target, side) in targets {
+        let label = format!(
+            "Replace this hunk in the {} file with the {} side",
+            name_of(side),
+            name_of(other(side))
+        );
         if revert::check_revert(ctx.diff_ctx, target, ctx.temp_root).is_err() {
             continue;
         }

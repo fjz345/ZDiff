@@ -225,19 +225,6 @@ impl PairCompareCache {
             );
     }
 
-    pub fn swap_sides(&mut self) {
-        let mut swapped: HashMap<String, HashMap<String, _>> = HashMap::new();
-        for (left_path, rights) in self.entries.drain() {
-            for (right_path, (left, right, state)) in rights {
-                swapped
-                    .entry(right_path)
-                    .or_default()
-                    .insert(left_path.clone(), (right, left, state));
-            }
-        }
-        self.entries = swapped;
-    }
-
     /// Read errors are not cached, so the next compare of the pair retries it.
     pub fn compare(
         &mut self,
@@ -713,19 +700,6 @@ mod tests {
             cache.get(&side("a", 10, time(1)), &side("b", 10, time(1))),
             None
         );
-    }
-
-    #[test]
-    fn a_swapped_cache_answers_for_the_swapped_sides() {
-        let reader = CountingReader::with(&[("a", vec![1; 10]), ("b", vec![2; 12])]);
-        let mut cache = PairCompareCache::default();
-        let (left, right) = (side("a", 10, time(1)), side("b", 12, time(2)));
-        cache.compare(&reader, &left, &right);
-
-        cache.swap_sides();
-
-        assert_eq!(cache.get(&right, &left), Some(PairState::Different));
-        assert_eq!(cache.get(&left, &right), None);
     }
 
     #[test]

@@ -6,6 +6,7 @@ pub struct TwoFolderTable<'a, 'b> {
     pub tolerance: &'a Tolerance,
     pub table: &'a mut TreeTable,
     pub linked: bool,
+    pub swapped: bool,
     pub find: &'a mut TreeFindView<'b>,
 }
 
@@ -249,6 +250,9 @@ pub fn draw_ui_folder_tree(
             ..
         } => (None, Some(pending_deletion), Some(columns), Some(row_menu)),
     };
+    let shown = shown_sides(two_folder.as_ref().is_some_and(|t| t.swapped));
+    let side_of = |column: usize| [Side::Folder1, Side::Folder2][shown[column]];
+    let mut open_dir_windows = [open_dir_window_1, open_dir_window_2];
     let (find_matcher, match_path, find_chip_query) =
         two_folder
             .as_ref()
@@ -353,13 +357,14 @@ pub fn draw_ui_folder_tree(
                 let body = table
                     .header(header_height, |mut header| {
                         header.col(|ui| {
-                            folder_1_header(
+                            folder_header(
                                 ui,
                                 sort,
-                                open_dir_window_1,
+                                &mut *open_dir_windows[0],
                                 [&mut *root_1, &mut *root_2],
                                 row_height_header,
                                 None,
+                                Side::Folder1,
                             );
                         });
                         for column in columns.iter() {
@@ -388,7 +393,7 @@ pub fn draw_ui_folder_tree(
                 return;
             };
             let center = CenterLayout::measure(ui, two_folder.likeness_bar);
-            let content_widths = two_folder.table.widths.get(
+            let side_widths = two_folder.table.widths.get(
                 ui,
                 views,
                 visible_rows,
@@ -396,6 +401,7 @@ pub fn draw_ui_folder_tree(
                 rows_cache.generation(),
                 layout,
             );
+            let content_widths = shown.map(|side| side_widths[side]);
 
             let mut split_table =
                 SplitTable::new("two_folder_diff_table", &mut two_folder.table.split)
@@ -416,13 +422,14 @@ pub fn draw_ui_folder_tree(
                 header_height,
                 |column, ui| match column {
                     SplitColumn::Left => {
-                        chip_event = folder_1_header(
+                        chip_event = folder_header(
                             ui,
                             sort,
-                            open_dir_window_1,
+                            &mut *open_dir_windows[shown[0]],
                             [&mut *root_1, &mut *root_2],
                             row_height_header,
                             find_chip_query,
+                            side_of(0),
                         );
                     }
                     SplitColumn::Center => center.show(ui, |slot, ui| match slot {
@@ -445,17 +452,18 @@ pub fn draw_ui_folder_tree(
                     }),
                     SplitColumn::Right => {
                         let available = ui.available_width();
+                        let side = side_of(1);
                         ui.vertical(|ui| {
                             if ui
                                 .add_sized(
                                     [available, row_height_header],
-                                    egui::Button::new("Open Folder 2"),
+                                    egui::Button::new(format!("Open {side}")),
                                 )
                                 .clicked()
                             {
-                                *open_dir_window_2 = true;
+                                *open_dir_windows[shown[1]] = true;
                             }
-                            root_path_bar(ui, [&mut *root_1, &mut *root_2], Side::Folder2);
+                            root_path_bar(ui, [&mut *root_1, &mut *root_2], side);
                         });
                     }
                 },
@@ -464,14 +472,14 @@ pub fn draw_ui_folder_tree(
                     count: row_count,
                 },
                 |i, column, ui| match column {
-                    SplitColumn::Left => side_cell(i, 0, ui),
-                    SplitColumn::Right => side_cell(i, 1, ui),
+                    SplitColumn::Left => side_cell(i, shown[0], ui),
+                    SplitColumn::Right => side_cell(i, shown[1], ui),
                     SplitColumn::Center => {
                         let row = row_cell(i);
                         if row.entry.is_dir {
                             fill_cell(ui, ui.max_rect().x_range(), row_tint);
                         }
-                        let cell = render_center_cell(ui, &row, &center, compare, tolerance);
+                        let cell = render_center_cell(ui, &row, &center, compare, tolerance, shown);
                         if cell.clicked {
                             center_clicked_row = Some(&visible_rows[drawn_rows[i]]);
                         }
@@ -515,9 +523,10 @@ pub fn draw_ui_folder_tree(
     }
 
     let table_y = table_top..=ui.min_rect().bottom();
-    let [left_rect, right_rect] =
+    let column_rects =
         side_rects.map(|rect| egui::Rect::from_x_y_ranges(rect.x_range(), table_y.clone()));
-    handle_drops(ui, root_1, root_2, left_rect, right_rect);
+    let [rect_1, rect_2] = shown.map(|column| column_rects[column]);
+    handle_drops(ui, root_1, root_2, rect_1, rect_2);
     if let Some(action) = row_action {
         apply_row_action(ui.ctx(), action, root_1, root_2);
     }
@@ -529,13 +538,18 @@ pub fn draw_ui_folder_tree(
     frame_output.response
 }
 
-pub(super) fn folder_1_header(
+pub(super) fn shown_sides(swapped: bool) -> [usize; 2] {
+    if swapped { [1, 0] } else { [0, 1] }
+}
+
+pub(super) fn folder_header(
     ui: &mut egui::Ui,
     sort: &mut TreeSort,
     open_dir_window: &mut bool,
     roots: [&mut Option<PathBuf>; 2],
     button_height: f32,
     find_chip_query: Option<&str>,
+    side: Side,
 ) -> Option<FindChipEvent> {
     let mut chip_event = None;
     ui.vertical(|ui| {
@@ -548,14 +562,14 @@ pub(super) fn folder_1_header(
             if ui
                 .add_sized(
                     [available, button_height],
-                    egui::Button::new("Open Folder 1"),
+                    egui::Button::new(format!("Open {side}")),
                 )
                 .clicked()
             {
                 *open_dir_window = true;
             }
         });
-        root_path_bar(ui, roots, Side::Folder1);
+        root_path_bar(ui, roots, side);
     });
     chip_event
 }

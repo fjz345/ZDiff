@@ -258,6 +258,7 @@ pub fn show(
     frames: &mut VideoFrameProcessor,
     image_settings: &mut ImageSettings,
     left_width: f32,
+    shown_sides: [usize; 2],
     audio: Option<(&mut AudioDiffProcessor, &mut AudioSettings)>,
 ) {
     processor.poll();
@@ -274,7 +275,7 @@ pub fn show(
         }
     });
     match processor.tab {
-        VideoTab::Frames => video_frames::show(ui, frames, image_settings, left_width),
+        VideoTab::Frames => video_frames::show(ui, frames, image_settings, left_width, shown_sides),
         VideoTab::Audio => match audio_tab(processor.has_audio()) {
             AudioTab::Probing => {
                 ui.label("Probing...");

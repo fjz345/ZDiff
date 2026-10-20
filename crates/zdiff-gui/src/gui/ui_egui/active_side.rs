@@ -72,6 +72,10 @@ impl ActiveSideState {
     }
 }
 
+pub fn shown_sides(swapped: bool) -> [usize; 2] {
+    if swapped { [1, 0] } else { [0, 1] }
+}
+
 /// Style of the outline around the active side's text block.
 pub fn outline_stroke() -> egui::Stroke {
     egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(60, 90, 130))

@@ -106,6 +106,8 @@ pub struct AppStateCtx {
     pub duplicates_filter: DuplicatesFilter,
     #[serde(default)]
     pub likeness_bar: bool,
+    #[serde(default)]
+    pub sides_swapped: bool,
     #[serde(skip)]
     two_folder_diff_rows_tolerance: Tolerance,
     #[serde(default)]
@@ -330,20 +332,6 @@ impl AppStateCtx {
                 scan.request_rescan();
             }
         }
-    }
-
-    fn swap_sides(&mut self) {
-        std::mem::swap(
-            &mut self.file_system_1_root_path,
-            &mut self.file_system_2_root_path,
-        );
-        std::mem::swap(
-            &mut self.file_system_model_1_view,
-            &mut self.file_system_model_2_view,
-        );
-        std::mem::swap(&mut self.file_system_1_scan, &mut self.file_system_2_scan);
-        self.tree_compare.swap_sides();
-        self.two_folder_diff_visible_rows = None;
     }
 
     fn update_scans(&mut self, repaint: &egui::Context) {
@@ -943,11 +931,13 @@ impl ZApp {
                     ui.ctx().request_repaint();
                 }
                 let swap = ui
-                    .add_enabled(shown, egui::Button::new("Swap"))
-                    .on_hover_text("Swap Folder 1 and Folder 2 without scanning or comparing");
+                    .add_enabled(
+                        shown,
+                        egui::Button::selectable(app_ctx.sides_swapped, "Swap"),
+                    )
+                    .on_hover_text("Show Folder 1 on the right and Folder 2 on the left");
                 if swap.clicked() {
-                    app_ctx.swap_sides();
-                    ui.ctx().request_repaint();
+                    app_ctx.sides_swapped = !app_ctx.sides_swapped;
                 }
             });
         });
@@ -1082,6 +1072,7 @@ impl ZApp {
                     diff_filter: &mut app_ctx.diff_filter,
                     duplicates_filter: &mut app_ctx.duplicates_filter,
                     likeness_bar: &mut app_ctx.likeness_bar,
+                    sides_swapped: app_ctx.sides_swapped,
                     tolerance: &mut app_ctx.tolerance,
                     tree_compare: &app_ctx.tree_compare,
                     h_scroll_link: &mut app_ctx.h_scroll_link,
@@ -1838,6 +1829,19 @@ mod tests {
         let restored: AppStateCtx = serde_json::from_str(&json).unwrap();
 
         assert!(restored.likeness_bar);
+    }
+
+    #[test]
+    fn swapped_sides_survive_a_restart() {
+        let state = AppStateCtx {
+            sides_swapped: true,
+            ..Default::default()
+        };
+
+        let json = serde_json::to_string(&state).unwrap();
+        let restored: AppStateCtx = serde_json::from_str(&json).unwrap();
+
+        assert!(restored.sides_swapped);
     }
 
     #[test]
@@ -2640,61 +2644,6 @@ mod tests {
         assert_ne!(sub(views[0], left.path()), old_sub);
         assert!(views[0].is_collapsed(sub(views[0], left.path())));
         assert!(!views[1].is_collapsed(sub(views[1], right.path())));
-    }
-
-    #[test]
-    fn swap_exchanges_the_sides_and_a_refresh_after_it_reads_no_file() {
-        let (left, right) = (tempdir().unwrap(), tempdir().unwrap());
-        for root in [left.path(), right.path()] {
-            fs::write(root.join("a.txt"), "a").unwrap();
-        }
-        fs::write(left.path().join("b.txt"), "left b").unwrap();
-        fs::write(right.path().join("b.txt"), "right b").unwrap();
-        fs::write(left.path().join("removed.txt"), "r").unwrap();
-        let mut state = loaded(left.path(), right.path());
-        finish_compare(&mut state);
-        let roots = [
-            state.file_system_1_root_path.clone(),
-            state.file_system_2_root_path.clone(),
-        ];
-        let models = [
-            &state.file_system_model_1_view,
-            &state.file_system_model_2_view,
-        ]
-        .map(|view| view.as_ref().unwrap().file_system.clone());
-
-        state.swap_sides();
-        state.update_scans(&egui::Context::default());
-        state.build_two_folder_diff_rows_if_stale();
-
-        assert_eq!(state.file_system_1_root_path, roots[1]);
-        assert_eq!(state.file_system_2_root_path, roots[0]);
-        let model = |view: &Option<FileSystemView>| view.as_ref().unwrap().file_system.clone();
-        assert!(Arc::ptr_eq(
-            &model(&state.file_system_model_1_view),
-            &models[1]
-        ));
-        assert!(Arc::ptr_eq(
-            &model(&state.file_system_model_2_view),
-            &models[0]
-        ));
-        assert!(!state.file_system_1_scan.is_scanning());
-        assert!(!state.file_system_2_scan.is_scanning());
-        assert!(!state.tree_compare.is_comparing());
-        assert!(matches!(b_state(&state), DiffState::Different(..)));
-        let rows = state.two_folder_diff_visible_rows.as_ref().unwrap();
-        let removed = rows.iter().find(|row| row.rel_path == "removed.txt");
-        assert!(matches!(
-            removed.unwrap().diff_state,
-            DiffState::OnlyInSecond(..)
-        ));
-
-        state.refresh();
-        state.update_scans(&egui::Context::default());
-        finish_scans(&mut state);
-        state.build_two_folder_diff_rows_if_stale();
-        assert!(!state.tree_compare.is_comparing());
-        assert!(matches!(b_state(&state), DiffState::Different(..)));
     }
 
     #[test]
