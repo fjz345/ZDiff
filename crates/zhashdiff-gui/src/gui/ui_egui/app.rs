@@ -26,12 +26,8 @@ use zcommon_ui::{
     style_window::StyleWindow,
 };
 use zhashdiff::{
-    external_diff_tool::DiffToolConfig,
-    filter::PathFilter,
-    fs::{FileSystemModel, FsNodeId},
-    scan::ScanOutput,
-    uasset::BlueprintDetector,
-    vcs_source::scan_side,
+    external_diff_tool::DiffToolConfig, filter::PathFilter, fs::FileSystemModel, scan::ScanOutput,
+    uasset::BlueprintDetector, vcs_source::scan_side,
 };
 
 use crate::ui_egui::{
@@ -481,20 +477,19 @@ fn shown_root(view: Option<&FileSystemView>) -> Option<PathBuf> {
 /// A rescan of the shown root keeps the collapsed state of every path still present.
 fn install_scanned(old: Option<&FileSystemView>, model: FileSystemModel) -> FileSystemView {
     let mut view = FileSystemView::new(Arc::new(model));
-    let Some(old) = old.filter(|old| shown_root(Some(old)) == shown_root(Some(&view))) else {
+    let Some(old) = old.filter(|old| {
+        !old.collapsed.is_empty() && shown_root(Some(old)) == shown_root(Some(&view))
+    }) else {
         return view;
     };
-    let node_path = |model: &FileSystemModel, id: FsNodeId| model.path(id);
-    let old_ids: HashMap<PathBuf, FsNodeId> = old
-        .file_system
-        .iter_nodes()
-        .map(|id| (node_path(&old.file_system, id), id))
+    let old_collapsed: HashMap<PathBuf, bool> = old
+        .collapsed
+        .iter()
+        .filter(|&(&id, _)| old.file_system.get_node(id).is_some())
+        .map(|(&id, &collapsed)| (old.file_system.path(id), collapsed))
         .collect();
     for id in view.file_system.iter_nodes() {
-        let Some(old_id) = old_ids.get(&node_path(&view.file_system, id)) else {
-            continue;
-        };
-        if let Some(&collapsed) = old.collapsed.get(old_id) {
+        if let Some(&collapsed) = old_collapsed.get(&view.file_system.path(id)) {
             view.collapsed.insert(id, collapsed);
         }
     }
