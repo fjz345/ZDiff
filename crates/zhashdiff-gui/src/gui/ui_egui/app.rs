@@ -74,8 +74,7 @@ pub struct AppStateCtx {
     two_folder_diff_rows_id: RowsId,
     #[serde(skip)]
     row_counts: Option<(RowsId, RowCounts)>,
-    /// The visible rows before find narrows them, None without a query. Current only while the
-    /// visible rows are set.
+    /// Pre-find visible rows, None without a query. Current only while the visible rows are set.
     #[serde(skip)]
     two_folder_diff_arranged_rows: Option<Vec<VisibleRowTwoFolderDiff>>,
     #[serde(skip)]
