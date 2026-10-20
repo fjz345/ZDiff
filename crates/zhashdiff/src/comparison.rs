@@ -199,23 +199,30 @@ fn side_version(side: &PairSide) -> SideVersion {
     (side.meta, side.hash.cloned())
 }
 
+fn is_version_of(version: &SideVersion, side: &PairSide) -> bool {
+    version.0 == side.meta && version.1.as_ref() == side.hash
+}
+
 #[derive(Debug, Default)]
 pub struct PairCompareCache {
-    entries: HashMap<(String, String), (SideVersion, SideVersion, PairState)>,
+    entries: HashMap<String, HashMap<String, (SideVersion, SideVersion, PairState)>>,
 }
 
 impl PairCompareCache {
     pub fn get(&self, left: &PairSide, right: &PairSide) -> Option<PairState> {
-        let key = (left.rel_path.to_owned(), right.rel_path.to_owned());
-        let (left_version, right_version, state) = self.entries.get(&key)?;
-        (*left_version == side_version(left) && *right_version == side_version(right))
-            .then_some(*state)
+        let (left_version, right_version, state) =
+            self.entries.get(left.rel_path)?.get(right.rel_path)?;
+        (is_version_of(left_version, left) && is_version_of(right_version, right)).then_some(*state)
     }
 
     pub fn insert(&mut self, left: &PairSide, right: &PairSide, state: PairState) {
-        let key = (left.rel_path.to_owned(), right.rel_path.to_owned());
         self.entries
-            .insert(key, (side_version(left), side_version(right), state));
+            .entry(left.rel_path.to_owned())
+            .or_default()
+            .insert(
+                right.rel_path.to_owned(),
+                (side_version(left), side_version(right), state),
+            );
     }
 
     /// Read errors are not cached, so the next compare of the pair retries it.
