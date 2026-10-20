@@ -1,5 +1,7 @@
 use std::{
     cell::RefCell,
+    collections::HashMap,
+    hash::BuildHasherDefault,
     ops::Range,
     sync::{
         Arc,
@@ -12,7 +14,7 @@ use crate::{
     ignore::IgnoreMask,
     lexer::{RawTokenTrait, TokenKind},
     myers::{
-        DiffPhases, LineHunk, MyersDiffAlgorithm, MyersPath, Side, Step, hunks_to_path,
+        DiffPhases, FxHasher, LineHunk, MyersDiffAlgorithm, MyersPath, Side, Step, hunks_to_path,
         intern_lines, line_pairs_path, path_steps, phases_path, raw_diff_path, slice_mask,
         split_lines,
     },
@@ -64,14 +66,24 @@ where
         key,
         &cancel_flag,
     )?;
-    let unit_eq = |a: &Range<usize>, b: &Range<usize>| {
-        source_ids[lines_in(&source_lines, a)] == target_ids[lines_in(&target_lines, b)]
+    let mut unit_ids: HashMap<&[u32], u32, BuildHasherDefault<FxHasher>> = HashMap::default();
+    let mut unit_id = |line_ids| {
+        let next = unit_ids.len() as u32;
+        *unit_ids.entry(line_ids).or_insert(next)
     };
+    let source_unit_ids: Vec<u32> = source_units
+        .iter()
+        .map(|unit| unit_id(&source_ids[lines_in(&source_lines, unit)]))
+        .collect();
+    let target_unit_ids: Vec<u32> = target_units
+        .iter()
+        .map(|unit| unit_id(&target_ids[lines_in(&target_lines, unit)]))
+        .collect();
     let unit_path = raw_diff_path(
         algorithm,
-        &source_units,
-        &target_units,
-        unit_eq,
+        &source_unit_ids,
+        &target_unit_ids,
+        |a: &u32, b: &u32| a == b,
         cancel_flag.clone(),
     )?;
     if cancel_flag.load(Ordering::Relaxed) {

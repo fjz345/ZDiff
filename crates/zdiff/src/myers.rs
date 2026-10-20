@@ -487,7 +487,7 @@ const INTERN_CANCEL_STRIDE: usize = 1024;
 const NO_ID: u32 = u32::MAX;
 
 #[derive(Default)]
-struct FxHasher(u64);
+pub(crate) struct FxHasher(u64);
 
 impl FxHasher {
     fn add(&mut self, word: u64) {
