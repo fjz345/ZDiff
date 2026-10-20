@@ -78,10 +78,11 @@ impl LoadedFile {
 pub fn load_file(display_path: UniversalPath, physical_path: &Path) -> io::Result<LoadedFile> {
     let bytes = std::fs::read(physical_path)?;
     match sniff_viewer_kind(&bytes) {
-        // Reads the file a second time, so text loading stays in CachedFile until the
-        // text-encoding-eol decoder replaces it.
-        ViewerKind::Text => CachedFile::new(display_path, physical_path)
-            .map(|file| LoadedFile::Text(Arc::new(file))),
+        ViewerKind::Text => String::from_utf8(bytes)
+            .map(|contents| {
+                LoadedFile::Text(Arc::new(CachedFile::from_contents(display_path, contents)))
+            })
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e)),
         // Sniffing never picks Image; image content is binary, and the Image viewer reads bytes.
         ViewerKind::Hex | ViewerKind::Image | ViewerKind::Audio | ViewerKind::Video => {
             Ok(LoadedFile::Binary(Arc::new(BinaryFile {
