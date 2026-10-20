@@ -13,7 +13,7 @@ pub enum TreeMode<'a, 'b> {
     TwoFolder(TwoFolderTable<'a, 'b>),
     /// Folder 1 alone, without the center column and Folder 2: the duplicates tab.
     SingleSide {
-        pending_deletion: &'a HashSet<PathBuf>,
+        pending_deletion: &'a HashSet<FsNodeId>,
         columns: Vec<NodeColumn<'a>>,
         /// Items appended to a row's right-click menu.
         row_menu: &'a mut RowMenuItems<'a>,
@@ -259,10 +259,6 @@ pub fn draw_ui_folder_tree(
                 (find.matcher, find.match_path, find.chip)
             });
 
-    let pending_ids = pending_deletion
-        .zip(file_system_1_view.as_ref())
-        .map(|(pending, view)| pending_node_ids(&view.file_system, pending));
-
     let frame_output = egui::Frame::default()
         .fill(egui::Color32::from_gray(20))
         .inner_margin(0.0)
@@ -284,7 +280,7 @@ pub fn draw_ui_folder_tree(
                 // would override it.
                 let dimmed =
                     selected_row != Some(i) && matches!(entry.diff_state, DiffState::Same(..));
-                let pending = pending_ids.as_ref().is_some_and(|pending| {
+                let pending = pending_deletion.is_some_and(|pending| {
                     entry
                         .diff_state
                         .first()

@@ -449,6 +449,68 @@ fn pending_deletions(
         .collect()
 }
 
+fn pending_node_ids(model: &FileSystemModel, pending: &HashSet<PathBuf>) -> HashSet<FsNodeId> {
+    let root = model.path(model.get_root_node_id());
+    pending
+        .iter()
+        .filter_map(|path| {
+            let mut id = model.get_root_node_id();
+            for component in path.strip_prefix(&root).ok()?.components() {
+                let name = component.as_os_str();
+                id = *model
+                    .get_node(id)?
+                    .children()?
+                    .iter()
+                    .find(|&&child| model.get_node(child).is_some_and(|n| n.name() == name))?;
+            }
+            Some(id)
+        })
+        .collect()
+}
+
+/// Valid while the keepers and the groups they keep are unchanged: no other group is deleted from.
+struct PendingDeletions {
+    model: Weak<FileSystemModel>,
+    keepers: HashMap<String, PathBuf>,
+    kept_groups: Vec<(String, Option<Vec<PathBuf>>)>,
+    paths: HashSet<PathBuf>,
+    ids: HashSet<FsNodeId>,
+}
+
+impl PendingDeletions {
+    fn new(
+        view: &FileSystemView,
+        conflict_map: &HashMap<String, Vec<PathBuf>>,
+        keepers: &HashMap<String, PathBuf>,
+    ) -> Self {
+        let paths = pending_deletions(conflict_map, keepers);
+        Self {
+            model: Arc::downgrade(&view.file_system),
+            keepers: keepers.clone(),
+            kept_groups: keepers
+                .keys()
+                .map(|hash| (hash.clone(), conflict_map.get(hash).cloned()))
+                .collect(),
+            ids: pending_node_ids(&view.file_system, &paths),
+            paths,
+        }
+    }
+
+    fn is_for(
+        &self,
+        view: &FileSystemView,
+        conflict_map: &HashMap<String, Vec<PathBuf>>,
+        keepers: &HashMap<String, PathBuf>,
+    ) -> bool {
+        self.model.ptr_eq(&Arc::downgrade(&view.file_system))
+            && self.keepers == *keepers
+            && self
+                .kept_groups
+                .iter()
+                .all(|(hash, paths)| conflict_map.get(hash) == paths.as_ref())
+    }
+}
+
 /// The only way keepers are stored, so a group is either without a keeper or kept by
 /// one of its own files. `None` clears the group's keeper.
 fn set_keeper(
@@ -519,6 +581,8 @@ pub struct DuplicateFilesPane {
     cursor_rows: CursorRowsCache,
     #[serde(skip)]
     members_generation: u64,
+    #[serde(skip)]
+    pending_deletions: Option<PendingDeletions>,
 }
 
 struct TreeRows {
@@ -574,6 +638,7 @@ impl DuplicateFilesPane {
             hash_batch: 0,
             cursor_rows: CursorRowsCache::default(),
             members_generation: 0,
+            pending_deletions: None,
         }
     }
 
@@ -1005,13 +1070,22 @@ impl DuplicateFilesPane {
                 *ctx.duplicates_filter,
             );
             let cache = self.tree_cache.as_ref().expect("built above");
-            let pending_deletion = pending_deletions(ctx.conflict_map, ctx.conflict_map_resolved);
+            if !self.pending_deletions.as_ref().is_some_and(|pending| {
+                pending.is_for(view, ctx.conflict_map, ctx.conflict_map_resolved)
+            }) {
+                self.pending_deletions = Some(PendingDeletions::new(
+                    view,
+                    ctx.conflict_map,
+                    ctx.conflict_map_resolved,
+                ));
+            }
+            let pending_deletion = self.pending_deletions.as_ref().expect("built above");
             let root = view_root(Some(view)).expect("a view has a root");
             let groups = self.groups.as_ref();
             let keepers = &*ctx.conflict_map_resolved;
             let mut group_cell = |ui: &mut egui::Ui, node_id: FsNodeId| {
-                let cell =
-                    groups.and_then(|groups| groups.cell(node_id, keepers, &pending_deletion));
+                let cell = groups
+                    .and_then(|groups| groups.cell(node_id, keepers, &pending_deletion.paths));
                 ui_group_cell(ui, cell, keepers, &root);
             };
             let mut hash_cell = |ui: &mut egui::Ui, node_id: FsNodeId| {
@@ -1069,7 +1143,7 @@ impl DuplicateFilesPane {
                     diff_filter: ctx.duplicates_filter.diff_filter(),
                 },
                 TreeMode::SingleSide {
-                    pending_deletion: &pending_deletion,
+                    pending_deletion: &pending_deletion.ids,
                     columns,
                     row_menu: &mut row_menu,
                     scroll_to_cursor,

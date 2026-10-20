@@ -621,28 +621,6 @@ pub(super) fn side_node(view: Option<&FileSystemView>, id: Option<FsNodeId>) -> 
     view?.file_system.get_node(id?)
 }
 
-pub(super) fn pending_node_ids(
-    model: &FileSystemModel,
-    pending: &HashSet<PathBuf>,
-) -> HashSet<FsNodeId> {
-    let root = model.path(model.get_root_node_id());
-    pending
-        .iter()
-        .filter_map(|path| {
-            let mut id = model.get_root_node_id();
-            for component in path.strip_prefix(&root).ok()?.components() {
-                let name = component.as_os_str();
-                id = *model
-                    .get_node(id)?
-                    .children()?
-                    .iter()
-                    .find(|&&child| model.get_node(child).is_some_and(|n| n.name() == name))?;
-            }
-            Some(id)
-        })
-        .collect()
-}
-
 /// Each line sits under its folder's expander, in the children's indentation.
 pub(super) fn paint_guides(ui: &egui::Ui, guides: &[Guide]) {
     let cell = ui.max_rect();
