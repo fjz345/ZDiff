@@ -83,7 +83,8 @@ impl<T: RawTokenTrait> CachedFile<T> {
     }
 
     fn build(display_path: UniversalPath, contents: String, hash: Blake3Hash) -> Self {
-        let tokens = Lexer::new(&contents).map(T::from).collect();
+        let mut tokens = Vec::with_capacity(contents.len() / 4);
+        tokens.extend(Lexer::new(&contents).map(T::from));
         let metadata = FileMetadata::new(&contents);
 
         Self {

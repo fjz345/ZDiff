@@ -96,7 +96,10 @@ impl<'a> Lexer<'a> {
     }
 
     fn peek(&self) -> Option<char> {
-        self.source[self.cursor..].chars().next()
+        match *self.source.as_bytes().get(self.cursor)? {
+            b if b.is_ascii() => Some(b as char),
+            _ => self.source[self.cursor..].chars().next(),
+        }
     }
 
     fn consume(&mut self) -> Option<char> {
@@ -106,7 +109,9 @@ impl<'a> Lexer<'a> {
     }
 
     pub fn parse(&mut self) -> Vec<RawToken> {
-        self.by_ref().collect()
+        let mut tokens = Vec::with_capacity(self.rest().len() / 4);
+        tokens.extend(self.by_ref());
+        tokens
     }
 
     pub fn token_value(&self, token: &RawToken) -> &str {
@@ -183,6 +188,23 @@ const KEYWORDS: &[&str] = &[
     "while",
     "yield",
 ];
+
+// Bit n of entry b: some keyword is n bytes long and starts with byte b.
+const KEYWORD_LENGTHS_BY_FIRST_BYTE: [u16; 128] = {
+    let mut lengths = [0; 128];
+    let mut i = 0;
+    while i < KEYWORDS.len() {
+        let keyword = KEYWORDS[i].as_bytes();
+        lengths[keyword[0] as usize] |= 1 << keyword.len();
+        i += 1;
+    }
+    lengths
+};
+
+fn may_be_keyword(word: &str) -> bool {
+    let (first, len) = (word.as_bytes()[0], word.len());
+    first.is_ascii() && len < 16 && KEYWORD_LENGTHS_BY_FIRST_BYTE[first as usize] & (1 << len) != 0
+}
 
 /// Byte length of the literal starting at `rest` (which starts with `"` or `'`), or None if no
 /// literal starts there.
@@ -313,9 +335,9 @@ impl Lexer<'_> {
         let c = self.peek().expect("next_code_token at end of source");
         match c {
             '/' if self.rest().starts_with("//") => {
-                while !self.at_line_end() {
-                    self.consume();
-                }
+                let rest = self.rest().as_bytes();
+                let len = rest.iter().position(|&b| b == b'\r' || b == b'\n');
+                self.consume_bytes(len.unwrap_or(rest.len()));
                 TokenKind::Comment
             }
             '/' if self.rest().starts_with("/*") => {
@@ -365,7 +387,7 @@ impl Lexer<'_> {
                 }
 
                 let word = &self.source[start..self.cursor];
-                if KEYWORDS.binary_search(&word).is_ok() {
+                if may_be_keyword(word) && KEYWORDS.binary_search(&word).is_ok() {
                     TokenKind::Keyword
                 } else {
                     TokenKind::Identifier
@@ -378,28 +400,20 @@ impl Lexer<'_> {
                 }
                 TokenKind::Number
             }
-            _ if "!@#$%^&*()-=+[]{}|;:'<>,.?/".contains(c) => {
-                let start_index = self.cursor;
-
-                let operators = [
-                    ">>", "<<", "==", "!=", ">=", "<=", "&&", "||", "->", "::", "+=", "-=", "*=",
-                    "/=",
-                ];
-
-                let mut matched_operator = false;
-                for op in operators {
-                    if self.source[start_index..].starts_with(op) {
-                        for _ in 0..op.len() {
-                            self.consume();
-                        }
-                        matched_operator = true;
-                        break;
-                    }
-                }
-
-                if !matched_operator {
-                    self.consume();
-                }
+            '!' | '@' | '#' | '$' | '%' | '^' | '&' | '*' | '(' | ')' | '-' | '=' | '+' | '['
+            | ']' | '{' | '}' | '|' | ';' | ':' | '\'' | '<' | '>' | ',' | '.' | '?' | '/' => {
+                let next = self.source.as_bytes().get(self.cursor + 1).copied();
+                let is_operator = matches!(
+                    (c as u8, next),
+                    (b'>', Some(b'>' | b'='))
+                        | (b'<', Some(b'<' | b'='))
+                        | (b'=' | b'!' | b'+' | b'-' | b'*' | b'/', Some(b'='))
+                        | (b'&', Some(b'&'))
+                        | (b'|', Some(b'|'))
+                        | (b'-', Some(b'>'))
+                        | (b':', Some(b':'))
+                );
+                self.consume_bytes(if is_operator { 2 } else { 1 });
                 TokenKind::Symbol
             }
             _ => {
