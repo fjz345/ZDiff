@@ -762,7 +762,7 @@ impl FileDiffPane {
                                                     let u = view.meta[row_index];
                                                     let content = &view.rows[row_index].left;
                                                     let context = u.kind == UnifiedKind::Context;
-                                                    let marked = ctx.active_highlights.contains(&u.row);
+                                                    let marked = ctx.active_highlights.binary_search(&u.row).is_ok();
                                                     let lit = marked
                                                         && (context
                                                             || ctx.highlight_side.is_none_or(|s| s == u.side));
@@ -843,7 +843,7 @@ impl FileDiffPane {
                                             if let Some(rows) = diff_rows {
                                                 let diff_row = &rows[row_index];
                                                 let is_highlighted =
-                                                    ctx.active_highlights.contains(&row_index);
+                                                    ctx.active_highlights.binary_search(&row_index).is_ok();
                                                 let highlight_side = ctx.highlight_side;
                                                 let lit = |side| {
                                                     is_highlighted
@@ -1106,7 +1106,7 @@ impl FileDiffPane {
                                     };
                                     let content =
                                         side_viewers::plain_content(&text.diff_rows[row].left);
-                                    let lit = highlights.contains(&row);
+                                    let lit = highlights.binary_search(&row).is_ok();
                                     let find = row_find(
                                         find_matcher,
                                         find_hit,

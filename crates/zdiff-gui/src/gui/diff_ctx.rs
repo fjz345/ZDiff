@@ -884,7 +884,7 @@ pub struct DiffProcessor {
 
     // Active user state
     pub conflict_cursor: ClampedCursor,
-    pub active_highlights: Vec<usize>,
+    pub active_highlights: Arc<[usize]>,
     /// `None`: both sides.
     pub highlight_side: Option<ActiveSide>,
     highlight_source: Option<HighlightSource>,
@@ -908,7 +908,7 @@ impl Default for DiffProcessor {
         Self {
             ctx: Default::default(),
             conflict_cursor: ClampedCursor::default(),
-            active_highlights: Vec::new(),
+            active_highlights: Arc::default(),
             highlight_side: None,
             highlight_source: None,
             pins: Vec::new(),
@@ -938,7 +938,7 @@ impl DiffProcessor {
         self.update_find(FindCtx::default());
         self.conflict_cursor.set(0);
         self.goto_line_number = None;
-        self.active_highlights.clear();
+        self.active_highlights = Arc::default();
         self.highlight_side = None;
         self.highlight_source = None;
         self.last_conflict_scroll_to_row = None;
@@ -1033,7 +1033,7 @@ impl DiffProcessor {
     pub fn clear_results(&mut self) {
         self.update_find(FindCtx::default());
         self.goto_line_number = None;
-        self.active_highlights.clear();
+        self.active_highlights = Arc::default();
         self.highlight_side = None;
         self.highlight_source = None;
     }
@@ -1076,16 +1076,11 @@ impl DiffProcessor {
             } else {
                 HighlightSource::Conflict
             });
-            self.active_highlights.clear();
-            if let Some(end) = maybe_end {
-                self.active_highlights.extend(*start..=*end);
-            } else {
-                self.active_highlights.push(*start);
-            }
+            self.active_highlights = (*start..=maybe_end.unwrap_or(*start)).collect();
         } else if self.conflict_cursor.get() == 0
             && self.highlight_source == Some(HighlightSource::Conflict)
         {
-            self.active_highlights.clear();
+            self.active_highlights = Arc::default();
             self.highlight_source = None;
         }
 
@@ -1221,8 +1216,9 @@ impl DiffProcessor {
                 .set(index.expect("a remap keeps every hit"));
         }
         let mut highlights: Vec<usize> = self.active_highlights.iter().map(|&r| remap(r)).collect();
+        assert!(highlights.is_sorted(), "remap_row must keep the row order");
         highlights.dedup();
-        self.active_highlights = highlights;
+        self.active_highlights = highlights.into();
         self.last_conflict_scroll_to_row = self.conflict_scroll_to_row();
         self.last_find_scroll_to_row = self.find_scroll_to_row();
     }
@@ -2521,7 +2517,7 @@ mod tests {
                 let ctx = processor.get_minimal_diff_ctx().expect("diff still shown");
                 let rows = &ctx.diff_rows;
                 let found = row_of_left_line(rows, 19);
-                assert_eq!(processor.active_highlights, vec![found]);
+                assert_eq!(*processor.active_highlights, [found]);
                 assert_eq!(processor.find_scroll_to_row().map(|s| s.start), Some(found));
 
                 let conflict = processor.conflict_scroll_to_row().expect("conflict 2");
@@ -2808,7 +2804,7 @@ mod tests {
                 processor.find_cursor.inc();
                 assert_eq!(hit(processor.current_find_hit()), Some((Right, 1, 0)));
                 assert_eq!(processor.get_scroll_to_row().map(|s| s.start), Some(1));
-                assert_eq!(processor.active_highlights, [1]);
+                assert_eq!(*processor.active_highlights, [1]);
             }
 
             #[test]
@@ -2843,7 +2839,7 @@ mod tests {
                 processor.update_goto(Some(2));
 
                 assert_eq!(processor.get_scroll_to_row().map(|s| s.start), Some(1));
-                assert_eq!(processor.active_highlights, [1]);
+                assert_eq!(*processor.active_highlights, [1]);
                 assert_eq!(processor.highlight_side, Some(Right));
 
                 assert_eq!(processor.get_scroll_to_row(), None);
@@ -2883,7 +2879,7 @@ mod tests {
                 assert_eq!(processor.get_scroll_to_row().map(|s| s.start), Some(1));
                 assert_eq!(processor.conflict_cursor.get(), 0);
                 assert_eq!(processor.get_scroll_to_row(), None);
-                assert_eq!(processor.active_highlights, [1]);
+                assert_eq!(*processor.active_highlights, [1]);
             }
 
             #[test]
@@ -2899,7 +2895,7 @@ mod tests {
                 assert_eq!(processor.get_scroll_to_row().map(|s| s.start), Some(1));
                 assert_eq!(processor.conflict_cursor.get(), 0);
                 assert_eq!(processor.get_scroll_to_row(), None);
-                assert_eq!(processor.active_highlights, [1]);
+                assert_eq!(*processor.active_highlights, [1]);
                 assert_eq!(processor.highlight_side, Some(Right));
             }
 

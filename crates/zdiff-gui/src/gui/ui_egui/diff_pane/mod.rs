@@ -139,7 +139,7 @@ pub struct FileDiffPaneCtx<'a> {
     pub code_language: [&'a str; 2],
 
     pub scroll_to_row_span: &'a Option<ScrollSpan>,
-    pub active_highlights: &'a Vec<usize>,
+    pub active_highlights: &'a [usize],
     pub highlight_side: Option<ActiveSide>,
     pub conflict_cursor: &'a mut ClampedCursor,
     pub find_cursor: &'a mut ClampedCursor,
