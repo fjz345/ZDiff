@@ -53,6 +53,8 @@ impl<T: RawTokenTrait> PartialEq for CachedFile<T> {
     }
 }
 
+impl<T: RawTokenTrait> Eq for CachedFile<T> {}
+
 impl<T: RawTokenTrait> CachedFile<T> {
     pub fn read_content_span(&self, span: Range<usize>) -> &str {
         &self.contents[span]

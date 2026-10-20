@@ -5,7 +5,7 @@ use std::sync::{
 
 use crate::{char_diff::CharRanges, ignore::IgnoreMask};
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DiffOp {
     // true: From Source 1, false: From Source 2
     Equal(bool), // From Source 1 (if not one sided diff)
@@ -13,7 +13,7 @@ pub enum DiffOp {
     Insert,      // From Source 2
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DiffResult {
     pub operation: DiffOp,
     pub token_source_idx: Option<u32>,
@@ -21,7 +21,7 @@ pub struct DiffResult {
     pub hide_in_diff: bool,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DiffIR {
     pub entries: Vec<DiffResult>,
     pub distance: i32,

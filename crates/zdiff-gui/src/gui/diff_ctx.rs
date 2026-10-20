@@ -263,7 +263,7 @@ impl From<&UpdateDiffRowsInput> for MyersCtxInput {
 }
 #[derive(Debug, Clone, PartialEq)]
 pub struct DiffIRInput {
-    pub myers_path: MyersPath,
+    pub myers_path: Arc<MyersPath>,
     pub char_ranges: Arc<CharRanges>,
 }
 #[derive(Debug, Clone)]
@@ -287,7 +287,7 @@ pub struct MyersCtx {
 
     num_add_delete: MyersNumAddDelete,
     change_unit: Option<ChangeUnit>,
-    path: MyersPath,
+    path: Arc<MyersPath>,
     char_ranges: Arc<CharRanges>,
     ignored_pins: Option<PinError>,
     phase_trace: Option<Arc<PhaseTrace>>,
@@ -675,7 +675,7 @@ impl DiffCtx {
                         input,
                         num_add_delete,
                         change_unit,
-                        path,
+                        path: Arc::new(path),
                         char_ranges: Arc::new(char_ranges),
                         ignored_pins,
                         phase_trace: trace.map(Arc::new),
