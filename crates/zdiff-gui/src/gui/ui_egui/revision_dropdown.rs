@@ -1,5 +1,6 @@
 use std::path::Path;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use eframe::egui::{
     self, PopupCloseBehavior,
@@ -156,6 +157,7 @@ fn load_listing(path: &UniversalPath) -> Result<Listing, String> {
 
 fn load_workspace(file: &Path) -> Result<Listing, String> {
     let p4 = P4Command::new(false).for_file(UniversalPath::Local(file.to_path_buf()));
+    p4.check_server_reachable(Duration::from_secs(1))?;
     let depot = depot_file_of_local(&p4, file)?;
     list_streams(&p4).map(|streams| Listing::Workspace { depot, streams })
 }

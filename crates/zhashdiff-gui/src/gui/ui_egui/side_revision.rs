@@ -1,5 +1,6 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use eframe::egui;
 use zcommon::{
@@ -203,6 +204,7 @@ fn load_listing(folder: &Path, current: &SideRev) -> Result<Listing, String> {
 
 fn load_workspace(folder: &Path) -> Result<Listing, String> {
     let p4 = P4Command::new(false).for_file(UniversalPath::Local(folder.join("...")));
+    p4.check_server_reachable(Duration::from_secs(1))?;
     let depot = depot_folder_of_local(&p4, folder)?;
     list_streams(&p4).map(|streams| Listing::Workspace { depot, streams })
 }

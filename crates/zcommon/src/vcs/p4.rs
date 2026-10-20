@@ -1,4 +1,5 @@
 use std::io::Read;
+use std::net::{TcpStream, ToSocketAddrs};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -558,6 +559,44 @@ fn checked_stdout(args: &[&str], output: Output) -> Result<Vec<u8>, String> {
     }
 }
 
+const P4PORT_PROTOCOLS: [&str; 10] = [
+    "tcp", "tcp4", "tcp6", "tcp46", "tcp64", "ssl", "ssl4", "ssl6", "ssl46", "ssl64",
+];
+
+fn p4port_address(port: &str) -> Option<(&str, u16)> {
+    let port = port.trim();
+    let address = match port.split_once(':') {
+        Some((protocol, rest)) if P4PORT_PROTOCOLS.contains(&protocol) => rest,
+        _ => port,
+    };
+    let (host, number) = address.rsplit_once(':').unwrap_or(("localhost", address));
+    let host = host.trim_start_matches('[').trim_end_matches(']');
+    Some((host, number.parse().ok()?))
+}
+
+fn port_of_set_output(out: &str) -> Option<&str> {
+    out.trim().strip_prefix("P4PORT=")
+}
+
+fn probe_p4port(port: &str, timeout: Duration) -> Result<(), String> {
+    let Some(address) = p4port_address(port) else {
+        return Ok(());
+    };
+    let unreachable =
+        |reason: String| format!("p4 server {} is unreachable: {reason}", port.trim());
+    let addresses = address
+        .to_socket_addrs()
+        .map_err(|e| unreachable(e.to_string()))?;
+    let mut last_error = "no address".to_string();
+    for address in addresses {
+        match TcpStream::connect_timeout(&address, timeout) {
+            Ok(_) => return Ok(()),
+            Err(e) => last_error = e.to_string(),
+        }
+    }
+    Err(unreachable(last_error))
+}
+
 pub struct P4Command {
     exe_path: String,
     is_gui: bool,
@@ -609,6 +648,21 @@ impl P4Command {
 
     fn prepare_cmd(&self) -> Command {
         self.build_cmd(&get_p4_config())
+    }
+
+    /// p4 itself waits out the OS connect timeout (21 s on Windows) on an unreachable server.
+    pub fn check_server_reachable(&self, timeout: Duration) -> Result<(), String> {
+        let configured = get_p4_config().port;
+        let set_output;
+        // `p4 set` ignores the -p option a configured port is passed as.
+        let port = match configured.as_str() {
+            "" | "#" => {
+                set_output = self.output(&["set", "-q", "P4PORT"])?;
+                port_of_set_output(&set_output).unwrap_or_default()
+            }
+            port => port,
+        };
+        probe_p4port(port, timeout)
     }
 
     pub fn output(&self, args: &[&str]) -> Result<String, String> {
@@ -754,6 +808,56 @@ mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
 
     use super::*;
+
+    #[test]
+    fn p4port_forms_give_the_host_and_port_to_connect_to() {
+        assert_eq!(
+            p4port_address("192.168.1.92:1666"),
+            Some(("192.168.1.92", 1666))
+        );
+        assert_eq!(
+            p4port_address("ssl:p4.example.com:1666"),
+            Some(("p4.example.com", 1666))
+        );
+        assert_eq!(p4port_address("tcp:p4:1666"), Some(("p4", 1666)));
+        assert_eq!(p4port_address("tcp6:[::1]:1666"), Some(("::1", 1666)));
+        assert_eq!(
+            p4port_address("ssl64:[fe80::1]:1667"),
+            Some(("fe80::1", 1667))
+        );
+        assert_eq!(p4port_address("1666"), Some(("localhost", 1666)));
+        assert_eq!(p4port_address("ssl:1666"), Some(("localhost", 1666)));
+        assert_eq!(p4port_address(" p4:1666\r\n"), Some(("p4", 1666)));
+    }
+
+    #[test]
+    fn p4port_forms_without_a_tcp_address_are_not_probed() {
+        assert_eq!(p4port_address("rsh:p4d -r /p4root -i"), None);
+        assert_eq!(p4port_address("p4:notaport"), None);
+        assert_eq!(p4port_address(""), None);
+    }
+
+    #[test]
+    fn the_port_comes_from_p4_set_quiet_output() {
+        assert_eq!(
+            port_of_set_output("P4PORT=ssl:p4:1666\r\n"),
+            Some("ssl:p4:1666")
+        );
+        assert_eq!(port_of_set_output(""), None);
+    }
+
+    #[test]
+    fn a_listening_server_is_reachable_and_a_closed_port_is_not() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let open = listener.local_addr().unwrap().port();
+        assert_eq!(
+            probe_p4port(&format!("127.0.0.1:{open}"), Duration::from_secs(5)),
+            Ok(())
+        );
+        drop(listener);
+        assert!(probe_p4port(&format!("127.0.0.1:{open}"), Duration::from_millis(200)).is_err());
+        assert_eq!(probe_p4port("rsh:p4d -i", Duration::from_secs(5)), Ok(()));
+    }
 
     fn config(port: &str, user: &str, client: &str, charset: &str) -> P4Config {
         P4Config {

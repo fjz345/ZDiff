@@ -303,8 +303,12 @@ impl VideoFrameProcessor {
         let Some(ffmpeg) = self.ffmpeg.clone() else {
             return;
         };
+        // Both sides fetch for the same time, so the pair shown and compared is one moment.
+        if self.fetching.iter().any(Option::is_some) {
+            return;
+        }
         for index in 0..2 {
-            let (Probe::Done(Ok(track)), None) = (&self.probes[index], self.fetching[index]) else {
+            let Probe::Done(Ok(track)) = &self.probes[index] else {
                 continue;
             };
             let wanted = track.nearest_frame(self.time_secs);
@@ -333,6 +337,9 @@ impl VideoFrameProcessor {
             (Probe::Idle | Probe::Running, _) | (Probe::Done(Ok(_)), None) => ImageSide::Pending,
             (Probe::Done(Err(reason)), _) | (Probe::Done(Ok(_)), Some((_, Err(reason)))) => {
                 ImageSide::Failed(reason.clone())
+            }
+            (Probe::Done(Ok(_)), Some((_, Ok(_)))) if self.fetching.iter().any(Option::is_some) => {
+                ImageSide::Pending
             }
             (Probe::Done(Ok(_)), Some((_, Ok(frame)))) => ImageSide::Image(frame.clone()),
         }
@@ -706,5 +713,61 @@ mod tests {
 
         processor.request([file("c.mp4"), file("d.mp4")], Some(&ffmpeg));
         assert!(!processor.timeline.is_started());
+    }
+
+    fn probed_pair(ffmpeg: Option<FfmpegPaths>) -> VideoFrameProcessor {
+        let file = |name: &str| {
+            Some(LoadedFile::Binary(Arc::new(crate::file::BinaryFile {
+                path: zdiff::universal_path::UniversalPath::from(name),
+                bytes: vec![0; 4],
+            })))
+        };
+        let frame = |index| {
+            let track = track(25.0, 25);
+            (
+                index,
+                Ok(Arc::new(frame_image(&track, index, vec![7; 32]).unwrap())),
+            )
+        };
+        VideoFrameProcessor {
+            files: [file("a.mp4"), file("b.mp4")],
+            ffmpeg,
+            probes: [
+                Probe::Done(Ok(track(25.0, 25))),
+                Probe::Done(Ok(track(25.0, 25))),
+            ],
+            frames: [Some(frame(0)), Some(frame(0))],
+            ..VideoFrameProcessor::default()
+        }
+    }
+
+    #[test]
+    fn a_side_keeps_its_shown_frame_until_the_other_sides_fetch_lands() {
+        let mut processor = probed_pair(None);
+        processor.frames[0].as_mut().unwrap().0 = 1;
+        processor.fetching[1] = Some(1);
+        assert!(matches!(processor.image_side(0), ImageSide::Pending));
+        assert!(matches!(processor.image_side(1), ImageSide::Pending));
+
+        processor.fetching[1] = None;
+        assert!(matches!(processor.image_side(0), ImageSide::Image(_)));
+        assert!(matches!(processor.image_side(1), ImageSide::Image(_)));
+    }
+
+    #[test]
+    fn both_sides_fetch_the_next_time_together() {
+        let ffmpeg = FfmpegPaths {
+            ffmpeg: "missing-ffmpeg".into(),
+            ffprobe: "missing-ffprobe".into(),
+        };
+        let mut processor = probed_pair(Some(ffmpeg));
+        processor.fetching[1] = Some(0);
+        processor.seek(track(25.0, 25).frame_time(1));
+        processor.fetch_wanted();
+        assert_eq!(processor.fetching, [None, Some(0)]);
+
+        processor.fetching[1] = None;
+        processor.fetch_wanted();
+        assert_eq!(processor.fetching, [Some(1), Some(1)]);
     }
 }
