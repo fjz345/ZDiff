@@ -371,7 +371,7 @@ fn ui_group_cell(
 }
 
 fn files_to_hash(view: &FileSystemView, hidden: &[bool]) -> Vec<PathBuf> {
-    let files: Vec<SizedFile> = view
+    let files: Vec<SizedFile<FsNodeId>> = view
         .file_system
         .iter_files()
         .map(|node_id| {
@@ -380,13 +380,16 @@ fn files_to_hash(view: &FileSystemView, hidden: &[bool]) -> Vec<PathBuf> {
                 .get_node(node_id)
                 .expect("iter_files yields valid node ids");
             SizedFile {
-                path: view.file_system.path(node_id),
+                path: node_id,
                 size: node.size,
                 hidden: hidden[node_id],
             }
         })
         .collect();
     size_collisions(&files)
+        .into_iter()
+        .map(|node_id| view.file_system.path(node_id))
+        .collect()
 }
 
 #[derive(Debug, PartialEq)]

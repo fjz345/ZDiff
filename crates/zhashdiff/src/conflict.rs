@@ -166,14 +166,14 @@ pub fn recycle_is_undoable(_path: &Path) -> bool {
     false
 }
 
-pub struct SizedFile {
-    pub path: PathBuf,
+pub struct SizedFile<P = PathBuf> {
+    pub path: P,
     pub size: u64,
     pub hidden: bool,
 }
 
 /// Visible files sharing their size with another visible file, in input order.
-pub fn size_collisions(files: &[SizedFile]) -> Vec<PathBuf> {
+pub fn size_collisions<P: Clone>(files: &[SizedFile<P>]) -> Vec<P> {
     let visible = || files.iter().filter(|file| !file.hidden);
     let mut counts: HashMap<u64, usize> = HashMap::new();
     for file in visible() {
