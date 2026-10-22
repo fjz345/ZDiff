@@ -1,4 +1,4 @@
-use eframe::egui::{self, Layout, PointerButton};
+use eframe::egui::{self, Layout, PointerButton, containers::menu::MenuConfig};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
@@ -811,72 +811,93 @@ impl ZApp {
 
     fn show_menu(&mut self, ui: &mut egui::Ui, app_ctx: &mut AppStateCtx) {
         ui.horizontal(|ui| {
-            egui::MenuBar::new().ui(ui, |ui| {
-                ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
-                ui.menu_button("File", |ui| {
-                    if menu_item(
-                        ui,
-                        "Open Folder 1",
-                        &app_ctx.keymap,
-                        FolderAction::OpenFolder1,
-                    )
-                    .clicked()
-                    {
-                        self.open_dir_window_1 = true;
-                    }
-                    if menu_item(
-                        ui,
-                        "Open Folder 2",
-                        &app_ctx.keymap,
-                        FolderAction::OpenFolder2,
-                    )
-                    .clicked()
-                    {
-                        self.open_dir_window_2 = true;
-                    }
-                });
+            egui::MenuBar::new()
+                .config(
+                    MenuConfig::new().close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside),
+                )
+                .ui(ui, |ui| {
+                    ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
+                    ui.menu_button("File", |ui| {
+                        if menu_item(
+                            ui,
+                            "Open Folder 1",
+                            &app_ctx.keymap,
+                            FolderAction::OpenFolder1,
+                        )
+                        .clicked()
+                        {
+                            self.open_dir_window_1 = true;
+                        }
+                        if menu_item(
+                            ui,
+                            "Open Folder 2",
+                            &app_ctx.keymap,
+                            FolderAction::OpenFolder2,
+                        )
+                        .clicked()
+                        {
+                            self.open_dir_window_2 = true;
+                        }
+                        if menu_item(ui, "Swap Sides", &app_ctx.keymap, FolderAction::SwapSides)
+                            .clicked()
+                        {
+                            app_ctx.sides_swapped = !app_ctx.sides_swapped;
+                        }
+                        if menu_item(ui, "Refresh", &app_ctx.keymap, FolderAction::Refresh)
+                            .clicked()
+                        {
+                            app_ctx.refresh();
+                            ui.ctx().request_repaint();
+                        }
+                        if ui.button("Clear Folder Paths").clicked() {
+                            clear_root(&mut app_ctx.file_system_1_root_path);
+                            clear_root(&mut app_ctx.file_system_2_root_path);
+                            ui.close();
+                        }
+                        ui.add_enabled_ui(self.diff_mode_path_diff, |ui| {
+                            if menu_item(ui, "Find", &app_ctx.keymap, FolderAction::Find).clicked()
+                            {
+                                self.find_open = true;
+                            }
+                        });
+                    });
 
-                ui.menu_button("Options", |ui| {
-                    if ui.button("External Diff Tools").clicked() {
-                        self.tools_window.open = true;
-                    }
-                    if menu_item(
-                        ui,
-                        "Keybindings",
-                        &app_ctx.keymap,
-                        FolderAction::OpenKeybindings,
-                    )
-                    .clicked()
-                    {
-                        self.keybindings_window.open = true;
-                    }
-                    if ui.button("Style").clicked() {
-                        self.style_window.open(ui.ctx());
-                    }
-                });
+                    ui.menu_button("Options", |ui| {
+                        if ui.button("External Diff Tools").clicked() {
+                            self.tools_window.open = true;
+                        }
+                        if menu_item(
+                            ui,
+                            "Keyboard Shortcuts",
+                            &app_ctx.keymap,
+                            FolderAction::OpenKeybindings,
+                        )
+                        .clicked()
+                        {
+                            self.keybindings_window.open = true;
+                        }
+                        if ui.button("Style").clicked() {
+                            self.style_window.open(ui.ctx());
+                        }
+                    });
 
-                let diff_mode_text = if self.diff_mode_path_diff {
-                    "Change to Duplicate Diff"
-                } else {
-                    "Change to Path Diff"
-                };
-                ui.menu_button("Diff Mode", |ui| {
-                    if ui.button(diff_mode_text).clicked() {
-                        self.diff_mode_path_diff = !self.diff_mode_path_diff;
-                    }
-                });
-                ui.menu_button("Debug", |ui| {
-                    if ui.button("Clear Root Paths").clicked() {
-                        clear_root(&mut app_ctx.file_system_1_root_path);
-                        clear_root(&mut app_ctx.file_system_2_root_path);
-                    }
-                    if ui.button("Clear FileSystemModels").clicked() {
-                        app_ctx.file_system_model_1_view = None;
-                        app_ctx.file_system_model_2_view = None;
-                        app_ctx.two_folder_diff_visible_rows = None;
-                    }
+                    let diff_mode_text = if self.diff_mode_path_diff {
+                        "Change to Duplicate Diff"
+                    } else {
+                        "Change to Path Diff"
+                    };
+                    ui.menu_button("Diff Mode", |ui| {
+                        if ui.button(diff_mode_text).clicked() {
+                            self.diff_mode_path_diff = !self.diff_mode_path_diff;
+                        }
+                    });
                     #[cfg(debug_assertions)]
-                    {
+                    ui.menu_button("Debug", |ui| {
+                        if ui.button("Clear FileSystemModels").clicked() {
+                            app_ctx.file_system_model_1_view = None;
+                            app_ctx.file_system_model_2_view = None;
+                            app_ctx.two_folder_diff_visible_rows = None;
+                        }
                         ui.separator();
                         for (label, p1, p2) in [
                             (
@@ -912,34 +933,8 @@ impl ZApp {
                                 }
                             }
                         }
-                    }
+                    });
                 });
-
-                // Inside the bar: `MenuBar` takes the full width, so anything after it overflows
-                // and widens the panel under it.
-                let shown = app_ctx.file_system_model_1_view.is_some()
-                    || app_ctx.file_system_model_2_view.is_some();
-                let refresh = ui
-                    .add_enabled(shown, egui::Button::new("Refresh"))
-                    .on_hover_text(
-                        app_ctx
-                            .keymap
-                            .with_shortcut(FolderAction::Refresh, "Refresh"),
-                    );
-                if refresh.clicked() {
-                    app_ctx.refresh();
-                    ui.ctx().request_repaint();
-                }
-                let swap = ui
-                    .add_enabled(
-                        shown,
-                        egui::Button::selectable(app_ctx.sides_swapped, "Swap"),
-                    )
-                    .on_hover_text("Show Folder 1 on the right and Folder 2 on the left");
-                if swap.clicked() {
-                    app_ctx.sides_swapped = !app_ctx.sides_swapped;
-                }
-            });
         });
         if self.tools_window.open {
             self.tools_window.show(ui.ctx(), &mut app_ctx.diff_config);
@@ -972,6 +967,9 @@ impl ZApp {
         if actions.contains(&FolderAction::Refresh) {
             app_ctx.refresh();
             ctx.request_repaint();
+        }
+        if actions.contains(&FolderAction::SwapSides) {
+            app_ctx.sides_swapped = !app_ctx.sides_swapped;
         }
         if actions.contains(&FolderAction::Find) && self.diff_mode_path_diff {
             self.find_open = true;

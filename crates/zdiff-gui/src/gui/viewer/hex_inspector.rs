@@ -79,6 +79,35 @@ pub enum InspectorValue {
     Text(String),
 }
 
+impl InspectorValue {
+    pub fn byte_len(&self) -> usize {
+        match self {
+            InspectorValue::U8(_) | InspectorValue::I8(_) => 1,
+            InspectorValue::U16(_) | InspectorValue::I16(_) => 2,
+            InspectorValue::U32(_) | InspectorValue::I32(_) | InspectorValue::F32(_) => 4,
+            InspectorValue::U64(_) | InspectorValue::I64(_) | InspectorValue::F64(_) => 8,
+            InspectorValue::Text(text) => text.len(),
+        }
+    }
+
+    pub fn hex_text(&self) -> Option<String> {
+        let bits = match *self {
+            InspectorValue::U8(v) => u64::from(v),
+            InspectorValue::I8(v) => u64::from(v as u8),
+            InspectorValue::U16(v) => u64::from(v),
+            InspectorValue::I16(v) => u64::from(v as u16),
+            InspectorValue::U32(v) => u64::from(v),
+            InspectorValue::I32(v) => u64::from(v as u32),
+            InspectorValue::U64(v) => v,
+            InspectorValue::I64(v) => v as u64,
+            InspectorValue::F32(v) => u64::from(v.to_bits()),
+            InspectorValue::F64(v) => v.to_bits(),
+            InspectorValue::Text(_) => return None,
+        };
+        Some(format!("0x{bits:0width$X}", width = self.byte_len() * 2))
+    }
+}
+
 impl fmt::Display for InspectorValue {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -90,10 +119,23 @@ impl fmt::Display for InspectorValue {
             InspectorValue::I32(v) => write!(f, "{v}"),
             InspectorValue::U64(v) => write!(f, "{v}"),
             InspectorValue::I64(v) => write!(f, "{v}"),
-            InspectorValue::F32(v) => write!(f, "{v}"),
-            InspectorValue::F64(v) => write!(f, "{v}"),
+            InspectorValue::F32(v) => write_float(f, *v, f64::from(v.abs())),
+            InspectorValue::F64(v) => write_float(f, *v, v.abs()),
             InspectorValue::Text(v) => write!(f, "\"{v}\""),
         }
+    }
+}
+
+fn write_float<T: fmt::Display + fmt::LowerExp>(
+    f: &mut fmt::Formatter<'_>,
+    value: T,
+    magnitude: f64,
+) -> fmt::Result {
+    let readable = magnitude == 0.0 || (1e-4..1e15).contains(&magnitude) || !magnitude.is_finite();
+    if readable {
+        write!(f, "{value}")
+    } else {
+        write!(f, "{value:e}")
     }
 }
 
@@ -157,6 +199,7 @@ pub fn inspector_ui(
     cursor: Option<usize>,
     sides: [&[u8]; 2],
     endian: &Cell<Endian>,
+    hover: &Cell<Option<InspectorKind>>,
 ) {
     let different = role_color(ui.ctx(), FileRole::HexDifferent);
     egui::CollapsingHeader::new("Value inspector")
@@ -196,18 +239,27 @@ pub fn inspector_ui(
                                 }
                                 continue;
                             };
-                            ui.label(kind.label());
+                            let mut hovered = ui.label(kind.label()).hovered();
                             let marked = values_differ(&values[0][index], &values[1][index]);
                             for side in &values {
                                 let text = match &side[index] {
                                     Some(value) => egui::RichText::new(value.to_string()),
                                     None => egui::RichText::new("n/a").weak(),
                                 };
-                                ui.label(if marked {
+                                let mut response = ui.label(if marked {
                                     text.background_color(different)
                                 } else {
                                     text
                                 });
+                                if let Some(hex) =
+                                    side[index].as_ref().and_then(InspectorValue::hex_text)
+                                {
+                                    response = response.on_hover_text(hex);
+                                }
+                                hovered |= response.hovered();
+                            }
+                            if hovered {
+                                hover.set(Some(*kind));
                             }
                         }
                         ui.end_row();
@@ -421,6 +473,77 @@ mod tests {
         assert!(values_differ(&a, &None));
         assert!(values_differ(&None, &b));
         assert!(!values_differ(&None, &None));
+    }
+
+    #[test]
+    fn floats_in_a_readable_range_print_plainly() {
+        assert_eq!(InspectorValue::F32(1.5).to_string(), "1.5");
+        assert_eq!(InspectorValue::F64(-2.25).to_string(), "-2.25");
+        assert_eq!(InspectorValue::F64(0.0).to_string(), "0");
+        assert_eq!(InspectorValue::F64(0.001).to_string(), "0.001");
+        assert_eq!(InspectorValue::F64(123456789.0).to_string(), "123456789");
+    }
+
+    #[test]
+    fn huge_and_tiny_floats_print_in_scientific_notation() {
+        assert_eq!(InspectorValue::F64(1e300).to_string(), "1e300");
+        assert_eq!(InspectorValue::F64(-1.25e-300).to_string(), "-1.25e-300");
+        assert_eq!(InspectorValue::F32(3.4e38).to_string(), "3.4e38");
+        assert_eq!(
+            InspectorValue::F64(f64::MIN_POSITIVE).to_string(),
+            "2.2250738585072014e-308"
+        );
+        assert_eq!(InspectorValue::F64(0.0000123).to_string(), "1.23e-5");
+    }
+
+    #[test]
+    fn non_finite_floats_print_by_name() {
+        assert_eq!(InspectorValue::F64(f64::NAN).to_string(), "NaN");
+        assert_eq!(InspectorValue::F32(f32::NEG_INFINITY).to_string(), "-inf");
+    }
+
+    #[test]
+    fn neighbouring_floats_still_differ() {
+        let a = 1e-300f64;
+        let b = f64::from_bits(a.to_bits() + 1);
+        assert!(values_differ(
+            &Some(InspectorValue::F64(a)),
+            &Some(InspectorValue::F64(b))
+        ));
+    }
+
+    #[test]
+    fn numbers_show_their_raw_bits_in_hex_padded_to_the_width() {
+        assert_eq!(InspectorValue::U8(0xAB).hex_text().as_deref(), Some("0xAB"));
+        assert_eq!(InspectorValue::U16(1).hex_text().as_deref(), Some("0x0001"));
+        assert_eq!(InspectorValue::I8(-1).hex_text().as_deref(), Some("0xFF"));
+        assert_eq!(
+            InspectorValue::I32(-2).hex_text().as_deref(),
+            Some("0xFFFFFFFE")
+        );
+        assert_eq!(
+            InspectorValue::U64(0x1234).hex_text().as_deref(),
+            Some("0x0000000000001234")
+        );
+        assert_eq!(
+            InspectorValue::F32(1.5).hex_text().as_deref(),
+            Some("0x3FC00000")
+        );
+        assert_eq!(
+            InspectorValue::F64(-2.25).hex_text().as_deref(),
+            Some("0xC002000000000000")
+        );
+        assert_eq!(InspectorValue::Text("ab".to_string()).hex_text(), None);
+    }
+
+    #[test]
+    fn values_cover_their_width_and_text_its_length() {
+        assert_eq!(InspectorValue::U8(0).byte_len(), 1);
+        assert_eq!(InspectorValue::I16(0).byte_len(), 2);
+        assert_eq!(InspectorValue::F32(0.0).byte_len(), 4);
+        assert_eq!(InspectorValue::U64(0).byte_len(), 8);
+        assert_eq!(InspectorValue::Text("abc".to_string()).byte_len(), 3);
+        assert_eq!(InspectorValue::Text(String::new()).byte_len(), 0);
     }
 
     #[test]

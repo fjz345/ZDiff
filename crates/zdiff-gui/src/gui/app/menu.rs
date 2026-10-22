@@ -1,6 +1,5 @@
 use super::{ZApp, quickdiff::run_diff_against_shelf_base};
 use eframe::egui::{self, containers::menu::MenuConfig};
-use std::env;
 use zcommon_ui::common::show_custom_popup;
 use zcommon_ui::h_scroll::WheelModifier;
 use zcommon_ui::keymap::menu_item;
@@ -84,9 +83,7 @@ impl ZApp {
                             self.open_merge_form.open = true;
                             ui.close();
                         }
-                        if menu_item(ui, "Swap Source/Target", keymap, FileAction::SwapSides)
-                            .clicked()
-                        {
+                        if menu_item(ui, "Swap Sides", keymap, FileAction::SwapSides).clicked() {
                             *sides_swapped = !*sides_swapped;
                         }
                         if menu_item(
@@ -98,6 +95,26 @@ impl ZApp {
                         .clicked()
                         {
                             run_diff_against_shelf_base(file_1, file_2);
+                        }
+                        if menu_item(ui, "Refresh", keymap, FileAction::RefreshDiff).clicked() {
+                            diff_processor.reset_ctx();
+                            Self::refresh_file_contents(file_1, file_2);
+                        }
+                        if menu_item(
+                            ui,
+                            "Refresh Diff Rows Only",
+                            keymap,
+                            FileAction::RefreshDiffRowsOnly,
+                        )
+                        .clicked()
+                        {
+                            diff_processor.reset_ctx();
+                        }
+                        if ui.button("Clear File Paths").clicked() {
+                            file_1.set_path(UniversalPath::default());
+                            file_2.set_path(UniversalPath::default());
+                            diff_processor.reset_ctx();
+                            ui.close();
                         }
                         if menu_item(ui, "Find", keymap, FileAction::Find).clicked() {
                             *find_open = true;
@@ -221,147 +238,121 @@ impl ZApp {
                         }
                     });
 
+                    #[cfg(debug_assertions)]
                     ui.menu_button("Debug", |ui| {
-                        if ui.button("Clear File Paths").clicked() {
-                            file_1.set_path(UniversalPath::default());
-                            file_2.set_path(UniversalPath::default());
-                            diff_processor.reset_ctx();
-                            ui.close();
-                        }
-                        if menu_item(ui, "Clear Cached Files", keymap, FileAction::RefreshDiff)
-                            .clicked()
-                        {
-                            diff_processor.reset_ctx();
-                            Self::refresh_file_contents(file_1, file_2);
-                        }
-                        if menu_item(
-                            ui,
-                            "Clear Diff Rows",
-                            keymap,
-                            FileAction::RefreshDiffRowsOnly,
-                        )
-                        .clicked()
-                        {
-                            diff_processor.reset_ctx();
-                        }
                         if ui.button("Phase Trace").clicked() {
                             self.open_phase_trace_window = true;
                             ui.close();
                         }
                         ui.checkbox(&mut self.phase_overlay, "Phase Overlay");
-                        #[cfg(debug_assertions)]
-                        {
-                            let load_btn = |ui: &mut egui::Ui,
-                                            label: &str,
-                                            file_1: &mut FileProcessor,
-                                            file_2: &mut FileProcessor,
-                                            diff_processor: &mut DiffProcessor,
-                                            p1: &str,
-                                            p2: &str| {
-                                let base = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-                                let (p1, p2) = (base.join(p1), base.join(p2));
-                                let missing = [&p1, &p2].into_iter().find(|p| !p.exists());
-                                let button = ui
-                                    .add_enabled(missing.is_none(), egui::Button::new(label))
-                                    .on_disabled_hover_text(format!(
-                                        "Missing fixture {}",
-                                        missing
-                                            .map(|p| p.display().to_string())
-                                            .unwrap_or_default()
-                                    ));
-                                if button.clicked() {
-                                    ui.close();
-                                    file_1.set_root("".into());
-                                    file_2.set_root("".into());
-                                    file_1.set_path(UniversalPath::from(p1));
-                                    file_2.set_path(UniversalPath::from(p2));
+                        let load_btn = |ui: &mut egui::Ui,
+                                        label: &str,
+                                        file_1: &mut FileProcessor,
+                                        file_2: &mut FileProcessor,
+                                        diff_processor: &mut DiffProcessor,
+                                        p1: &str,
+                                        p2: &str| {
+                            let base = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+                            let (p1, p2) = (base.join(p1), base.join(p2));
+                            let missing = [&p1, &p2].into_iter().find(|p| !p.exists());
+                            let button = ui
+                                .add_enabled(missing.is_none(), egui::Button::new(label))
+                                .on_disabled_hover_text(format!(
+                                    "Missing fixture {}",
+                                    missing.map(|p| p.display().to_string()).unwrap_or_default()
+                                ));
+                            if button.clicked() {
+                                ui.close();
+                                file_1.set_root("".into());
+                                file_2.set_root("".into());
+                                file_1.set_path(UniversalPath::from(p1));
+                                file_2.set_path(UniversalPath::from(p2));
 
-                                    diff_processor.reset_ctx();
-                                }
-                            };
+                                diff_processor.reset_ctx();
+                            }
+                        };
 
-                            load_btn(
-                                ui,
-                                "Load $A",
-                                file_1,
-                                file_2,
-                                diff_processor,
-                                "../../test/rust_files_diff_1/advanced_rust.rs",
-                                "../../test/rust_files_diff_1/advanced_rust_2.rs",
-                            );
+                        load_btn(
+                            ui,
+                            "Load $A",
+                            file_1,
+                            file_2,
+                            diff_processor,
+                            "../../test/rust_files_diff_1/advanced_rust.rs",
+                            "../../test/rust_files_diff_1/advanced_rust_2.rs",
+                        );
 
-                            load_btn(
-                                ui,
-                                "Load $B",
-                                file_1,
-                                file_2,
-                                diff_processor,
-                                "../../test/rust_files_diff_1/imgui.1.91.1.h",
-                                "../../test/rust_files_diff_1/imgui.h",
-                            );
+                        load_btn(
+                            ui,
+                            "Load $B",
+                            file_1,
+                            file_2,
+                            diff_processor,
+                            "../../test/rust_files_diff_1/imgui.1.91.1.h",
+                            "../../test/rust_files_diff_1/imgui.h",
+                        );
 
-                            load_btn(
-                                ui,
-                                "Load $C",
-                                file_1,
-                                file_2,
-                                diff_processor,
-                                "../../test/test_ignore_whitespace_simple/1.txt",
-                                "../../test/test_ignore_whitespace_simple/2.txt",
-                            );
+                        load_btn(
+                            ui,
+                            "Load $C",
+                            file_1,
+                            file_2,
+                            diff_processor,
+                            "../../test/test_ignore_whitespace_simple/1.txt",
+                            "../../test/test_ignore_whitespace_simple/2.txt",
+                        );
 
-                            load_btn(
-                                ui,
-                                "Load $D",
-                                file_1,
-                                file_2,
-                                diff_processor,
-                                "../../test/test_ignore_whitespace_extreme_simple/1.txt",
-                                "../../test/test_ignore_whitespace_extreme_simple/2.txt",
-                            );
+                        load_btn(
+                            ui,
+                            "Load $D",
+                            file_1,
+                            file_2,
+                            diff_processor,
+                            "../../test/test_ignore_whitespace_extreme_simple/1.txt",
+                            "../../test/test_ignore_whitespace_extreme_simple/2.txt",
+                        );
 
-                            ui.separator();
+                        ui.separator();
 
-                            load_btn(
-                                ui,
-                                "Open Text Logs",
-                                file_1,
-                                file_2,
-                                diff_processor,
-                                "../../test/test_log/1.txt",
-                                "../../test/test_log/2.txt",
-                            );
+                        load_btn(
+                            ui,
+                            "Open Text Logs",
+                            file_1,
+                            file_2,
+                            diff_processor,
+                            "../../test/test_log/1.txt",
+                            "../../test/test_log/2.txt",
+                        );
 
-                            load_btn(
-                                ui,
-                                "Open Hex Binaries",
-                                file_1,
-                                file_2,
-                                diff_processor,
-                                "../../test/1/2/2_battery-crates_all_A1-Mini - Copy (4).3mf",
-                                "../../test/test_similar_2/1/2/AAA.3mf",
-                            );
+                        load_btn(
+                            ui,
+                            "Open Hex Binaries",
+                            file_1,
+                            file_2,
+                            diff_processor,
+                            "../../test/1/2/2_battery-crates_all_A1-Mini - Copy (4).3mf",
+                            "../../test/test_similar_2/1/2/AAA.3mf",
+                        );
 
-                            load_btn(
-                                ui,
-                                "Open PNG Pair",
-                                file_1,
-                                file_2,
-                                diff_processor,
-                                "../../test/test_similar_1/different_hash.png",
-                                "../../test/test_similar_2/different_hash.png",
-                            );
+                        load_btn(
+                            ui,
+                            "Open PNG Pair",
+                            file_1,
+                            file_2,
+                            diff_processor,
+                            "../../test/test_similar_1/different_hash.png",
+                            "../../test/test_similar_2/different_hash.png",
+                        );
 
-                            load_btn(
-                                ui,
-                                "Open PNG vs Text",
-                                file_1,
-                                file_2,
-                                diff_processor,
-                                "../../test/1/admin_icon.png",
-                                "../../test/test_log/1.txt",
-                            );
-                        }
+                        load_btn(
+                            ui,
+                            "Open PNG vs Text",
+                            file_1,
+                            file_2,
+                            diff_processor,
+                            "../../test/1/admin_icon.png",
+                            "../../test/test_log/1.txt",
+                        );
                     });
                 });
         });
@@ -370,7 +361,7 @@ impl ZApp {
             show_custom_popup(
                 ui.ctx(),
                 &mut self.open_shortcuts_window,
-                "Option - Shortcuts",
+                "Keyboard Shortcuts",
                 true,
                 |ui| {
                     ui_keybindings(

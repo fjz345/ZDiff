@@ -10,7 +10,9 @@ use crate::ui_egui::{
     tree_compare::{PairLikeness, TreeCompare},
 };
 
-const BAR_COLOR: egui::Color32 = egui::Color32::from_rgb(0x2E, 0x6B, 0x8F);
+const UNLIKE_COLOR: egui::Color32 = egui::Color32::from_rgb(0xB0, 0x3A, 0x2E);
+const HALF_LIKE_COLOR: egui::Color32 = egui::Color32::from_rgb(0xA8, 0x8C, 0x1E);
+const ALIKE_COLOR: egui::Color32 = egui::Color32::from_rgb(0x3A, 0x8C, 0x3A);
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum FolderLikeness {
@@ -167,7 +169,7 @@ fn bar(ui: &mut egui::Ui, ratio: f64, row_height: f32) -> egui::Response {
     painter.rect_filled(rect, 2.0, ui.visuals().extreme_bg_color);
     let mut filled = rect;
     filled.set_width(rect.width() * ratio.clamp(0.0, 1.0) as f32);
-    painter.rect_filled(filled, 2.0, BAR_COLOR);
+    painter.rect_filled(filled, 2.0, likeness_color(ratio));
     painter.text(
         rect.center(),
         egui::Align2::CENTER_CENTER,
@@ -176,6 +178,15 @@ fn bar(ui: &mut egui::Ui, ratio: f64, row_height: f32) -> egui::Response {
         ui.visuals().strong_text_color(),
     );
     response
+}
+
+fn likeness_color(ratio: f64) -> egui::Color32 {
+    let t = ratio.clamp(0.0, 1.0) as f32 * 2.0;
+    if t <= 1.0 {
+        UNLIKE_COLOR.lerp_to_gamma(HALF_LIKE_COLOR, t)
+    } else {
+        HALF_LIKE_COLOR.lerp_to_gamma(ALIKE_COLOR, t - 1.0)
+    }
 }
 
 fn tooltip(likeness: &Likeness) -> String {

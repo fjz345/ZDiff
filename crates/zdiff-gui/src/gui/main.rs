@@ -72,6 +72,7 @@ fn main() -> ExitCode {
                             Ok(mut app) => {
                                 log::info!("Found previous app storage");
                                 app.report_exit_code_to(app_exit_code);
+                                app.remember_window_from(cc.storage);
                                 app.request_init();
                                 return Ok(Box::new(app));
                             }
@@ -85,6 +86,7 @@ fn main() -> ExitCode {
 
             let mut app = ZApp::new();
             app.report_exit_code_to(app_exit_code);
+            app.remember_window_from(cc.storage);
             app.request_init();
             Ok(Box::<ZApp>::new(app))
         }),

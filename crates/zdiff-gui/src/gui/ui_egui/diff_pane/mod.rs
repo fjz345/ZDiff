@@ -145,7 +145,7 @@ pub struct FileDiffPaneCtx<'a> {
     pub highlight_side: Option<ActiveSide>,
     pub conflict_cursor: &'a mut ClampedCursor,
     pub find_cursor: &'a mut ClampedCursor,
-    pub find_matcher: Option<&'a Matcher>,
+    pub find_matchers: [Option<&'a Matcher>; 2],
     pub find_hit: Option<FindHit>,
     pub find_count: usize,
     pub active_side: &'a mut ActiveSide,

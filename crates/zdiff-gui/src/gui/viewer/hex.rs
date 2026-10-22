@@ -8,7 +8,7 @@ use zcommon::job::Job;
 use zcommon_ui::{style_window::role_color, table::SplitColumn};
 use zdiff::hex::{HexDiff, HexSide, hex_diff};
 
-use super::hex_inspector::{Endian, inspector_ui};
+use super::hex_inspector::{Endian, InspectorKind, decode, inspector_ui};
 use crate::{
     diff_ctx::ScrollSpan,
     file::LoadedFile,
@@ -28,6 +28,25 @@ pub enum HexByteState {
     Different,
     /// In the size-mismatch tail, so only this side has it.
     OnlyHere,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ByteClass {
+    Null,
+    Printable,
+    Control,
+    High,
+    Full,
+}
+
+pub fn byte_class(byte: u8) -> ByteClass {
+    match byte {
+        0x00 => ByteClass::Null,
+        0x20..=0x7E => ByteClass::Printable,
+        0x01..=0x1F | 0x7F => ByteClass::Control,
+        0x80..=0xFE => ByteClass::High,
+        0xFF => ByteClass::Full,
+    }
 }
 
 pub fn hex_row_count(len_1: usize, len_2: usize) -> usize {
@@ -58,6 +77,72 @@ pub fn hex_byte_at_column(column: usize) -> Option<usize> {
     }
 }
 
+pub const HEX_PAGE_ROWS: usize = 16;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CursorMove {
+    Left,
+    Right,
+    Up,
+    Down,
+    PageUp,
+    PageDown,
+    RowStart,
+    RowEnd,
+    FileStart,
+    FileEnd,
+}
+
+pub fn cursor_move_for(key: egui::Key, modifiers: egui::Modifiers) -> Option<CursorMove> {
+    use egui::{Key, Modifiers};
+    // Exact, unlike consume_key: Alt+Up/Down are the conflict navigation keys.
+    if modifiers.matches_exact(Modifiers::CTRL) {
+        return match key {
+            Key::Home => Some(CursorMove::FileStart),
+            Key::End => Some(CursorMove::FileEnd),
+            _ => None,
+        };
+    }
+    if !modifiers.matches_exact(Modifiers::NONE) {
+        return None;
+    }
+    Some(match key {
+        Key::ArrowLeft => CursorMove::Left,
+        Key::ArrowRight => CursorMove::Right,
+        Key::ArrowUp => CursorMove::Up,
+        Key::ArrowDown => CursorMove::Down,
+        Key::PageUp => CursorMove::PageUp,
+        Key::PageDown => CursorMove::PageDown,
+        Key::Home => CursorMove::RowStart,
+        Key::End => CursorMove::RowEnd,
+        _ => return None,
+    })
+}
+
+pub fn moved_cursor(cursor: Option<usize>, step: CursorMove, len: usize) -> Option<usize> {
+    let last = len.checked_sub(1)?;
+    let Some(cursor) = cursor else {
+        return Some(0);
+    };
+    let cursor = cursor.min(last);
+    let row = hex_row_for_offset(cursor);
+    let column = cursor % HEX_ROW_BYTES;
+    let to_row =
+        |row: usize| (row.min(hex_row_for_offset(last)) * HEX_ROW_BYTES + column).min(last);
+    Some(match step {
+        CursorMove::Left => cursor.saturating_sub(1),
+        CursorMove::Right => (cursor + 1).min(last),
+        CursorMove::Up => to_row(row.saturating_sub(1)),
+        CursorMove::Down => to_row(row + 1),
+        CursorMove::PageUp => to_row(row.saturating_sub(HEX_PAGE_ROWS)),
+        CursorMove::PageDown => to_row(row + HEX_PAGE_ROWS),
+        CursorMove::RowStart => row * HEX_ROW_BYTES,
+        CursorMove::RowEnd => (row * HEX_ROW_BYTES + HEX_ROW_BYTES - 1).min(last),
+        CursorMove::FileStart => 0,
+        CursorMove::FileEnd => last,
+    })
+}
+
 /// The rows `bytes` (non-empty) covers.
 fn hex_rows_span(bytes: &Range<usize>) -> ScrollSpan {
     ScrollSpan {
@@ -73,6 +158,10 @@ pub fn hex_nav_count(diff: Option<&HexDiff>) -> usize {
     diff.map_or(0, |diff| {
         diff.ranges.len() + usize::from(diff.tail.is_some())
     })
+}
+
+pub fn differing_bytes(diff: &HexDiff) -> usize {
+    diff.ranges.iter().map(Range::len).sum()
 }
 
 /// Rows and bytes of stop `cursor`, 1-based like the text conflict cursor (0 is no stop). `None`
@@ -194,6 +283,7 @@ pub struct HexDiffProcessor {
     file_2: Option<LoadedFile>,
     diff: Option<HexDiff>,
     change_spans: Vec<ChangeSpan>,
+    differing_bytes: usize,
     in_progress: bool,
     job: Option<Job<HexDiff>>,
 
@@ -206,6 +296,7 @@ pub struct HexDiffProcessor {
     /// A byte clicked this frame, taken as the cursor at the next `scroll_to_row`.
     cursor_click: Cell<Option<usize>>,
     endian: Cell<Endian>,
+    inspector_hover: Cell<Option<InspectorKind>>,
 }
 
 impl Default for HexDiffProcessor {
@@ -215,6 +306,7 @@ impl Default for HexDiffProcessor {
             file_2: None,
             diff: None,
             change_spans: Vec::new(),
+            differing_bytes: 0,
             in_progress: false,
             job: None,
             goto_offset: None,
@@ -222,6 +314,7 @@ impl Default for HexDiffProcessor {
             highlight: None,
             cursor_click: Cell::new(None),
             endian: Cell::new(Endian::default()),
+            inspector_hover: Cell::new(None),
         }
     }
 }
@@ -254,6 +347,7 @@ impl HexDiffProcessor {
         job.cancel();
         self.diff = None;
         self.change_spans.clear();
+        self.differing_bytes = 0;
         self.in_progress = false;
         self.file_1 = file_1;
         self.file_2 = file_2;
@@ -306,6 +400,7 @@ impl HexDiffProcessor {
     /// The rows to scroll to this frame, from a pending goto or a changed conflict cursor (goto
     /// wins, as in the text viewer), and highlights the target bytes.
     pub fn scroll_to_row(&mut self, conflict_cursor: usize) -> Option<ScrollSpan> {
+        self.inspector_hover.set(None);
         if let Some(offset) = self.cursor_click.take() {
             self.highlight = Some(offset..offset + 1);
         }
@@ -330,6 +425,7 @@ impl HexDiffProcessor {
         };
         for diff in job.poll() {
             self.change_spans = hex_change_spans(&diff);
+            self.differing_bytes = differing_bytes(&diff);
             self.diff = Some(diff);
             self.in_progress = false;
         }
@@ -341,11 +437,13 @@ impl HexDiffProcessor {
             file_2: self.file_2.as_ref(),
             diff: self.diff.as_ref(),
             change_spans: &self.change_spans,
+            differing_bytes: self.differing_bytes,
             computing: self.in_progress,
             highlight: self.highlight.clone(),
             cursor: self.cursor(),
             cursor_click: &self.cursor_click,
             endian: &self.endian,
+            inspector_hover: &self.inspector_hover,
         }
     }
 }
@@ -355,11 +453,13 @@ pub struct HexViewCtx<'a> {
     pub file_2: Option<&'a LoadedFile>,
     pub diff: Option<&'a HexDiff>,
     pub change_spans: &'a [ChangeSpan],
+    pub differing_bytes: usize,
     pub computing: bool,
     pub highlight: Option<Range<usize>>,
     pub cursor: Option<usize>,
     pub cursor_click: &'a Cell<Option<usize>>,
     pub endian: &'a Cell<Endian>,
+    pub inspector_hover: &'a Cell<Option<InspectorKind>>,
 }
 
 impl HexViewCtx<'_> {
@@ -372,7 +472,42 @@ impl HexViewCtx<'_> {
             self.cursor,
             [bytes(self.file_1), bytes(self.file_2)],
             self.endian,
+            self.inspector_hover,
         );
+    }
+
+    /// The row to keep visible; the cursor itself moves next frame, like a click.
+    pub fn cursor_keys_ui(&self, ui: &egui::Ui) -> Option<usize> {
+        if ui.ctx().wants_keyboard_input() {
+            return None;
+        }
+        let len = byte_len(self);
+        let moved = ui.input(|i| {
+            i.events
+                .iter()
+                .filter_map(|event| match event {
+                    egui::Event::Key {
+                        key,
+                        pressed: true,
+                        modifiers,
+                        ..
+                    } => cursor_move_for(*key, *modifiers),
+                    _ => None,
+                })
+                .fold(None, |moved: Option<usize>, step| {
+                    moved_cursor(moved.or(self.cursor), step, len)
+                })
+        })?;
+        self.cursor_click.set(Some(moved));
+        ui.ctx().request_repaint();
+        Some(hex_row_for_offset(moved))
+    }
+
+    fn hover_span(&self, bytes: &[u8]) -> Option<Range<usize>> {
+        let cursor = self.cursor?;
+        let kind = self.inspector_hover.get()?;
+        let len = decode(bytes, cursor, kind, self.endian.get())?.byte_len();
+        Some(cursor..cursor + len)
     }
 
     pub fn status_text(&self) -> String {
@@ -385,7 +520,11 @@ impl HexViewCtx<'_> {
         if diff.ranges.is_empty() && diff.tail.is_none() {
             return "Identical bytes".to_string();
         }
-        let mut text = format!("{} differing ranges", diff.ranges.len());
+        let mut text = format!(
+            "{} differing ranges ({} bytes)",
+            diff.ranges.len(),
+            self.differing_bytes
+        );
         if let Some(tail) = &diff.tail {
             let side = match tail.longer {
                 HexSide::First => "left",
@@ -455,14 +594,28 @@ fn side_row_label(
 ) {
     let font_id = egui::TextStyle::Monospace.resolve(ui.style());
     let char_width = ui.fonts_mut(|fonts| fonts.glyph_width(&font_id, ' '));
+    let color = |role| role_color(ui.ctx(), role);
     let colors = HexColors {
         text: ui.style().visuals.text_color(),
-        offset: role_color(ui.ctx(), FileRole::LineNumber),
-        different: role_color(ui.ctx(), FileRole::HexDifferent),
-        only_here: role_color(ui.ctx(), FileRole::HexOnlyHere),
-        highlight: role_color(ui.ctx(), FileRole::HexGoto),
+        offset: color(FileRole::LineNumber),
+        different: color(FileRole::HexDifferent),
+        only_here: color(FileRole::HexOnlyHere),
+        highlight: color(FileRole::HexGoto),
+        null: color(FileRole::HexByteNull),
+        printable: color(FileRole::HexBytePrintable),
+        control: color(FileRole::HexByteControl),
+        high: color(FileRole::HexByteHigh),
+        full: color(FileRole::HexByteFull),
     };
-    let job = side_row_job(bytes, states, row, ctx.highlight.as_ref(), font_id, &colors);
+    let job = side_row_job(
+        bytes,
+        states,
+        row,
+        ctx.highlight.as_ref(),
+        ctx.hover_span(bytes).as_ref(),
+        font_id,
+        &colors,
+    );
     let response = ui.add(
         egui::Label::new(job)
             .selectable(false)
@@ -491,6 +644,23 @@ struct HexColors {
     different: Color32,
     only_here: Color32,
     highlight: Color32,
+    null: Color32,
+    printable: Color32,
+    control: Color32,
+    high: Color32,
+    full: Color32,
+}
+
+impl HexColors {
+    fn byte(&self, byte: u8) -> Color32 {
+        match byte_class(byte) {
+            ByteClass::Null => self.null,
+            ByteClass::Printable => self.printable,
+            ByteClass::Control => self.control,
+            ByteClass::High => self.high,
+            ByteClass::Full => self.full,
+        }
+    }
 }
 
 fn side_row_job(
@@ -498,13 +668,19 @@ fn side_row_job(
     states: &[HexByteState; HEX_ROW_BYTES],
     row: usize,
     highlight: Option<&Range<usize>>,
+    hover: Option<&Range<usize>>,
     font_id: FontId,
     colors: &HexColors,
 ) -> LayoutJob {
     let text_color = colors.text;
     let row_start = row * HEX_ROW_BYTES;
     let mut job = LayoutJob::default();
-    let append = |job: &mut LayoutJob, text: &str, color: Color32, background: Color32| {
+    let underline = egui::Stroke::new(1.0_f32, colors.highlight);
+    let append = |job: &mut LayoutJob,
+                  text: &str,
+                  color: Color32,
+                  background: Color32,
+                  underline: egui::Stroke| {
         job.append(
             text,
             0.0,
@@ -512,6 +688,7 @@ fn side_row_job(
                 font_id: font_id.clone(),
                 color,
                 background,
+                underline,
                 ..Default::default()
             },
         );
@@ -521,26 +698,23 @@ fn side_row_job(
         HexByteState::OnlyHere => colors.only_here,
         HexByteState::Missing | HexByteState::Same => Color32::TRANSPARENT,
     };
+    let present = |i: usize| states[i] != HexByteState::Missing;
+    let covers = |range: Option<&Range<usize>>, i: usize| {
+        present(i) && range.is_some_and(|range| range.contains(&(row_start + i)))
+    };
     // The goto or navigation target is recolored and underlined, so the diff background stays.
-    // Not on the shorter side's missing bytes.
-    let append_byte = |job: &mut LayoutJob, text: &str, i: usize, state: HexByteState| {
-        let marked = state != HexByteState::Missing
-            && highlight.is_some_and(|range| range.contains(&(row_start + i)));
-        job.append(
-            text,
-            0.0,
-            egui::TextFormat {
-                font_id: font_id.clone(),
-                color: if marked { colors.highlight } else { text_color },
-                background: background(state),
-                underline: if marked {
-                    egui::Stroke::new(1.0_f32, colors.highlight)
-                } else {
-                    egui::Stroke::NONE
-                },
-                ..Default::default()
-            },
-        );
+    let append_byte = |job: &mut LayoutJob, text: &str, i: usize| {
+        let marked = covers(highlight, i);
+        let color = match marked {
+            true => colors.highlight,
+            false if present(i) => colors.byte(bytes[row_start + i]),
+            false => text_color,
+        };
+        let stroke = match marked || covers(hover, i) {
+            true => underline,
+            false => egui::Stroke::NONE,
+        };
+        append(job, text, color, background(states[i]), stroke);
     };
 
     append(
@@ -548,13 +722,15 @@ fn side_row_job(
         &format!("{row_start:08X}  "),
         colors.offset,
         Color32::TRANSPARENT,
+        egui::Stroke::NONE,
     );
     for (i, &state) in states.iter().enumerate() {
         let hex = match state {
             HexByteState::Missing => "  ".to_string(),
             _ => format!("{:02X}", bytes[row_start + i]),
         };
-        append_byte(&mut job, &hex, i, state);
+        append_byte(&mut job, &hex, i);
+        let joined = i + 1 < HEX_ROW_BYTES && covers(hover, i) && covers(hover, i + 1);
         append(
             &mut job,
             if i == HEX_ROW_BYTES / 2 - 1 {
@@ -564,9 +740,20 @@ fn side_row_job(
             },
             text_color,
             Color32::TRANSPARENT,
+            if joined {
+                underline
+            } else {
+                egui::Stroke::NONE
+            },
         );
     }
-    append(&mut job, " ", text_color, Color32::TRANSPARENT);
+    append(
+        &mut job,
+        " ",
+        text_color,
+        Color32::TRANSPARENT,
+        egui::Stroke::NONE,
+    );
     for (i, &state) in states.iter().enumerate() {
         let ch = match state {
             HexByteState::Missing => ' ',
@@ -575,7 +762,7 @@ fn side_row_job(
                 _ => '.',
             },
         };
-        append_byte(&mut job, &ch.to_string(), i, state);
+        append_byte(&mut job, &ch.to_string(), i);
     }
     job
 }
@@ -730,15 +917,37 @@ mod tests {
         assert_eq!(processor.scroll_to_row(0), None);
     }
 
+    fn test_colors() -> HexColors {
+        let gray = |v| Color32::from_rgb(v, v, v);
+        HexColors {
+            text: gray(1),
+            offset: gray(2),
+            different: gray(3),
+            only_here: gray(4),
+            highlight: gray(5),
+            null: gray(6),
+            printable: gray(7),
+            control: gray(8),
+            high: gray(9),
+            full: gray(10),
+        }
+    }
+
+    fn hex_section(byte: usize) -> usize {
+        1 + 2 * byte
+    }
+
+    fn separator_section(byte: usize) -> usize {
+        2 + 2 * byte
+    }
+
+    fn ascii_section(byte: usize) -> usize {
+        2 + 2 * HEX_ROW_BYTES + byte
+    }
+
     #[test]
     fn row_colors_come_from_the_given_colors() {
-        let colors = HexColors {
-            text: Color32::from_rgb(1, 1, 1),
-            offset: Color32::from_rgb(2, 2, 2),
-            different: Color32::from_rgb(3, 3, 3),
-            only_here: Color32::from_rgb(4, 4, 4),
-            highlight: Color32::from_rgb(5, 5, 5),
-        };
+        let colors = test_colors();
         let mut states = [HexByteState::Same; HEX_ROW_BYTES];
         states[0] = HexByteState::Different;
         states[1] = HexByteState::OnlyHere;
@@ -748,6 +957,7 @@ mod tests {
             &states,
             0,
             Some(&(2..3)),
+            None,
             FontId::default(),
             &colors,
         );
@@ -755,7 +965,7 @@ mod tests {
         let format = |section: usize| &job.sections[section].format;
         assert_eq!(format(0).color, colors.offset);
         assert_eq!(format(1).background, colors.different);
-        assert_eq!(format(1).color, colors.text);
+        assert_eq!(format(1).color, colors.null);
         assert_eq!(format(3).background, colors.only_here);
         assert_eq!(format(5).background, Color32::TRANSPARENT);
         assert_eq!(format(5).color, colors.highlight);
@@ -831,14 +1041,15 @@ mod tests {
     fn columns_match_the_drawn_row() {
         let bytes: Vec<u8> = (0..HEX_ROW_BYTES as u8).collect();
         let states = [HexByteState::Same; HEX_ROW_BYTES];
-        let colors = HexColors {
-            text: Color32::WHITE,
-            offset: Color32::WHITE,
-            different: Color32::WHITE,
-            only_here: Color32::WHITE,
-            highlight: Color32::WHITE,
-        };
-        let job = side_row_job(&bytes, &states, 0, None, FontId::default(), &colors);
+        let job = side_row_job(
+            &bytes,
+            &states,
+            0,
+            None,
+            None,
+            FontId::default(),
+            &test_colors(),
+        );
         for (column, ch) in job.text.chars().enumerate() {
             match hex_byte_at_column(column) {
                 Some(i) if column < 59 => {
@@ -887,5 +1098,259 @@ mod tests {
         processor.goto(7);
         assert!(processor.scroll_to_row(0).is_some());
         assert_eq!(processor.cursor(), Some(7));
+    }
+
+    #[test]
+    fn bytes_fall_into_their_class() {
+        assert_eq!(byte_class(0x00), ByteClass::Null);
+        assert_eq!(byte_class(0x01), ByteClass::Control);
+        assert_eq!(byte_class(0x0A), ByteClass::Control);
+        assert_eq!(byte_class(0x1F), ByteClass::Control);
+        assert_eq!(byte_class(0x20), ByteClass::Printable);
+        assert_eq!(byte_class(b'A'), ByteClass::Printable);
+        assert_eq!(byte_class(0x7E), ByteClass::Printable);
+        assert_eq!(byte_class(0x7F), ByteClass::Control);
+        assert_eq!(byte_class(0x80), ByteClass::High);
+        assert_eq!(byte_class(0xFE), ByteClass::High);
+        assert_eq!(byte_class(0xFF), ByteClass::Full);
+    }
+
+    #[test]
+    fn hex_and_ascii_text_are_colored_by_byte_class() {
+        let colors = test_colors();
+        let mut bytes = [b'A'; HEX_ROW_BYTES];
+        bytes[..5].copy_from_slice(&[0x00, b'A', 0x01, 0x80, 0xFF]);
+        let job = side_row_job(
+            &bytes,
+            &[HexByteState::Same; HEX_ROW_BYTES],
+            0,
+            None,
+            None,
+            FontId::default(),
+            &colors,
+        );
+        let expected = [
+            colors.null,
+            colors.printable,
+            colors.control,
+            colors.high,
+            colors.full,
+        ];
+        for (byte, color) in expected.into_iter().enumerate() {
+            assert_eq!(job.sections[hex_section(byte)].format.color, color);
+            assert_eq!(job.sections[ascii_section(byte)].format.color, color);
+        }
+    }
+
+    #[test]
+    fn the_cursor_color_wins_over_the_byte_class() {
+        let colors = test_colors();
+        let job = side_row_job(
+            &[0xFF; HEX_ROW_BYTES],
+            &[HexByteState::Same; HEX_ROW_BYTES],
+            0,
+            Some(&(3..4)),
+            None,
+            FontId::default(),
+            &colors,
+        );
+        assert_eq!(job.sections[hex_section(3)].format.color, colors.highlight);
+        assert_eq!(
+            job.sections[ascii_section(3)].format.color,
+            colors.highlight
+        );
+    }
+
+    #[test]
+    fn hover_underlines_its_bytes_and_the_separators_between_them() {
+        let colors = test_colors();
+        let job = side_row_job(
+            &[b'A'; HEX_ROW_BYTES],
+            &[HexByteState::Same; HEX_ROW_BYTES],
+            0,
+            None,
+            Some(&(2..5)),
+            FontId::default(),
+            &colors,
+        );
+        let underlined =
+            |section: usize| job.sections[section].format.underline != egui::Stroke::NONE;
+        for byte in 2..5 {
+            assert!(underlined(hex_section(byte)), "hex {byte}");
+            assert!(underlined(ascii_section(byte)), "ascii {byte}");
+            assert_eq!(
+                job.sections[hex_section(byte)].format.color,
+                colors.printable
+            );
+        }
+        assert!(underlined(separator_section(2)));
+        assert!(underlined(separator_section(3)));
+        assert!(!underlined(separator_section(4)));
+        assert!(!underlined(separator_section(1)));
+        assert!(!underlined(hex_section(1)));
+        assert!(!underlined(hex_section(5)));
+        assert!(!underlined(ascii_section(5)));
+    }
+
+    #[test]
+    fn hover_on_missing_bytes_is_not_drawn() {
+        let mut states = [HexByteState::Same; HEX_ROW_BYTES];
+        states[4] = HexByteState::Missing;
+        let job = side_row_job(
+            &[b'A'; HEX_ROW_BYTES],
+            &states,
+            0,
+            None,
+            Some(&(3..6)),
+            FontId::default(),
+            &test_colors(),
+        );
+        assert_eq!(
+            job.sections[hex_section(4)].format.underline,
+            egui::Stroke::NONE
+        );
+    }
+
+    const LEN: usize = 40;
+
+    fn moved(cursor: usize, step: CursorMove) -> Option<usize> {
+        moved_cursor(Some(cursor), step, LEN)
+    }
+
+    #[test]
+    fn arrows_step_a_byte_or_a_row() {
+        assert_eq!(moved(17, CursorMove::Left), Some(16));
+        assert_eq!(moved(17, CursorMove::Right), Some(18));
+        assert_eq!(moved(17, CursorMove::Up), Some(1));
+        assert_eq!(moved(17, CursorMove::Down), Some(33));
+    }
+
+    #[test]
+    fn moves_stop_at_the_ends() {
+        assert_eq!(moved(0, CursorMove::Left), Some(0));
+        assert_eq!(moved(LEN - 1, CursorMove::Right), Some(LEN - 1));
+        assert_eq!(moved(5, CursorMove::Up), Some(5));
+        assert_eq!(moved(37, CursorMove::Down), Some(37));
+    }
+
+    #[test]
+    fn down_into_a_short_last_row_lands_on_the_last_byte() {
+        assert_eq!(moved(30, CursorMove::Down), Some(LEN - 1));
+        assert_eq!(moved(20, CursorMove::Down), Some(36));
+    }
+
+    #[test]
+    fn pages_keep_the_column_and_clamp_to_the_first_and_last_row() {
+        let len = HEX_ROW_BYTES * HEX_PAGE_ROWS * 3;
+        let page = HEX_ROW_BYTES * HEX_PAGE_ROWS;
+        assert_eq!(
+            moved_cursor(Some(5), CursorMove::PageDown, len),
+            Some(5 + page)
+        );
+        assert_eq!(
+            moved_cursor(Some(5 + page), CursorMove::PageUp, len),
+            Some(5)
+        );
+        assert_eq!(
+            moved_cursor(Some(page - 3), CursorMove::PageUp, len),
+            Some(13)
+        );
+        assert_eq!(
+            moved_cursor(Some(len - page + 7), CursorMove::PageDown, len),
+            Some(len - 9)
+        );
+        assert_eq!(moved(3, CursorMove::PageDown), Some(35));
+        assert_eq!(moved(10, CursorMove::PageDown), Some(LEN - 1));
+    }
+
+    #[test]
+    fn home_and_end_go_to_the_row_or_file_edges() {
+        assert_eq!(moved(20, CursorMove::RowStart), Some(16));
+        assert_eq!(moved(20, CursorMove::RowEnd), Some(31));
+        assert_eq!(moved(33, CursorMove::RowEnd), Some(LEN - 1));
+        assert_eq!(moved(20, CursorMove::FileStart), Some(0));
+        assert_eq!(moved(20, CursorMove::FileEnd), Some(LEN - 1));
+    }
+
+    #[test]
+    fn a_move_without_a_cursor_starts_at_the_first_byte() {
+        assert_eq!(moved_cursor(None, CursorMove::Down, LEN), Some(0));
+        assert_eq!(moved_cursor(None, CursorMove::FileEnd, LEN), Some(0));
+    }
+
+    #[test]
+    fn nothing_moves_in_an_empty_file() {
+        assert_eq!(moved_cursor(None, CursorMove::Right, 0), None);
+        assert_eq!(moved_cursor(Some(3), CursorMove::Right, 0), None);
+    }
+
+    #[test]
+    fn a_cursor_past_a_shrunk_file_is_clamped_first() {
+        assert_eq!(
+            moved_cursor(Some(100), CursorMove::Left, LEN),
+            Some(LEN - 2)
+        );
+    }
+
+    #[test]
+    fn keys_map_to_moves_only_with_exact_modifiers() {
+        use egui::{Key, Modifiers};
+        assert_eq!(
+            cursor_move_for(Key::ArrowDown, Modifiers::NONE),
+            Some(CursorMove::Down)
+        );
+        assert_eq!(
+            cursor_move_for(Key::ArrowLeft, Modifiers::NONE),
+            Some(CursorMove::Left)
+        );
+        assert_eq!(
+            cursor_move_for(Key::PageUp, Modifiers::NONE),
+            Some(CursorMove::PageUp)
+        );
+        assert_eq!(
+            cursor_move_for(Key::Home, Modifiers::NONE),
+            Some(CursorMove::RowStart)
+        );
+        assert_eq!(
+            cursor_move_for(Key::End, Modifiers::NONE),
+            Some(CursorMove::RowEnd)
+        );
+        assert_eq!(
+            cursor_move_for(Key::Home, Modifiers::CTRL),
+            Some(CursorMove::FileStart)
+        );
+        assert_eq!(
+            cursor_move_for(Key::End, Modifiers::CTRL),
+            Some(CursorMove::FileEnd)
+        );
+        assert_eq!(cursor_move_for(Key::ArrowDown, Modifiers::ALT), None);
+        assert_eq!(cursor_move_for(Key::ArrowUp, Modifiers::ALT), None);
+        assert_eq!(cursor_move_for(Key::ArrowRight, Modifiers::SHIFT), None);
+        assert_eq!(cursor_move_for(Key::ArrowDown, Modifiers::CTRL), None);
+        assert_eq!(cursor_move_for(Key::A, Modifiers::NONE), None);
+    }
+
+    #[test]
+    fn differing_bytes_sum_the_ranges_but_not_the_tail() {
+        let d = diff(
+            vec![3..4, 20..40],
+            Some(HexTail {
+                longer: HexSide::First,
+                range: 50..60,
+            }),
+        );
+        assert_eq!(differing_bytes(&d), 21);
+        assert_eq!(differing_bytes(&diff(vec![], None)), 0);
+    }
+
+    #[test]
+    fn the_inspector_hover_lasts_one_frame() {
+        let mut processor = HexDiffProcessor::default();
+        processor
+            .view_ctx()
+            .inspector_hover
+            .set(Some(InspectorKind::U32));
+        processor.scroll_to_row(0);
+        assert_eq!(processor.view_ctx().inspector_hover.get(), None);
     }
 }

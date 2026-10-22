@@ -1,7 +1,7 @@
 use std::io::Read;
 use std::net::{TcpStream, ToSocketAddrs};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Output, Stdio};
+use std::process::{Command, Output, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use std::{env, str, thread};
@@ -728,11 +728,29 @@ impl P4Command {
         checked_stdout(args, output)
     }
 
-    pub fn spawn(&self, args: &[&str]) -> Result<Child, String> {
-        self.prepare_cmd()
+    /// For GUI commands, which outlive the call: their failure can only be logged once they exit.
+    pub fn spawn(&self, args: &[&str]) -> Result<(), String> {
+        let child = self
+            .prepare_cmd()
             .args(args)
+            // Not null stdin: p4vc.bat's `timeout` fails at once on redirected input.
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
             .spawn()
-            .map_err(|e| format!("{}: {e}", self.exe_path))
+            .map_err(|e| format!("{}: {e}", self.exe_path))?;
+        let exe_path = self.exe_path.clone();
+        let args: Vec<String> = args.iter().map(|arg| arg.to_string()).collect();
+        thread::spawn(move || {
+            let args: Vec<&str> = args.iter().map(String::as_str).collect();
+            let exited = child
+                .wait_with_output()
+                .map_err(|e| e.to_string())
+                .and_then(|output| checked_stdout(&args, output));
+            if let Err(e) = exited {
+                log::error!("{exe_path} {}: {e}", args.join(" "));
+            }
+        });
+        Ok(())
     }
 
     pub fn get_depot_file_bytes(file: &UniversalPath) -> Result<Vec<u8>, String> {
@@ -746,15 +764,13 @@ impl P4Command {
         let path = depot_path_without_revision(file)?;
         P4Command::new(true)
             .for_file(file.clone())
-            .spawn(&["revisiongraph", path])?;
-        Ok(())
+            .spawn(&["revisiongraph", path])
     }
     pub fn open_timelapse_view(file: &UniversalPath) -> Result<(), String> {
         let path = depot_path_without_revision(file)?;
         P4Command::new(true)
             .for_file(file.clone())
-            .spawn(&["timelapse", path])?;
-        Ok(())
+            .spawn(&["timelapse", path])
     }
     #[allow(dead_code)]
     pub fn get_revision_history(path: &str) -> Result<String, String> {

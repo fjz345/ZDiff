@@ -125,6 +125,8 @@ pub struct AppStateCtx {
     pub find_open: bool,
     #[cfg_attr(feature = "serde", serde(skip))]
     pub find_query: FindQuery,
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub find_both_panes: bool,
     #[cfg_attr(feature = "serde", serde(skip))]
     pub find_error: Option<String>,
 }
@@ -170,6 +172,7 @@ impl Default for AppStateCtx {
             find_open: Default::default(),
             goto_input: Default::default(),
             find_query: Default::default(),
+            find_both_panes: false,
             find_error: None,
             keybindings: Default::default(),
             p4_profiles: Default::default(),

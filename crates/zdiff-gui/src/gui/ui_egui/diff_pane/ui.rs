@@ -343,6 +343,7 @@ impl FileDiffPane {
         if let Some(hex_view) = &ctx.hex_view {
             hex_view.inspector_ui(ui);
         }
+        let hex_key_row = ctx.hex_view.as_ref().and_then(|hex_view| hex_view.cursor_keys_ui(ui));
         let table_height = ui.available_height();
         let hex_len = ctx.hex_view.as_ref().map_or(0, hex::byte_len);
         let show_ruler = if ctx.hex_view.is_some() {
@@ -412,6 +413,8 @@ impl FileDiffPane {
                                     None => span.start,
                                 };
                                 table = table.scroll_to_row(start, Some(egui::Align::Min));
+                            } else if let Some(row) = hex_key_row {
+                                table = table.scroll_to_row(row, None);
                             }
 
                             let editable_path_test =
@@ -779,10 +782,13 @@ impl FileDiffPane {
                                                             || ctx.highlight_side.is_none_or(|s| s == u.side));
                                                     let accent = marked
                                                         && (context || ctx.highlight_side == Some(u.side));
-                                                    let (matcher, hit) = (ctx.find_matcher, ctx.find_hit);
-                                                    let mut find = row_find(matcher, hit, u.side, u.row, content);
+                                                    let (matchers, hit) = (ctx.find_matchers, ctx.find_hit);
+                                                    let mut find = row_find(matchers, hit, u.side, u.row, content);
                                                     if context && single_side.is_none() && find.current.is_none() {
-                                                        find = row_find(matcher, hit, ActiveSide::Right, u.row, &rows[u.row].right);
+                                                        let right = row_find(matchers, hit, ActiveSide::Right, u.row, &rows[u.row].right);
+                                                        if right.current.is_some() || find.matcher.is_none() {
+                                                            find = right;
+                                                        }
                                                     }
                                                     let width = ui.max_rect().width();
                                                     let hit = Self::render_row(
@@ -878,8 +884,8 @@ impl FileDiffPane {
                                                 let accent_line_num = |side| {
                                                     is_highlighted && highlight_side == Some(side)
                                                 };
-                                                let (find_matcher, find_hit) =
-                                                    (ctx.find_matcher, ctx.find_hit);
+                                                let (find_matchers, find_hit) =
+                                                    (ctx.find_matchers, ctx.find_hit);
 
                                                 match column {
                                                 SplitColumn::Left | SplitColumn::Right => {
@@ -919,7 +925,7 @@ impl FileDiffPane {
                                                                 is_highlighted: lit(side),
                                                                 accent_line_num: accent_line_num(side),
                                                                 find: row_find(
-                                                                    find_matcher,
+                                                                    find_matchers,
                                                                     find_hit,
                                                                     side,
                                                                     row_index,
@@ -1135,7 +1141,7 @@ impl FileDiffPane {
                             }
                             if let Some(sides) = side_viewers.as_mut() {
                                 let text = sides.text;
-                                let (find_matcher, find_hit) = (ctx.find_matcher, ctx.find_hit);
+                                let (find_matchers, find_hit) = (ctx.find_matchers, ctx.find_hit);
                                 let text_side = sides
                                     .kinds
                                     .iter()
@@ -1152,7 +1158,7 @@ impl FileDiffPane {
                                         side_viewers::plain_content(&text.diff_rows[row].left);
                                     let lit = highlights.binary_search(&row).is_ok();
                                     let find = row_find(
-                                        find_matcher,
+                                        find_matchers,
                                         find_hit,
                                         ActiveSide::Left,
                                         row,

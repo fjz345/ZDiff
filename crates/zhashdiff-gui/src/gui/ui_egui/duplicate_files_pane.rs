@@ -855,6 +855,7 @@ impl DuplicateFilesPane {
                 | FolderAction::NextDiff
                 | FolderAction::PrevDiff
                 | FolderAction::Refresh
+                | FolderAction::SwapSides
                 | FolderAction::OpenKeybindings
                 | FolderAction::Find => continue,
             };

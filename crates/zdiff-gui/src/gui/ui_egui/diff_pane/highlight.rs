@@ -2,7 +2,7 @@ use super::*;
 
 /// Lines hidden in a collapsed block share another line's row, hence the line check.
 pub(super) fn row_find<'a>(
-    matcher: Option<&'a Matcher>,
+    matchers: [Option<&'a Matcher>; 2],
     hit: Option<FindHit>,
     side: ActiveSide,
     row: usize,
@@ -15,7 +15,10 @@ pub(super) fn row_find<'a>(
     let current = hit
         .filter(|hit| hit.side == side && hit.row == row && line_num == Some(hit.line + 1))
         .map(|hit| hit.ordinal);
-    RowFind { matcher, current }
+    RowFind {
+        matcher: matchers[side as usize],
+        current,
+    }
 }
 
 /// Ghost text is visual-only: it is kept out of the label text so egui can neither select nor
@@ -190,7 +193,7 @@ mod tests {
             row: 4,
         };
         let current = |side, row, content: &LineContent| {
-            row_find(None, Some(hit), side, row, content).current
+            row_find([None; 2], Some(hit), side, row, content).current
         };
 
         assert_eq!(current(ActiveSide::Right, 4, &code(10)), Some(2));
@@ -199,9 +202,24 @@ mod tests {
         assert_eq!(current(ActiveSide::Right, 4, &code(3)), None);
         assert_eq!(current(ActiveSide::Right, 4, &LineContent::Void), None);
         assert_eq!(
-            row_find(None, None, ActiveSide::Right, 4, &code(10)).current,
+            row_find([None; 2], None, ActiveSide::Right, 4, &code(10)).current,
             None
         );
+    }
+
+    #[test]
+    fn a_row_paints_matches_only_with_its_own_sides_matcher() {
+        use crate::ui_egui::active_side::ActiveSide;
+        let matcher = Matcher::new(&zcommon::find::FindQuery {
+            text: "x".into(),
+            ..Default::default()
+        })
+        .unwrap();
+        let matchers = [None, Some(&matcher)];
+
+        let matcher_on = |side| row_find(matchers, None, side, 0, &LineContent::Void).matcher;
+        assert!(matcher_on(ActiveSide::Left).is_none());
+        assert!(matcher_on(ActiveSide::Right).is_some());
     }
 
     fn job_with_one_section(text: &str) -> eframe::egui::text::LayoutJob {

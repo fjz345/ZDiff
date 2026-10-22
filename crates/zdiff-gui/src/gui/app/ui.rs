@@ -13,6 +13,7 @@ use crate::{
     p4::P4Command,
     revert::{self, RevertRefusal, RevertWrite},
     ui_egui::{
+        active_side::ActiveSide,
         diff_pane::FileDiffPaneCtx,
         merge_pane::{Closing, MergeView},
         panes::{Pane, TreeBehavior},
@@ -46,6 +47,7 @@ impl ZApp {
                 find_open,
                 goto_input,
                 find_query,
+                find_both_panes,
                 find_error,
                 keybindings,
                 myers_diff_algorithm,
@@ -157,9 +159,12 @@ impl ZApp {
                 *goto_open = goto_window_open;
             }
             if *find_open {
-                let event = find_popup(ctx, find_query, find_error.as_deref(), None, |_| false);
+                let event = find_popup(ctx, find_query, find_error.as_deref(), None, |ui| {
+                    ui.checkbox(find_both_panes, "Both panes").changed()
+                });
                 match event {
                     Some(FindPopupEvent::Changed | FindPopupEvent::Submitted) => {
+                        diff_processor.find_both_sides = *find_both_panes;
                         *find_error = diff_processor
                             .update_find_query(find_query)
                             .err()
@@ -199,7 +204,8 @@ impl ZApp {
             let mut pins_request = None;
             let mut find_cursor = diff_processor.find_cursor.clone();
             let highlight_side = diff_processor.highlight_side;
-            let find_matcher = diff_processor.find_ctx.matcher().cloned();
+            let find_matchers = [ActiveSide::Left, ActiveSide::Right]
+                .map(|side| diff_processor.find_ctx.matcher_on(side).cloned());
             let find_hit = diff_processor.current_find_hit();
             let find_count = diff_processor.find_ctx.hits().len();
             let mut active_side = diff_processor.active_side;
@@ -274,7 +280,7 @@ impl ZApp {
                     pins: &pins,
                     pins_request: &mut pins_request,
                     find_cursor: &mut find_cursor,
-                    find_matcher: find_matcher.as_ref(),
+                    find_matchers: find_matchers.each_ref().map(Option::as_ref),
                     find_hit,
                     find_count,
                     active_side: &mut active_side,
@@ -485,7 +491,7 @@ impl ZApp {
                 diff_processor.set_pins(pins);
             }
             diff_processor.find_cursor = clone_find;
-            diff_processor.active_side = clone_active_side;
+            diff_processor.set_active_side(clone_active_side);
             diff_processor.conflict_cursor = clone_conflict;
             if let Some((key, toggle)) = block_toggle_request {
                 diff_processor.toggle_block(key, toggle);

@@ -59,7 +59,7 @@ impl FileKind {
             FileKind::Audio => &[
                 "wav", "flac", "mp3", "ogg", "opus", "m4a", "aac", "wma", "aif", "aiff",
             ],
-            FileKind::Model => &["fbx", "obj", "gltf", "glb", "blend", "abc", "usd"],
+            FileKind::Model => &["fbx", "gltf", "glb", "blend", "abc", "usd"],
             FileKind::Archive => &["zip", "7z", "rar", "pak", "utoc", "ucas"],
             FileKind::Executable => &["exe", "dll", "pdb", "lib", "so"],
             FileKind::UnrealAsset => &["uasset"],
@@ -222,7 +222,7 @@ mod tests {
         ),
         (
             FileKind::Model,
-            &["fbx", "obj", "gltf", "glb", "blend", "abc", "usd"],
+            &["fbx", "gltf", "glb", "blend", "abc", "usd"],
         ),
         (
             FileKind::Archive,
@@ -246,7 +246,7 @@ mod tests {
     #[test]
     fn unknown_extension_is_binary() {
         let table = KindTable::default();
-        for extension in ["", "xyz", "uasset2", "tx"] {
+        for extension in ["", "xyz", "uasset2", "tx", "obj"] {
             assert_eq!(table.kind(extension), FileKind::Binary, "{extension}");
         }
     }

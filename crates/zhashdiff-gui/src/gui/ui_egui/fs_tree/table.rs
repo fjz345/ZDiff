@@ -160,6 +160,7 @@ pub fn draw_ui_folder_tree(
             FolderAction::OpenFolder1
             | FolderAction::OpenFolder2
             | FolderAction::Refresh
+            | FolderAction::SwapSides
             | FolderAction::OpenKeybindings
             | FolderAction::Find
             | FolderAction::KeepThis

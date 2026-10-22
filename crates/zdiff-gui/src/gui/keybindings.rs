@@ -160,9 +160,9 @@ impl Action for FileAction {
         match self {
             Self::OpenFileSource => "Open Source File",
             Self::OpenFileTarget => "Open Target File",
-            Self::RefreshDiff => "Refresh Diff",
+            Self::RefreshDiff => "Refresh",
             Self::RefreshDiffRowsOnly => "Refresh Diff Rows Only",
-            Self::OpenKeybindings => "Open Keybindings Options",
+            Self::OpenKeybindings => "Open Keyboard Shortcuts",
             Self::OpenUniversalPath => "Open P4Config",
             Self::Find => "Find",
             Self::Goto => "Goto",
@@ -176,7 +176,7 @@ impl Action for FileAction {
             Self::Redo => "Redo Revert",
             Self::DiffLocalFile => "Diff Source Against Local File",
             Self::DiffShelfBase => "Diff Shelved File Against Base",
-            Self::SwapSides => "Swap Source/Target",
+            Self::SwapSides => "Swap Sides",
             Self::IgnoreWhitespace => "Ignore Whitespace",
             Self::IgnoreComments => "Ignore Comments",
             Self::IgnoreRegex => "Ignore Regex On/Off",
@@ -249,10 +249,7 @@ impl Action for FileAction {
                 key: Key::L,
                 modifiers: CTRL,
             }],
-            Self::SwapSides => &[Shortcut {
-                key: Key::S,
-                modifiers: CTRL_SHIFT,
-            }],
+            Self::SwapSides => SharedAction::SwapSides.defaults(),
             Self::IgnoreWhitespace => &[Shortcut {
                 key: Key::W,
                 modifiers: Modifiers::ALT,
@@ -330,6 +327,7 @@ impl Action for FileAction {
             Self::RefreshDiff => Some(SharedAction::Refresh),
             Self::Find => Some(SharedAction::Find),
             Self::OpenKeybindings => Some(SharedAction::OpenKeybindings),
+            Self::SwapSides => Some(SharedAction::SwapSides),
             _ => None,
         }
     }

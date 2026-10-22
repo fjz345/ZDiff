@@ -20,6 +20,7 @@ pub enum FolderAction {
     NextDiff,
     PrevDiff,
     Refresh,
+    SwapSides,
     OpenKeybindings,
     Find,
     KeepThis,
@@ -35,6 +36,7 @@ impl Action for FolderAction {
             Self::NextDiff,
             Self::PrevDiff,
             Self::Refresh,
+            Self::SwapSides,
             Self::OpenKeybindings,
             Self::Find,
             Self::KeepThis,
@@ -50,6 +52,7 @@ impl Action for FolderAction {
             Self::NextDiff => "next_diff",
             Self::PrevDiff => "prev_diff",
             Self::Refresh => "refresh",
+            Self::SwapSides => "swap_sides",
             Self::OpenKeybindings => "open_keybindings",
             Self::Find => "find",
             Self::KeepThis => "keep_this",
@@ -62,14 +65,15 @@ impl Action for FolderAction {
         match self {
             Self::OpenFolder1 => "Open Folder 1",
             Self::OpenFolder2 => "Open Folder 2",
-            Self::NextDiff => "Next differing file",
-            Self::PrevDiff => "Previous differing file",
+            Self::NextDiff => "Next Differing File",
+            Self::PrevDiff => "Previous Differing File",
             Self::Refresh => "Refresh",
-            Self::OpenKeybindings => "Open Keybindings",
+            Self::SwapSides => "Swap Sides",
+            Self::OpenKeybindings => "Open Keyboard Shortcuts",
             Self::Find => "Find",
-            Self::KeepThis => "Keep this",
-            Self::NextGroup => "Next duplicate group",
-            Self::PrevGroup => "Previous duplicate group",
+            Self::KeepThis => "Keep This",
+            Self::NextGroup => "Next Duplicate Group",
+            Self::PrevGroup => "Previous Duplicate Group",
         }
     }
 
@@ -80,6 +84,7 @@ impl Action for FolderAction {
             Self::NextDiff => SharedAction::NextDiff.defaults(),
             Self::PrevDiff => SharedAction::PrevDiff.defaults(),
             Self::Refresh => SharedAction::Refresh.defaults(),
+            Self::SwapSides => SharedAction::SwapSides.defaults(),
             Self::OpenKeybindings => SharedAction::OpenKeybindings.defaults(),
             Self::Find => SharedAction::Find.defaults(),
             Self::KeepThis => &[Shortcut {
@@ -104,6 +109,7 @@ impl Action for FolderAction {
             Self::NextDiff => Some(SharedAction::NextDiff),
             Self::PrevDiff => Some(SharedAction::PrevDiff),
             Self::Refresh => Some(SharedAction::Refresh),
+            Self::SwapSides => Some(SharedAction::SwapSides),
             Self::OpenKeybindings => Some(SharedAction::OpenKeybindings),
             Self::Find => Some(SharedAction::Find),
             Self::KeepThis | Self::NextGroup | Self::PrevGroup => None,
@@ -138,8 +144,10 @@ impl KeybindingsWindow {
     }
 
     pub fn show(&mut self, ctx: &egui::Context, keymap: &mut Keymap<FolderAction>) {
-        show_custom_popup(ctx, &mut self.open, "Keybindings", true, |ui| {
-            self.editor.ui(ui, keymap, |_| {});
+        show_custom_popup(ctx, &mut self.open, "Keyboard Shortcuts", true, |ui| {
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                self.editor.ui(ui, keymap, |_| {});
+            });
         });
         if !self.open {
             self.editor.cancel_capture();

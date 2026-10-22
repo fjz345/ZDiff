@@ -81,11 +81,13 @@ pub struct FindCtx {
     query: FindQuery,
     /// `None` for an empty query.
     matcher: Option<Matcher>,
+    /// `None`: both sides.
+    side: Option<ActiveSide>,
     /// Sorted by row, then side (left first), then position.
     hits: Vec<FindHit>,
 }
 impl FindCtx {
-    /// An empty query gives no hits; only an invalid regex is an error.
+    /// Searches both sides. An empty query gives no hits; only an invalid regex is an error.
     #[cfg(test)]
     pub fn new(query: &FindQuery, diff_ctx: &MinimalDiffCtx) -> Result<Self, FindError> {
         let matcher = Self::compile(query)?;
@@ -94,6 +96,7 @@ impl FindCtx {
             query.clone(),
             matcher,
             files,
+            None,
             &diff_ctx.precomputed_file_rows,
             &AtomicBool::new(false),
         );
@@ -112,11 +115,14 @@ impl FindCtx {
         query: FindQuery,
         matcher: Option<Matcher>,
         files: [&Option<Arc<CachedFile<RawToken>>>; 2],
+        side: Option<ActiveSide>,
         file_rows: &PrecomputedFileRows,
         cancel: &AtomicBool,
     ) -> Option<Self> {
-        let search = |side, file: &Option<Arc<CachedFile<RawToken>>>| match (file, &matcher) {
-            (Some(file), Some(matcher)) => Self::search(file, matcher, side, cancel),
+        let search = |file_side, file: &Option<Arc<CachedFile<RawToken>>>| match (file, &matcher) {
+            (Some(file), Some(matcher)) if side.is_none_or(|side| side == file_side) => {
+                Self::search(file, matcher, file_side, cancel)
+            }
             _ => Vec::new(),
         };
         let (left, right) = rayon::join(
@@ -129,6 +135,7 @@ impl FindCtx {
         let mut find_ctx = Self {
             query,
             matcher,
+            side,
             hits: [left, right].concat(),
         };
         find_ctx.map_to_rows(file_rows);
@@ -145,8 +152,10 @@ impl FindCtx {
         &self.query
     }
 
-    pub fn matcher(&self) -> Option<&Matcher> {
-        self.matcher.as_ref()
+    pub fn matcher_on(&self, side: ActiveSide) -> Option<&Matcher> {
+        self.matcher
+            .as_ref()
+            .filter(|_| self.side.is_none_or(|searched| searched == side))
     }
 
     pub fn hits(&self) -> &[FindHit] {
@@ -930,8 +939,13 @@ pub struct DiffProcessor {
     pub find_cursor: ClampedCursor,
     pub find_ctx: FindCtx,
     find_job: Job<(FindCtx, Arc<PrecomputedFileRows>)>,
+    /// The last non-empty valid query, searched again when the active side changes.
+    find_request: Option<FindQuery>,
+    /// Set by a side switch, so its results keep the cursor near this row and don't scroll.
+    find_keep_row: Option<usize>,
     goto_line_number: Option<usize>,
     pub active_side: ActiveSide,
+    pub find_both_sides: bool,
 
     last_conflict_scroll_to_row: Option<ScrollSpan>,
     last_find_scroll_to_row: Option<ScrollSpan>,
@@ -954,8 +968,11 @@ impl Default for DiffProcessor {
             in_progress_input: None,
             find_cursor: ClampedCursor::default(),
             find_ctx: FindCtx::default(),
+            find_request: None,
+            find_keep_row: None,
             goto_line_number: None,
             active_side: ActiveSide::default(),
+            find_both_sides: false,
             last_conflict_scroll_to_row: None,
             last_find_scroll_to_row: None,
             expansion: None,
@@ -974,6 +991,7 @@ impl DiffProcessor {
     }
     pub fn reset_ui(&mut self) {
         self.update_find(FindCtx::default());
+        self.find_request = None;
         self.conflict_cursor.set(0);
         self.goto_line_number = None;
         self.active_highlights = Arc::default();
@@ -1052,6 +1070,20 @@ impl DiffProcessor {
         }
     }
 
+    pub fn set_active_side(&mut self, side: ActiveSide) {
+        let switched = self.active_side != side;
+        self.active_side = side;
+        if switched
+            && !self.find_both_sides
+            && let Some(query) = self.find_request.clone()
+        {
+            let row = self.current_find_hit().map(|hit| hit.row);
+            self.update_find_query(&query)
+                .expect("the query compiled when it was requested");
+            self.find_keep_row = row;
+        }
+    }
+
     pub fn update_goto(&mut self, line_number: Option<usize>) {
         log::info!("Goto to line: {:?}", line_number);
         self.goto_line_number = line_number;
@@ -1067,24 +1099,36 @@ impl DiffProcessor {
 
     /// Without a finished diff there is nothing to search and the query isn't checked.
     pub fn update_find_query(&mut self, query: &FindQuery) -> Result<(), FindError> {
+        self.find_keep_row = None;
         let Some(diff_ctx) = self.get_minimal_diff_ctx() else {
             return Ok(());
         };
         let Some(matcher) = FindCtx::compile(query)? else {
+            self.find_request = None;
             self.update_find(FindCtx {
                 query: query.clone(),
                 ..FindCtx::default()
             });
             return Ok(());
         };
+        self.find_request = Some(query.clone());
         let query = query.clone();
         let files = [diff_ctx.input.file_1, diff_ctx.input.file_2];
+        // A one-sided diff has no file on the other side to search.
+        let side = (!self.find_both_sides && files[self.active_side as usize].is_some())
+            .then_some(self.active_side);
         let file_rows = diff_ctx.precomputed_file_rows;
         self.find_job.start(move |job| {
             let [file_1, file_2] = &files;
             let cancel = job.cancel_flag();
-            let searched =
-                FindCtx::searched(query, Some(matcher), [file_1, file_2], &file_rows, cancel);
+            let searched = FindCtx::searched(
+                query,
+                Some(matcher),
+                [file_1, file_2],
+                side,
+                &file_rows,
+                cancel,
+            );
             if let Some(find_ctx) = searched {
                 job.send((find_ctx, file_rows));
             }
@@ -1099,6 +1143,13 @@ impl DiffProcessor {
             find_ctx.map_to_rows(&diff_ctx.precomputed_file_rows);
         }
         self.update_find(find_ctx);
+        if let Some(row) = self.find_keep_row.take() {
+            let hits = &self.find_ctx.hits;
+            let near = hits.iter().position(|hit| hit.row >= row);
+            self.find_cursor
+                .set(near.unwrap_or(hits.len().saturating_sub(1)));
+            self.last_find_scroll_to_row = self.find_scroll_to_row();
+        }
     }
 
     #[cfg(test)]
@@ -1116,6 +1167,7 @@ impl DiffProcessor {
 
     pub fn clear_results(&mut self) {
         self.update_find(FindCtx::default());
+        self.find_request = None;
         self.goto_line_number = None;
         self.active_highlights = Arc::default();
         self.highlight_side = None;
@@ -1308,8 +1360,9 @@ impl DiffProcessor {
     }
 }
 
-/// Index of the first hidden row of block `key` that a scope expansion reveals. `None` when no
-/// scope opens inside the block, or no change follows it.
+/// Index of the first hidden row of block `key` that a scope expansion reveals: the line above the
+/// scope opening, which holds the signature of an Allman-style `{`. `None` when no scope opens
+/// inside the block, or no change follows it.
 fn scope_reveal_from(ctx: &MinimalDiffCtx, key: usize) -> Option<usize> {
     let block = ctx.row_blocks.iter().find(|block| block.key == key)?;
     let hidden = &ctx
@@ -1341,7 +1394,7 @@ fn scope_reveal_from(ctx: &MinimalDiffCtx, key: usize) -> Option<usize> {
         .iter()
         .map(text)
         .collect();
-    scope::scope_opening(&hidden, &below)
+    scope::scope_opening(&hidden, &below).map(|opening| opening.saturating_sub(1))
 }
 
 /// The rows shown with some collapsed blocks expanded, built once per change.
@@ -2650,7 +2703,7 @@ mod tests {
             }
 
             #[test]
-            fn expanding_to_scope_reveals_the_lines_from_the_scope_opening_to_the_block_bottom() {
+            fn expanding_to_scope_reveals_from_above_the_scope_opening_to_the_block_bottom() {
                 let dir = tempfile::tempdir().unwrap();
                 let pair = scope_pair(dir.path());
                 let (mut processor, collapsed) = opened(&diff_only(&pair, 2));
@@ -2659,19 +2712,19 @@ mod tests {
                 processor.expand_block_to_scope(key);
                 let ctx = processor.get_minimal_diff_ctx().expect("diff still shown");
 
-                // Lines 6 and 7 stay behind the Collapsed row.
+                // Line 6 stays behind the Collapsed row.
                 assert_eq!(collapsed_rows(&ctx.diff_rows), vec![key]);
-                let shown: Vec<_> = ctx.diff_rows[key + 1..key + 9]
+                let shown: Vec<_> = ctx.diff_rows[key + 1..key + 10]
                     .iter()
                     .map(line_nums)
                     .collect();
-                let expected: Vec<_> = (8..=15).map(|n| (n, n)).collect();
+                let expected: Vec<_> = (7..=15).map(|n| (n, n)).collect();
                 assert_eq!(shown, expected);
                 assert_eq!(
                     *ctx.row_blocks,
                     vec![RowBlock {
                         key,
-                        rows: key..key + 9,
+                        rows: key..key + 10,
                         expanded: false
                     }]
                 );
@@ -2680,11 +2733,11 @@ mod tests {
                     format!("{:?}", &collapsed.diff_rows[..=key])
                 );
                 assert_eq!(
-                    format!("{:?}", &ctx.diff_rows[key + 9..]),
+                    format!("{:?}", &ctx.diff_rows[key + 10..]),
                     format!("{:?}", &collapsed.diff_rows[key + 1..])
                 );
-                assert_eq!(ctx.precomputed_file_rows.0[7], key + 1);
-                assert_eq!(ctx.precomputed_file_rows.1[14], key + 8);
+                assert_eq!(ctx.precomputed_file_rows.0[6], key + 1);
+                assert_eq!(ctx.precomputed_file_rows.1[14], key + 9);
             }
 
             #[test]
@@ -2717,6 +2770,37 @@ mod tests {
             fn expanding_to_scope_with_no_scope_in_the_block_expands_all_of_it() {
                 let dir = tempfile::tempdir().unwrap();
                 let pair = gap_pair(dir.path());
+                let (mut processor, collapsed) = opened(&diff_only(&pair, 2));
+                let key = only_block(&collapsed);
+                let (_, full) = opened(&input(&pair.0, &pair.1));
+
+                processor.expand_block_to_scope(key);
+                let ctx = processor.get_minimal_diff_ctx().expect("diff still shown");
+                assert_eq!(
+                    format!("{:?}", ctx.diff_rows),
+                    format!("{:?}", full.diff_rows)
+                );
+                assert!(ctx.row_blocks[0].expanded);
+            }
+
+            #[test]
+            fn expanding_to_a_scope_opening_on_the_first_hidden_line_expands_all_of_it() {
+                let dir = tempfile::tempdir().unwrap();
+                let write = |name: &str, edit: bool| {
+                    let contents: String = (1..=20)
+                        .map(|n| match n {
+                            5 => "fn scoped()\n".to_string(),
+                            6 => "{\n".to_string(),
+                            19 => "}\n".to_string(),
+                            3 | 18 if edit => format!("    edit_{n}\n"),
+                            _ => format!("    keep_{n}\n"),
+                        })
+                        .collect();
+                    let path = dir.path().join(name);
+                    std::fs::write(&path, contents).unwrap();
+                    load(&UniversalPath::from(path))
+                };
+                let pair = (write("left.rs", false), write("right.rs", true));
                 let (mut processor, collapsed) = opened(&diff_only(&pair, 2));
                 let key = only_block(&collapsed);
                 let (_, full) = opened(&input(&pair.0, &pair.1));
@@ -3073,7 +3157,7 @@ mod tests {
                 let result = processor.update_find_query(&regex("foo(", true));
 
                 assert!(matches!(result, Err(FindError::InvalidRegex(_))));
-                assert_eq!(processor.find_ctx.hits().len(), 7);
+                assert_eq!(processor.find_ctx.hits().len(), 3);
                 assert_eq!(processor.find_ctx.query().text, "foo");
                 assert_eq!(processor.find_cursor.get(), 1);
             }
@@ -3100,7 +3184,89 @@ mod tests {
                 processor.wait_for_find();
 
                 assert_eq!(processor.find_ctx.query().text, "bar");
-                assert_eq!(processor.find_ctx.hits().len(), 2);
+                assert_eq!(processor.find_ctx.hits().len(), 1);
+            }
+
+            fn hit_sides(processor: &DiffProcessor) -> Vec<ActiveSide> {
+                processor
+                    .find_ctx
+                    .hits()
+                    .iter()
+                    .map(|hit| hit.side)
+                    .collect()
+            }
+
+            #[test]
+            fn find_searches_only_the_active_side_and_follows_a_switch() {
+                let dir = tempfile::tempdir().unwrap();
+                let (mut processor, _) = foo_pair(dir.path());
+                processor.update_find_query(&plain("foo", true)).unwrap();
+                processor.wait_for_find();
+
+                assert_eq!(hit_sides(&processor), [Left; 3]);
+                assert!(processor.find_ctx.matcher_on(Left).is_some());
+                assert!(processor.find_ctx.matcher_on(Right).is_none());
+
+                processor.set_active_side(Right);
+                processor.wait_for_find();
+
+                assert_eq!(hit_sides(&processor), [Right; 4]);
+                assert!(processor.find_ctx.matcher_on(Left).is_none());
+                assert!(processor.find_ctx.matcher_on(Right).is_some());
+            }
+
+            #[test]
+            fn switching_sides_keeps_the_find_cursor_near_its_row_without_scrolling() {
+                let dir = tempfile::tempdir().unwrap();
+                let (mut processor, _) = foo_pair(dir.path());
+                processor.update_find_query(&plain("foo", true)).unwrap();
+                processor.wait_for_find();
+                processor.find_cursor.set(2);
+                assert_eq!(processor.get_scroll_to_row().map(|s| s.start), Some(2));
+
+                processor.set_active_side(Right);
+                processor.wait_for_find();
+
+                assert_eq!(processor.get_scroll_to_row(), None);
+                let current = processor.current_find_hit().expect("a current hit");
+                assert_eq!((current.side, current.row), (Right, 2));
+            }
+
+            #[test]
+            fn find_on_both_sides_lists_both_and_ignores_a_switch() {
+                let dir = tempfile::tempdir().unwrap();
+                let (mut processor, _) = foo_pair(dir.path());
+                processor.find_both_sides = true;
+                processor.update_find_query(&plain("foo", true)).unwrap();
+                processor.wait_for_find();
+                let hits = processor.find_ctx.hits().to_vec();
+
+                processor.set_active_side(Right);
+                processor.wait_for_find();
+
+                assert_eq!(hits.len(), 7);
+                assert_eq!(processor.find_ctx.hits(), hits);
+                assert!(processor.find_ctx.matcher_on(Left).is_some());
+                assert!(processor.find_ctx.matcher_on(Right).is_some());
+            }
+
+            #[test]
+            fn a_one_sided_diff_finds_on_its_only_side() {
+                let dir = tempfile::tempdir().unwrap();
+                let path = dir.path().join("only.rs");
+                std::fs::write(&path, "foo\nfoo\n").unwrap();
+                let mut processor = DiffProcessor::default();
+                open(
+                    &mut processor,
+                    &input(&load(&UniversalPath::from(path)), &None),
+                );
+                settle(&mut processor).expect("diff never completed");
+                processor.active_side = Right;
+
+                processor.update_find_query(&plain("foo", true)).unwrap();
+                processor.wait_for_find();
+
+                assert_eq!(hit_sides(&processor), [Left; 2]);
             }
         }
 

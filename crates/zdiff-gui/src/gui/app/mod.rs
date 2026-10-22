@@ -5,7 +5,9 @@ mod quickdiff;
 mod revert_write;
 mod state;
 mod ui;
+mod window_memory;
 use launch::{LaunchOutcome, apply_launch};
+use window_memory::WindowMemory;
 use state::AppState;
 
 use eframe::egui::{self};
@@ -85,6 +87,8 @@ pub struct ZApp {
     exit_code: Arc<AtomicU8>,
     #[serde(skip)]
     window_title: Option<String>,
+    #[serde(skip)]
+    window_memory: WindowMemory,
 }
 
 fn default_zoom() -> f32 {
@@ -102,6 +106,10 @@ fn deserialize_zoom<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result
 impl ZApp {
     pub fn report_exit_code_to(&mut self, exit_code: Arc<AtomicU8>) {
         self.exit_code = exit_code;
+    }
+
+    pub fn remember_window_from(&mut self, storage: Option<&dyn eframe::Storage>) {
+        self.window_memory = WindowMemory::load(storage);
     }
 
     pub fn request_init(&mut self) {
@@ -175,6 +183,7 @@ impl ZApp {
             open_merge_form: OpenMergeForm::default(),
             exit_code: Arc::default(),
             window_title: None,
+            window_memory: WindowMemory::default(),
         }
     }
 
@@ -238,6 +247,7 @@ impl eframe::App for ZApp {
     }
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
+        self.window_memory.keep_restorable(storage);
         #[cfg(feature = "serde")]
         if let Ok(json) = serde_json::to_string(self) {
             storage.set_string(eframe::APP_KEY, json);

@@ -14,6 +14,10 @@ const CTRL: Modifiers = Modifiers {
     command: true,
     ..Modifiers::NONE
 };
+const CTRL_SHIFT: Modifiers = Modifiers {
+    shift: true,
+    ..CTRL
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SharedAction {
@@ -24,6 +28,7 @@ pub enum SharedAction {
     Refresh,
     Find,
     OpenKeybindings,
+    SwapSides,
 }
 
 impl SharedAction {
@@ -35,6 +40,7 @@ impl SharedAction {
         Self::Refresh,
         Self::Find,
         Self::OpenKeybindings,
+        Self::SwapSides,
     ];
 
     pub fn name(self) -> &'static str {
@@ -46,6 +52,7 @@ impl SharedAction {
             Self::Refresh => "refresh",
             Self::Find => "find",
             Self::OpenKeybindings => "open_keybindings",
+            Self::SwapSides => "swap_sides",
         }
     }
 
@@ -90,6 +97,10 @@ impl SharedAction {
             Self::OpenKeybindings => &[Shortcut {
                 key: Key::O,
                 modifiers: CTRL,
+            }],
+            Self::SwapSides => &[Shortcut {
+                key: Key::S,
+                modifiers: CTRL_SHIFT,
             }],
         }
     }
@@ -281,10 +292,14 @@ mod tests {
     }
 
     #[test]
-    fn shared_defaults_are_ctrl_f1_f2_digits_r_f_and_o() {
+    fn shared_defaults_are_ctrl_f1_f2_digits_r_f_o_and_shift_s() {
         let ctrl = |key| Shortcut {
             key,
             modifiers: CTRL,
+        };
+        let ctrl_shift = |key| Shortcut {
+            key,
+            modifiers: CTRL_SHIFT,
         };
         let expected = [
             (SharedAction::Open1, vec![ctrl(Key::F1)]),
@@ -300,6 +315,7 @@ mod tests {
             (SharedAction::Refresh, vec![ctrl(Key::R)]),
             (SharedAction::Find, vec![ctrl(Key::F)]),
             (SharedAction::OpenKeybindings, vec![ctrl(Key::O)]),
+            (SharedAction::SwapSides, vec![ctrl_shift(Key::S)]),
         ];
         assert_eq!(expected.len(), SharedAction::ALL.len());
         for (action, shortcuts) in expected {
