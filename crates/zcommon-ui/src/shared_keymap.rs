@@ -31,6 +31,7 @@ pub enum SharedAction {
     SwapSides,
     ClearPaths,
     OpenStyle,
+    Export,
 }
 
 impl SharedAction {
@@ -45,6 +46,7 @@ impl SharedAction {
         Self::SwapSides,
         Self::ClearPaths,
         Self::OpenStyle,
+        Self::Export,
     ];
 
     pub fn name(self) -> &'static str {
@@ -59,6 +61,7 @@ impl SharedAction {
             Self::SwapSides => "swap_sides",
             Self::ClearPaths => "clear_paths",
             Self::OpenStyle => "open_style",
+            Self::Export => "export",
         }
     }
 
@@ -114,6 +117,10 @@ impl SharedAction {
             }],
             Self::OpenStyle => &[Shortcut {
                 key: Key::Comma,
+                modifiers: CTRL,
+            }],
+            Self::Export => &[Shortcut {
+                key: Key::E,
                 modifiers: CTRL,
             }],
         }
@@ -332,6 +339,7 @@ mod tests {
             (SharedAction::SwapSides, vec![ctrl_shift(Key::S)]),
             (SharedAction::ClearPaths, vec![ctrl(Key::W)]),
             (SharedAction::OpenStyle, vec![ctrl(Key::Comma)]),
+            (SharedAction::Export, vec![ctrl(Key::E)]),
         ];
         assert_eq!(expected.len(), SharedAction::ALL.len());
         for (action, shortcuts) in expected {

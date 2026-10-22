@@ -20,6 +20,7 @@ use copy::*;
 use gutter::*;
 use highlight::*;
 use layout::*;
+pub(crate) use line_menu::line_text;
 use line_menu::*;
 use path_bar::*;
 use pins::*;

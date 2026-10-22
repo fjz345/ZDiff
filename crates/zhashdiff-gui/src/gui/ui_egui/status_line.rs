@@ -48,7 +48,7 @@ pub fn count_rows(rows: &[VisibleRowTwoFolderDiff]) -> RowCounts {
     counts
 }
 
-fn counts_text(counts: &RowCounts, tolerance_on: bool) -> String {
+pub fn counts_text(counts: &RowCounts, tolerance_on: bool) -> String {
     let similar = if tolerance_on {
         format!(", {} similar", counts.similar)
     } else {

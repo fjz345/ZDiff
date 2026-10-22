@@ -191,6 +191,13 @@ impl AppStateCtx {
         self.viewers == Some(Viewers::Pair(ViewerKind::Hex))
             && self.hex_settings.mode == HexMode::Strings
     }
+
+    pub(super) fn shows_text_diff(&self) -> bool {
+        self.strings_view()
+            || self
+                .viewers
+                .is_none_or(|v| v == Viewers::Pair(ViewerKind::Text))
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]

@@ -30,6 +30,7 @@ use zhashdiff::fs::FileSystemModel;
 use zhashdiff::fs::FsNodeId;
 use zhashdiff::vcs_source::ContentSource;
 
+use crate::ui_egui::export::{duplicates_report, save_report};
 use crate::ui_egui::folder_keymap::FolderAction;
 use crate::ui_egui::fs_tree::CursorRowsCache;
 use crate::ui_egui::fs_tree::FileSystemView;
@@ -737,6 +738,29 @@ impl DuplicateFilesPane {
         })
     }
 
+    fn export(&self, ctx: &mut DuplicateFilesPaneCtx) {
+        let view = ctx.path_diff_view.file_system_1_view.as_ref();
+        let Some(groups) =
+            view.and_then(|view| current_groups(&self.groups, view, ctx.path_filter))
+        else {
+            *ctx.tool_message = Some(ToolMessage {
+                status: Some("Export: no duplicate groups are shown yet".to_owned()),
+                ..ToolMessage::default()
+            });
+            return;
+        };
+        let hashing = self.hash_progress(ctx.hash_service).is_some();
+        let text = duplicates_report(
+            view_root(view).as_deref(),
+            &groups.groups,
+            ctx.conflict_map_resolved,
+            hashing,
+        );
+        if let Some(message) = save_report(&text, "duplicates.txt") {
+            *ctx.tool_message = Some(message);
+        }
+    }
+
     fn cancel_hashing(&mut self, ctx: &mut DuplicateFilesPaneCtx) {
         ctx.hash_service.cancel();
         self.hash_batch = ctx.hash_service.count_active_hashes();
@@ -861,7 +885,8 @@ impl DuplicateFilesPane {
                 | FolderAction::ClearPaths
                 | FolderAction::OpenStyle
                 | FolderAction::OpenDiffTools
-                | FolderAction::ToggleDiffMode => continue,
+                | FolderAction::ToggleDiffMode
+                | FolderAction::Export => continue,
             };
             let Some((cursor, expand)) =
                 group_jump(&self.cursor, view, rows, groups, flat, forward)
@@ -1085,6 +1110,9 @@ impl DuplicateFilesPane {
         self.set_regroup_wake(ui.ctx());
         self.update_groups(ctx);
         let scroll_to_cursor = self.apply_actions(ctx);
+        if ctx.actions.contains(&FolderAction::Export) {
+            self.export(ctx);
+        }
 
         ui.vertical(|ui| {
             self.ui_popups(ui, ctx);

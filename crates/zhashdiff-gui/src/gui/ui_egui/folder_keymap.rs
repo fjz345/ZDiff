@@ -30,6 +30,7 @@ pub enum FolderAction {
     OpenStyle,
     OpenDiffTools,
     ToggleDiffMode,
+    Export,
 }
 
 impl Action for FolderAction {
@@ -50,6 +51,7 @@ impl Action for FolderAction {
             Self::OpenStyle,
             Self::OpenDiffTools,
             Self::ToggleDiffMode,
+            Self::Export,
         ]
     }
 
@@ -70,6 +72,7 @@ impl Action for FolderAction {
             Self::OpenStyle => "open_style",
             Self::OpenDiffTools => "open_diff_tools",
             Self::ToggleDiffMode => "toggle_diff_mode",
+            Self::Export => "export",
         }
     }
 
@@ -90,6 +93,7 @@ impl Action for FolderAction {
             Self::OpenStyle => "Open Style Settings",
             Self::OpenDiffTools => "Open External Diff Tools",
             Self::ToggleDiffMode => "Switch Path / Duplicate Diff",
+            Self::Export => "Export Folder Diff / Duplicates",
         }
     }
 
@@ -125,6 +129,7 @@ impl Action for FolderAction {
                 key: Key::D,
                 modifiers: CTRL,
             }],
+            Self::Export => SharedAction::Export.defaults(),
         }
     }
 
@@ -147,6 +152,7 @@ impl Action for FolderAction {
             Self::Find => Some(SharedAction::Find),
             Self::ClearPaths => Some(SharedAction::ClearPaths),
             Self::OpenStyle => Some(SharedAction::OpenStyle),
+            Self::Export => Some(SharedAction::Export),
             Self::KeepThis
             | Self::NextGroup
             | Self::PrevGroup

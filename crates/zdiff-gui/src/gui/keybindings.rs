@@ -82,6 +82,7 @@ pub enum FileAction {
     ClearFilePaths,
     OpenFileViewers,
     OpenStyle,
+    ExportDiff,
 }
 
 impl Action for FileAction {
@@ -124,6 +125,7 @@ impl Action for FileAction {
             Self::ClearFilePaths,
             Self::OpenFileViewers,
             Self::OpenStyle,
+            Self::ExportDiff,
         ]
     }
 
@@ -166,6 +168,7 @@ impl Action for FileAction {
             Self::ClearFilePaths => "clear_file_paths",
             Self::OpenFileViewers => "open_file_viewers",
             Self::OpenStyle => "open_style",
+            Self::ExportDiff => "export_diff",
         }
     }
 
@@ -208,6 +211,7 @@ impl Action for FileAction {
             Self::ClearFilePaths => "Clear File Paths",
             Self::OpenFileViewers => "Open File Viewer Settings",
             Self::OpenStyle => "Open Style Settings",
+            Self::ExportDiff => "Export Diff",
         }
     }
 
@@ -337,6 +341,7 @@ impl Action for FileAction {
                 modifiers: CTRL_ALT,
             }],
             Self::OpenStyle => SharedAction::OpenStyle.defaults(),
+            Self::ExportDiff => SharedAction::Export.defaults(),
         }
     }
 
@@ -360,6 +365,7 @@ impl Action for FileAction {
             Self::SwapSides => Some(SharedAction::SwapSides),
             Self::ClearFilePaths => Some(SharedAction::ClearPaths),
             Self::OpenStyle => Some(SharedAction::OpenStyle),
+            Self::ExportDiff => Some(SharedAction::Export),
             _ => None,
         }
     }
@@ -983,6 +989,7 @@ mod tests {
                 FileAction::ClearFilePaths,
                 FileAction::OpenFileViewers,
                 FileAction::OpenStyle,
+                FileAction::ExportDiff,
             ];
             let expected: Vec<_> = expected
                 .into_iter()

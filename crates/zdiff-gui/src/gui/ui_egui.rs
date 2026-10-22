@@ -2,6 +2,7 @@ pub mod active_side;
 #[cfg(test)]
 pub mod copy_harness;
 pub mod diff_pane;
+pub mod export;
 pub mod file_role;
 pub mod merge_pane;
 pub mod occurrence;

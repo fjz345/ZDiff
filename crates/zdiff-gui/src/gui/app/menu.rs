@@ -17,7 +17,7 @@ use crate::{
     language_icon::{emoji_renders, language_icon, show_language_icon},
     p4::{P4Profiles, ui_p4_profiles, update_p4_profiles},
     phase_trace_window::ui_phase_trace,
-    ui_egui::file_role::FileRole,
+    ui_egui::{export, file_role::FileRole},
     viewer::{FfmpegSetting, SharedKinds, ui_extension_map, ui_ffmpeg_setting},
 };
 
@@ -38,6 +38,7 @@ pub(super) struct MenuCtx<'a> {
     pub code_language_custom: &'a mut String,
     pub detected_languages: [Option<&'a str>; 2],
     pub h_scroll_modifier: &'a mut WheelModifier,
+    pub text_diff_shown: bool,
 }
 
 impl ZApp {
@@ -59,6 +60,7 @@ impl ZApp {
             code_language_custom,
             detected_languages,
             h_scroll_modifier,
+            text_diff_shown,
         } = menu_ctx;
         let keymap = &keybindings.keymap;
         ui.horizontal(|ui| {
@@ -114,6 +116,16 @@ impl ZApp {
                         {
                             Self::clear_file_paths(file_1, file_2, diff_processor);
                         }
+                        ui.add_enabled_ui(text_diff_shown, |ui| {
+                            if menu_item(ui, "Export Diff...", keymap, FileAction::ExportDiff)
+                                .clicked()
+                            {
+                                match diff_processor.get_minimal_diff_ctx() {
+                                    Some(diff_ctx) => export::export_diff(&diff_ctx),
+                                    None => log::info!("Export Diff: the diff is not ready"),
+                                }
+                            }
+                        });
                         if menu_item(ui, "Find", keymap, FileAction::Find).clicked() {
                             *find_open = true;
                         }

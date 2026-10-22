@@ -32,6 +32,7 @@ impl ZApp {
         app_ctx: &mut AppStateCtx,
     ) {
         egui::CentralPanel::default().show(ctx, |ui| {
+            let text_diff_shown = self.merge.is_none() && app_ctx.shows_text_diff();
             let AppStateCtx {
                 scroll_left,
                 scroll_right,
@@ -116,6 +117,7 @@ impl ZApp {
                     code_language_custom,
                     detected_languages: detected,
                     h_scroll_modifier,
+                    text_diff_shown,
                 },
             );
             let code_language = match code_language_override.as_deref() {

@@ -32,6 +32,7 @@ use zhashdiff::{
 
 use crate::ui_egui::{
     duplicate_files_pane::DuplicateFilesPane,
+    export::{folder_diff_report, save_report},
     folder_keymap::{self, FolderAction, KeybindingsWindow},
     fs_tree::{
         FileSystemView, FolderRole, HScrollLink, RowsId, VisibleRowTwoFolderDiff,
@@ -42,7 +43,8 @@ use crate::ui_egui::{
     revision_open,
     roots::{LaunchArgs, Side, apply_launch_args, clear_root, set_root},
     status_line::{
-        RowCounts, ScanSummary, ToolMessage, count_rows, ui_status_summary, ui_tool_message,
+        RowCounts, ScanSummary, ToolMessage, count_rows, counts_text, ui_status_summary,
+        ui_tool_message,
     },
     tools_window::ToolsWindow,
     tree_compare::{CompareUpdate, PairLikeness, TreeCompare, patch_row_states},
@@ -203,6 +205,25 @@ impl AppStateCtx {
                 ],
                 Instant::now(),
             );
+        }
+    }
+
+    fn export_folder_diff(&mut self) {
+        let Some(rows) = self.two_folder_diff_visible_rows.as_deref() else {
+            self.tool_message = Some(ToolMessage {
+                status: Some("Export: no folder diff is shown".to_owned()),
+                ..ToolMessage::default()
+            });
+            return;
+        };
+        let counts = counts_text(&count_rows(rows), self.tolerance.enabled);
+        let roots = [
+            self.file_system_1_root_path.as_deref(),
+            self.file_system_2_root_path.as_deref(),
+        ];
+        let text = folder_diff_report(roots, &counts, rows);
+        if let Some(message) = save_report(&text, "folder-diff.txt") {
+            self.tool_message = Some(message);
         }
     }
 
@@ -709,6 +730,8 @@ pub struct ZApp {
     #[serde(skip)]
     find_open: bool,
     #[serde(skip)]
+    export_requested: bool,
+    #[serde(skip)]
     title: String,
 }
 
@@ -763,6 +786,7 @@ impl ZApp {
             keybindings_window: KeybindingsWindow::default(),
             style_window: StyleWindow::default(),
             find_open: false,
+            export_requested: false,
             title: String::new(),
         }
     }
@@ -870,6 +894,17 @@ impl ZApp {
                                 self.find_open = true;
                             }
                         });
+                        let export_label = if self.diff_mode_path_diff {
+                            "Export Folder Diff..."
+                        } else {
+                            "Export Duplicates..."
+                        };
+                        if menu_item(ui, export_label, &app_ctx.keymap, FolderAction::Export)
+                            .clicked()
+                        {
+                            self.export_requested = true;
+                            ui.ctx().request_repaint();
+                        }
                     });
 
                     ui.menu_button("Options", |ui| {
@@ -976,11 +1011,15 @@ impl ZApp {
         // consuming the key, so a later check would hand that Enter to the tree cursor.
         let capturing = self.keybindings_window.is_capturing();
         let keyboard_taken = ctx.wants_keyboard_input() || capturing;
-        let actions = if capturing {
+        let mut actions = if capturing {
             Vec::new()
         } else {
             ctx.input(|i| app_ctx.keymap.dispatch(&i.events, keyboard_taken))
         };
+        // The menu draws after this frame's actions are taken, so its export runs next frame.
+        if std::mem::take(&mut self.export_requested) {
+            actions.push(FolderAction::Export);
+        }
         if actions.contains(&FolderAction::OpenFolder1) {
             self.open_dir_window_1 = true;
         }
@@ -1011,6 +1050,9 @@ impl ZApp {
         }
         if actions.contains(&FolderAction::Find) && self.diff_mode_path_diff {
             self.find_open = true;
+        }
+        if actions.contains(&FolderAction::Export) && self.diff_mode_path_diff {
+            app_ctx.export_folder_diff();
         }
         if !self.diff_mode_path_diff {
             self.find_open = false;

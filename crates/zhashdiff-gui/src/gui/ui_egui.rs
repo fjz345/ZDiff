@@ -1,5 +1,6 @@
 pub mod app;
 pub mod duplicate_files_pane;
+pub mod export;
 pub mod folder_keymap;
 pub mod fs_tree;
 pub mod panes;

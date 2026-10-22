@@ -17,6 +17,7 @@ use crate::{
     p4::{P4Command, set_p4_slot_profile},
     revert::HistoryStep,
     toggle_all::OptionSet,
+    ui_egui::export,
     viewer::video_meta::VideoTab,
 };
 
@@ -45,6 +46,7 @@ impl ZApp {
         let mut tab_pressed = false;
         let mut esc_pressed = false;
         let mut save_merge = false;
+        let mut export_diff = false;
         let mut open_style = false;
         {
             let _input_ctx = ctx.input(|r| {
@@ -92,6 +94,7 @@ impl ZApp {
                         FileAction::Find => app_state_ctx.find_open = true,
                         FileAction::Goto => app_state_ctx.goto_open = true,
                         FileAction::SaveMerge => save_merge = true,
+                        FileAction::ExportDiff => export_diff = true,
                         FileAction::OpenMerge => self.open_merge_form.open = true,
                         FileAction::ClearFilePaths => Self::clear_file_paths(
                             &mut app_state_ctx.file_1,
@@ -282,6 +285,15 @@ impl ZApp {
             match &mut self.merge {
                 Some(merge) => merge.request_save(),
                 None => log::info!("Save Merge: no merge is open"),
+            }
+        }
+        if export_diff {
+            let diff_ctx = (self.merge.is_none() && app_state_ctx.shows_text_diff())
+                .then(|| app_state_ctx.diff_processor.get_minimal_diff_ctx())
+                .flatten();
+            match diff_ctx {
+                Some(diff_ctx) => export::export_diff(&diff_ctx),
+                None => log::info!("Export Diff: no text diff is shown"),
             }
         }
         if let Some(step) = history_step {
