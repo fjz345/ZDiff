@@ -13,26 +13,19 @@ pub(super) fn handle_drops(
     // );
 
     // let mut should_draw = false;
-    let did_drop = ui.input(|i| {
-        if let Some(drop_pos) = i.pointer.hover_pos() {
-            // should_draw = true;
-            for dropped_file in &i.raw.dropped_files {
-                if let Some(path) = &dropped_file.path {
-                    if rect1.contains(drop_pos) {
-                        *load_file_1_request = Some(UniversalPath::from(path.clone()));
-                        log::info!("File dropped on left pane: {}", path.display());
-                        return true;
-                    } else if rect2.contains(drop_pos) {
-                        *load_file_2_request = Some(UniversalPath::from(path.clone()));
-                        log::info!("File dropped on right pane: {}", path.display());
-                        return true;
-                    }
-                    break;
-                }
-            }
+    let did_drop = match zcommon_ui::common::dropped_file(ui.ctx()) {
+        Some((path, drop_pos)) if rect1.contains(drop_pos) => {
+            log::info!("File dropped on left pane: {}", path.display());
+            *load_file_1_request = Some(UniversalPath::from(path));
+            true
         }
-        return false;
-    });
+        Some((path, drop_pos)) if rect2.contains(drop_pos) => {
+            log::info!("File dropped on right pane: {}", path.display());
+            *load_file_2_request = Some(UniversalPath::from(path));
+            true
+        }
+        _ => false,
+    };
     // if should_draw {
     //     ui.painter()
     //         .debug_rect(rect1, egui::Color32::RED, "Left Drop Zone");

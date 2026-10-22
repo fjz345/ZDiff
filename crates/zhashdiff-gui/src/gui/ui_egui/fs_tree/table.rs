@@ -627,23 +627,17 @@ pub(super) fn handle_drops(
     rect1: egui::Rect,
     rect2: egui::Rect,
 ) -> bool {
-    return ui.input(|i| {
-        if let Some(drop_pos) = i.pointer.hover_pos() {
-            for dropped_file in &i.raw.dropped_files {
-                if let Some(path) = &dropped_file.path {
-                    if rect1.contains(drop_pos) {
-                        let _ = set_root(root_1, Side::Folder1, path);
-                        return true;
-                    } else if rect2.contains(drop_pos) {
-                        let _ = set_root(root_2, Side::Folder2, path);
-                        return true;
-                    }
-                    break;
-                }
-            }
+    return match zcommon_ui::common::dropped_file(ui.ctx()) {
+        Some((path, drop_pos)) if rect1.contains(drop_pos) => {
+            let _ = set_root(root_1, Side::Folder1, &path);
+            true
         }
-        return false;
-    });
+        Some((path, drop_pos)) if rect2.contains(drop_pos) => {
+            let _ = set_root(root_2, Side::Folder2, &path);
+            true
+        }
+        _ => false,
+    };
 }
 
 #[derive(Clone)]

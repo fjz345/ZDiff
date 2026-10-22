@@ -341,3 +341,34 @@ pub fn show_custom_popup_with_color<F>(
             });
         });
 }
+
+pub fn dropped_file(ctx: &egui::Context) -> Option<(std::path::PathBuf, egui::Pos2)> {
+    let path = ctx.input(|i| i.raw.dropped_files.iter().find_map(|f| f.path.clone()))?;
+    Some((path, file_drop_pos(ctx)?))
+}
+
+// winit 0.30 ignores the OLE drop point and the window gets no mouse moves during a drag.
+#[cfg(windows)]
+fn file_drop_pos(ctx: &egui::Context) -> Option<egui::Pos2> {
+    #[repr(C)]
+    struct Point {
+        x: i32,
+        y: i32,
+    }
+    #[link(name = "user32")]
+    unsafe extern "system" {
+        fn GetCursorPos(point: *mut Point) -> i32;
+    }
+    let mut point = Point { x: 0, y: 0 };
+    if unsafe { GetCursorPos(&mut point) } == 0 {
+        return None;
+    }
+    let inner = ctx.input(|i| i.viewport().inner_rect)?;
+    let screen = egui::pos2(point.x as f32, point.y as f32) / ctx.pixels_per_point();
+    Some(screen - inner.min.to_vec2())
+}
+
+#[cfg(not(windows))]
+fn file_drop_pos(ctx: &egui::Context) -> Option<egui::Pos2> {
+    ctx.input(|i| i.pointer.hover_pos())
+}

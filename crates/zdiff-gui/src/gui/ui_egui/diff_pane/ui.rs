@@ -357,7 +357,7 @@ impl FileDiffPane {
         let mut table_rect = egui::Rect::NOTHING;
         let mut header_rects = [egui::Rect::NOTHING; 2];
         let mut browse: [Option<String>; 2] = [None, None];
-        ui.vertical(|ui| {
+        let content_rect = ui.vertical(|ui| {
             ui.set_min_width(available_width);
 
             if table_height > 0.0 && (diff_rows_len > 0 || other_viewer) {
@@ -1211,7 +1211,9 @@ impl FileDiffPane {
                     }
                 });
             }
-        });
+        })
+        .response
+        .rect;
 
         for (i, side) in [ActiveSide::Left, ActiveSide::Right]
             .into_iter()
@@ -1293,12 +1295,17 @@ impl FileDiffPane {
                 .data_mut(|data| data.insert_temp(wheel_rects_id(), side_rects));
         }
 
+        let (left_drop_rect, right_drop_rect) = if table_rect.is_positive() {
+            (left_rect, right_rect)
+        } else {
+            content_rect.split_left_right_at_fraction(0.5)
+        };
         handle_drops(
             ui,
             &mut ctx.load_file_1_request,
             &mut ctx.load_file_2_request,
-            left_rect,
-            right_rect,
+            left_drop_rect,
+            right_drop_rect,
         );
 
         egui_tiles::UiResponse::None
