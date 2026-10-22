@@ -6,7 +6,7 @@ use std::{
 
 use eframe::egui::{self, RichText, TextBuffer};
 use zcommon::kinds::FileKind;
-use zcommon_ui::common::show_custom_popup;
+use zcommon_ui::common::{icon_button, section_heading, show_settings_window};
 use zhashdiff::external_diff_tool::{
     DiffPair, DiffTool, DiffToolConfig, DiffToolMatch, DiffToolRule, ExeNotFound, find_on_path,
     folder_labels, open_diff_tool, presets, preview_command, resolve_exe,
@@ -84,16 +84,22 @@ impl ToolsWindow {
     pub fn show(&mut self, ctx: &egui::Context, config: &mut DiffToolConfig) {
         let was_open = self.open;
         let mut open = self.open;
-        show_custom_popup(ctx, &mut open, "External Diff Tools", true, |ui| {
-            ui.checkbox(
-                &mut config.mark_undiffable,
-                "Mark file rows the chosen tool can't diff",
-            );
-            ui.separator();
-            self.tools_ui(ui, config);
-            ui.separator();
-            Self::rules_ui(ui, config);
-        });
+        show_settings_window(
+            ctx,
+            &mut open,
+            "External Diff Tools",
+            [600.0, 640.0],
+            |ui| {
+                ui.checkbox(
+                    &mut config.mark_undiffable,
+                    "Mark file rows the chosen tool can't diff",
+                );
+                section_heading(ui, "Tools");
+                self.tools_ui(ui, config);
+                section_heading(ui, "Rules");
+                Self::rules_ui(ui, config);
+            },
+        );
         self.open = open;
         if was_open && !open {
             for tool in &config.tools {
@@ -119,69 +125,102 @@ impl ToolsWindow {
             if preview.is_err() {
                 title = title.color(ui.visuals().error_fg_color);
             }
-            egui::CollapsingHeader::new(title)
+            egui::CollapsingHeader::new(title.strong())
                 .id_salt(("diff_tool", index))
                 .default_open(is_default)
                 .show(ui, |ui| {
-                    ui.horizontal(|ui| match &mut self.renaming {
-                        Some((old, new)) if *old == tool.name => {
-                            ui.text_edit_singleline(new);
-                            if ui.button("OK").clicked() {
-                                action = Some(ToolAction::Rename);
-                            }
-                            if ui.button("Cancel").clicked() {
-                                self.renaming = None;
-                                self.rename_error = None;
-                            }
-                        }
-                        _ => {
-                            ui.label(format!("Name: {}", tool.name));
-                            if ui.button("Rename").clicked() {
-                                self.renaming = Some((tool.name.clone(), tool.name.clone()));
-                                self.rename_error = None;
-                            }
-                        }
-                    });
-                    if let (Some((old, _)), Some(err)) = (&self.renaming, &self.rename_error)
-                        && *old == tool.name
-                    {
-                        ui.colored_label(ui.visuals().error_fg_color, err);
-                    }
-
-                    ui.label("Executable:");
-                    let mut exe_path = tool.exe_path.to_string_lossy();
-                    if ui.text_edit_singleline(&mut exe_path).changed() {
-                        tool.exe_path = PathBuf::from(exe_path.as_str());
-                    }
-                    ui.label("Arguments ({left} {right} {left_name} {right_name}):");
-                    ui.add(egui::TextEdit::singleline(&mut tool.template).desired_width(400.0));
-                    match &preview {
-                        Ok(command) => {
-                            ui.label("Preview:");
-                            ui.label(RichText::new(command).monospace());
-                        }
-                        Err(err) => {
-                            ui.colored_label(ui.visuals().error_fg_color, err.to_string());
-                        }
-                    }
-                    ui.label("Kinds it diffs:");
-                    egui::Grid::new(("diff_tool_kinds", index)).show(ui, |ui| {
-                        for (i, kind) in FileKind::ALL.into_iter().enumerate() {
-                            let mut listed = tool.kinds.contains(&kind);
-                            if ui.checkbox(&mut listed, format!("{kind:?}")).changed() {
-                                if listed {
-                                    tool.kinds.push(kind);
-                                    tool.kinds.sort();
-                                } else {
-                                    tool.kinds.retain(|&k| k != kind);
+                    egui::Grid::new(("diff_tool_fields", index))
+                        .num_columns(2)
+                        .spacing([16.0, 6.0])
+                        .show(ui, |ui| {
+                            ui.label("Name");
+                            ui.horizontal(|ui| match &mut self.renaming {
+                                Some((old, new)) if *old == tool.name => {
+                                    ui.text_edit_singleline(new);
+                                    if ui.button("OK").clicked() {
+                                        action = Some(ToolAction::Rename);
+                                    }
+                                    if ui.button("Cancel").clicked() {
+                                        self.renaming = None;
+                                        self.rename_error = None;
+                                    }
                                 }
-                            }
-                            if i % 5 == 4 {
+                                _ => {
+                                    ui.label(&tool.name);
+                                    if icon_button(ui, "✏", "Rename").clicked() {
+                                        self.renaming =
+                                            Some((tool.name.clone(), tool.name.clone()));
+                                        self.rename_error = None;
+                                    }
+                                }
+                            });
+                            ui.end_row();
+                            if let (Some((old, _)), Some(err)) =
+                                (&self.renaming, &self.rename_error)
+                                && *old == tool.name
+                            {
+                                ui.label("");
+                                ui.colored_label(ui.visuals().error_fg_color, err);
                                 ui.end_row();
                             }
-                        }
-                    });
 
+                            ui.label("Executable");
+                            let mut exe_path = tool.exe_path.to_string_lossy();
+                            let exe_edit = egui::TextEdit::singleline(&mut exe_path)
+                                .desired_width(f32::INFINITY);
+                            if ui.add(exe_edit).changed() {
+                                tool.exe_path = PathBuf::from(exe_path.as_str());
+                            }
+                            ui.end_row();
+
+                            ui.label("Arguments");
+                            ui.add(
+                                egui::TextEdit::singleline(&mut tool.template)
+                                    .desired_width(f32::INFINITY),
+                            );
+                            ui.end_row();
+
+                            ui.label("");
+                            ui.weak("{left} {right} {left_name} {right_name}");
+                            ui.end_row();
+
+                            ui.label("Preview");
+                            match &preview {
+                                Ok(command) => {
+                                    ui.add(
+                                        egui::Label::new(RichText::new(command).monospace()).wrap(),
+                                    );
+                                }
+                                Err(err) => {
+                                    ui.colored_label(
+                                        ui.visuals().error_fg_color,
+                                        format!("⚠ {err}"),
+                                    );
+                                }
+                            }
+                            ui.end_row();
+
+                            ui.label("Kinds");
+                            egui::Grid::new(("diff_tool_kinds", index)).show(ui, |ui| {
+                                for (i, kind) in FileKind::ALL.into_iter().enumerate() {
+                                    let mut listed = tool.kinds.contains(&kind);
+                                    if ui.checkbox(&mut listed, format!("{kind:?}")).changed() {
+                                        if listed {
+                                            tool.kinds.push(kind);
+                                            tool.kinds.sort();
+                                        } else {
+                                            tool.kinds.retain(|&k| k != kind);
+                                        }
+                                    }
+                                    if i % 4 == 3 {
+                                        ui.end_row();
+                                    }
+                                }
+                            });
+                            ui.end_row();
+                        });
+
+                    ui.add_space(4.0);
                     ui.horizontal(|ui| {
                         if ui.button("Test").clicked() {
                             action = Some(ToolAction::Test(index));
@@ -244,7 +283,8 @@ impl ToolsWindow {
             None => {}
         }
 
-        ui.menu_button("Add tool", |ui| {
+        ui.add_space(4.0);
+        ui.menu_button("➕ Add tool", |ui| {
             let local_app_data = env::var_os("LOCALAPPDATA").map(PathBuf::from);
             for preset in presets(local_app_data.as_deref()) {
                 if ui.button(preset.name).clicked() {
@@ -264,63 +304,74 @@ impl ToolsWindow {
     }
 
     fn rules_ui(ui: &mut egui::Ui, config: &mut DiffToolConfig) {
-        ui.label("Rules (first match wins, otherwise the default tool):");
+        ui.weak("First match wins, otherwise the default tool.");
         let names: Vec<String> = config.tools.iter().map(|tool| tool.name.clone()).collect();
         let rule_count = config.rules.len();
         let mut action = None;
-        for (index, rule) in config.rules.iter_mut().enumerate() {
-            ui.horizontal(|ui| {
-                let is_kind = matches!(rule.matches, DiffToolMatch::Kind(_));
-                egui::ComboBox::from_id_salt(("diff_tool_rule_type", index))
-                    .selected_text(if is_kind { "Kind" } else { "Extension" })
-                    .show_ui(ui, |ui| {
-                        if ui.selectable_label(is_kind, "Kind").clicked() && !is_kind {
-                            rule.matches = DiffToolMatch::Kind(FileKind::Text);
-                        }
-                        if ui.selectable_label(!is_kind, "Extension").clicked() && is_kind {
-                            rule.matches = DiffToolMatch::Extension(String::new());
-                        }
-                    });
-                match &mut rule.matches {
-                    DiffToolMatch::Kind(kind) => {
-                        egui::ComboBox::from_id_salt(("diff_tool_rule_kind", index))
-                            .selected_text(format!("{kind:?}"))
+        egui::Grid::new("diff_tool_rules")
+            .num_columns(1)
+            .striped(true)
+            .show(ui, |ui| {
+                for (index, rule) in config.rules.iter_mut().enumerate() {
+                    ui.horizontal(|ui| {
+                        let is_kind = matches!(rule.matches, DiffToolMatch::Kind(_));
+                        egui::ComboBox::from_id_salt(("diff_tool_rule_type", index))
+                            .selected_text(if is_kind { "Kind" } else { "Extension" })
                             .show_ui(ui, |ui| {
-                                for option in FileKind::ALL {
-                                    ui.selectable_value(kind, option, format!("{option:?}"));
+                                if ui.selectable_label(is_kind, "Kind").clicked() && !is_kind {
+                                    rule.matches = DiffToolMatch::Kind(FileKind::Text);
+                                }
+                                if ui.selectable_label(!is_kind, "Extension").clicked() && is_kind {
+                                    rule.matches = DiffToolMatch::Extension(String::new());
                                 }
                             });
-                    }
-                    DiffToolMatch::Extension(extension) => {
-                        ui.add(egui::TextEdit::singleline(extension).desired_width(80.0));
-                    }
-                }
-                ui.label("->");
-                let mut tool_text = RichText::new(&rule.tool);
-                if !names.contains(&rule.tool) {
-                    tool_text = tool_text.color(ui.visuals().error_fg_color);
-                }
-                egui::ComboBox::from_id_salt(("diff_tool_rule_tool", index))
-                    .selected_text(tool_text)
-                    .show_ui(ui, |ui| {
-                        for name in &names {
-                            ui.selectable_value(&mut rule.tool, name.clone(), name);
+                        match &mut rule.matches {
+                            DiffToolMatch::Kind(kind) => {
+                                egui::ComboBox::from_id_salt(("diff_tool_rule_kind", index))
+                                    .selected_text(format!("{kind:?}"))
+                                    .show_ui(ui, |ui| {
+                                        for option in FileKind::ALL {
+                                            ui.selectable_value(
+                                                kind,
+                                                option,
+                                                format!("{option:?}"),
+                                            );
+                                        }
+                                    });
+                            }
+                            DiffToolMatch::Extension(extension) => {
+                                ui.add(egui::TextEdit::singleline(extension).desired_width(80.0));
+                            }
+                        }
+                        ui.label("➡");
+                        let mut tool_text = RichText::new(&rule.tool);
+                        if !names.contains(&rule.tool) {
+                            tool_text = tool_text.color(ui.visuals().error_fg_color);
+                        }
+                        egui::ComboBox::from_id_salt(("diff_tool_rule_tool", index))
+                            .selected_text(tool_text)
+                            .show_ui(ui, |ui| {
+                                for name in &names {
+                                    ui.selectable_value(&mut rule.tool, name.clone(), name);
+                                }
+                            });
+                        let up = ui.add_enabled_ui(index > 0, |ui| icon_button(ui, "⏶", "Move up"));
+                        if up.inner.clicked() {
+                            action = Some(RuleAction::Up(index));
+                        }
+                        let down = ui.add_enabled_ui(index + 1 < rule_count, |ui| {
+                            icon_button(ui, "⏷", "Move down")
+                        });
+                        if down.inner.clicked() {
+                            action = Some(RuleAction::Down(index));
+                        }
+                        if icon_button(ui, "✖", "Remove").clicked() {
+                            action = Some(RuleAction::Remove(index));
                         }
                     });
-                if ui.add_enabled(index > 0, egui::Button::new("Up")).clicked() {
-                    action = Some(RuleAction::Up(index));
-                }
-                if ui
-                    .add_enabled(index + 1 < rule_count, egui::Button::new("Down"))
-                    .clicked()
-                {
-                    action = Some(RuleAction::Down(index));
-                }
-                if ui.button("Remove").clicked() {
-                    action = Some(RuleAction::Remove(index));
+                    ui.end_row();
                 }
             });
-        }
         match action {
             Some(RuleAction::Up(index)) => config.rules.swap(index - 1, index),
             Some(RuleAction::Down(index)) => config.rules.swap(index, index + 1),
@@ -329,7 +380,7 @@ impl ToolsWindow {
             }
             None => {}
         }
-        if ui.button("Add rule").clicked() {
+        if ui.button("➕ Add rule").clicked() {
             config.rules.push(DiffToolRule {
                 matches: DiffToolMatch::Kind(FileKind::Text),
                 tool: config.default_tool.clone(),

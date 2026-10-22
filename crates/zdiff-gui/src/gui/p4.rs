@@ -1,72 +1,75 @@
 use eframe::egui;
+use zcommon_ui::common::icon_button;
 
 pub use zcommon::vcs::p4::*;
 
 pub fn ui_p4_profiles(ui: &mut egui::Ui, profiles: &mut P4Profiles) {
-    ui.vertical(|ui| {
-        ui.heading("Perforce Profiles");
-        ui.label("A Quick Diff slot's profile goes over the default profile");
-        ui.label("Empty fields come from the default profile, then P4CONFIG or the environment");
-        ui.label("# to unset an env var for the command");
+    ui.weak("A Quick Diff slot's profile goes over the default profile.");
+    ui.weak("Empty fields come from the default profile, then P4CONFIG or the environment.");
+    ui.weak("# unsets an env var for the command.");
+    ui.add_space(6.0);
 
-        ui.horizontal(|ui| {
-            ui.label("Default profile");
-            ui_p4_profile_combo(
-                ui,
-                "p4_default_profile",
-                &profiles.profiles,
-                "None",
-                &mut profiles.default,
-            );
+    ui.horizontal(|ui| {
+        ui.label("Default profile");
+        ui_p4_profile_combo(
+            ui,
+            "p4_default_profile",
+            &profiles.profiles,
+            "None",
+            &mut profiles.default,
+        );
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if ui.button("➕ Add Profile").clicked() {
+                let name = format!("Profile {}", profiles.profiles.len() + 1);
+                profiles.add(name);
+            }
         });
-        if ui.button("Add Profile").clicked() {
-            let name = format!("Profile {}", profiles.profiles.len() + 1);
-            profiles.add(name);
-        }
+    });
+    ui.add_space(4.0);
 
-        let mut remove = None;
-        egui::ScrollArea::vertical().show(ui, |ui| {
-            for profile in &mut profiles.profiles {
-                ui.separator();
-                ui.horizontal(|ui| {
-                    ui.add(
-                        egui::TextEdit::singleline(&mut profile.name)
-                            .hint_text("name")
-                            .desired_width(200.0),
-                    );
-                    if ui.button("Remove").clicked() {
+    let mut remove = None;
+    for profile in &mut profiles.profiles {
+        egui::Frame::group(ui.style()).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                ui.add(
+                    egui::TextEdit::singleline(&mut profile.name)
+                        .hint_text("name")
+                        .font(egui::TextStyle::Heading)
+                        .desired_width(240.0),
+                );
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if icon_button(ui, "✖", "Remove this profile").clicked() {
                         remove = Some(profile.id);
                     }
                 });
+            });
 
-                let config = &mut profile.config;
-                egui::Grid::new(("p4_profile_grid", profile.id))
-                    .num_columns(2)
-                    .spacing([40.0, 8.0])
-                    .show(ui, |ui| {
-                        let mut edit_row = |label: &str, value: &mut String, hint: &str| {
-                            ui.label(label);
-                            ui.add(
-                                egui::TextEdit::singleline(value)
-                                    .hint_text(hint)
-                                    .desired_width(200.0),
-                            );
-                            ui.end_row();
-                        };
+            let config = &mut profile.config;
+            egui::Grid::new(("p4_profile_grid", profile.id))
+                .num_columns(2)
+                .spacing([16.0, 4.0])
+                .show(ui, |ui| {
+                    let mut edit_row = |label: &str, value: &mut String, hint: &str| {
+                        ui.label(label);
+                        ui.add(
+                            egui::TextEdit::singleline(value)
+                                .hint_text(hint)
+                                .desired_width(f32::INFINITY),
+                        );
+                        ui.end_row();
+                    };
 
-                        edit_row("P4PORT", &mut config.port, "ssl:perforce:1666");
-                        edit_row("P4USER", &mut config.user, "username");
-                        edit_row("P4CLIENT", &mut config.client, "workspace_name");
-                        edit_row("P4CHARSET", &mut config.charset, "utf8");
-                    });
-            }
+                    edit_row("P4PORT", &mut config.port, "ssl:perforce:1666");
+                    edit_row("P4USER", &mut config.user, "username");
+                    edit_row("P4CLIENT", &mut config.client, "workspace_name");
+                    edit_row("P4CHARSET", &mut config.charset, "utf8");
+                });
         });
-        if let Some(id) = remove {
-            profiles.remove(id);
-        }
-
-        ui.add_space(10.0);
-    });
+    }
+    if let Some(id) = remove {
+        profiles.remove(id);
+    }
 }
 
 /// Picks a profile, or `none_label` for none. A removed profile shows as none, which is how it

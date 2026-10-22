@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use eframe::egui;
 use zcommon::ffmpeg::{FfmpegNotFound, FfmpegPaths, find_ffmpeg};
 use zcommon::kinds::{FileKind, KindTable, normalize_extension};
+use zcommon_ui::common::{confirm_button, icon_button, section_heading};
 use zdiff::universal_path::UniversalPath;
 
 pub mod audio;
@@ -440,18 +441,19 @@ impl FfmpegSetting {
 }
 
 pub fn ui_ffmpeg_setting(ui: &mut egui::Ui, setting: &mut FfmpegSetting) {
+    section_heading(ui, "ffmpeg");
     ui.horizontal(|ui| {
-        ui.label("ffmpeg folder");
+        ui.label("Folder");
         let edit = egui::TextEdit::singleline(&mut setting.path)
-            .desired_width(300.0)
+            .desired_width(f32::INFINITY)
             .hint_text("next to the app, then PATH");
         if ui.add(edit).changed() {
             setting.found = None;
         }
     });
     match setting.lookup() {
-        Ok(paths) => ui.label(format!("Using {}", paths.ffmpeg.display())),
-        Err(not_found) => ui.colored_label(ui.visuals().warn_fg_color, not_found.to_string()),
+        Ok(paths) => ui.weak(format!("✔ Using {}", paths.ffmpeg.display())),
+        Err(not_found) => ui.colored_label(ui.visuals().warn_fg_color, format!("⚠ {not_found}")),
     };
 }
 
@@ -478,19 +480,26 @@ fn kind_label(kind: FileKind) -> String {
 /// live in egui's temp memory.
 pub fn ui_extension_map(ui: &mut egui::Ui, table: &KindTable) -> Vec<KindEdit> {
     let mut edits = Vec::new();
-    if ui.button("Reset to defaults").clicked() {
-        edits.push(KindEdit::Reset);
-    }
-    ui.label("Shared with ZHashDiff. Unlisted extensions are sniffed: text opens as Text, binary as Hex.");
-    ui.collapsing("Defaults", |ui| {
-        for kind in FileKind::ALL {
-            let extensions = kind.default_extensions();
-            if !extensions.is_empty() {
-                ui.label(format!("{}: {}", kind_label(kind), extensions.join(" ")));
-            }
-        }
-    });
-    ui.separator();
+    section_heading(ui, "Extensions");
+    ui.weak("Shared with ZHashDiff. Unlisted extensions are sniffed: text opens as Text, binary as Hex.");
+    egui::CollapsingHeader::new("Built-in defaults")
+        .id_salt("extension_map_defaults")
+        .show(ui, |ui| {
+            egui::Grid::new("extension_map_defaults_grid")
+                .num_columns(2)
+                .striped(true)
+                .show(ui, |ui| {
+                    for kind in FileKind::ALL {
+                        let extensions = kind.default_extensions();
+                        if !extensions.is_empty() {
+                            ui.label(kind_label(kind));
+                            ui.add(egui::Label::new(extensions.join(" ")).wrap());
+                            ui.end_row();
+                        }
+                    }
+                });
+        });
+    ui.add_space(4.0);
 
     let new_id = ui.id().with("new_extension");
     let (mut new_extension, mut new_kind) = ui.data_mut(|d| {
@@ -498,11 +507,13 @@ pub fn ui_extension_map(ui: &mut egui::Ui, table: &KindTable) -> Vec<KindEdit> {
             .unwrap_or((String::new(), FileKind::Text))
     });
     ui.horizontal(|ui| {
+        ui.label("Override");
         ui.add(
             egui::TextEdit::singleline(&mut new_extension)
                 .desired_width(80.0)
                 .hint_text("zbin"),
         );
+        ui.label("opens as");
         egui::ComboBox::from_id_salt("new_extension_kind")
             .selected_text(kind_label(new_kind))
             .show_ui(ui, |ui| {
@@ -510,38 +521,51 @@ pub fn ui_extension_map(ui: &mut egui::Ui, table: &KindTable) -> Vec<KindEdit> {
                     ui.selectable_value(&mut new_kind, option, kind_label(option));
                 }
             });
-        if ui.button("Add").clicked() && !normalize_extension(&new_extension).is_empty() {
+        let can_add = !normalize_extension(&new_extension).is_empty();
+        if ui
+            .add_enabled(can_add, egui::Button::new("➕ Add"))
+            .clicked()
+        {
             edits.push(KindEdit::Set(std::mem::take(&mut new_extension), new_kind));
         }
     });
     ui.data_mut(|d| d.insert_temp(new_id, (new_extension, new_kind)));
-    ui.separator();
+    ui.add_space(4.0);
 
-    egui::ScrollArea::vertical().show(ui, |ui| {
-        egui::Grid::new("extension_map_grid")
-            .num_columns(3)
-            .spacing([20.0, 8.0])
-            .show(ui, |ui| {
-                for (extension, kind) in table.overrides() {
-                    ui.label(format!(".{}", extension));
-                    let mut picked = kind;
-                    egui::ComboBox::from_id_salt(("extension_map_kind", extension))
-                        .selected_text(kind_label(kind))
-                        .show_ui(ui, |ui| {
-                            for option in FileKind::ALL {
-                                ui.selectable_value(&mut picked, option, kind_label(option));
-                            }
-                        });
-                    if picked != kind {
-                        edits.push(KindEdit::Set(extension.to_owned(), picked));
-                    }
-                    if ui.button("Remove").clicked() {
-                        edits.push(KindEdit::Remove(extension.to_owned()));
-                    }
-                    ui.end_row();
+    let mut any_override = false;
+    egui::Grid::new("extension_map_grid")
+        .num_columns(3)
+        .striped(true)
+        .spacing([16.0, 4.0])
+        .show(ui, |ui| {
+            for (extension, kind) in table.overrides() {
+                any_override = true;
+                ui.monospace(format!(".{}", extension));
+                let mut picked = kind;
+                egui::ComboBox::from_id_salt(("extension_map_kind", extension))
+                    .selected_text(kind_label(kind))
+                    .show_ui(ui, |ui| {
+                        for option in FileKind::ALL {
+                            ui.selectable_value(&mut picked, option, kind_label(option));
+                        }
+                    });
+                if picked != kind {
+                    edits.push(KindEdit::Set(extension.to_owned(), picked));
                 }
-            });
-    });
+                if icon_button(ui, "✖", "Remove this override").clicked() {
+                    edits.push(KindEdit::Remove(extension.to_owned()));
+                }
+                ui.end_row();
+            }
+        });
+    if any_override {
+        ui.add_space(4.0);
+        if confirm_button(ui, "Reset all...", "Remove every override") {
+            edits.push(KindEdit::Reset);
+        }
+    } else {
+        ui.weak("No overrides");
+    }
     edits
 }
 

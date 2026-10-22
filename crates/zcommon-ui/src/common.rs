@@ -241,6 +241,63 @@ pub fn show_custom_popup<F>(
     });
 }
 
+// Fresh id: a resizable window restores the size stored under its id, so the default applies.
+pub fn show_settings_window<F>(
+    ctx: &egui::Context,
+    open: &mut bool,
+    title: &str,
+    default_size: impl Into<Vec2>,
+    add_contents: F,
+) where
+    F: FnOnce(&mut egui::Ui),
+{
+    let screen = ctx.content_rect();
+    let max_size = screen.size() * 0.95;
+    let default_size = default_size.into().min(max_size);
+    let default_pos = (screen.center() - default_size / 2.0).max(screen.min);
+    egui::Window::new(title)
+        .id(egui::Id::new(("settings_window", title)))
+        .open(open)
+        .collapsible(false)
+        .resizable(true)
+        .default_pos(default_pos)
+        .default_size(default_size)
+        .max_size(max_size)
+        .show(ctx, |ui| {
+            egui::ScrollArea::vertical()
+                .auto_shrink(false)
+                .show(ui, add_contents);
+        });
+}
+
+pub fn section_heading(ui: &mut egui::Ui, title: &str) {
+    ui.add_space(8.0);
+    ui.label(egui::RichText::new(title).strong().size(15.0));
+    ui.separator();
+}
+
+pub fn confirm_button(ui: &mut egui::Ui, label: &str, confirm: &str) -> bool {
+    let mut confirmed = false;
+    ui.menu_button(label, |ui| {
+        if ui.button(confirm).clicked() {
+            confirmed = true;
+            ui.close();
+        }
+    });
+    confirmed
+}
+
+pub fn icon_button(ui: &mut egui::Ui, icon: &str, hover: &str) -> egui::Response {
+    ui.add(egui::Button::new(icon).small().frame(false))
+        .on_hover_text(hover)
+}
+
+pub fn reset_button(ui: &mut egui::Ui, visible: bool) -> bool {
+    ui.add_visible(visible, egui::Button::new("⟲").small().frame(false))
+        .on_hover_text("Reset to default")
+        .clicked()
+}
+
 // Want to only change the title bar background color, but could not manage how to...
 pub fn show_custom_popup_with_color<F>(
     ctx: &egui::Context,

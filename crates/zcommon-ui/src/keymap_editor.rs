@@ -1,15 +1,20 @@
 use eframe::egui::{self, Key, RichText};
 
+use super::common::{confirm_button, icon_button, reset_button};
 use super::keymap::{Action, Keymap, Shortcut};
 use super::shared_keymap::save_shared;
 
 pub struct KeymapEditor<A> {
     capture: Option<(A, Option<usize>)>,
+    filter: String,
 }
 
 impl<A> Default for KeymapEditor<A> {
     fn default() -> Self {
-        Self { capture: None }
+        Self {
+            capture: None,
+            filter: String::new(),
+        }
     }
 }
 
@@ -23,26 +28,16 @@ impl<A: Action> KeymapEditor<A> {
     }
 
     /// While capturing, removes the frame's first key press from the input so later readers
-    /// (an app's Esc to quit) don't act on it too. `extra_rows` draws into the same grid.
-    pub fn ui(
-        &mut self,
-        ui: &mut egui::Ui,
-        keymap: &mut Keymap<A>,
-        extra_rows: impl FnOnce(&mut egui::Ui),
-    ) {
+    /// (an app's Esc to quit) don't act on it too.
+    pub fn ui(&mut self, ui: &mut egui::Ui, keymap: &mut Keymap<A>) {
         let before = keymap.clone();
-        self.keymap_ui(ui, keymap, extra_rows);
+        self.keymap_ui(ui, keymap);
         if *keymap != before {
             save_shared(&before, keymap);
         }
     }
 
-    fn keymap_ui(
-        &mut self,
-        ui: &mut egui::Ui,
-        keymap: &mut Keymap<A>,
-        extra_rows: impl FnOnce(&mut egui::Ui),
-    ) {
+    fn keymap_ui(&mut self, ui: &mut egui::Ui, keymap: &mut Keymap<A>) {
         if let Some((action, slot)) = self.capture
             && let Some(captured) = take_key_press(ui)
         {
@@ -53,19 +48,42 @@ impl<A: Action> KeymapEditor<A> {
             }
         }
 
-        if ui.button("Reset to defaults").clicked() {
-            *keymap = Keymap::default();
-            self.capture = None;
-        }
-        ui.separator();
+        ui.horizontal(|ui| {
+            let filter = ui.add(
+                egui::TextEdit::singleline(&mut self.filter)
+                    .hint_text("🔎 Filter by action or key")
+                    .desired_width(240.0),
+            );
+            // Else the next letter typed into the filter would bind as the captured shortcut.
+            if filter.clicked() || filter.has_focus() {
+                self.capture = None;
+            }
+            if !self.filter.is_empty() && icon_button(ui, "✖", "Clear filter").clicked() {
+                self.filter.clear();
+            }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if confirm_button(ui, "Reset all...", "Reset every shortcut to its default") {
+                    *keymap = Keymap::default();
+                    self.capture = None;
+                }
+            });
+        });
+        ui.weak("Click a shortcut to rebind it, Esc cancels");
+        ui.add_space(4.0);
 
         let clashes = keymap.clashes();
         let warn = ui.visuals().warn_fg_color;
+        let mut shown = 0;
         egui::Grid::new("keymap_editor")
-            .num_columns(2)
-            .spacing([40.0, 8.0])
+            .num_columns(3)
+            .striped(true)
+            .spacing([16.0, 4.0])
             .show(ui, |ui| {
                 for &action in A::all() {
+                    if !matches_filter(action.label(), keymap.shortcuts(action), &self.filter) {
+                        continue;
+                    }
+                    shown += 1;
                     let others = |shortcut: Option<&Shortcut>| {
                         let mut labels: Vec<&str> = Vec::new();
                         for (clash, actions) in &clashes {
@@ -85,54 +103,60 @@ impl<A: Action> KeymapEditor<A> {
                     if row_others.is_empty() {
                         ui.label(action.label());
                     } else {
-                        ui.label(RichText::new(action.label()).color(warn))
+                        ui.label(RichText::new(format!("⚠ {}", action.label())).color(warn))
                             .on_hover_text(clash_text(&row_others));
                     }
 
+                    let shortcuts = keymap.shortcuts_mut(action);
                     ui.horizontal(|ui| {
-                        let shortcuts = keymap.shortcuts_mut(action);
                         let mut remove = None;
                         for (i, shortcut) in shortcuts.iter().enumerate() {
-                            let text = if self.capture == Some((action, Some(i))) {
+                            let capturing = self.capture == Some((action, Some(i)));
+                            let text = if capturing {
                                 RichText::new("Press keys...")
                             } else {
                                 RichText::new(shortcut.format())
                             };
                             let chip_others = others(Some(shortcut));
                             let chip = if chip_others.is_empty() {
-                                ui.button(text)
+                                ui.add(egui::Button::new(text).selected(capturing))
                             } else {
-                                ui.button(text.color(warn))
+                                ui.add(egui::Button::new(text.color(warn)).selected(capturing))
                                     .on_hover_text(clash_text(&chip_others))
                             };
                             if chip.clicked() {
                                 self.capture = Some((action, Some(i)));
                             }
-                            if ui.small_button("x").on_hover_text("Remove").clicked() {
+                            if icon_button(ui, "✖", "Remove").clicked() {
                                 remove = Some(i);
                             }
+                            ui.add_space(4.0);
                         }
                         if let Some(i) = remove {
                             shortcuts.remove(i);
                             self.capture = None;
                         }
-                        let add_text = if self.capture == Some((action, None)) {
-                            "Press keys..."
+                        let add = if self.capture == Some((action, None)) {
+                            ui.add(egui::Button::new("Press keys...").selected(true))
                         } else {
-                            "+"
+                            icon_button(ui, "➕", "Add a shortcut")
                         };
-                        if ui
-                            .button(add_text)
-                            .on_hover_text("Add a shortcut")
-                            .clicked()
-                        {
+                        if add.clicked() {
                             self.capture = Some((action, None));
                         }
                     });
+
+                    let is_default = shortcuts.as_slice() == action.defaults();
+                    if reset_button(ui, !is_default) {
+                        *shortcuts = action.defaults().to_vec();
+                        self.capture = None;
+                    }
                     ui.end_row();
                 }
-                extra_rows(ui);
             });
+        if shown == 0 {
+            ui.weak("No action matches the filter");
+        }
     }
 }
 
@@ -160,6 +184,15 @@ fn take_key_press(ui: &egui::Ui) -> Option<Option<Shortcut>> {
     })
 }
 
+fn matches_filter(label: &str, shortcuts: &[Shortcut], filter: &str) -> bool {
+    let filter = filter.trim().to_lowercase();
+    filter.is_empty()
+        || label.to_lowercase().contains(&filter)
+        || shortcuts
+            .iter()
+            .any(|shortcut| shortcut.format().to_lowercase().contains(&filter))
+}
+
 fn set_shortcut(shortcuts: &mut Vec<Shortcut>, slot: Option<usize>, shortcut: Shortcut) {
     if shortcuts.contains(&shortcut) {
         return;
@@ -167,5 +200,25 @@ fn set_shortcut(shortcuts: &mut Vec<Shortcut>, slot: Option<usize>, shortcut: Sh
     match slot {
         Some(i) => shortcuts[i] = shortcut,
         None => shortcuts.push(shortcut),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use eframe::egui::Modifiers;
+
+    #[test]
+    fn filter_matches_label_or_shortcut_text_ignoring_case() {
+        let shortcuts = [Shortcut {
+            key: Key::F,
+            modifiers: Modifiers::CTRL,
+        }];
+        assert!(matches_filter("Find", &shortcuts, ""));
+        assert!(matches_filter("Find", &shortcuts, "  "));
+        assert!(matches_filter("Find Next", &shortcuts, "next"));
+        assert!(matches_filter("Find", &shortcuts, "ctrl+f"));
+        assert!(!matches_filter("Find", &shortcuts, "alt"));
+        assert!(!matches_filter("Find", &[], "ctrl"));
     }
 }

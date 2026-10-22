@@ -1,6 +1,6 @@
 use super::{ZApp, quickdiff::run_diff_against_shelf_base};
 use eframe::egui::{self, containers::menu::MenuConfig};
-use zcommon_ui::common::show_custom_popup;
+use zcommon_ui::common::{show_custom_popup, show_settings_window};
 use zcommon_ui::h_scroll::WheelModifier;
 use zcommon_ui::keymap::menu_item;
 use zdiff::{
@@ -357,11 +357,11 @@ impl ZApp {
         });
 
         if self.open_shortcuts_window {
-            show_custom_popup(
+            show_settings_window(
                 ui.ctx(),
                 &mut self.open_shortcuts_window,
                 "Keyboard Shortcuts",
-                true,
+                [600.0, 680.0],
                 |ui| {
                     ui_keybindings(
                         ui,
@@ -376,14 +376,13 @@ impl ZApp {
             self.keymap_editor.cancel_capture();
         }
         if self.open_viewers_window {
-            show_custom_popup(
+            show_settings_window(
                 ui.ctx(),
                 &mut self.open_viewers_window,
-                "Option - File Viewers",
-                true,
+                "File Viewers",
+                [480.0, 520.0],
                 |ui| {
                     ui_ffmpeg_setting(ui, ffmpeg);
-                    ui.separator();
                     let edits = ui_extension_map(ui, &kinds.table);
                     kinds.apply(edits);
                 },
@@ -414,11 +413,11 @@ impl ZApp {
             );
         }
         if self.open_universal_path_window {
-            show_custom_popup(
+            show_settings_window(
                 ui.ctx(),
                 &mut self.open_universal_path_window,
-                "Option - P4Config",
-                true,
+                "P4Config",
+                [460.0, 460.0],
                 |ui| {
                     let before = p4_profiles.clone();
                     ui_p4_profiles(ui, p4_profiles);

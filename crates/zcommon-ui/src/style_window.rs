@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use eframe::egui::{self, Color32, Id, Theme, ThemePreference};
 
-use super::common::show_custom_popup;
+use super::common::{confirm_button, reset_button, show_settings_window};
 use zcommon::style::{
     Mode, Palette, Rgba8, Role, RowLook, SYNTAX_PRESETS, SharedRole, Style, SyntaxCategory,
     SyntaxColors, Tone, style_file_path,
@@ -148,7 +148,7 @@ impl StyleWindow {
     pub fn show<R: Role>(&mut self, ctx: &egui::Context, app_group: &str) {
         if self.open {
             let mut changed = false;
-            show_custom_popup(ctx, &mut self.open, "Style", true, |ui| {
+            show_settings_window(ctx, &mut self.open, "Style", [440.0, 640.0], |ui| {
                 changed = style_ui::<R>(ui, &mut self.style, app_group, self.syntax);
                 if self.row_looks {
                     changed |= row_looks_ui(ui, &mut self.style);
@@ -185,33 +185,39 @@ fn style_ui<R: Role>(ui: &mut egui::Ui, style: &mut Style, app_group: &str, synt
             (Mode::Light, "Light"),
             (Mode::System, "System"),
         ] {
-            changed |= ui.radio_value(&mut style.mode, mode, label).changed();
+            changed |= ui.selectable_value(&mut style.mode, mode, label).changed();
         }
-        if ui.button("Reset all").clicked() {
-            style.palette.reset_all::<SharedRole>();
-            style.palette.reset_all::<R>();
-            if syntax {
-                style.palette.reset_all::<SyntaxCategory>();
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if confirm_button(ui, "Reset all...", "Reset every color to its default") {
+                style.palette.reset_all::<SharedRole>();
+                style.palette.reset_all::<R>();
+                if syntax {
+                    style.palette.reset_all::<SyntaxCategory>();
+                }
+                changed = true;
             }
-            changed = true;
-        }
+        });
     });
     ui.weak(match tone {
         Tone::Dark => "Editing the dark mode colors",
         Tone::Light => "Editing the light mode colors",
     });
-    changed |= role_group::<SharedRole>(ui, "Shared", &mut style.palette, tone);
+    ui.add_space(4.0);
+    changed |= role_group::<SharedRole>(ui, "Shared", &mut style.palette, tone, |_, _| false);
     if !R::all().is_empty() {
-        changed |= role_group::<R>(ui, app_group, &mut style.palette, tone);
+        changed |= role_group::<R>(ui, app_group, &mut style.palette, tone, |_, _| false);
     }
     if syntax {
-        changed |= syntax_group(ui, &mut style.palette, tone);
+        changed |=
+            role_group::<SyntaxCategory>(ui, "Syntax", &mut style.palette, tone, |ui, palette| {
+                syntax_preset_ui(ui, palette, tone)
+            });
     }
     changed
 }
 
-fn syntax_group(ui: &mut egui::Ui, palette: &mut Palette, tone: Tone) -> bool {
-    let mut changed = role_group::<SyntaxCategory>(ui, "Syntax", palette, tone);
+fn syntax_preset_ui(ui: &mut egui::Ui, palette: &mut Palette, tone: Tone) -> bool {
+    let mut changed = false;
     let current = palette.syntax_colors(tone);
     let selected = SYNTAX_PRESETS
         .iter()
@@ -236,12 +242,31 @@ fn syntax_group(ui: &mut egui::Ui, palette: &mut Palette, tone: Tone) -> bool {
     changed
 }
 
-fn role_group<R: Role>(ui: &mut egui::Ui, title: &str, palette: &mut Palette, tone: Tone) -> bool {
+fn role_group<R: Role>(
+    ui: &mut egui::Ui,
+    title: &str,
+    palette: &mut Palette,
+    tone: Tone,
+    header: impl FnOnce(&mut egui::Ui, &mut Palette) -> bool,
+) -> bool {
     let mut changed = false;
-    ui.separator();
-    ui.strong(title);
+    egui::CollapsingHeader::new(egui::RichText::new(title).strong())
+        .id_salt(("style_group", title))
+        .default_open(true)
+        .show(ui, |ui| {
+            changed |= header(ui, palette);
+            changed |= role_grid::<R>(ui, title, palette, tone);
+        });
+    changed
+}
+
+fn role_grid<R: Role>(ui: &mut egui::Ui, title: &str, palette: &mut Palette, tone: Tone) -> bool {
+    let mut changed = false;
     egui::Grid::new(("style_roles", title))
         .num_columns(3)
+        .striped(true)
+        .min_col_width(0.0)
+        .spacing([12.0, 4.0])
         .show(ui, |ui| {
             for &role in R::all() {
                 ui.label(role.label());
@@ -259,10 +284,7 @@ fn role_group<R: Role>(ui: &mut egui::Ui, title: &str, palette: &mut Palette, to
                     changed = true;
                 }
                 let is_default = palette.get(role, tone) == role.default_color(tone);
-                if ui
-                    .add_enabled(!is_default, egui::Button::new("Reset"))
-                    .clicked()
-                {
+                if reset_button(ui, !is_default) {
                     palette.reset(role, tone);
                     changed = true;
                 }
@@ -274,25 +296,32 @@ fn role_group<R: Role>(ui: &mut egui::Ui, title: &str, palette: &mut Palette, to
 
 fn row_looks_ui(ui: &mut egui::Ui, style: &mut Style) -> bool {
     let mut changed = false;
-    ui.separator();
-    ui.strong("Rows");
-    egui::Grid::new("style_row_looks")
-        .num_columns(4)
+    egui::CollapsingHeader::new(egui::RichText::new("Rows").strong())
+        .id_salt("style_group_rows")
+        .default_open(true)
         .show(ui, |ui| {
-            for (label, look) in [
-                ("Void rows", &mut style.void_look),
-                ("Collapsed rows", &mut style.collapsed_look),
-            ] {
-                ui.label(label);
-                for (value, text) in [
-                    (RowLook::Solid, "Solid"),
-                    (RowLook::Stripes, "Stripes"),
-                    (RowLook::Empty, "Empty"),
-                ] {
-                    changed |= ui.radio_value(look, value, text).changed();
-                }
-                ui.end_row();
-            }
+            egui::Grid::new("style_row_looks")
+                .num_columns(2)
+                .striped(true)
+                .spacing([12.0, 4.0])
+                .show(ui, |ui| {
+                    for (label, look) in [
+                        ("Void rows", &mut style.void_look),
+                        ("Collapsed rows", &mut style.collapsed_look),
+                    ] {
+                        ui.label(label);
+                        ui.horizontal(|ui| {
+                            for (value, text) in [
+                                (RowLook::Solid, "Solid"),
+                                (RowLook::Stripes, "Stripes"),
+                                (RowLook::Empty, "Empty"),
+                            ] {
+                                changed |= ui.selectable_value(look, value, text).changed();
+                            }
+                        });
+                        ui.end_row();
+                    }
+                });
         });
     changed
 }

@@ -1,6 +1,6 @@
 use eframe::egui::{self, Key, Modifiers};
 use zcommon_ui::{
-    common::show_custom_popup,
+    common::show_settings_window,
     keymap::{Action, Keymap, Shortcut, TypingPolicy},
     keymap_editor::KeymapEditor,
     shared_keymap::SharedAction,
@@ -183,11 +183,13 @@ impl KeybindingsWindow {
     }
 
     pub fn show(&mut self, ctx: &egui::Context, keymap: &mut Keymap<FolderAction>) {
-        show_custom_popup(ctx, &mut self.open, "Keyboard Shortcuts", true, |ui| {
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                self.editor.ui(ui, keymap, |_| {});
-            });
-        });
+        show_settings_window(
+            ctx,
+            &mut self.open,
+            "Keyboard Shortcuts",
+            [560.0, 640.0],
+            |ui| self.editor.ui(ui, keymap),
+        );
         if !self.open {
             self.editor.cancel_capture();
         }
