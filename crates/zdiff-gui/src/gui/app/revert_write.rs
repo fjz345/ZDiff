@@ -26,6 +26,16 @@ impl ZApp {
         file_2.invalidate_cache_file();
     }
 
+    pub(super) fn clear_file_paths(
+        file_1: &mut FileProcessor,
+        file_2: &mut FileProcessor,
+        diff_processor: &mut DiffProcessor,
+    ) {
+        file_1.set_path(UniversalPath::default());
+        file_2.set_path(UniversalPath::default());
+        diff_processor.reset_ctx();
+    }
+
     /// Records a written revert for undo and reloads both sides; reloads the target when it was
     /// stale.
     pub(super) fn finish_revert_write(

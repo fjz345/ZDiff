@@ -45,6 +45,7 @@ impl ZApp {
         let mut tab_pressed = false;
         let mut esc_pressed = false;
         let mut save_merge = false;
+        let mut open_style = false;
         {
             let _input_ctx = ctx.input(|r| {
                 if capturing {
@@ -91,6 +92,14 @@ impl ZApp {
                         FileAction::Find => app_state_ctx.find_open = true,
                         FileAction::Goto => app_state_ctx.goto_open = true,
                         FileAction::SaveMerge => save_merge = true,
+                        FileAction::OpenMerge => self.open_merge_form.open = true,
+                        FileAction::ClearFilePaths => Self::clear_file_paths(
+                            &mut app_state_ctx.file_1,
+                            &mut app_state_ctx.file_2,
+                            &mut app_state_ctx.diff_processor,
+                        ),
+                        FileAction::OpenFileViewers => self.open_viewers_window = true,
+                        FileAction::OpenStyle => open_style = true,
                         FileAction::NextFrame | FileAction::PrevFrame => {
                             if app_state_ctx.video_meta.tab == VideoTab::Frames {
                                 app_state_ctx
@@ -264,6 +273,9 @@ impl ZApp {
         {
             app_state_ctx.diff_processor.clear_results();
             app_state_ctx.hex_processor.clear_highlight();
+        }
+        if open_style {
+            self.style_window.open(ctx);
         }
         // After the input closure: this writes to disk.
         if save_merge {

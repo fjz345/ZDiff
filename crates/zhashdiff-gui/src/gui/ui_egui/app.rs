@@ -334,6 +334,11 @@ impl AppStateCtx {
         }
     }
 
+    fn clear_roots(&mut self) {
+        clear_root(&mut self.file_system_1_root_path);
+        clear_root(&mut self.file_system_2_root_path);
+    }
+
     fn update_scans(&mut self, repaint: &egui::Context) {
         update_side_scan(
             Side::Folder1,
@@ -849,10 +854,15 @@ impl ZApp {
                             app_ctx.refresh();
                             ui.ctx().request_repaint();
                         }
-                        if ui.button("Clear Folder Paths").clicked() {
-                            clear_root(&mut app_ctx.file_system_1_root_path);
-                            clear_root(&mut app_ctx.file_system_2_root_path);
-                            ui.close();
+                        if menu_item(
+                            ui,
+                            "Clear Folder Paths",
+                            &app_ctx.keymap,
+                            FolderAction::ClearPaths,
+                        )
+                        .clicked()
+                        {
+                            app_ctx.clear_roots();
                         }
                         ui.add_enabled_ui(self.diff_mode_path_diff, |ui| {
                             if menu_item(ui, "Find", &app_ctx.keymap, FolderAction::Find).clicked()
@@ -863,7 +873,14 @@ impl ZApp {
                     });
 
                     ui.menu_button("Options", |ui| {
-                        if ui.button("External Diff Tools").clicked() {
+                        if menu_item(
+                            ui,
+                            "External Diff Tools",
+                            &app_ctx.keymap,
+                            FolderAction::OpenDiffTools,
+                        )
+                        .clicked()
+                        {
                             self.tools_window.open = true;
                         }
                         if menu_item(
@@ -876,7 +893,9 @@ impl ZApp {
                         {
                             self.keybindings_window.open = true;
                         }
-                        if ui.button("Style").clicked() {
+                        if menu_item(ui, "Style", &app_ctx.keymap, FolderAction::OpenStyle)
+                            .clicked()
+                        {
                             self.style_window.open(ui.ctx());
                         }
                     });
@@ -887,7 +906,14 @@ impl ZApp {
                         "Change to Path Diff"
                     };
                     ui.menu_button("Diff Mode", |ui| {
-                        if ui.button(diff_mode_text).clicked() {
+                        if menu_item(
+                            ui,
+                            diff_mode_text,
+                            &app_ctx.keymap,
+                            FolderAction::ToggleDiffMode,
+                        )
+                        .clicked()
+                        {
                             self.diff_mode_path_diff = !self.diff_mode_path_diff;
                         }
                     });
@@ -970,6 +996,18 @@ impl ZApp {
         }
         if actions.contains(&FolderAction::SwapSides) {
             app_ctx.sides_swapped = !app_ctx.sides_swapped;
+        }
+        if actions.contains(&FolderAction::ClearPaths) {
+            app_ctx.clear_roots();
+        }
+        if actions.contains(&FolderAction::OpenStyle) {
+            self.style_window.open(ctx);
+        }
+        if actions.contains(&FolderAction::OpenDiffTools) {
+            self.tools_window.open = true;
+        }
+        if actions.contains(&FolderAction::ToggleDiffMode) {
+            self.diff_mode_path_diff = !self.diff_mode_path_diff;
         }
         if actions.contains(&FolderAction::Find) && self.diff_mode_path_diff {
             self.find_open = true;

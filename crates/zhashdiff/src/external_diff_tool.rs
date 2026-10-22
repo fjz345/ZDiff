@@ -143,6 +143,7 @@ fn zdiff_gui_handles(kind: FileKind) -> bool {
         | FileKind::Model
         | FileKind::Archive
         | FileKind::Executable
+        | FileKind::Intermediate
         | FileKind::UnrealAsset
         | FileKind::UnrealMap
         | FileKind::Binary => false,

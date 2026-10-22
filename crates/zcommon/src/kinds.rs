@@ -11,13 +11,14 @@ pub enum FileKind {
     Model,
     Archive,
     Executable,
+    Intermediate,
     UnrealAsset,
     UnrealMap,
     Binary,
 }
 
 impl FileKind {
-    pub const ALL: [FileKind; 10] = [
+    pub const ALL: [FileKind; 11] = [
         FileKind::Text,
         FileKind::Image,
         FileKind::Video,
@@ -25,6 +26,7 @@ impl FileKind {
         FileKind::Model,
         FileKind::Archive,
         FileKind::Executable,
+        FileKind::Intermediate,
         FileKind::UnrealAsset,
         FileKind::UnrealMap,
         FileKind::Binary,
@@ -39,6 +41,7 @@ impl FileKind {
             FileKind::Model => "3d",
             FileKind::Archive => "arc",
             FileKind::Executable => "exe",
+            FileKind::Intermediate => "int",
             FileKind::UnrealAsset => "UASS",
             FileKind::UnrealMap => "UMAP",
             FileKind::Binary => "bin",
@@ -62,6 +65,10 @@ impl FileKind {
             FileKind::Model => &["fbx", "gltf", "glb", "blend", "abc", "usd"],
             FileKind::Archive => &["zip", "7z", "rar", "pak", "utoc", "ucas"],
             FileKind::Executable => &["exe", "dll", "pdb", "lib", "so"],
+            FileKind::Intermediate => &[
+                "obj", "o", "pch", "gch", "ipch", "ilk", "iobj", "ipdb", "exp", "idb", "rlib",
+                "rmeta", "class", "pyc", "pyo", "bc", "spv", "dxil", "cso",
+            ],
             FileKind::UnrealAsset => &["uasset"],
             FileKind::UnrealMap => &["umap"],
             FileKind::Binary => &[],
@@ -229,6 +236,13 @@ mod tests {
             &["zip", "7z", "rar", "pak", "utoc", "ucas"],
         ),
         (FileKind::Executable, &["exe", "dll", "pdb", "lib", "so"]),
+        (
+            FileKind::Intermediate,
+            &[
+                "obj", "o", "pch", "gch", "ipch", "ilk", "iobj", "ipdb", "exp", "idb", "rlib",
+                "rmeta", "class", "pyc", "pyo", "bc", "spv", "dxil", "cso",
+            ],
+        ),
         (FileKind::UnrealAsset, &["uasset"]),
         (FileKind::UnrealMap, &["umap"]),
     ];
@@ -246,7 +260,7 @@ mod tests {
     #[test]
     fn unknown_extension_is_binary() {
         let table = KindTable::default();
-        for extension in ["", "xyz", "uasset2", "tx", "obj"] {
+        for extension in ["", "xyz", "uasset2", "tx"] {
             assert_eq!(table.kind(extension), FileKind::Binary, "{extension}");
         }
     }
@@ -290,6 +304,7 @@ mod tests {
             (FileKind::Model, "3d"),
             (FileKind::Archive, "arc"),
             (FileKind::Executable, "exe"),
+            (FileKind::Intermediate, "int"),
             (FileKind::UnrealAsset, "UASS"),
             (FileKind::UnrealMap, "UMAP"),
             (FileKind::Binary, "bin"),

@@ -34,7 +34,7 @@ GUI for zdiff crate
 * Sides
     - Breadcrumb path bar per side, and a folder browser over that side to pick another file
     - Local paths, Perforce depot paths, changelists and shelves, git revisions, picked from a revision dropdown per side
-    - Diff a depot file against its local file (Ctrl+L), a shelved file against its base
+    - Diff a depot file against its local file (Ctrl+L), a shelved file against its base revision (Ctrl+B)
 * Viewers, picked from the file kind (override per diff); mismatched types show each side in its own viewer
     - Hex: Bytes or Strings mode, overview strip, next/previous difference, goto offset, value inspector (ints, floats, string, endian toggle)
     - Image: side by side, blink, difference, heatmap, histogram, swipe and overlay; channel filter, tolerance, Nearest/Linear sampling, linked zoom and pan

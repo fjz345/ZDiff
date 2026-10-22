@@ -29,6 +29,8 @@ pub enum SharedAction {
     Find,
     OpenKeybindings,
     SwapSides,
+    ClearPaths,
+    OpenStyle,
 }
 
 impl SharedAction {
@@ -41,6 +43,8 @@ impl SharedAction {
         Self::Find,
         Self::OpenKeybindings,
         Self::SwapSides,
+        Self::ClearPaths,
+        Self::OpenStyle,
     ];
 
     pub fn name(self) -> &'static str {
@@ -53,6 +57,8 @@ impl SharedAction {
             Self::Find => "find",
             Self::OpenKeybindings => "open_keybindings",
             Self::SwapSides => "swap_sides",
+            Self::ClearPaths => "clear_paths",
+            Self::OpenStyle => "open_style",
         }
     }
 
@@ -101,6 +107,14 @@ impl SharedAction {
             Self::SwapSides => &[Shortcut {
                 key: Key::S,
                 modifiers: CTRL_SHIFT,
+            }],
+            Self::ClearPaths => &[Shortcut {
+                key: Key::W,
+                modifiers: CTRL,
+            }],
+            Self::OpenStyle => &[Shortcut {
+                key: Key::Comma,
+                modifiers: CTRL,
             }],
         }
     }
@@ -292,7 +306,7 @@ mod tests {
     }
 
     #[test]
-    fn shared_defaults_are_ctrl_f1_f2_digits_r_f_o_and_shift_s() {
+    fn shared_defaults_are_pinned() {
         let ctrl = |key| Shortcut {
             key,
             modifiers: CTRL,
@@ -316,6 +330,8 @@ mod tests {
             (SharedAction::Find, vec![ctrl(Key::F)]),
             (SharedAction::OpenKeybindings, vec![ctrl(Key::O)]),
             (SharedAction::SwapSides, vec![ctrl_shift(Key::S)]),
+            (SharedAction::ClearPaths, vec![ctrl(Key::W)]),
+            (SharedAction::OpenStyle, vec![ctrl(Key::Comma)]),
         ];
         assert_eq!(expected.len(), SharedAction::ALL.len());
         for (action, shortcuts) in expected {

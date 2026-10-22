@@ -82,6 +82,7 @@ pub fn viewer_for_kind(kind: FileKind) -> ViewerKind {
         FileKind::Model
         | FileKind::Archive
         | FileKind::Executable
+        | FileKind::Intermediate
         | FileKind::UnrealAsset
         | FileKind::UnrealMap
         | FileKind::Binary => ViewerKind::Hex,
@@ -806,6 +807,7 @@ mod tests {
             (FileKind::Model, ViewerKind::Hex),
             (FileKind::Archive, ViewerKind::Hex),
             (FileKind::Executable, ViewerKind::Hex),
+            (FileKind::Intermediate, ViewerKind::Hex),
             (FileKind::UnrealAsset, ViewerKind::Hex),
             (FileKind::UnrealMap, ViewerKind::Hex),
             (FileKind::Binary, ViewerKind::Hex),

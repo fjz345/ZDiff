@@ -77,6 +77,10 @@ pub enum FileAction {
     SaveMerge,
     NextFrame,
     PrevFrame,
+    OpenMerge,
+    ClearFilePaths,
+    OpenFileViewers,
+    OpenStyle,
 }
 
 impl Action for FileAction {
@@ -115,6 +119,10 @@ impl Action for FileAction {
             Self::SaveMerge,
             Self::NextFrame,
             Self::PrevFrame,
+            Self::OpenMerge,
+            Self::ClearFilePaths,
+            Self::OpenFileViewers,
+            Self::OpenStyle,
         ]
     }
 
@@ -153,6 +161,10 @@ impl Action for FileAction {
             Self::SaveMerge => "save_merge",
             Self::NextFrame => "next_frame",
             Self::PrevFrame => "prev_frame",
+            Self::OpenMerge => "open_merge",
+            Self::ClearFilePaths => "clear_file_paths",
+            Self::OpenFileViewers => "open_file_viewers",
+            Self::OpenStyle => "open_style",
         }
     }
 
@@ -161,25 +173,25 @@ impl Action for FileAction {
             Self::OpenFileSource => "Open Source File",
             Self::OpenFileTarget => "Open Target File",
             Self::RefreshDiff => "Refresh",
-            Self::RefreshDiffRowsOnly => "Refresh Diff Rows Only",
+            Self::RefreshDiffRowsOnly => "Recompute Diff (Keep Loaded Files)",
             Self::OpenKeybindings => "Open Keyboard Shortcuts",
-            Self::OpenUniversalPath => "Open P4Config",
+            Self::OpenUniversalPath => "Open P4Config Settings",
             Self::Find => "Find",
-            Self::Goto => "Goto",
-            Self::NextConflict => "Next Conflict",
-            Self::PrevConflict => "Previous Conflict",
+            Self::Goto => "Go to Line / Offset",
+            Self::NextConflict => "Next Difference",
+            Self::PrevConflict => "Previous Difference",
             Self::NextFind => "Next Find Result",
             Self::PrevFind => "Previous Find Result",
-            Self::RevisionGraph => "Revision Graph",
-            Self::TimelapseView => "Timelapse View",
+            Self::RevisionGraph => "P4V Revision Graph",
+            Self::TimelapseView => "P4V Timelapse View",
             Self::UndoRevert => "Undo Revert",
             Self::Redo => "Redo Revert",
             Self::DiffLocalFile => "Diff Source Against Local File",
-            Self::DiffShelfBase => "Diff Shelved File Against Base",
+            Self::DiffShelfBase => "Diff Shelved File Against Its Base Revision",
             Self::SwapSides => "Swap Sides",
             Self::IgnoreWhitespace => "Ignore Whitespace",
             Self::IgnoreComments => "Ignore Comments",
-            Self::IgnoreRegex => "Ignore Regex On/Off",
+            Self::IgnoreRegex => "Ignore Regex",
             Self::HighlightRows => "Highlight Rows",
             Self::GhostRows => "Ghost Rows",
             Self::LinkHScroll => "Link Horizontal Scrolling",
@@ -191,6 +203,10 @@ impl Action for FileAction {
             Self::SaveMerge => "Save Merge",
             Self::NextFrame => "Video: Next Frame",
             Self::PrevFrame => "Video: Previous Frame",
+            Self::OpenMerge => "Open Merge",
+            Self::ClearFilePaths => "Clear File Paths",
+            Self::OpenFileViewers => "Open File Viewer Settings",
+            Self::OpenStyle => "Open Style Settings",
         }
     }
 
@@ -294,7 +310,10 @@ impl Action for FileAction {
                 key: Key::A,
                 modifiers: Modifiers::ALT,
             }],
-            Self::DiffShelfBase => &[],
+            Self::DiffShelfBase => &[Shortcut {
+                key: Key::B,
+                modifiers: CTRL,
+            }],
             Self::SaveMerge => &[Shortcut {
                 key: Key::S,
                 modifiers: CTRL,
@@ -307,13 +326,23 @@ impl Action for FileAction {
                 key: Key::ArrowLeft,
                 modifiers: Modifiers::NONE,
             }],
+            Self::OpenMerge => &[Shortcut {
+                key: Key::M,
+                modifiers: CTRL,
+            }],
+            Self::ClearFilePaths => SharedAction::ClearPaths.defaults(),
+            Self::OpenFileViewers => &[Shortcut {
+                key: Key::V,
+                modifiers: CTRL_ALT,
+            }],
+            Self::OpenStyle => SharedAction::OpenStyle.defaults(),
         }
     }
 
-    // A focused text field has its own Ctrl+Z/Ctrl+Y; they must not also rewrite a file on disk.
+    // Keys pressed while typing must not rewrite a file on disk or wipe both paths.
     fn typing_policy(self) -> TypingPolicy {
         match self {
-            Self::UndoRevert | Self::Redo => TypingPolicy::Never,
+            Self::UndoRevert | Self::Redo | Self::ClearFilePaths => TypingPolicy::Never,
             _ => TypingPolicy::CtrlOrAlt,
         }
     }
@@ -328,6 +357,8 @@ impl Action for FileAction {
             Self::Find => Some(SharedAction::Find),
             Self::OpenKeybindings => Some(SharedAction::OpenKeybindings),
             Self::SwapSides => Some(SharedAction::SwapSides),
+            Self::ClearFilePaths => Some(SharedAction::ClearPaths),
+            Self::OpenStyle => Some(SharedAction::OpenStyle),
             _ => None,
         }
     }
@@ -371,7 +402,12 @@ impl<'de> serde::Deserialize<'de> for Keybindings {
         use serde::de::Error;
         let value = serde_json::Value::deserialize(deserializer)?;
         if value.get("keymap").is_some() {
-            let saved: Saved = serde_json::from_value(value).map_err(D::Error::custom)?;
+            let mut saved: Saved = serde_json::from_value(value).map_err(D::Error::custom)?;
+            // Empty was DiffShelfBase's default before Ctrl+B.
+            let shelf_base = saved.keymap.shortcuts_mut(FileAction::DiffShelfBase);
+            if shelf_base.is_empty() {
+                *shelf_base = FileAction::DiffShelfBase.defaults().to_vec();
+            }
             Ok(Self {
                 keymap: saved.keymap,
                 user_quick_diffs: saved.user_quick_diffs,
@@ -714,6 +750,13 @@ mod tests {
     }
 
     #[test]
+    fn every_file_action_has_a_default() {
+        for &action in FileAction::all() {
+            assert!(!action.defaults().is_empty(), "{action:?}");
+        }
+    }
+
+    #[test]
     fn undo_and_redo_never_fire_while_typing() {
         let keymap = Keymap::<FileAction>::default();
         let events = [
@@ -914,6 +957,10 @@ mod tests {
                 FileAction::SaveMerge,
                 FileAction::NextFrame,
                 FileAction::PrevFrame,
+                FileAction::OpenMerge,
+                FileAction::ClearFilePaths,
+                FileAction::OpenFileViewers,
+                FileAction::OpenStyle,
             ];
             let expected: Vec<_> = expected
                 .into_iter()
@@ -984,6 +1031,20 @@ mod tests {
             assert_eq!(
                 keymap.shortcuts(FileAction::PrevConflict),
                 [alt(Key::ArrowUp)]
+            );
+        }
+
+        #[test]
+        fn a_saved_empty_shelf_base_binding_gets_the_new_default() {
+            let mut saved = Keybindings::default();
+            saved
+                .keymap
+                .shortcuts_mut(FileAction::DiffShelfBase)
+                .clear();
+            let keymap = load(serde_json::to_value(&saved).unwrap());
+            assert_eq!(
+                keymap.shortcuts(FileAction::DiffShelfBase),
+                FileAction::DiffShelfBase.defaults()
             );
         }
 

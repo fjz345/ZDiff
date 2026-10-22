@@ -79,16 +79,15 @@ impl ZApp {
                         {
                             Self::open_file_picker(file_2.get_tx(), ui.ctx().clone());
                         }
-                        if ui.button("Open Merge...").clicked() {
+                        if menu_item(ui, "Open Merge...", keymap, FileAction::OpenMerge).clicked() {
                             self.open_merge_form.open = true;
-                            ui.close();
                         }
                         if menu_item(ui, "Swap Sides", keymap, FileAction::SwapSides).clicked() {
                             *sides_swapped = !*sides_swapped;
                         }
                         if menu_item(
                             ui,
-                            "Diff Shelved File Against Base",
+                            "Diff Shelved File Against Its Base Revision",
                             keymap,
                             FileAction::DiffShelfBase,
                         )
@@ -102,7 +101,7 @@ impl ZApp {
                         }
                         if menu_item(
                             ui,
-                            "Refresh Diff Rows Only",
+                            "Recompute Diff (Keep Loaded Files)",
                             keymap,
                             FileAction::RefreshDiffRowsOnly,
                         )
@@ -110,16 +109,16 @@ impl ZApp {
                         {
                             diff_processor.reset_ctx();
                         }
-                        if ui.button("Clear File Paths").clicked() {
-                            file_1.set_path(UniversalPath::default());
-                            file_2.set_path(UniversalPath::default());
-                            diff_processor.reset_ctx();
-                            ui.close();
+                        if menu_item(ui, "Clear File Paths", keymap, FileAction::ClearFilePaths)
+                            .clicked()
+                        {
+                            Self::clear_file_paths(file_1, file_2, diff_processor);
                         }
                         if menu_item(ui, "Find", keymap, FileAction::Find).clicked() {
                             *find_open = true;
                         }
-                        if menu_item(ui, "Goto", keymap, FileAction::Goto).clicked() {
+                        if menu_item(ui, "Go to Line / Offset", keymap, FileAction::Goto).clicked()
+                        {
                             *goto_open = true;
                         }
                     });
@@ -228,13 +227,13 @@ impl ZApp {
                         {
                             self.open_shortcuts_window = true;
                         }
-                        if ui.button("File Viewers").clicked() {
+                        if menu_item(ui, "File Viewers", keymap, FileAction::OpenFileViewers)
+                            .clicked()
+                        {
                             self.open_viewers_window = true;
-                            ui.close();
                         }
-                        if ui.button("Style").clicked() {
+                        if menu_item(ui, "Style", keymap, FileAction::OpenStyle).clicked() {
                             self.style_window.open(ui.ctx());
-                            ui.close();
                         }
                     });
 

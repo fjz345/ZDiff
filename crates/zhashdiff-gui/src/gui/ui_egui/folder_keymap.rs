@@ -1,7 +1,7 @@
 use eframe::egui::{self, Key, Modifiers};
 use zcommon_ui::{
     common::show_custom_popup,
-    keymap::{Action, Keymap, Shortcut},
+    keymap::{Action, Keymap, Shortcut, TypingPolicy},
     keymap_editor::KeymapEditor,
     shared_keymap::SharedAction,
 };
@@ -26,6 +26,10 @@ pub enum FolderAction {
     KeepThis,
     NextGroup,
     PrevGroup,
+    ClearPaths,
+    OpenStyle,
+    OpenDiffTools,
+    ToggleDiffMode,
 }
 
 impl Action for FolderAction {
@@ -42,6 +46,10 @@ impl Action for FolderAction {
             Self::KeepThis,
             Self::NextGroup,
             Self::PrevGroup,
+            Self::ClearPaths,
+            Self::OpenStyle,
+            Self::OpenDiffTools,
+            Self::ToggleDiffMode,
         ]
     }
 
@@ -58,6 +66,10 @@ impl Action for FolderAction {
             Self::KeepThis => "keep_this",
             Self::NextGroup => "next_group",
             Self::PrevGroup => "prev_group",
+            Self::ClearPaths => "clear_paths",
+            Self::OpenStyle => "open_style",
+            Self::OpenDiffTools => "open_diff_tools",
+            Self::ToggleDiffMode => "toggle_diff_mode",
         }
     }
 
@@ -71,9 +83,13 @@ impl Action for FolderAction {
             Self::SwapSides => "Swap Sides",
             Self::OpenKeybindings => "Open Keyboard Shortcuts",
             Self::Find => "Find",
-            Self::KeepThis => "Keep This",
+            Self::KeepThis => "Toggle Keep on Duplicate",
             Self::NextGroup => "Next Duplicate Group",
             Self::PrevGroup => "Previous Duplicate Group",
+            Self::ClearPaths => "Clear Folder Paths",
+            Self::OpenStyle => "Open Style Settings",
+            Self::OpenDiffTools => "Open External Diff Tools",
+            Self::ToggleDiffMode => "Switch Path / Duplicate Diff",
         }
     }
 
@@ -99,6 +115,23 @@ impl Action for FolderAction {
                 key: Key::Num3,
                 modifiers: CTRL,
             }],
+            Self::ClearPaths => SharedAction::ClearPaths.defaults(),
+            Self::OpenStyle => SharedAction::OpenStyle.defaults(),
+            Self::OpenDiffTools => &[Shortcut {
+                key: Key::T,
+                modifiers: CTRL,
+            }],
+            Self::ToggleDiffMode => &[Shortcut {
+                key: Key::D,
+                modifiers: CTRL,
+            }],
+        }
+    }
+
+    fn typing_policy(self) -> TypingPolicy {
+        match self {
+            Self::ClearPaths => TypingPolicy::Never,
+            _ => TypingPolicy::CtrlOrAlt,
         }
     }
 
@@ -112,7 +145,13 @@ impl Action for FolderAction {
             Self::SwapSides => Some(SharedAction::SwapSides),
             Self::OpenKeybindings => Some(SharedAction::OpenKeybindings),
             Self::Find => Some(SharedAction::Find),
-            Self::KeepThis | Self::NextGroup | Self::PrevGroup => None,
+            Self::ClearPaths => Some(SharedAction::ClearPaths),
+            Self::OpenStyle => Some(SharedAction::OpenStyle),
+            Self::KeepThis
+            | Self::NextGroup
+            | Self::PrevGroup
+            | Self::OpenDiffTools
+            | Self::ToggleDiffMode => None,
         }
     }
 }
@@ -170,6 +209,13 @@ mod tests {
     #[test]
     fn folder_action_defaults_are_clash_free() {
         assert!(Keymap::<FolderAction>::default().clashes().is_empty());
+    }
+
+    #[test]
+    fn every_folder_action_has_a_default() {
+        for &action in FolderAction::all() {
+            assert!(!action.defaults().is_empty(), "{action:?}");
+        }
     }
 
     #[test]

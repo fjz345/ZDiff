@@ -165,7 +165,11 @@ pub fn draw_ui_folder_tree(
             | FolderAction::Find
             | FolderAction::KeepThis
             | FolderAction::NextGroup
-            | FolderAction::PrevGroup => continue,
+            | FolderAction::PrevGroup
+            | FolderAction::ClearPaths
+            | FolderAction::OpenStyle
+            | FolderAction::OpenDiffTools
+            | FolderAction::ToggleDiffMode => continue,
         };
         let Some((moved, expand)) = target else {
             log::info!("No more diffs");
