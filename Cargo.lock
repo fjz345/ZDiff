@@ -5135,6 +5135,42 @@ dependencies = [
 ]
 
 [[package]]
+name = "zdiff-folder"
+version = "2.0.1"
+dependencies = [
+ "image",
+ "log",
+ "md-5",
+ "rayon",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "trash",
+ "zcommon",
+ "zdiff",
+]
+
+[[package]]
+name = "zdiff-folder-gui"
+version = "2.0.1"
+dependencies = [
+ "color-backtrace",
+ "eframe",
+ "egui_extras",
+ "egui_tiles",
+ "image",
+ "log",
+ "memmap2",
+ "rfd",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "zcommon",
+ "zcommon-ui",
+ "zdiff-folder",
+]
+
+[[package]]
 name = "zdiff-gui"
 version = "2.0.1"
 dependencies = [
@@ -5228,42 +5264,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
-]
-
-[[package]]
-name = "zhashdiff"
-version = "2.0.1"
-dependencies = [
- "image",
- "log",
- "md-5",
- "rayon",
- "serde",
- "serde_json",
- "tempfile",
- "trash",
- "zcommon",
- "zdiff",
-]
-
-[[package]]
-name = "zhashdiff-gui"
-version = "2.0.1"
-dependencies = [
- "color-backtrace",
- "eframe",
- "egui_extras",
- "egui_tiles",
- "image",
- "log",
- "memmap2",
- "rfd",
- "serde",
- "serde_json",
- "tempfile",
- "zcommon",
- "zcommon-ui",
- "zhashdiff",
 ]
 
 [[package]]

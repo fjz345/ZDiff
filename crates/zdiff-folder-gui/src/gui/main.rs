@@ -32,7 +32,7 @@ fn main() -> eframe::Result {
     };
 
     eframe::run_native(
-        "ZHashDiff",
+        "ZDiffFolder",
         native_options,
         Box::new(move |cc: &eframe::CreationContext<'_>| {
             egui_extras::install_image_loaders(&cc.egui_ctx);

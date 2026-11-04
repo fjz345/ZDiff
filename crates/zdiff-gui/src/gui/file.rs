@@ -470,12 +470,12 @@ mod tests {
     use zcommon::vcs::p4::FakeP4;
     #[test]
     fn test_is_root_valid_local() {
-        let root = UniversalPath::Local(PathBuf::from(r"E:\Github\ZHashDiff\crates"));
+        let root = UniversalPath::Local(PathBuf::from(r"E:\Github\ZDiff\crates"));
 
         assert!(FileProcessor::is_root_valid(
             &root,
             &UniversalPath::Local(PathBuf::from(
-                r"E:\Github\ZHashDiff\crates\zdiff-gui\src\main.rs",
+                r"E:\Github\ZDiff\crates\zdiff-gui\src\main.rs",
             ))
         ));
 
@@ -487,7 +487,7 @@ mod tests {
         assert!(!FileProcessor::is_root_valid(
             &root,
             &UniversalPath::Local(PathBuf::from(
-                r"E:\Github\ZHashDiff\crates\zdiff-gui\..\..\test\rust_files_diff_1\advanced_rust.rs",
+                r"E:\Github\ZDiff\crates\zdiff-gui\..\..\test\rust_files_diff_1\advanced_rust.rs",
             ))
         ));
     }
@@ -548,7 +548,7 @@ mod tests {
 
     #[test]
     fn test_is_root_valid_mixed() {
-        let local = UniversalPath::Local(PathBuf::from(r"E:\Github\ZHashDiff"));
+        let local = UniversalPath::Local(PathBuf::from(r"E:\Github\ZDiff"));
         let depot = UniversalPath::Depot("//depot/folder/file.rs".into(), Some(DepotRev::Rev(2)));
 
         assert!(FileProcessor::is_root_valid(&local, &depot));

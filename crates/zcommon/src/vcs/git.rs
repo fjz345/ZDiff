@@ -831,7 +831,7 @@ refs/tags/v1.2 \n";
     #[test]
     fn a_missing_git_is_named() {
         let git = GitCommand {
-            exe: PathBuf::from("zhashdiff-no-such-git"),
+            exe: PathBuf::from("zdiff-folder-no-such-git"),
         };
 
         let err = git.run(Path::new("."), &["--version"]).unwrap_err();
@@ -839,12 +839,12 @@ refs/tags/v1.2 \n";
         assert_eq!(
             err.kind,
             GitErrorKind::NotFound {
-                exe: "zhashdiff-no-such-git".to_string()
+                exe: "zdiff-folder-no-such-git".to_string()
             }
         );
         let message = err.to_string();
         assert!(message.contains("git not found"), "{message}");
-        assert!(message.contains("zhashdiff-no-such-git"), "{message}");
+        assert!(message.contains("zdiff-folder-no-such-git"), "{message}");
     }
 
     fn setup(dir: &Path, args: &[&str]) {

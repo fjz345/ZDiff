@@ -1,11 +1,11 @@
-# ZHashDiff-GUI
+# ZDiffFolder-GUI
 
-![zhashdiff-gui](img/showcase.png)
+![zdiff-folder-gui](img/showcase.png)
 
-GUI for zhashdiff crate
+GUI for zdiff-folder crate
 
 ```
-zhashdiff-gui [<dir1> [<dir2>]]
+zdiff-folder-gui [<dir1> [<dir2>]]
 ```
 
 # Features
@@ -37,7 +37,7 @@ zhashdiff-gui [<dir1> [<dir2>]]
 
 ## Configuration
 
-zhashdiff-gui reads a `.env` file only from the folder of its executable (`target/<profile>/` for `cargo run`). The working directory and its parents are not searched. Real environment variables win over `.env` values. The log window shows which file was loaded, or that none was found.
+zdiff-folder-gui reads a `.env` file only from the folder of its executable (`target/<profile>/` for `cargo run`). The working directory and its parents are not searched. Real environment variables win over `.env` values. The log window shows which file was loaded, or that none was found.
 
 # Todo
 * Maybe fixed?? ____ Some PCs egui becomes white after first launch ____ 

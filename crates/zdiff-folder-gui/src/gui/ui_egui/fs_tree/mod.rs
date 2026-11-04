@@ -16,7 +16,7 @@ use zcommon::{
     find::Matcher,
     kinds::{FileKind, KindTable},
 };
-use zhashdiff::{
+use zdiff_folder::{
     comparison::{FileMeta, PairState},
     external_diff_tool::{
         CantDiff, DiffPair, DiffToolConfig, cant_diff, folder_labels, open_diff_tool,

@@ -439,7 +439,7 @@ pub fn stripe_segments(
     })
 }
 
-// %APPDATA%\ZHashDiff on Windows; shared by both apps, unlike eframe's per-app storage.
+// %APPDATA%\ZDiff on Windows; shared by both apps, unlike eframe's per-app storage.
 pub fn settings_dir() -> Option<PathBuf> {
     #[cfg(windows)]
     let base = std::env::var_os("APPDATA").map(PathBuf::from);
@@ -447,7 +447,7 @@ pub fn settings_dir() -> Option<PathBuf> {
     let base = std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")));
-    base.map(|dir| dir.join("ZHashDiff"))
+    base.map(|dir| dir.join("ZDiff"))
 }
 
 pub fn style_file_path() -> Option<PathBuf> {

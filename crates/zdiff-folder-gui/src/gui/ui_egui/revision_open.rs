@@ -12,7 +12,7 @@ use zcommon::{
     job::{Job, JobCtx},
     vcs::{git::GitCommand, p4::P4Command},
 };
-use zhashdiff::{
+use zdiff_folder::{
     external_diff_tool::{DiffPair, DiffTool, folder_labels, open_diff_tool},
     revision_pair::{PairSource, remove_temp_dir, tool_paths},
     vcs_source::ContentSource,
@@ -42,7 +42,7 @@ fn opens() -> std::sync::MutexGuard<'static, Vec<Open>> {
 
 fn temp_root() -> PathBuf {
     env::temp_dir()
-        .join("zhashdiff-revisions")
+        .join("zdiff-folder-revisions")
         .join(process::id().to_string())
 }
 

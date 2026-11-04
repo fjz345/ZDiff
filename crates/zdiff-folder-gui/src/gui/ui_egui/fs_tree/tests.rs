@@ -18,7 +18,7 @@ use eframe::egui;
 use std::time::{Duration, SystemTime};
 use zcommon::path::split_path;
 use zcommon_ui::pathbar::PathBarAction;
-use zhashdiff::external_diff_tool::{DiffTool, DiffToolConfig};
+use zdiff_folder::external_diff_tool::{DiffTool, DiffToolConfig};
 
 use std::cell::Cell;
 use std::collections::HashMap;
@@ -27,9 +27,9 @@ use std::path::Path;
 use std::sync::Arc;
 use tempfile::{TempDir, tempdir};
 use zcommon::kinds::{FileKind, KindTable};
-use zhashdiff::comparison::PairState;
-use zhashdiff::filter::{PathFilter, PatternList};
-use zhashdiff::fs::{FileSystemModel, FsIsDir, FsNodeDepth, FsNodeId};
+use zdiff_folder::comparison::PairState;
+use zdiff_folder::filter::{PathFilter, PatternList};
+use zdiff_folder::fs::{FileSystemModel, FsIsDir, FsNodeDepth, FsNodeId};
 
 #[test]
 fn folder_role_names_are_unique_against_the_shared_roles() {
@@ -1917,7 +1917,7 @@ fn missing_tool_config(kinds: Vec<FileKind>, mark_undiffable: bool) -> DiffToolC
     DiffToolConfig {
         tools: vec![DiffTool {
             name: "Missing".to_string(),
-            exe_path: "zhashdiff-test-missing-tool.exe".into(),
+            exe_path: "zdiff-folder-test-missing-tool.exe".into(),
             template: "{left} {right}".to_string(),
             kinds,
         }],
@@ -1955,7 +1955,7 @@ fn a_tool_that_is_not_found_reports_the_places_searched() {
     assert_eq!(message.warning, None);
     let error = message.error.unwrap();
     assert!(
-        error.contains("zhashdiff-test-missing-tool.exe not found, searched: "),
+        error.contains("zdiff-folder-test-missing-tool.exe not found, searched: "),
         "{error}"
     );
 }

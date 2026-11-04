@@ -1,4 +1,4 @@
-// Shared by the zdiff-gui and zhashdiff-gui build scripts via `#[path]`.
+// Shared by the zdiff-gui and zdiff-folder-gui build scripts via `#[path]`.
 
 use std::{env, io::Cursor, path::PathBuf};
 

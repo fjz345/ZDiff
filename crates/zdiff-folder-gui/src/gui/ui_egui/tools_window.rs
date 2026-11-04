@@ -7,7 +7,7 @@ use std::{
 use eframe::egui::{self, RichText, TextBuffer};
 use zcommon::kinds::FileKind;
 use zcommon_ui::common::{icon_button, section_heading, show_settings_window};
-use zhashdiff::external_diff_tool::{
+use zdiff_folder::external_diff_tool::{
     DiffPair, DiffTool, DiffToolConfig, DiffToolMatch, DiffToolRule, ExeNotFound, find_on_path,
     folder_labels, open_diff_tool, presets, preview_command, resolve_exe,
 };
@@ -30,11 +30,11 @@ fn write_test_files(dir: &Path) -> io::Result<(PathBuf, PathBuf)> {
     let (left, right) = (dir.join("left.txt"), dir.join("right.txt"));
     fs::write(
         &left,
-        "zhashdiff diff tool test\nthis line is on the left\nsame\n",
+        "zdiff-folder diff tool test\nthis line is on the left\nsame\n",
     )?;
     fs::write(
         &right,
-        "zhashdiff diff tool test\nthis line is on the right\nsame\n",
+        "zdiff-folder diff tool test\nthis line is on the right\nsame\n",
     )?;
     Ok((left, right))
 }
@@ -42,7 +42,7 @@ fn write_test_files(dir: &Path) -> io::Result<(PathBuf, PathBuf)> {
 /// Fixed files, not a self-deleting temp dir: the tool opens them after the spawn returns.
 fn test_tool(tool: &DiffTool) -> Result<String, String> {
     let exe = resolve_tool_exe(&tool.exe_path).map_err(|err| err.to_string())?;
-    let (left, right) = write_test_files(&env::temp_dir().join("zhashdiff-diff-tool-test"))
+    let (left, right) = write_test_files(&env::temp_dir().join("zdiff-folder-diff-tool-test"))
         .map_err(|err| format!("writing the test files failed: {err}"))?;
     let (left_name, right_name) = folder_labels("test.txt");
     open_diff_tool(

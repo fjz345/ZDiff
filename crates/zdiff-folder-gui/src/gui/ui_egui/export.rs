@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::fmt::Write;
 use std::path::{Path, PathBuf};
 
-use zhashdiff::conflict::DuplicateGroup;
+use zdiff_folder::conflict::DuplicateGroup;
 
 use crate::ui_egui::fs_tree::{DiffState, VisibleRowTwoFolderDiff};
 use crate::ui_egui::status_line::ToolMessage;

@@ -1,7 +1,7 @@
 use std::time::SystemTime;
 
 use serde::{Deserialize, Serialize};
-use zhashdiff::{comparison::PairState, fs::FsNode};
+use zdiff_folder::{comparison::PairState, fs::FsNode};
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -174,7 +174,7 @@ pub fn similar_tooltip(
 mod tests {
     use super::{Passed, SideMeta, SizeDelta, Tolerance, similar_tooltip};
     use std::time::{Duration, SystemTime};
-    use zhashdiff::comparison::PairState;
+    use zdiff_folder::comparison::PairState;
 
     const DIFFERENT: Option<PairState> = Some(PairState::Different);
 

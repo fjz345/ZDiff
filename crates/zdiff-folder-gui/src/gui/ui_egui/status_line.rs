@@ -1,6 +1,6 @@
 use eframe::egui;
 use std::time::Duration;
-use zhashdiff::scan::SkippedEntry;
+use zdiff_folder::scan::SkippedEntry;
 
 use crate::ui_egui::{
     fs_tree::{DiffState, VisibleRowTwoFolderDiff},
@@ -122,7 +122,7 @@ mod tests {
 
     use tempfile::tempdir;
     use zcommon::kinds::KindTable;
-    use zhashdiff::{comparison::PairState, filter::PathFilter, fs::FileSystemModel};
+    use zdiff_folder::{comparison::PairState, filter::PathFilter, fs::FileSystemModel};
 
     use super::{RowCounts, count_rows, counts_text};
     use crate::ui_egui::fs_tree::{DiffState, FileSystemView, VisibleRowTwoFolderDiff};

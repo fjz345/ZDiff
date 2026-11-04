@@ -16,19 +16,19 @@ use zcommon::job::Job;
 use zcommon_ui::common::show_custom_popup;
 use zcommon_ui::style_window::role_color;
 use zcommon_ui::toggle::toggle_button;
-use zhashdiff::conflict::DuplicateGroup;
-use zhashdiff::conflict::SizedFile;
-use zhashdiff::conflict::execute_resolution;
-use zhashdiff::conflict::group_by_size_and_hash;
-use zhashdiff::conflict::plan_resolution;
-use zhashdiff::conflict::recycle;
-use zhashdiff::conflict::recycle_is_undoable;
-use zhashdiff::conflict::size_collisions;
-use zhashdiff::external_diff_tool::DiffToolConfig;
-use zhashdiff::filter::PathFilter;
-use zhashdiff::fs::FileSystemModel;
-use zhashdiff::fs::FsNodeId;
-use zhashdiff::vcs_source::ContentSource;
+use zdiff_folder::conflict::DuplicateGroup;
+use zdiff_folder::conflict::SizedFile;
+use zdiff_folder::conflict::execute_resolution;
+use zdiff_folder::conflict::group_by_size_and_hash;
+use zdiff_folder::conflict::plan_resolution;
+use zdiff_folder::conflict::recycle;
+use zdiff_folder::conflict::recycle_is_undoable;
+use zdiff_folder::conflict::size_collisions;
+use zdiff_folder::external_diff_tool::DiffToolConfig;
+use zdiff_folder::filter::PathFilter;
+use zdiff_folder::fs::FileSystemModel;
+use zdiff_folder::fs::FsNodeId;
+use zdiff_folder::vcs_source::ContentSource;
 
 use crate::ui_egui::export::{duplicates_report, save_report};
 use crate::ui_egui::folder_keymap::FolderAction;
@@ -1526,8 +1526,8 @@ mod tests {
     use std::time::Instant;
     use tempfile::{TempDir, tempdir};
     use zcommon::hash::hash_file_mmap;
-    use zhashdiff::filter::PatternList;
-    use zhashdiff::vcs_source::{DepotContent, DepotRevisions, GitContent};
+    use zdiff_folder::filter::PatternList;
+    use zdiff_folder::vcs_source::{DepotContent, DepotRevisions, GitContent};
 
     /// Owns everything a `DuplicateFilesPaneCtx` borrows.
     struct PaneState {

@@ -481,7 +481,7 @@ fn kind_label(kind: FileKind) -> String {
 pub fn ui_extension_map(ui: &mut egui::Ui, table: &KindTable) -> Vec<KindEdit> {
     let mut edits = Vec::new();
     section_heading(ui, "Extensions");
-    ui.weak("Shared with ZHashDiff. Unlisted extensions are sniffed: text opens as Text, binary as Hex.");
+    ui.weak("Shared with ZDiffFolder. Unlisted extensions are sniffed: text opens as Text, binary as Hex.");
     egui::CollapsingHeader::new("Built-in defaults")
         .id_salt("extension_map_defaults")
         .show(ui, |ui| {
@@ -1284,7 +1284,7 @@ mod tests {
         #[test]
         fn an_edit_in_the_settings_page_is_written_to_the_shared_file() {
             let dir = tempfile::tempdir().unwrap();
-            let path = dir.path().join("ZHashDiff").join("kinds.json");
+            let path = dir.path().join("ZDiff").join("kinds.json");
             let mut kinds = SharedKinds::load(Some(path.clone()), &mut None);
             assert!(!path.exists(), "loading alone writes nothing");
 

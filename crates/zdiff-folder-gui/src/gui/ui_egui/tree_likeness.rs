@@ -1,5 +1,5 @@
 use eframe::egui;
-use zhashdiff::{
+use zdiff_folder::{
     comparison::PairState,
     fs::FsNode,
     likeness::{Likeness, LikenessReason, Measure},

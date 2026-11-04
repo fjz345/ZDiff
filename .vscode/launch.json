@@ -7,16 +7,16 @@
         {
             "type": "lldb",
             "request": "launch",
-            "name": "Debug unit tests in library 'zhashdiff'",
+            "name": "Debug unit tests in library 'zdiff-folder'",
             "cargo": {
                 "args": [
                     "test",
                     "--no-run",
                     "--lib",
-                    "--package=zhashdiff"
+                    "--package=zdiff-folder"
                 ],
                 "filter": {
-                    "name": "zhashdiff",
+                    "name": "zdiff-folder",
                     "kind": "lib"
                 }
             },
@@ -44,15 +44,15 @@
         {
             "type": "lldb",
             "request": "launch",
-            "name": "Debug executable 'zhashdiff-gui'",
+            "name": "Debug executable 'zdiff-folder-gui'",
             "cargo": {
                 "args": [
                     "build",
-                    "--bin=zhashdiff-gui",
-                    "--package=zhashdiff"
+                    "--bin=zdiff-folder-gui",
+                    "--package=zdiff-folder"
                 ],
                 "filter": {
-                    "name": "zhashdiff-gui",
+                    "name": "zdiff-folder-gui",
                     "kind": "bin"
                 }
             },
@@ -62,16 +62,16 @@
         {
             "type": "lldb",
             "request": "launch",
-            "name": "Debug unit tests in executable 'zhashdiff-gui'",
+            "name": "Debug unit tests in executable 'zdiff-folder-gui'",
             "cargo": {
                 "args": [
                     "test",
                     "--no-run",
-                    "--bin=zhashdiff-gui",
-                    "--package=zhashdiff"
+                    "--bin=zdiff-folder-gui",
+                    "--package=zdiff-folder"
                 ],
                 "filter": {
-                    "name": "zhashdiff-gui",
+                    "name": "zdiff-folder-gui",
                     "kind": "bin"
                 }
             },

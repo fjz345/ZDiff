@@ -25,7 +25,7 @@ use zcommon_ui::{
     shared_keymap::load_shared,
     style_window::StyleWindow,
 };
-use zhashdiff::{
+use zdiff_folder::{
     external_diff_tool::DiffToolConfig, filter::PathFilter, fs::FileSystemModel, scan::ScanOutput,
     uasset::BlueprintDetector, vcs_source::scan_side,
 };
@@ -1176,7 +1176,7 @@ impl ZApp {
                             app_ctx.file_system_2_root_path.clone().unwrap_or_default();
 
                         let new_title = format!(
-                            "ZHashDiff [{}] - {}, {}",
+                            "ZDiffFolder [{}] - {}, {}",
                             built_rows_len,
                             source_path.display(),
                             target_path.display()
@@ -1450,8 +1450,8 @@ mod tests {
     use zcommon::hash::HashService;
     use zcommon::logger::LogBuffer;
     use zcommon_ui::keymap::{Action, Keymap, Shortcut};
-    use zhashdiff::likeness::{Likeness, Measure};
-    use zhashdiff::{
+    use zdiff_folder::likeness::{Likeness, Measure};
+    use zdiff_folder::{
         comparison::{PairCompare, PairState},
         filter::{PathFilter, PatternList},
         fs::FileSystemModel,

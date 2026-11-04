@@ -77,7 +77,7 @@ pub fn draw_ui_folder_tree(
         return ui
             .vertical_centered(|ui| {
                 ui.add_space(100.0);
-                ui.heading("Welcome to ZHashDiff");
+                ui.heading("Welcome to ZDiffFolder");
                 ui.label("Drag and drop folders here or use the buttons below to start comparing.");
                 ui.horizontal(|ui| {
                     if ui.button("Open Folder 1").clicked() {

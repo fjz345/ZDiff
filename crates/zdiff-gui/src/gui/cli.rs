@@ -94,7 +94,7 @@ impl std::fmt::Display for LaunchError {
             LaunchError::MissingPath(role) => write!(f, "no {role} file given"),
             LaunchError::Folders { left, right } => write!(
                 f,
-                "`{left}` and `{right}` are folders; zdiff-gui compares files, use zhashdiff-gui for folders"
+                "`{left}` and `{right}` are folders; zdiff-gui compares files, use zdiff-folder-gui for folders"
             ),
         }
     }
@@ -644,7 +644,7 @@ mod tests {
         let r = right.path().to_str().unwrap();
         let err = parse(&[l, r]).unwrap_err();
         assert!(matches!(err, LaunchError::Folders { .. }), "{err:?}");
-        assert!(err.to_string().contains("zhashdiff-gui"), "{err}");
+        assert!(err.to_string().contains("zdiff-folder-gui"), "{err}");
     }
 
     #[test]

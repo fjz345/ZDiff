@@ -10,7 +10,7 @@ use zcommon_ui::{
     presets::presets_menu,
     toggle::{TOGGLE_BUTTON_SIZE, toggle_button},
 };
-use zhashdiff::{
+use zdiff_folder::{
     external_diff_tool::DiffToolConfig,
     filter::{PathFilter, PatternList},
 };
@@ -482,7 +482,7 @@ mod tests {
     use crate::ui_egui::{fs_tree::FileSystemView, tree_cursor::TreeCursor};
     use std::{path::Path, sync::Arc};
     use tempfile::tempdir;
-    use zhashdiff::{filter::PathFilter, fs::FileSystemModel};
+    use zdiff_folder::{filter::PathFilter, fs::FileSystemModel};
 
     const DIR: bool = true;
     const FILE: bool = false;

@@ -1,4 +1,4 @@
-use zhashdiff::fs::FsNodeDepth;
+use zdiff_folder::fs::FsNodeDepth;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Guide {
@@ -59,7 +59,7 @@ pub fn tree_guides(rows: &[(FsNodeDepth, bool)]) -> TreeGuides {
 #[cfg(test)]
 mod tests {
     use super::{Guide, tree_guides};
-    use zhashdiff::fs::FsNodeDepth;
+    use zdiff_folder::fs::FsNodeDepth;
 
     fn side(rows: &[(&str, bool, bool)], right: bool) -> Vec<String> {
         let input: Vec<(FsNodeDepth, bool)> = rows

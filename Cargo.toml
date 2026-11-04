@@ -3,8 +3,8 @@ members = [ "crates/zcommon",
     "crates/zcommon-ui",
     "crates/zdiff",
     "crates/zdiff-gui",
-    "crates/zhashdiff",
-    "crates/zhashdiff-gui",
+    "crates/zdiff-folder",
+    "crates/zdiff-folder-gui",
     "xtask",
 ]
 resolver = "2"

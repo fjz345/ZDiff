@@ -6,7 +6,7 @@ use zcommon::{
     hash::HashService,
     logger::LogBuffer,
 };
-use zhashdiff::{external_diff_tool::DiffToolConfig, filter::PathFilter};
+use zdiff_folder::{external_diff_tool::DiffToolConfig, filter::PathFilter};
 
 use crate::ui_egui::{
     app::SideScan,

@@ -1107,7 +1107,7 @@ mod tests {
     mod exe_resolution {
         use super::*;
 
-        const APP_DIR: &str = r"C:\apps\zhashdiff";
+        const APP_DIR: &str = r"C:\apps\zdiff-folder";
         const BUILD_ZDIFF: &str = r"E:\repo\target\debug\zdiff-gui.exe";
         const ON_PATH_DIR: &str = r"C:\tools";
 
@@ -1128,7 +1128,7 @@ mod tests {
 
         #[test]
         fn bare_name_resolves_next_to_the_app_first() {
-            let next_to_app = r"C:\apps\zhashdiff\zdiff-gui.exe";
+            let next_to_app = r"C:\apps\zdiff-folder\zdiff-gui.exe";
             assert_eq!(
                 resolve(
                     "zdiff-gui.exe",
@@ -1179,7 +1179,7 @@ mod tests {
                 Err(ExeNotFound {
                     exe: PathBuf::from("TortoiseProc.exe"),
                     searched: vec![
-                        r"C:\apps\zhashdiff\TortoiseProc.exe".to_string(),
+                        r"C:\apps\zdiff-folder\TortoiseProc.exe".to_string(),
                         "PATH".to_string(),
                     ],
                 })
@@ -1201,11 +1201,11 @@ mod tests {
             let err = resolve("zdiff-gui.exe", &[], &[]).unwrap_err();
             assert_eq!(
                 err.searched,
-                [r"C:\apps\zhashdiff\zdiff-gui.exe", BUILD_ZDIFF, "PATH"]
+                [r"C:\apps\zdiff-folder\zdiff-gui.exe", BUILD_ZDIFF, "PATH"]
             );
             assert_eq!(
                 err.to_string(),
-                r"zdiff-gui.exe not found, searched: C:\apps\zhashdiff\zdiff-gui.exe, E:\repo\target\debug\zdiff-gui.exe, PATH"
+                r"zdiff-gui.exe not found, searched: C:\apps\zdiff-folder\zdiff-gui.exe, E:\repo\target\debug\zdiff-gui.exe, PATH"
             );
         }
 

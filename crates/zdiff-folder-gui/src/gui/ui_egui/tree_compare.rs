@@ -12,7 +12,7 @@ use std::{
 
 use memmap2::Mmap;
 use zcommon::{job::Job, kinds::KindTable};
-use zhashdiff::{
+use zdiff_folder::{
     comparison::{FileMeta, PairCompare, PairCompareCache, PairSide, PairState, compare_pair_with},
     fs::{FileSystemModel, FsNode},
     likeness::{Likeness, likeness},
@@ -666,7 +666,7 @@ mod tests {
     };
     use tempfile::{TempDir, tempdir};
     use zcommon::kinds::KindTable;
-    use zhashdiff::{
+    use zdiff_folder::{
         comparison::{PairCompare, PairState},
         filter::PathFilter,
         fs::FileSystemModel,
