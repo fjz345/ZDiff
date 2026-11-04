@@ -33,6 +33,13 @@ cargo run -p zhashdiff-gui
 ```
 Build `zdiff-gui` before `zhashdiff-gui`: zhashdiff-gui's build script bakes in the path to `zdiff-gui.exe` as the default external diff tool. The audio and video viewers need ffmpeg (`cargo xtask fetch-ffmpeg`).
 
+# Todo
+* Option to stop the console log window from opening with the app (zdiff-gui opens one in every build, zhashdiff-gui in debug builds)
+* Diff mode for `.pdb` files, with options such as stripped PDBs
+* ~2% CPU while moving the mouse over either app; the only mouse interactions should be drag and drop and hover
+* Patch view mode in the file diff, so the diff can be read as a patch without exporting it first
+* Folder view resets every so often on large folders (not reproduced yet)
+
 ---
 
 # Notes
