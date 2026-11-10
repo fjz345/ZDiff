@@ -122,6 +122,9 @@ enum Listing {
         depot: String,
         streams: Vec<P4Stream>,
     },
+    Unversioned {
+        detail: String,
+    },
 }
 
 type LoadResult = Result<Listing, String>;
@@ -145,9 +148,11 @@ fn load_listing(path: &UniversalPath) -> Result<Listing, String> {
             let location = match git::locate(&git_cmd, p) {
                 Ok(location) => location,
                 Err(git_err) if matches!(path, UniversalPath::Local(_)) => {
-                    return load_workspace(p).map_err(|p4_err| {
-                        format!("Not in a git repo or p4 workspace.\ngit: {git_err}\np4: {p4_err}")
-                    });
+                    return Ok(load_workspace(p).unwrap_or_else(|p4_err| {
+                        let detail = format!("git: {git_err}\np4: {p4_err}");
+                        log::debug!("{} is not under source control\n{detail}", p.display());
+                        Listing::Unversioned { detail }
+                    }));
                 }
                 Err(e) => return Err(e.to_string()),
             };
@@ -217,21 +222,27 @@ fn menu(ui: &mut egui::Ui, id: egui::Id, path: &UniversalPath) -> Option<Univers
         Some(Ok(Listing::Workspace { depot, streams })) => (streams, Some(depot)),
         _ => (&[], None),
     };
+    let unversioned = matches!(listing, Some(Ok(Listing::Unversioned { .. })));
     let is_depot = path.is_depot() || workspace_depot.is_some();
     let hint = if is_depot {
         "Filter, or @change, @=shelf, #rev"
     } else {
         "Filter, or any commit or expression"
     };
-    let edit = ui.add(
-        egui::TextEdit::singleline(&mut state.text)
-            .hint_text(hint)
-            .desired_width(f32::INFINITY),
-    );
-    if fresh {
-        edit.request_focus();
-    }
-    let entered = edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+    let entered = if unversioned {
+        false
+    } else {
+        let edit = ui.add(
+            egui::TextEdit::singleline(&mut state.text)
+                .hint_text(hint)
+                .desired_width(f32::INFINITY),
+        );
+        if fresh {
+            edit.request_focus();
+        }
+        ui.separator();
+        edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter))
+    };
 
     // Before the listing arrives, a workspace file's typed text would be read as a git revision.
     let mut pick = (entered && listing.is_some()).then(|| RevisionPick::Typed(state.text.clone()));
@@ -243,7 +254,6 @@ fn menu(ui: &mut egui::Ui, id: egui::Id, path: &UniversalPath) -> Option<Univers
         }
     };
 
-    ui.separator();
     if !path.is_depot() {
         item(
             ui,
@@ -259,7 +269,7 @@ fn menu(ui: &mut egui::Ui, id: egui::Id, path: &UniversalPath) -> Option<Univers
             "Head",
             RevisionPick::Head,
         );
-    } else {
+    } else if !unversioned {
         item(
             ui,
             matches!(path, UniversalPath::Git(_, GitRev::Index)),
@@ -277,6 +287,9 @@ fn menu(ui: &mut egui::Ui, id: egui::Id, path: &UniversalPath) -> Option<Univers
         }
         Some(Err(e)) => {
             ui.colored_label(ui.visuals().error_fg_color, e);
+        }
+        Some(Ok(Listing::Unversioned { detail })) => {
+            ui.weak("Not under source control").on_hover_text(detail);
         }
         Some(Ok(Listing::Git(refs))) => {
             let current = match path {

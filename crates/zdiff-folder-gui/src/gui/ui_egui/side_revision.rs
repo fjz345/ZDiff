@@ -149,6 +149,9 @@ enum Listing {
         depot: String,
         streams: Vec<P4Stream>,
     },
+    Unversioned {
+        detail: String,
+    },
 }
 
 struct Load {
@@ -195,9 +198,11 @@ fn load_listing(folder: &Path, current: &SideRev) -> Result<Listing, String> {
             .map(Listing::Git)
             .map_err(|e| e.to_string()),
         Err(git_err) if *current == SideRev::Git(None) => {
-            load_workspace(folder).map_err(|p4_err| {
-                format!("Not in a git repo or p4 workspace.\ngit: {git_err}\np4: {p4_err}")
-            })
+            Ok(load_workspace(folder).unwrap_or_else(|p4_err| {
+                let detail = format!("git: {git_err}\np4: {p4_err}");
+                log::debug!("{} is not under source control\n{detail}", folder.display());
+                Listing::Unversioned { detail }
+            }))
         }
         Err(e) => Err(e.to_string()),
     }
@@ -267,17 +272,22 @@ fn menu_contents(
         _ => None,
     };
     let depot = matches!(current, SideRev::Depot(_)) || workspace_depot.is_some();
+    let unversioned = matches!(listing, Some(Ok(Listing::Unversioned { .. })));
     let mut pick = None;
-    let edit = ui.add(
-        egui::TextEdit::singleline(&mut state.text)
-            .hint_text(if depot {
-                "@change or @=shelf"
-            } else {
-                "Commit or expression"
-            })
-            .desired_width(220.0),
-    );
-    let entered = edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+    let entered = if unversioned {
+        false
+    } else {
+        let edit = ui.add(
+            egui::TextEdit::singleline(&mut state.text)
+                .hint_text(if depot {
+                    "@change or @=shelf"
+                } else {
+                    "Commit or expression"
+                })
+                .desired_width(220.0),
+        );
+        edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter))
+    };
     // Before the listing arrives, a workspace folder's typed text would be read as a git revision.
     if entered && listing.is_some() && !state.text.trim().is_empty() {
         pick = Some(RootPick::Typed(state.text.clone()));
@@ -296,13 +306,12 @@ fn menu_contents(
         {
             pick = Some(RootPick::Head);
         }
-    } else {
-        if ui
+    } else if !unversioned
+        && ui
             .selectable_label(*current == SideRev::Git(Some(GitRev::Index)), "Index")
             .clicked()
-        {
-            pick = Some(RootPick::Index);
-        }
+    {
+        pick = Some(RootPick::Index);
     }
     let mut streams: &[P4Stream] = &[];
     match listing.as_ref() {
@@ -314,6 +323,9 @@ fn menu_contents(
         }
         Some(Err(e)) => {
             ui.colored_label(ui.visuals().error_fg_color, e);
+        }
+        Some(Ok(Listing::Unversioned { detail })) => {
+            ui.weak("Not under source control").on_hover_text(detail);
         }
         Some(Ok(Listing::Git(refs))) => {
             egui::ScrollArea::vertical()
