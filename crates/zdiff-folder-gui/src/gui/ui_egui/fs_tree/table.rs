@@ -408,6 +408,12 @@ pub fn draw_ui_folder_tree(
                 layout,
             );
             let content_widths = shown.map(|side| side_widths[side]);
+            let pitch = row_height + ui.spacing().item_spacing.y;
+            let generation = rows_cache.generation();
+            let anchored_offset =
+                two_folder
+                    .table
+                    .anchored_offset(generation, visible_rows, drawn_rows, pitch);
 
             let mut split_table =
                 SplitTable::new("two_folder_diff_table", &mut two_folder.table.split)
@@ -421,6 +427,8 @@ pub fn draw_ui_folder_tree(
                     .selected_row(selected_row);
             if let Some(row) = scroll_to_row {
                 split_table = split_table.scroll_to_row(row, None);
+            } else if let Some(offset) = anchored_offset {
+                split_table = split_table.vertical_scroll_offset(offset);
             }
             let (compare, tolerance) = (two_folder.compare, two_folder.tolerance);
             let output = split_table.show(
@@ -496,6 +504,13 @@ pub fn draw_ui_folder_tree(
                 },
             );
             side_rects = output.side_rects;
+            two_folder.table.set_anchor(
+                generation,
+                output.scroll_offset,
+                visible_rows,
+                drawn_rows,
+                pitch,
+            );
         });
     if let Some(entry) = center_clicked_row {
         clicked_row = Some(entry);

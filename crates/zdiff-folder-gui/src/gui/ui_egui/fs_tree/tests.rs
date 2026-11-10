@@ -1,9 +1,9 @@
 use crate::ui_egui::fs_tree::apply_path_bar;
 use crate::ui_egui::fs_tree::{
     ContentWidths, CursorRowsCache, DiffState, EXPANDER_WIDTH, FileSystemView, RowLayout, RowsId,
-    TREE_INDENT, VisibleRowTwoFolderDiff, aggregate_folder_state, apply_blueprint_results,
-    apply_cursor_request, cursor_keys, side_width, single_side_rows, tree_hidden,
-    two_folder_cursor_rows,
+    TREE_INDENT, TreeTable, VisibleRowTwoFolderDiff, aggregate_folder_state,
+    apply_blueprint_results, apply_cursor_request, cursor_keys, side_width, single_side_rows,
+    tree_hidden, two_folder_cursor_rows,
 };
 use crate::ui_egui::roots::{InvalidRoot, Side};
 use crate::ui_egui::status_line::ToolMessage;
@@ -2471,4 +2471,78 @@ fn path_bar_committed_file_keeps_root() {
 
     assert_eq!(result, Err(InvalidRoot::NotAFolder(file)));
     assert_eq!(root_2, Some(dir.path().to_path_buf()));
+}
+
+fn anchor_rows(rel_paths: &[&str]) -> (Vec<VisibleRowTwoFolderDiff>, Vec<usize>) {
+    let rows = rel_paths
+        .iter()
+        .map(|rel_path| VisibleRowTwoFolderDiff {
+            rel_path: rel_path.to_string(),
+            is_dir: false,
+            depth: 0,
+            diff_state: DiffState::OnlyInFirst(0),
+            file_kinds: [None, None],
+            blueprints: [false, false],
+            folder_likeness: None,
+        })
+        .collect();
+    (rows, (1..rel_paths.len()).collect())
+}
+
+fn anchored_at(rel_paths: &[&str], scroll_offset: f32) -> TreeTable {
+    let (rows, drawn) = anchor_rows(rel_paths);
+    let mut table = TreeTable::default();
+    table.set_anchor(1, scroll_offset, &rows, &drawn, 10.0);
+    table
+}
+
+fn offset_after_rebuild(table: &TreeTable, rel_paths: &[&str]) -> Option<f32> {
+    let (rows, drawn) = anchor_rows(rel_paths);
+    table.anchored_offset(2, &rows, &drawn, 10.0)
+}
+
+#[test]
+fn rebuilt_rows_scroll_the_top_row_back_to_the_top() {
+    let table = anchored_at(&["", "a", "b", "c", "d"], 23.0);
+
+    let offset = offset_after_rebuild(&table, &["", "d", "c", "a", "b"]);
+
+    assert_eq!(offset, Some(13.0));
+}
+
+#[test]
+fn a_top_row_that_is_gone_scrolls_its_nearest_drawn_ancestor_to_the_top() {
+    let table = anchored_at(&["", "x", "x/y", "x/y/f", "z"], 25.0);
+
+    let offset = offset_after_rebuild(&table, &["", "a", "b", "x", "x/y", "x/yz", "z"]);
+
+    assert_eq!(offset, Some(30.0));
+}
+
+#[test]
+fn rebuilt_rows_keep_the_scroll_when_the_top_row_did_not_move_or_nothing_is_left_of_it() {
+    let table = anchored_at(&["", "a", "b", "c"], 15.0);
+    let (rows, drawn) = anchor_rows(&["", "x", "b", "c"]);
+
+    assert_eq!(table.anchored_offset(1, &rows, &drawn, 10.0), None);
+    assert_eq!(offset_after_rebuild(&table, &["", "x", "b", "c"]), None);
+    assert_eq!(offset_after_rebuild(&table, &["", "a", "c"]), None);
+}
+
+#[test]
+fn a_view_at_the_very_top_stays_at_the_top_of_rebuilt_rows() {
+    let table = anchored_at(&["", "a", "b", "c"], 0.0);
+
+    let offset = offset_after_rebuild(&table, &["", "c", "b", "a"]);
+
+    assert_eq!(offset, None);
+}
+
+#[test]
+fn an_offset_a_hair_short_of_a_row_anchors_that_row() {
+    let table = anchored_at(&["", "a", "b", "c", "d"], 20.0 - 0.001);
+
+    let offset = offset_after_rebuild(&table, &["", "c", "d", "a", "b"]);
+
+    assert_eq!(offset.map(f32::round), Some(0.0));
 }

@@ -33,6 +33,78 @@ pub struct TreeTable {
     pub(super) split: Split,
     pub(super) offsets: [f32; 2],
     pub(super) widths: ContentWidths,
+    pub(super) anchor: Option<ScrollAnchor>,
+}
+
+pub(super) struct ScrollAnchor {
+    generation: u64,
+    top: usize,
+    rel_path: String,
+    below_top: f32,
+}
+
+impl TreeTable {
+    /// The offset that brings back the old top row, or its nearest drawn ancestor once it is gone.
+    pub(super) fn anchored_offset(
+        &self,
+        generation: u64,
+        rows: &[VisibleRowTwoFolderDiff],
+        drawn: &[usize],
+        pitch: f32,
+    ) -> Option<f32> {
+        let anchor = self
+            .anchor
+            .as_ref()
+            .filter(|anchor| anchor.generation != generation)?;
+        let is_self_or_ancestor = |rel_path: &str| {
+            anchor
+                .rel_path
+                .strip_prefix(rel_path)
+                .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
+        };
+        let (top, rel_path) = drawn
+            .iter()
+            .map(|&i| rows[i].rel_path.as_str())
+            .enumerate()
+            .filter(|&(_, rel_path)| is_self_or_ancestor(rel_path))
+            .max_by_key(|&(_, rel_path)| rel_path.len())?;
+        let below_top = if rel_path == anchor.rel_path {
+            anchor.below_top
+        } else {
+            0.0
+        };
+        (top != anchor.top).then_some(top as f32 * pitch + below_top)
+    }
+
+    pub(super) fn set_anchor(
+        &mut self,
+        generation: u64,
+        scroll_offset: f32,
+        rows: &[VisibleRowTwoFolderDiff],
+        drawn: &[usize],
+        pitch: f32,
+    ) {
+        let Some(last) = drawn.len().checked_sub(1).filter(|_| scroll_offset > 0.0) else {
+            self.anchor = None;
+            return;
+        };
+        // A restored offset is a whole number of rows; float error must not pick the row above.
+        let top = (((scroll_offset + 0.01) / pitch) as usize).min(last);
+        let below_top = scroll_offset - top as f32 * pitch;
+        match &mut self.anchor {
+            Some(anchor) if (anchor.generation, anchor.top) == (generation, top) => {
+                anchor.below_top = below_top;
+            }
+            _ => {
+                self.anchor = Some(ScrollAnchor {
+                    generation,
+                    top,
+                    rel_path: rows[drawn[top]].rel_path.clone(),
+                    below_top,
+                });
+            }
+        }
+    }
 }
 
 impl FileSystemView {

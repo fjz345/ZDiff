@@ -2931,6 +2931,121 @@ mod tests {
         assert!(!shows_first_folder(&after));
     }
 
+    fn pending_files() -> Vec<FlatEntry> {
+        (0..3000)
+            .map(|i| {
+                let (dir, sub) = (i / 300, i / 30 % 10);
+                FlatEntry {
+                    rel_path: format!("dir_{dir}/sub_{sub}/f_{dir}_{sub}_{:02}.txt", i % 30),
+                    size: 1,
+                    hash: None,
+                }
+            })
+            .collect()
+    }
+
+    fn files_in_view(texts: Vec<String>) -> Vec<String> {
+        texts
+            .into_iter()
+            .filter(|text| text.starts_with("f_"))
+            .collect()
+    }
+
+    fn folder_of(file: &str) -> &str {
+        file.rsplit_once('_').unwrap().0
+    }
+
+    fn top_files_across_the_compare_finish(
+        diff_filter: DiffFilter,
+        tree_sort: TreeSort,
+    ) -> (String, Vec<String>) {
+        let (left, right) = (tempdir().unwrap(), tempdir().unwrap());
+        let mut state = AppStateCtx {
+            file_system_1_root_path: Some(left.path().to_path_buf()),
+            file_system_2_root_path: Some(right.path().to_path_buf()),
+            file_system_model_1_view: Some(in_memory_view(left.path(), pending_files())),
+            file_system_model_2_view: Some(in_memory_view(right.path(), pending_files())),
+            diff_filter,
+            tree_sort,
+            ..Default::default()
+        };
+        state.build_two_folder_diff_rows_if_stale();
+        let (sender, paths) = state.tree_compare.pause(Instant::now());
+        let mut app = ZApp::new(LogBuffer::default());
+        app.state = Some(AppState::Idle(state));
+        let ctx = egui::Context::default();
+        let screen = egui::vec2(1600.0, 1000.0);
+        let wheel = || {
+            vec![
+                egui::Event::PointerMoved(egui::pos2(400.0, 500.0)),
+                egui::Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Page,
+                    delta: egui::vec2(0.0, -1.0),
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ]
+        };
+        for _ in 0..3 {
+            frame_texts(&ctx, &mut app, screen, wheel());
+        }
+        for _ in 0..120 {
+            frame_texts(&ctx, &mut app, screen, Vec::new());
+        }
+        let before = files_in_view(frame_texts(&ctx, &mut app, screen, Vec::new())).remove(0);
+
+        for (i, path) in paths.iter().enumerate() {
+            let state = if path.ends_with("0.txt") {
+                PairState::Different
+            } else {
+                PairState::Same
+            };
+            let result = PairResult {
+                compare: Some(PairCompare { state, error: None }),
+                likeness: None,
+            };
+            sender.send((i, result)).unwrap();
+        }
+        drop(sender);
+        let comparing = |app: &ZApp| match &app.state {
+            Some(AppState::Idle(state)) => state.tree_compare.is_comparing(),
+            _ => unreachable!("the app is idle"),
+        };
+        while comparing(&app) {
+            frame_texts(&ctx, &mut app, screen, Vec::new());
+        }
+        let mut after = files_in_view(frame_texts(&ctx, &mut app, screen, Vec::new()));
+        after.truncate(4);
+        (before, after)
+    }
+
+    #[test]
+    fn the_compare_finishing_under_the_diff_filter_keeps_the_scrolled_to_folder_in_view() {
+        let diff_only = DiffFilter {
+            states: StateFilter::Diff,
+            show_parents: true,
+        };
+
+        let (before, after) = top_files_across_the_compare_finish(diff_only, TreeSort::default());
+
+        assert!(!before.starts_with("f_0_0_"), "scrolled: {before}");
+        assert!(
+            after
+                .iter()
+                .any(|file| folder_of(file) == folder_of(&before)),
+            "{before} -> {after:?}"
+        );
+    }
+
+    #[test]
+    fn the_compare_finishing_under_a_state_sort_keeps_the_top_row_in_place() {
+        let by_state = TreeSort::default().clicked(SortKey::State);
+
+        let (before, after) = top_files_across_the_compare_finish(DiffFilter::default(), by_state);
+
+        assert!(!before.starts_with("f_0_0_"), "scrolled: {before}");
+        assert!(after.contains(&before), "{before} -> {after:?}");
+    }
+
     fn repaint_delay(ctx: &egui::Context, app: &mut ZApp) -> Duration {
         let mut frame = eframe::Frame::_new_kittest();
         let input = egui::RawInput {

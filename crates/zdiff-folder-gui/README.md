@@ -13,6 +13,7 @@ No console window opens. `-log` writes the log to the terminal zdiff-folder-gui 
 # Features
 * Two-folder tree diff
     - Background scan and compare, rows show Pending until compared; counts and timings in the status line
+    - Rebuilt rows (compare finished, sort, filters) keep the top row of the view in place, or its nearest shown folder
     - Breadcrumb path bars, right-click menu on rows (set as root, set as Folder 1/2, open in Explorer, copy path)
     - Tree guide lines, folder tint, dimmed equal rows
     - File type tag column per side (`img`, `bin`, `BP` for Blueprint `.uasset`, ...)

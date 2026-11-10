@@ -90,6 +90,7 @@ pub struct SplitTable<'a> {
     center_width: f32,
     h_scroll: Option<HScroll<'a>>,
     scroll_to_row: Option<(usize, Option<egui::Align>)>,
+    scroll_offset: Option<f32>,
     striped: bool,
     selected_row: Option<usize>,
     single: bool,
@@ -103,6 +104,7 @@ impl<'a> SplitTable<'a> {
             center_width: 0.0,
             h_scroll: None,
             scroll_to_row: None,
+            scroll_offset: None,
             striped: false,
             selected_row: None,
             single: false,
@@ -143,6 +145,11 @@ impl<'a> SplitTable<'a> {
         self
     }
 
+    pub fn vertical_scroll_offset(mut self, offset: f32) -> Self {
+        self.scroll_offset = Some(offset);
+        self
+    }
+
     pub fn striped(mut self, striped: bool) -> Self {
         self.striped = striped;
         self
@@ -167,6 +174,7 @@ impl<'a> SplitTable<'a> {
             center_width,
             mut h_scroll,
             scroll_to_row,
+            scroll_offset: set_scroll_offset,
             striped,
             selected_row,
             single,
@@ -278,6 +286,9 @@ impl<'a> SplitTable<'a> {
                 }
                 if let Some((row, align)) = scroll_to_row {
                     table = table.scroll_to_row(row, align);
+                }
+                if let Some(offset) = set_scroll_offset {
+                    table = table.vertical_scroll_offset(offset);
                 }
                 let mut add_row = |mut row: TableRow<'_, '_>| {
                     let i = row.index();
