@@ -32,7 +32,9 @@ use unified::*;
 pub(super) use copy::CopyMarkerPlugin;
 pub(super) use layout::wrap_width;
 #[cfg(test)]
-pub(super) use layout::{measure_wrapped_rows, side_content_widths, wrapped_row_heights};
+pub(super) use layout::{
+    measure_wrapped_rows, natural_row_widths, side_content_widths, wrapped_row_heights,
+};
 pub(super) use row::{RowCtx, text_rows};
 pub use toolbar::REGEX_IGNORE_PRESETS;
 

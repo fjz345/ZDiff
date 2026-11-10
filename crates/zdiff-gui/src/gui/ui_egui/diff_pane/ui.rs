@@ -732,7 +732,8 @@ impl FileDiffPane {
                                             &egui_ctx,
                                             &mono_font,
                                             rows,
-                                            diff_ctx,
+                                            diff_ctx.input.file_1.as_deref(),
+                                            diff_ctx.input.file_2.as_deref(),
                                             text_widths,
                                         );
                                         ruler_tops = &cached.tops;

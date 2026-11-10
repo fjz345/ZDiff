@@ -26,8 +26,8 @@ use zdiff::{
 use crate::ui_egui::{
     active_side::{ActiveSide, ActiveSideState},
     diff_pane::{
-        CopyMarkerPlugin, FileDiffPane, RowCtx, measure_wrapped_rows, side_content_widths, text_rows,
-        wrap_width, wrapped_row_heights,
+        CopyMarkerPlugin, FileDiffPane, RowCtx, measure_wrapped_rows, natural_row_widths,
+        side_content_widths, text_rows, wrap_width, wrapped_row_heights,
     },
     occurrence::{OccurrenceState, RowFind},
 };
@@ -194,6 +194,7 @@ impl CopyHarness {
     pub fn wrapped_row_heights(
         &self,
         line_height: f32,
+        may_wrap: impl FnMut(usize, usize) -> bool,
         side_height: impl FnMut(usize, &RowText) -> f32,
     ) -> Vec<f32> {
         wrapped_row_heights(
@@ -201,6 +202,7 @@ impl CopyHarness {
             Some(&*self.file_source),
             Some(&*self.file_target),
             line_height,
+            may_wrap,
             side_height,
         )
     }
@@ -209,12 +211,12 @@ impl CopyHarness {
     /// `text_widths`. Returns them with the line height.
     pub fn measured_row_heights(&self, text_widths: [f32; 2]) -> (Vec<f32>, f32) {
         measure_in_fresh_context(|fonts, font_id| {
-            let heights = measure_wrapped_rows(
+            let heights = measure_rows(
                 fonts,
                 font_id,
                 &self.rows,
-                Some(&*self.file_source),
-                Some(&*self.file_target),
+                &self.file_source,
+                &self.file_target,
                 text_widths,
             );
             (heights, fonts.row_height(font_id))
@@ -223,6 +225,10 @@ impl CopyHarness {
 
     pub fn rows(&self) -> &[DiffRow] {
         &self.rows
+    }
+
+    pub fn files(&self) -> [&CachedFile<RawToken>; 2] {
+        [&self.file_source, &self.file_target]
     }
 
     /// Replaces a row, e.g. to inject Collapsed rows that are created outside the zdiff pipeline.
@@ -489,12 +495,12 @@ impl CopyHarness {
                 // Mirrors the table's heterogeneous rows with wrap on.
                 let row_heights = if wrap {
                     ui.fonts_mut(|fonts| {
-                        measure_wrapped_rows(
+                        measure_rows(
                             fonts,
                             &font_id,
                             rows,
-                            Some(&**file_source),
-                            Some(&**file_target),
+                            file_source,
+                            file_target,
                             side_widths.map(wrap_width),
                         )
                     })
@@ -582,6 +588,27 @@ impl CopyHarness {
         self.active_side.end_frame(side_rect(0), side_rect(1));
         (layout, output)
     }
+}
+
+fn measure_rows(
+    fonts: &mut egui::epaint::FontsView<'_>,
+    font_id: &egui::FontId,
+    rows: &[DiffRow],
+    file_source: &CachedFile<RawToken>,
+    file_target: &CachedFile<RawToken>,
+    text_widths: [f32; 2],
+) -> Vec<f32> {
+    let (source, target) = (Some(file_source), Some(file_target));
+    let natural_widths = natural_row_widths(fonts, font_id, rows, source, target);
+    measure_wrapped_rows(
+        fonts,
+        font_id,
+        rows,
+        source,
+        target,
+        &natural_widths,
+        text_widths,
+    )
 }
 
 /// Runs `measure` with the fonts and monospace font of a fresh context, as the pane sees them.

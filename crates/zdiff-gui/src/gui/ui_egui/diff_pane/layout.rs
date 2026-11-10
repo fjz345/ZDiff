@@ -16,48 +16,71 @@ pub(super) struct RowHeights {
     pub(super) rows: Arc<DiffRows>,
     pub(super) font_id: egui::FontId,
     pub(super) pixels_per_point: f32,
+    natural_widths: Vec<[f32; 2]>,
     pub(super) text_widths: [f32; 2],
     pub(super) heights: Vec<f32>,
     pub(super) tops: Vec<f32>,
 }
 
-/// The cached wrapped row heights, measured again when the rows, font or `text_widths` changed.
-/// Measuring lays out every row that doesn't fit on one line, so a column resize on a large file
-/// costs a full pass each frame it moves.
-pub(super) fn wrapped_heights<'c>(
+/// The cached wrapped row heights. A `text_widths` change lays out only the rows too wide for
+/// the new widths; a rows, font or zoom change measures every row's one-line width again.
+pub(super) fn wrapped_heights<'c, T: RawTokenTrait>(
     cache: &'c mut Option<RowHeights>,
     egui_ctx: &egui::Context,
     font_id: &egui::FontId,
     rows: &Arc<DiffRows>,
-    diff_ctx: &MinimalDiffCtx,
+    file_source: Option<&CachedFile<T>>,
+    file_target: Option<&CachedFile<T>>,
     text_widths: [f32; 2],
 ) -> &'c RowHeights {
     let pixels_per_point = egui_ctx.pixels_per_point();
-    let hit = cache.as_ref().is_some_and(|cached| {
-        Arc::ptr_eq(&cached.rows, rows)
-            && cached.font_id == *font_id
-            && cached.pixels_per_point == pixels_per_point
-            && cached.text_widths == text_widths
-    });
-    if !hit {
-        let heights = egui_ctx.fonts_mut(|fonts| {
-            measure_wrapped_rows(
-                fonts,
-                font_id,
-                rows,
-                diff_ctx.input.file_1.as_deref(),
-                diff_ctx.input.file_2.as_deref(),
+    match cache {
+        Some(cached)
+            if Arc::ptr_eq(&cached.rows, rows)
+                && cached.font_id == *font_id
+                && cached.pixels_per_point == pixels_per_point =>
+        {
+            if cached.text_widths != text_widths {
+                cached.heights = egui_ctx.fonts_mut(|fonts| {
+                    measure_wrapped_rows(
+                        fonts,
+                        font_id,
+                        rows,
+                        file_source,
+                        file_target,
+                        &cached.natural_widths,
+                        text_widths,
+                    )
+                });
+                cached.tops = row_tops(&cached.heights);
+                cached.text_widths = text_widths;
+            }
+        }
+        _ => {
+            let (natural_widths, heights) = egui_ctx.fonts_mut(|fonts| {
+                let natural_widths =
+                    natural_row_widths(fonts, font_id, rows, file_source, file_target);
+                let heights = measure_wrapped_rows(
+                    fonts,
+                    font_id,
+                    rows,
+                    file_source,
+                    file_target,
+                    &natural_widths,
+                    text_widths,
+                );
+                (natural_widths, heights)
+            });
+            *cache = Some(RowHeights {
+                rows: rows.clone(),
+                font_id: font_id.clone(),
+                pixels_per_point,
+                natural_widths,
                 text_widths,
-            )
-        });
-        *cache = Some(RowHeights {
-            rows: rows.clone(),
-            font_id: font_id.clone(),
-            pixels_per_point,
-            text_widths,
-            tops: row_tops(&heights),
-            heights,
-        });
+                tops: row_tops(&heights),
+                heights,
+            });
+        }
     }
     cache.as_ref().expect("filled above")
 }
@@ -113,15 +136,7 @@ pub(in crate::ui_egui) fn side_content_widths<T: RawTokenTrait>(
     let mut row_width = |content: &LineContent| match content {
         LineContent::Code { tokens, .. } => {
             let row_text = build_row_text(tokens, &[], file_source, file_target);
-            let ghosts: f32 = row_text
-                .ghosts
-                .iter()
-                .map(|ghost| h_scroll::text_width(&ghost.text, &mut glyph_width))
-                .sum();
-            GUTTER_WIDTH
-                + GUTTER_GAP
-                + h_scroll::text_width(&row_text.text, &mut glyph_width)
-                + ghosts
+            GUTTER_WIDTH + GUTTER_GAP + one_line_width(&row_text, &mut glyph_width)
         }
         LineContent::Void | LineContent::Collapsed => 0.0,
     };
@@ -133,6 +148,32 @@ pub(in crate::ui_egui) fn side_content_widths<T: RawTokenTrait>(
     })
 }
 
+fn one_line_width(row_text: &RowText, mut glyph_width: impl FnMut(char) -> f32) -> f32 {
+    std::iter::once(&row_text.text)
+        .chain(row_text.ghosts.iter().map(|ghost| &ghost.text))
+        .map(|text| h_scroll::text_width(text, &mut glyph_width))
+        .sum()
+}
+
+pub(in crate::ui_egui) fn natural_row_widths<T: RawTokenTrait>(
+    fonts: &mut egui::epaint::FontsView<'_>,
+    font_id: &egui::FontId,
+    rows: &[DiffRow],
+    file_source: Option<&CachedFile<T>>,
+    file_target: Option<&CachedFile<T>>,
+) -> Vec<[f32; 2]> {
+    let mut side_width = |content: &LineContent| match content {
+        LineContent::Code { tokens, .. } => {
+            let row_text = build_row_text(tokens, &[], file_source, file_target);
+            one_line_width(&row_text, |c| fonts.glyph_width(font_id, c))
+        }
+        LineContent::Void | LineContent::Collapsed => 0.0,
+    };
+    rows.iter()
+        .map(|row| [side_width(&row.left), side_width(&row.right)])
+        .collect()
+}
+
 /// Each row's height with wrap on: the taller of its two sides, and never less than one line.
 /// `side_height(side, text)` measures one side's code row, side 0 being the left.
 pub(in crate::ui_egui) fn wrapped_row_heights<T: RawTokenTrait>(
@@ -140,18 +181,20 @@ pub(in crate::ui_egui) fn wrapped_row_heights<T: RawTokenTrait>(
     file_source: Option<&CachedFile<T>>,
     file_target: Option<&CachedFile<T>>,
     line_height: f32,
+    mut may_wrap: impl FnMut(usize, usize) -> bool,
     mut side_height: impl FnMut(usize, &RowText) -> f32,
 ) -> Vec<f32> {
     rows.iter()
-        .map(|row| {
+        .enumerate()
+        .map(|(row_index, row)| {
             [&row.left, &row.right].into_iter().enumerate().fold(
                 line_height,
                 |height, (side, content)| match content {
-                    LineContent::Code { tokens, .. } => {
+                    LineContent::Code { tokens, .. } if may_wrap(row_index, side) => {
                         let row_text = build_row_text(tokens, &[], file_source, file_target);
                         height.max(side_height(side, &row_text))
                     }
-                    LineContent::Void | LineContent::Collapsed => height,
+                    LineContent::Code { .. } | LineContent::Void | LineContent::Collapsed => height,
                 },
             )
         })
@@ -166,21 +209,16 @@ pub(in crate::ui_egui) fn measure_wrapped_rows<T: RawTokenTrait>(
     rows: &[DiffRow],
     file_source: Option<&CachedFile<T>>,
     file_target: Option<&CachedFile<T>>,
+    natural_widths: &[[f32; 2]],
     text_widths: [f32; 2],
 ) -> Vec<f32> {
+    assert_eq!(natural_widths.len(), rows.len());
     let line_height = fonts.row_height(font_id);
+    // The glyph sum is never short of the one-line layout (see `side_content_widths`), so a row
+    // that fits by it needs no layout. The margin covers pixel rounding.
+    let may_wrap = |row: usize, side: usize| natural_widths[row][side] + 1.0 >= text_widths[side];
     let side_height = |side: usize, row_text: &RowText| {
         let width = text_widths[side];
-        // The glyph sum is never short of the one-line layout (see `side_content_widths`), so a
-        // row that fits by it needs no layout. The margin covers pixel rounding.
-        let mut glyph_width = |c| fonts.glyph_width(font_id, c);
-        let one_line: f32 = std::iter::once(&row_text.text)
-            .chain(row_text.ghosts.iter().map(|ghost| &ghost.text))
-            .map(|text| h_scroll::text_width(text, &mut glyph_width))
-            .sum();
-        if one_line + 1.0 < width {
-            return line_height;
-        }
         let job = egui::text::LayoutJob::single_section(
             row_text.text.clone(),
             egui::TextFormat::simple(font_id.clone(), egui::Color32::PLACEHOLDER),
@@ -195,7 +233,14 @@ pub(in crate::ui_egui) fn measure_wrapped_rows<T: RawTokenTrait>(
         )
         .height()
     };
-    wrapped_row_heights(rows, file_source, file_target, line_height, side_height)
+    wrapped_row_heights(
+        rows,
+        file_source,
+        file_target,
+        line_height,
+        may_wrap,
+        side_height,
+    )
 }
 
 /// The cell a side's row is drawn in before `SplitTable` shifts it sideways. The shifted ui still
@@ -244,9 +289,69 @@ mod tests {
 
     // Ten points per line, wrapping every `per_line` chars of a side's text.
     fn char_wrapped_heights(harness: &CopyHarness, per_line: [usize; 2]) -> Vec<f32> {
-        harness.wrapped_row_heights(10.0, |side, row_text| {
-            row_text.text.chars().count().div_ceil(per_line[side]) as f32 * 10.0
-        })
+        harness.wrapped_row_heights(
+            10.0,
+            |_, _| true,
+            |side, row_text| row_text.text.chars().count().div_ceil(per_line[side]) as f32 * 10.0,
+        )
+    }
+
+    #[test]
+    fn a_side_that_cannot_wrap_takes_one_line_unmeasured() {
+        let text = format!("short\n{}\n", "x".repeat(25));
+        let harness = CopyHarness::new(&text, &text, &DiffBuilderOptions::default());
+        let mut measured = Vec::new();
+
+        let heights = harness.wrapped_row_heights(
+            10.0,
+            |row, side| (row, side) == (1, 0),
+            |side, row_text| {
+                measured.push((side, row_text.text.clone()));
+                50.0
+            },
+        );
+
+        assert_eq!(heights, [10.0, 50.0]);
+        assert_eq!(measured, [(0, "x".repeat(25))]);
+    }
+
+    #[test]
+    fn a_width_change_measures_the_cached_rows_at_the_new_width() {
+        let line = "let words = [alpha, beta, gamma, delta, epsilon, zeta, eta, theta];";
+        let source = format!("{line}\nshort\n");
+        let target = format!("{}\nshort\n", line.replace("theta", "iota"));
+        let harness = CopyHarness::new(&source, &target, &DiffBuilderOptions::default());
+        let rows = Arc::new(harness.rows().to_vec());
+        let [file_source, file_target] = harness.files();
+        let ctx = egui::Context::default();
+        let mut cache = None;
+        let mut heights_at = |text_widths| {
+            let mut heights = Vec::new();
+            let _ = ctx.run(egui::RawInput::default(), |ctx| {
+                let font_id = egui::TextStyle::Monospace.resolve(&ctx.style());
+                let cached = wrapped_heights(
+                    &mut cache,
+                    ctx,
+                    &font_id,
+                    &rows,
+                    Some(file_source),
+                    Some(file_target),
+                    text_widths,
+                );
+                assert_eq!(cached.tops, row_tops(&cached.heights));
+                heights = cached.heights.clone();
+            });
+            heights
+        };
+
+        for chars in [1000.0, 20.0, 30.0, 1000.0] {
+            let text_widths = [chars * char_width(), 1000.0];
+            assert_eq!(
+                heights_at(text_widths),
+                harness.measured_row_heights(text_widths).0,
+                "at {chars} chars"
+            );
+        }
     }
 
     #[test]

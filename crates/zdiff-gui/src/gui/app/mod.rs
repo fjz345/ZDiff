@@ -6,6 +6,8 @@ mod revert_write;
 mod state;
 mod ui;
 mod window_memory;
+#[cfg(test)]
+mod frame_tests;
 use launch::{LaunchOutcome, apply_launch};
 use window_memory::WindowMemory;
 use state::AppState;
