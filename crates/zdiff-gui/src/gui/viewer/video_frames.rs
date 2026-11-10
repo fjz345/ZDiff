@@ -1,25 +1,33 @@
-//! Video frame compare: one RGBA frame per side fetched by seeking ffmpeg, the sides matched by
+//! Video frame compare: RGBA frames per side decoded by seeking ffmpeg, the sides matched by
 //! timestamp (each side's nearest frame), drawn with the image viewer's rendering and modes.
 
 use std::{
-    path::Path,
+    ops::Range,
+    path::{Path, PathBuf},
     sync::{Arc, atomic::AtomicBool},
+    time::Instant,
 };
 
 use eframe::egui::{self, Align2, TextStyle, pos2, vec2};
 use zcommon::{
-    ffmpeg::{FfmpegPaths, MediaInfo, StreamKind, frame_at_args, probe, run_ffmpeg},
-    job::Job,
+    ffmpeg::{
+        FfmpegError, FfmpegPaths, MediaInfo, StreamKind, frames_at_args, probe, run_ffmpeg,
+        scaled_frames_args,
+    },
+    job::{Job, JobCtx},
 };
 
 use super::{
     hex::is_same_side,
     image::{self, DecodedImage, ImageDiffProcessor, ImageSettings, ImageSide},
-    video_timeline::{self, VideoTimeline},
+    video_cache::{
+        FRAME_CACHE_BYTES, FrameCache, PREVIEW_BYTES, PreviewStrip, Scrub, kept_frames, next_run,
+    },
+    video_timeline::{self, VideoTimeline, split_frames},
 };
 use crate::file::LoadedFile;
 
-/// The first video stream, the one `frame_at_args` maps (0:v:0).
+/// The first video stream, the one `frames_at_args` maps (0:v:0).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct VideoTrack {
     pub width: u32,
@@ -112,13 +120,17 @@ pub fn format_time(secs: f64) -> String {
     }
 }
 
+fn no_frame(track: &VideoTrack, index: u64) -> String {
+    format!(
+        "ffmpeg returned no frame {index} at {}",
+        format_time(track.frame_time(index))
+    )
+}
+
 pub fn frame_image(track: &VideoTrack, index: u64, rgba: Vec<u8>) -> Result<DecodedImage, String> {
     let expected = track.width as usize * track.height as usize * 4;
     if rgba.is_empty() {
-        return Err(format!(
-            "ffmpeg returned no frame {index} at {}",
-            format_time(track.frame_time(index))
-        ));
+        return Err(no_frame(track, index));
     }
     if rgba.len() != expected {
         return Err(format!(
@@ -142,20 +154,82 @@ fn local_path(file: &LoadedFile) -> Result<&Path, String> {
         .ok_or_else(|| format!("{}: video frames need a local file", file.path()))
 }
 
-fn fetch_frame(
+fn decode_run(
     ffmpeg: &FfmpegPaths,
     input: &Path,
     track: &VideoTrack,
-    index: u64,
-    cancel: &AtomicBool,
-) -> Result<DecodedImage, String> {
-    let mut rgba = Vec::with_capacity(track.width as usize * track.height as usize * 4);
-    let args = frame_at_args(input, track.seek_time(index));
-    run_ffmpeg(&ffmpeg.ffmpeg, &args, cancel, |chunk| {
-        rgba.extend_from_slice(chunk)
-    })
-    .map_err(|e| format!("{}: {e}", input.display()))?;
-    frame_image(track, index, rgba)
+    run: Range<u64>,
+    ctx: &JobCtx<JobResult>,
+) {
+    let started = Instant::now();
+    let frame_len = track.width as usize * track.height as usize * 4;
+    let args = frames_at_args(input, track.seek_time(run.start), run.end - run.start);
+    let (mut carry, mut next, mut first, mut bad_frame) = (Vec::new(), run.start, None, None);
+    let result = run_ffmpeg(&ffmpeg.ffmpeg, &args, ctx.cancel_flag(), |chunk| {
+        // One allocation per frame instead of regrowing it chunk by chunk.
+        carry.reserve_exact(frame_len.saturating_sub(carry.len()));
+        split_frames(&mut carry, chunk, frame_len, |rgba| {
+            if next == run.end || bad_frame.is_some() {
+                return;
+            }
+            match frame_image(track, next, rgba) {
+                Ok(frame) => {
+                    ctx.send(JobResult::Frame(next, frame));
+                    first.get_or_insert(started.elapsed());
+                    next += 1;
+                }
+                Err(e) => bad_frame = Some(e),
+            }
+        })
+    });
+    let error = match result {
+        Err(FfmpegError::Cancelled) => return,
+        Err(e) => Some(format!("{}: {e}", input.display())),
+        Ok(()) if next < run.end && !carry.is_empty() => Some(format!(
+            "{}: ffmpeg stopped inside frame {next}",
+            input.display()
+        )),
+        Ok(()) => bad_frame,
+    };
+    log::debug!(
+        "Video frames {}..{next} of {} in {:?}, the first after {first:?}",
+        run.start,
+        input.display(),
+        started.elapsed()
+    );
+    ctx.send(JobResult::RunDone {
+        missing: next..run.end,
+        error,
+    });
+}
+
+fn decode_previews(
+    ffmpeg: &FfmpegPaths,
+    input: &Path,
+    (width, height): (u32, u32),
+    fps: f64,
+    ctx: &JobCtx<PreviewMessage>,
+) {
+    let started = Instant::now();
+    let frame_len = width as usize * height as usize * 4;
+    let mut carry = Vec::new();
+    let args = scaled_frames_args(input, width, height, fps);
+    let result = run_ffmpeg(&ffmpeg.ffmpeg, &args, ctx.cancel_flag(), |chunk| {
+        split_frames(&mut carry, chunk, frame_len, |sample| {
+            ctx.send(PreviewMessage::Sample(sample));
+        })
+    });
+    let result = match result {
+        Err(FfmpegError::Cancelled) => return,
+        Err(e) => Err(format!("{}: {e}", input.display())),
+        Ok(()) => Ok(()),
+    };
+    log::debug!(
+        "Video previews of {} in {:?}",
+        input.display(),
+        started.elapsed()
+    );
+    ctx.send(PreviewMessage::Done(result));
 }
 
 #[derive(Debug)]
@@ -168,22 +242,40 @@ enum Probe {
 #[derive(Debug)]
 enum JobResult {
     Probe(Result<VideoTrack, String>),
-    Frame(u64, Result<DecodedImage, String>),
+    Frame(u64, DecodedImage),
+    RunDone {
+        missing: Range<u64>,
+        error: Option<String>,
+    },
+}
+
+enum PreviewMessage {
+    Sample(Vec<u8>),
+    Done(Result<(), String>),
 }
 
 type ShownFrame = (u64, Result<Arc<DecodedImage>, String>);
 
-/// Probes each side when the pair changes, then keeps one frame per side: the nearest to the
-/// shared time. Each side runs at most one fetch, so scrubbing fetches only the latest frame.
+/// Probes each side when the pair changes, then shows per side the frame nearest to the shared
+/// time. Runs of frames around it are decoded into a cache; previews stand in while scrubbing.
 #[derive(Debug)]
 pub struct VideoFrameProcessor {
     files: [Option<LoadedFile>; 2],
     ffmpeg: Option<FfmpegPaths>,
     probes: [Probe; 2],
+    /// The wanted frame a side's run is decoding; the other side waits for it.
     fetching: [Option<u64>; 2],
     frames: [Option<ShownFrame>; 2],
     time_secs: f64,
     jobs: [Job<JobResult>; 2],
+    runs: [Option<Range<u64>>; 2],
+    caches: [FrameCache; 2],
+    /// Frames a finished run didn't give, so they aren't decoded again ahead of time.
+    missing: [Vec<Range<u64>>; 2],
+    previews: [Option<PreviewStrip>; 2],
+    preview_jobs: [Job<PreviewMessage>; 2],
+    shown_previews: [Option<(usize, Arc<DecodedImage>)>; 2],
+    scrub: Scrub,
     image: ImageDiffProcessor,
     timeline: VideoTimeline,
 }
@@ -198,6 +290,16 @@ impl Default for VideoFrameProcessor {
             frames: [None, None],
             time_secs: 0.0,
             jobs: [Job::new(|| {}), Job::new(|| {})],
+            runs: [None, None],
+            caches: [
+                FrameCache::new(FRAME_CACHE_BYTES),
+                FrameCache::new(FRAME_CACHE_BYTES),
+            ],
+            missing: [Vec::new(), Vec::new()],
+            previews: [None, None],
+            preview_jobs: [Job::new(|| {}), Job::new(|| {})],
+            shown_previews: [None, None],
+            scrub: Scrub::default(),
             image: ImageDiffProcessor::default(),
             timeline: VideoTimeline::default(),
         }
@@ -222,12 +324,23 @@ impl VideoFrameProcessor {
         for job in &mut self.jobs {
             job.cancel();
         }
+        for job in &mut self.preview_jobs {
+            job.cancel();
+        }
         self.files = files;
         self.ffmpeg = ffmpeg;
         self.probes = [Probe::Idle, Probe::Idle];
         self.fetching = [None, None];
         self.frames = [None, None];
         self.time_secs = 0.0;
+        self.runs = [None, None];
+        for cache in &mut self.caches {
+            cache.clear();
+        }
+        self.missing = [Vec::new(), Vec::new()];
+        self.previews = [None, None];
+        self.shown_previews = [None, None];
+        self.scrub = Scrub::default();
         self.timeline.clear();
         // A pending side keeps its shown image; the new pair must not show the old pair's frames.
         self.image
@@ -264,21 +377,82 @@ impl VideoFrameProcessor {
     pub fn poll(&mut self, max_texture_side: usize) {
         for index in 0..2 {
             for result in self.jobs[index].poll() {
-                match result {
-                    JobResult::Probe(probed) => self.probes[index] = Probe::Done(probed),
-                    JobResult::Frame(frame, fetched) => {
-                        self.fetching[index] = None;
-                        self.frames[index] = Some((frame, fetched.map(Arc::new)));
+                self.take_result(index, result);
+            }
+            for message in self.preview_jobs[index].poll() {
+                let Some(strip) = &mut self.previews[index] else {
+                    continue;
+                };
+                match message {
+                    PreviewMessage::Sample(rgba) => strip.push(rgba),
+                    PreviewMessage::Done(Ok(())) => strip.finish(),
+                    // The samples so far stay; later times fetch exact frames only.
+                    PreviewMessage::Done(Err(reason)) => {
+                        log::warn!("Video previews failed: {reason}")
                     }
                 }
             }
         }
         self.start_timeline();
         self.timeline.poll();
+        self.start_previews();
         self.fetch_wanted();
+        self.update_previews();
         let sides = std::array::from_fn(|index| self.image_side(index));
         self.image.set_images(sides, max_texture_side);
         self.image.poll(max_texture_side);
+    }
+
+    fn take_result(&mut self, index: usize, result: JobResult) {
+        match result {
+            JobResult::Probe(probed) => self.probes[index] = Probe::Done(probed),
+            JobResult::Frame(frame, image) => {
+                let image = Arc::new(image);
+                self.caches[index].insert(frame, image.clone());
+                if let Some(run) = &mut self.runs[index] {
+                    run.start = frame + 1;
+                }
+                if self.fetching[index] == Some(frame) {
+                    self.fetching[index] = None;
+                    self.frames[index] = Some((frame, Ok(image)));
+                }
+            }
+            JobResult::RunDone { missing, error } => {
+                self.runs[index] = None;
+                if let Some(wanted) = self.fetching[index].filter(|w| missing.contains(w)) {
+                    let track = self.track(index).expect("a decoding side is probed");
+                    let reason = error.clone().unwrap_or_else(|| no_frame(&track, wanted));
+                    self.fetching[index] = None;
+                    self.frames[index] = Some((wanted, Err(reason)));
+                } else if let Some(reason) = &error {
+                    log::warn!("Decoding video frames ahead failed: {reason}");
+                }
+                if !missing.is_empty() {
+                    self.missing[index].push(missing);
+                }
+            }
+        }
+    }
+
+    fn start_previews(&mut self) {
+        let Some(ffmpeg) = &self.ffmpeg else {
+            return;
+        };
+        for index in 0..2 {
+            // After the first frame, so the previews' decode doesn't delay it.
+            if self.previews[index].is_some() || self.frames[index].is_none() {
+                continue;
+            }
+            let Some(track) = self.track(index) else {
+                continue;
+            };
+            let strip = PreviewStrip::plan(&track, PREVIEW_BYTES);
+            let (path, ffmpeg) = (self.local_input(index), ffmpeg.clone());
+            let (size, fps) = ((strip.width, strip.height), strip.fps);
+            self.preview_jobs[index]
+                .start(move |ctx| decode_previews(&ffmpeg, &path, size, fps, ctx));
+            self.previews[index] = Some(strip);
+        }
     }
 
     fn start_timeline(&mut self) {
@@ -303,35 +477,142 @@ impl VideoFrameProcessor {
         let Some(ffmpeg) = self.ffmpeg.clone() else {
             return;
         };
+        let mut needed = [None, None];
+        for (index, needed) in needed.iter_mut().enumerate() {
+            let Some(track) = self.track(index) else {
+                continue;
+            };
+            let wanted = track.nearest_frame(self.time_secs);
+            let run = self.run_length(index, &track);
+            self.caches[index].touch(kept_frames(wanted, track.frame_count, run));
+            if self.frames[index].as_ref().map(|(frame, _)| *frame) == Some(wanted) {
+                continue;
+            }
+            if let Some(frame) = self.caches[index].get(wanted) {
+                self.frames[index] = Some((wanted, Ok(frame)));
+            } else if self.runs[index]
+                .as_ref()
+                .is_some_and(|r| r.contains(&wanted))
+            {
+                self.fetching[index] = Some(wanted);
+            } else {
+                *needed = Some(wanted);
+            }
+        }
         // Both sides fetch for the same time, so the pair shown and compared is one moment.
         if self.fetching.iter().any(Option::is_some) {
             return;
         }
+        let scrubbing = self.scrub.active(Instant::now());
+        // A drag shows previews; the exact frames are fetched once it pauses or ends.
+        let previewed =
+            |index: usize| needed[index].is_none() || self.preview_sample(index).is_some();
+        if scrubbing && (0..2).all(previewed) {
+            return;
+        }
+        for (index, wanted) in needed.into_iter().enumerate() {
+            let (Some(wanted), Some(track)) = (wanted, self.track(index)) else {
+                continue;
+            };
+            let end = (wanted + self.run_length(index, &track)).min(track.frame_count);
+            self.fetching[index] = Some(wanted);
+            self.start_run(index, &ffmpeg, wanted..end);
+        }
+        if scrubbing || self.fetching.iter().any(Option::is_some) {
+            return;
+        }
         for index in 0..2 {
-            let Probe::Done(Ok(track)) = &self.probes[index] else {
+            let Some(track) = self.track(index).filter(|_| self.runs[index].is_none()) else {
+                continue;
+            };
+            let (cache, missing) = (&self.caches[index], &self.missing[index]);
+            let have = |frame| cache.contains(frame) || missing.iter().any(|m| m.contains(&frame));
+            let wanted = track.nearest_frame(self.time_secs);
+            let run = self.run_length(index, &track);
+            if let Some(run) = next_run(wanted, track.frame_count, run, have) {
+                self.start_run(index, &ffmpeg, run);
+            }
+        }
+    }
+
+    fn start_run(&mut self, index: usize, ffmpeg: &FfmpegPaths, run: Range<u64>) {
+        let track = self.track(index).expect("a decoding side is probed");
+        let (path, ffmpeg) = (self.local_input(index), ffmpeg.clone());
+        self.runs[index] = Some(run.clone());
+        self.jobs[index].start(move |ctx| decode_run(&ffmpeg, &path, &track, run, ctx));
+    }
+
+    fn run_length(&self, index: usize, track: &VideoTrack) -> u64 {
+        self.caches[index].run_length(track.width as usize * track.height as usize * 4)
+    }
+
+    fn local_input(&self, index: usize) -> PathBuf {
+        let file = self.files[index]
+            .as_ref()
+            .expect("a probed side has a file");
+        local_path(file)
+            .expect("a probed side is local")
+            .to_path_buf()
+    }
+
+    fn preview_sample(&self, index: usize) -> Option<usize> {
+        self.previews[index].as_ref()?.sample_at(self.time_secs)
+    }
+
+    fn update_previews(&mut self) {
+        for index in 0..2 {
+            let (Some(track), Some(sample)) = (self.track(index), self.preview_sample(index))
+            else {
                 continue;
             };
             let wanted = track.nearest_frame(self.time_secs);
-            if self.frames[index].as_ref().map(|(frame, _)| *frame) == Some(wanted) {
+            let exact = self.frames[index]
+                .as_ref()
+                .is_some_and(|(frame, _)| *frame == wanted);
+            let shown = self.shown_previews[index]
+                .as_ref()
+                .is_some_and(|(shown, _)| *shown == sample);
+            if exact || shown {
                 continue;
             }
-            let file = self.files[index]
-                .as_ref()
-                .expect("a probed side has a file");
-            let path = local_path(file)
-                .expect("a probed side is local")
-                .to_path_buf();
-            let (ffmpeg, track) = (ffmpeg.clone(), *track);
-            self.fetching[index] = Some(wanted);
-            self.spawn(index, move |cancel| {
-                JobResult::Frame(wanted, fetch_frame(&ffmpeg, &path, &track, wanted, cancel))
-            });
+            let strip = self.previews[index].as_ref().expect("a sample has a strip");
+            let preview = strip.upscaled(sample, track.width, track.height);
+            self.shown_previews[index] = Some((sample, Arc::new(preview)));
+        }
+    }
+
+    fn preview(&self, index: usize) -> Option<Arc<DecodedImage>> {
+        let sample = self.preview_sample(index)?;
+        let (shown, preview) = self.shown_previews[index].as_ref()?;
+        (*shown == sample).then(|| preview.clone())
+    }
+
+    fn exact_or_preview(&self, index: usize) -> Option<ImageSide> {
+        if self.files[index].is_none() {
+            return Some(ImageSide::Empty);
+        }
+        let wanted = match &self.probes[index] {
+            Probe::Idle | Probe::Running => return None,
+            Probe::Done(Err(reason)) => return Some(ImageSide::Failed(reason.clone())),
+            Probe::Done(Ok(track)) => track.nearest_frame(self.time_secs),
+        };
+        match &self.frames[index] {
+            Some((frame, Ok(image))) if *frame == wanted => Some(ImageSide::Image(image.clone())),
+            Some((frame, Err(reason))) if *frame == wanted => {
+                Some(ImageSide::Failed(reason.clone()))
+            }
+            _ => self.preview(index).map(ImageSide::Image),
         }
     }
 
     fn image_side(&self, index: usize) -> ImageSide {
         if self.files[index].is_none() {
             return ImageSide::Empty;
+        }
+        if (0..2).all(|side| self.exact_or_preview(side).is_some())
+            && let Some(side) = self.exact_or_preview(index)
+        {
+            return side;
         }
         match (&self.probes[index], &self.frames[index]) {
             (Probe::Idle | Probe::Running, _) | (Probe::Done(Ok(_)), None) => ImageSide::Pending,
@@ -368,11 +649,18 @@ impl VideoFrameProcessor {
     }
 
     pub fn seek(&mut self, time_secs: f64) {
-        self.time_secs = time_secs.clamp(0.0, end_time(&self.tracks()));
+        self.set_time(time_secs.clamp(0.0, end_time(&self.tracks())));
     }
 
     pub fn step(&mut self, forward: bool) {
-        self.time_secs = step_time(&self.tracks(), self.time_secs, forward);
+        self.set_time(step_time(&self.tracks(), self.time_secs, forward));
+    }
+
+    fn set_time(&mut self, time_secs: f64) {
+        if time_secs != self.time_secs {
+            self.scrub.change(Instant::now());
+        }
+        self.time_secs = time_secs;
     }
 
     fn busy(&self) -> bool {
@@ -380,6 +668,7 @@ impl VideoFrameProcessor {
             .iter()
             .any(|probe| matches!(probe, Probe::Running))
             || self.fetching.iter().any(Option::is_some)
+            || self.runs.iter().any(Option::is_some)
     }
 
     fn readout(&self, index: usize) -> String {
@@ -407,8 +696,10 @@ pub fn show(
     left_width: f32,
     shown_sides: [usize; 2],
 ) {
-    if processor.busy() {
-        // Jobs finish on workers; keep frames coming until they are polled.
+    let scrubbing = processor.scrub.active(Instant::now());
+    processor.scrub.hold(ui.input(|i| i.pointer.any_down()));
+    if processor.busy() || scrubbing {
+        // Jobs finish on workers and a paused drag fetches later; keep frames coming until then.
         ui.ctx().request_repaint();
     }
     let end = end_time(&processor.tracks());
@@ -777,5 +1068,127 @@ mod tests {
         processor.fetching[1] = None;
         processor.fetch_wanted();
         assert_eq!(processor.fetching, [Some(1), Some(1)]);
+    }
+
+    fn missing_ffmpeg() -> FfmpegPaths {
+        FfmpegPaths {
+            ffmpeg: "missing-ffmpeg".into(),
+            ffprobe: "missing-ffprobe".into(),
+        }
+    }
+
+    fn cached_frame(processor: &mut VideoFrameProcessor, index: u64) -> Arc<DecodedImage> {
+        let frame = Arc::new(frame_image(&track(25.0, 25), index, vec![3; 32]).unwrap());
+        for cache in &mut processor.caches {
+            cache.insert(index, frame.clone());
+        }
+        frame
+    }
+
+    fn with_previews(processor: &mut VideoFrameProcessor) {
+        for strip in &mut processor.previews {
+            let mut previews = PreviewStrip::plan(&track(25.0, 25), PREVIEW_BYTES);
+            for _ in 0..25 {
+                previews.push(vec![9; 32]);
+            }
+            *strip = Some(previews);
+        }
+    }
+
+    #[test]
+    fn a_cached_frame_shows_at_once_and_the_frames_ahead_decode_next() {
+        let mut processor = probed_pair(Some(missing_ffmpeg()));
+        let frame = cached_frame(&mut processor, 3);
+        processor.seek(track(25.0, 25).frame_time(3));
+        processor.fetch_wanted();
+        assert_eq!(processor.fetching, [None, None]);
+        assert_eq!(processor.runs, [Some(4..20), Some(4..20)]);
+        let ImageSide::Image(shown) = processor.image_side(0) else {
+            panic!("not shown");
+        };
+        assert!(Arc::ptr_eq(&shown, &frame));
+    }
+
+    #[test]
+    fn a_run_on_its_way_to_the_wanted_frame_is_waited_for() {
+        let mut processor = probed_pair(Some(missing_ffmpeg()));
+        processor.runs = [Some(1..17), Some(1..17)];
+        processor.seek(track(25.0, 25).frame_time(5));
+        processor.fetch_wanted();
+        assert_eq!(processor.fetching, [Some(5), Some(5)]);
+        assert_eq!(processor.runs, [Some(1..17), Some(1..17)]);
+    }
+
+    #[test]
+    fn a_run_gives_the_wanted_frame_or_the_reason_it_could_not() {
+        let mut processor = probed_pair(None);
+        processor.fetching = [Some(3), Some(3)];
+        processor.runs = [Some(3..8), Some(3..8)];
+        let frame = frame_image(&track(25.0, 25), 3, vec![3; 32]).unwrap();
+        processor.take_result(0, JobResult::Frame(3, frame));
+        assert_eq!(
+            (processor.fetching[0], &processor.runs[0]),
+            (None, &Some(4..8))
+        );
+        assert!(processor.caches[0].contains(3));
+        assert!(matches!(&processor.frames[0], Some((3, Ok(_)))));
+
+        let done = JobResult::RunDone {
+            missing: 3..8,
+            error: None,
+        };
+        processor.take_result(1, done);
+        assert_eq!((processor.fetching[1], &processor.runs[1]), (None, &None));
+        assert_eq!(processor.missing[1].first(), Some(&(3..8)));
+        assert_eq!(processor.missing[1].len(), 1);
+        let Some((3, Err(reason))) = &processor.frames[1] else {
+            panic!("{:?}", processor.frames[1]);
+        };
+        assert_eq!(reason, "ffmpeg returned no frame 3 at 00:00.120");
+    }
+
+    #[test]
+    fn scrubbing_shows_previews_and_fetches_the_exact_frames_once_released() {
+        let mut processor = probed_pair(Some(missing_ffmpeg()));
+        with_previews(&mut processor);
+        processor.scrub.hold(true);
+        processor.seek(track(25.0, 25).frame_time(7));
+        processor
+            .scrub
+            .change(Instant::now() + std::time::Duration::from_secs(3600));
+        processor.fetch_wanted();
+        processor.update_previews();
+        assert_eq!(
+            (processor.fetching, &processor.runs),
+            ([None, None], &[None, None])
+        );
+        let ImageSide::Image(preview) = processor.image_side(1) else {
+            panic!("no preview");
+        };
+        assert_eq!(
+            (preview.format, preview.width, preview.height),
+            ("Preview", 4, 2)
+        );
+
+        processor.scrub.hold(false);
+        processor.fetch_wanted();
+        assert_eq!(processor.fetching, [Some(7), Some(7)]);
+        assert!(matches!(processor.image_side(0), ImageSide::Image(i) if i.format == "Preview"));
+    }
+
+    #[test]
+    fn a_new_pair_drops_the_old_pairs_cached_frames_and_previews() {
+        let mut processor = probed_pair(Some(missing_ffmpeg()));
+        cached_frame(&mut processor, 3);
+        with_previews(&mut processor);
+        let file = |name: &str| {
+            Some(LoadedFile::Binary(Arc::new(crate::file::BinaryFile {
+                path: zdiff::universal_path::UniversalPath::from(name),
+                bytes: vec![0; 4],
+            })))
+        };
+        processor.request([file("c.mp4"), file("d.mp4")], Some(&missing_ffmpeg()));
+        assert!(processor.caches.iter().all(|cache| !cache.contains(3)));
+        assert!(processor.previews.iter().all(Option::is_none));
     }
 }

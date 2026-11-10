@@ -427,6 +427,17 @@ pub fn show(
         [pos2(cursor, rect.top()), pos2(cursor, rect.bottom())],
         Stroke::new(1.0_f32, ui.visuals().text_color()),
     );
+    let top = rect.top();
+    let handle = vec![
+        pos2(cursor - 5.0, top),
+        pos2(cursor + 5.0, top),
+        pos2(cursor, top + 7.0),
+    ];
+    painter.add(egui::Shape::convex_polygon(
+        handle,
+        ui.visuals().text_color(),
+        Stroke::NONE,
+    ));
 
     let pointer = response.interact_pointer_pos()?;
     (response.clicked() || response.dragged())

@@ -124,12 +124,13 @@ pub fn resampled_decode_args(input: &Path, sample_rate: u32, channels: u32) -> V
     decode_args(input, Some((sample_rate, channels)))
 }
 
-/// One RGBA frame at the file's own resolution.
-pub fn frame_at_args(input: &Path, time_secs: f64) -> Vec<OsString> {
+/// `count` back-to-back RGBA frames at the file's own resolution.
+pub fn frames_at_args(input: &Path, time_secs: f64, count: u64) -> Vec<OsString> {
     assert!(
         time_secs.is_finite() && time_secs >= 0.0,
         "seek time {time_secs}"
     );
+    assert!(count > 0, "frame count");
     let mut args = quiet_args();
     args.extend([
         "-ss".into(),
@@ -137,20 +138,9 @@ pub fn frame_at_args(input: &Path, time_secs: f64) -> Vec<OsString> {
         "-i".into(),
         input.into(),
     ]);
-    args.extend(
-        [
-            "-map",
-            "0:v:0",
-            "-frames:v",
-            "1",
-            "-pix_fmt",
-            "rgba",
-            "-f",
-            "rawvideo",
-            "-",
-        ]
-        .map(OsString::from),
-    );
+    args.extend(["-map".into(), "0:v:0".into()]);
+    args.extend(["-frames:v".into(), count.to_string().into()]);
+    args.extend(["-pix_fmt", "rgba", "-f", "rawvideo", "-"].map(OsString::from));
     args
 }
 
@@ -599,7 +589,7 @@ mod tests {
     #[test]
     fn frame_at_seeks_before_input_and_reads_one_rgba_frame() {
         assert_eq!(
-            strings(&frame_at_args(Path::new("in.mp4"), 1.5)),
+            strings(&frames_at_args(Path::new("in.mp4"), 1.5, 1)),
             [
                 "-hide_banner",
                 "-loglevel",
@@ -620,6 +610,20 @@ mod tests {
                 "-"
             ]
         );
+    }
+
+    #[test]
+    fn frames_at_reads_a_run_of_frames_from_one_seek() {
+        let args = strings(&frames_at_args(Path::new("in.mp4"), 0.0, 16));
+        let count = args.iter().position(|a| a == "-frames:v").unwrap() + 1;
+        assert_eq!(args[count], "16");
+        assert_eq!(args.iter().filter(|a| *a == "-ss").count(), 1);
+    }
+
+    #[test]
+    #[should_panic(expected = "frame count")]
+    fn frames_at_needs_a_frame() {
+        frames_at_args(Path::new("in.mp4"), 0.0, 0);
     }
 
     #[test]

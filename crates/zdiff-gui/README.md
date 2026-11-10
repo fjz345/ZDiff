@@ -45,6 +45,7 @@ GUI for zdiff crate
     - Image metric (Exact, Neighborhood 3x3/5x5/7x7, SSIM) for the difference, heatmap and changed count, with the tolerance on its 0 to 255 scale; hover the count for the mean difference (mean SSIM). Alignment of differently sized images: top left, center or scale to fit, for drawing and comparing. Both are saved; the video difference timeline uses the same metric
     - Audio: waveform lanes, overlay, spectrograms with their dB difference, sample difference lanes, metadata table with loudness
     - Video: frame compare with timestamp matching, scrubber and frame steps, a difference timeline, Audio and Metadata tabs (the audio decodes when the Audio tab first opens and is kept until the pair changes)
+    - Video seeking: dragging the scrubber or the timeline shows low-res previews (about 320 px wide, decoded for the whole video in the background) at once, and the exact frames land when the drag pauses or ends. The frames around the cursor are decoded ahead into a cache (256 MB per side), so frame steps and going back and forth show at once.
     - Zooming out stops at fit: the whole image (or 1:1 for an image smaller than the view), the whole audio length
     - Double-clicking an image or audio mode button resets that mode's own settings (A/B interval, swipe divider, overlay opacity, spectrogram window and ranges)
     - Audio and video need ffmpeg: `cargo xtask fetch-ffmpeg` (see [ffmpeg/README.md](../../ffmpeg/README.md))

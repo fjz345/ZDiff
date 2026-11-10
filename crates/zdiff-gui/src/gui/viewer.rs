@@ -19,6 +19,7 @@ pub mod hex;
 pub mod hex_inspector;
 pub mod hex_strings;
 pub mod image;
+pub mod video_cache;
 pub mod video_frames;
 pub mod video_meta;
 pub mod video_timeline;
