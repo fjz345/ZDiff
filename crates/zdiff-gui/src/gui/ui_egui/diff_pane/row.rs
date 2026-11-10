@@ -84,230 +84,230 @@ impl FileDiffPane {
                 let Rgba8([r, g, b, _]) = code_colors.get(SyntaxCategory::Background);
                 ui.painter()
                     .rect_filled(extended_rect, 0.0, egui::Color32::from_rgb(r, g, b));
-                ui.scope_builder(UiBuilder::new().max_rect(rect), |ui| {
-                    let add_contents = |ui: &mut egui::Ui| {
-                        ui.spacing_mut().item_spacing.x = 0.0;
-
-                        let line_number = |ui: &mut egui::Ui, text: String, width: f32| {
-                            let text = egui::RichText::new(text).font(line_number_font(ui.style()));
-                            let text = if accent_line_num {
-                                text.color(role_color(ui.ctx(), FileRole::GotoLineNumber))
-                                    .strong()
-                            } else {
-                                text.color(role_color(ui.ctx(), FileRole::LineNumber))
-                            };
-                            ui.add_sized([width, row_h], egui::Label::new(text).selectable(false));
-                        };
-                        match gutter {
-                            Gutter::Single { number_width } => {
-                                let line = (*line_num > 0).then(|| line_num.to_string());
-                                line_number(ui, line.unwrap_or_default(), number_width);
-                            }
-                            Gutter::Offset(offset) => {
-                                let shown = offset.map(|o| format!("{o:08X}")).unwrap_or_default();
-                                line_number(ui, shown, OFFSET_GUTTER_WIDTH);
-                            }
-                            Gutter::Unified {
-                                left,
-                                right,
-                                sign,
-                                number_width,
-                            } => {
-                                let shown = |line: Option<usize>| {
-                                    line.map(|n| n.to_string()).unwrap_or_default()
-                                };
-                                line_number(ui, shown(left), number_width);
-                                line_number(ui, shown(right), number_width);
-                                let (sign, color) =
-                                    sign.unwrap_or((' ', egui::Color32::PLACEHOLDER));
-                                ui.add_sized(
-                                    [UNIFIED_SIGN_WIDTH, row_h],
-                                    egui::Label::new(egui::RichText::new(sign).color(color))
-                                        .selectable(false),
-                                );
-                            }
-                        }
-
-                        ui.add_space(GUTTER_GAP);
-
-                        let row_text = build_row_text(
-                            tokens,
-                            changed_chars,
-                            file_source.as_deref(),
-                            file_target.as_deref(),
-                        );
-
-                        let mut layout_job = syntax::highlight(
-                            ui.ctx(),
-                            ui.style(),
-                            &code_colors,
-                            &row_text.text,
-                            code_language,
-                        );
-                        let style_ctx = ui.ctx().clone();
-                        let color = |role| role_color(&style_ctx, role);
-                        // Text matched by an ignore pattern is dimmed over the syntax colors.
-                        recolor_ranges(
-                            &mut layout_job,
-                            &row_text.dimmed,
-                            color(FileRole::DimmedText),
-                        );
-                        let (tokens_bg, chars_bg) = match side {
-                            ActiveSide::Left => (
-                                color(FileRole::DeleteChangedTokens),
-                                color(FileRole::DeleteChangedChars),
-                            ),
-                            ActiveSide::Right => (
-                                color(FileRole::InsertChangedTokens),
-                                color(FileRole::InsertChangedChars),
-                            ),
-                        };
-                        if marks.tokens {
-                            highlight_ranges(&mut layout_job, &row_text.changed_tokens, tokens_bg);
-                        }
-                        if marks.chars {
-                            highlight_ranges(&mut layout_job, &row_text.changed_chars, chars_bg);
-                        }
-                        let found = occurrences.ranges(side, row_index, &row_text.text);
-                        highlight_ranges(&mut layout_job, &found, color(FileRole::Occurrence));
-                        // After the occurrences, so a find match shows over one.
-                        let (find_all, find_current) = find_ranges(&row_text.text, find);
-                        highlight_ranges(&mut layout_job, &find_all, color(FileRole::Find));
-                        if let Some(current) = find_current {
-                            highlight_ranges(
-                                &mut layout_job,
-                                &[current],
-                                color(FileRole::FindCurrent),
-                            );
-                        }
-
-                        let font_id = egui::TextStyle::Monospace.resolve(ui.style());
-                        let wrap_at = if wrap {
-                            gutter.text_width(width)
-                        } else {
-                            f32::INFINITY
-                        };
-                        let ghost_color = color(FileRole::GhostText);
-                        let side_text = ui.fonts_mut(|fonts| {
-                            layout_side_text(
-                                fonts,
-                                layout_job,
-                                &row_text.ghosts,
-                                ghost_color,
-                                &font_id,
-                                wrap_at,
-                            )
-                        });
-                        let galley = side_text.galley.clone();
-                        // The hit area spans the rest of the row, not just the text, so a press
-                        // anywhere in the block starts a selection. Drag sense on both sides:
-                        // egui hit-tests against the previous frame, so the side that becomes
-                        // selectable on a press needs it already, or that press is lost.
-                        let hit_size = egui::vec2(
-                            galley.size().x.max(ui.available_width()),
-                            side_text.height().max(cell_h),
-                        );
-                        let (hit_rect, response) =
-                            ui.allocate_exact_size(hit_size, egui::Sense::click_and_drag());
-                        code_hit = Some(response.clone());
-                        let text_color = ui.style().visuals.text_color();
-                        if selectable {
-                            let marker = if tokens.iter().all(|(_, _, is_ghost)| *is_ghost) {
-                                Some(COPY_MARKER_NO_LINE)
-                            } else if row_text.text.is_empty() {
-                                Some(COPY_MARKER_BLANK_LINE)
-                            } else {
-                                None
-                            };
-                            if marker.is_none() {
-                                occurrences.track(
-                                    ui,
-                                    &response,
-                                    hit_rect.left_top(),
-                                    &galley,
-                                    side,
-                                    row_index,
-                                );
-                            }
-                            let galley = match marker {
-                                Some(marker) => copy_marker_galley(ui, marker),
-                                None => galley,
-                            };
-                            let galley = if wrap {
-                                reach_down_to(galley, hit_rect.height())
-                            } else {
-                                galley
-                            };
-                            LabelSelectionState::label_text_selection(
-                                ui,
-                                &response,
-                                hit_rect.left_top(),
-                                galley,
-                                text_color,
-                                egui::Stroke::NONE,
-                            );
-                        } else {
-                            ui.painter().add(egui::epaint::TextShape::new(
-                                hit_rect.left_top(),
-                                galley,
-                                text_color,
-                            ));
-                        }
-                        for (pos, ghost_galley) in side_text.ghosts {
-                            ui.painter().add(egui::epaint::TextShape::new(
-                                hit_rect.left_top() + pos,
-                                ghost_galley,
-                                text_color,
-                            ));
-                        }
-
-                        if marks.scope {
-                            let scope_bg = match side {
-                                ActiveSide::Left => color(FileRole::DeleteChangedScope),
-                                ActiveSide::Right => color(FileRole::InsertChangedScope),
-                            };
-                            ui.painter().rect_filled(extended_rect, 0.0, scope_bg);
-                        }
-                        let bg = match bg {
-                            RowBg::None => egui::Color32::TRANSPARENT,
-                            RowBg::Delete | RowBg::Insert if !marks.line => {
-                                egui::Color32::TRANSPARENT
-                            }
-                            RowBg::Delete => role_color(ui.ctx(), SharedRole::DeleteBackground),
-                            RowBg::Insert => role_color(ui.ctx(), SharedRole::InsertBackground),
-                            RowBg::Custom(zdiff::diff_builder::Color32([r, g, b, a])) => {
-                                egui::Color32::from_rgba_unmultiplied(*r, *g, *b, *a)
-                            }
-                        };
-                        ui.painter().rect_filled(extended_rect, 0.0, bg);
-                        if is_highlighted {
-                            ui.painter()
-                                .rect_filled(extended_rect, 0.0, color(FileRole::GotoRow));
-                        }
-                        if let Some(trace) = trace {
-                            let outlines = token_hunk_outlines(
-                                trace,
-                                tokens,
-                                &row_text,
-                                file_source.as_deref(),
-                                file_target.as_deref(),
-                            );
-                            paint_trace_row(
-                                ui.painter(),
-                                &outlines,
-                                &row_text,
-                                &side_text.galley,
-                                hit_rect.left_top(),
-                            );
-                        }
-                    };
-                    // A wrapped row's line number stays on its first line.
-                    if wrap {
-                        ui.horizontal_top(add_contents);
+                let painter = ui.painter();
+                let number_color = role_color(
+                    ui.ctx(),
+                    if accent_line_num {
+                        FileRole::GotoLineNumber
                     } else {
-                        ui.horizontal_centered(add_contents);
+                        FileRole::LineNumber
+                    },
+                );
+                let mut gutter_x = rect.left();
+                let mut paint_gutter_text =
+                    |text: String, font: egui::FontId, color, width: f32| {
+                        let cell = egui::Rect::from_min_size(
+                            egui::pos2(gutter_x, rect.top()),
+                            egui::vec2(width, row_h),
+                        );
+                        let galley = painter.layout_no_wrap(text, font, color);
+                        painter.galley(cell.center() - galley.size() / 2.0, galley, color);
+                        gutter_x += width;
+                    };
+                let number_font = line_number_font(ui.style());
+                match gutter {
+                    Gutter::Single { number_width } => {
+                        let line = (*line_num > 0).then(|| line_num.to_string());
+                        paint_gutter_text(
+                            line.unwrap_or_default(),
+                            number_font,
+                            number_color,
+                            number_width,
+                        );
                     }
+                    Gutter::Offset(offset) => {
+                        let shown = offset.map(|o| format!("{o:08X}")).unwrap_or_default();
+                        paint_gutter_text(shown, number_font, number_color, OFFSET_GUTTER_WIDTH);
+                    }
+                    Gutter::Unified {
+                        left,
+                        right,
+                        sign,
+                        number_width,
+                    } => {
+                        let shown =
+                            |line: Option<usize>| line.map(|n| n.to_string()).unwrap_or_default();
+                        paint_gutter_text(
+                            shown(left),
+                            number_font.clone(),
+                            number_color,
+                            number_width,
+                        );
+                        paint_gutter_text(shown(right), number_font, number_color, number_width);
+                        if let Some((sign, color)) = sign {
+                            let font = egui::FontSelection::Default.resolve(ui.style());
+                            paint_gutter_text(sign.to_string(), font, color, UNIFIED_SIGN_WIDTH);
+                        }
+                    }
+                }
+                let text_left = rect.left() + gutter.width() + GUTTER_GAP;
+
+                let row_text = build_row_text(
+                    tokens,
+                    changed_chars,
+                    file_source.as_deref(),
+                    file_target.as_deref(),
+                );
+
+                let mut layout_job = syntax::highlight(
+                    ui.ctx(),
+                    ui.style(),
+                    &code_colors,
+                    &row_text.text,
+                    code_language,
+                );
+                let style_ctx = ui.ctx().clone();
+                let color = |role| role_color(&style_ctx, role);
+                // Text matched by an ignore pattern is dimmed over the syntax colors.
+                recolor_ranges(
+                    &mut layout_job,
+                    &row_text.dimmed,
+                    color(FileRole::DimmedText),
+                );
+                let (tokens_bg, chars_bg) = match side {
+                    ActiveSide::Left => (
+                        color(FileRole::DeleteChangedTokens),
+                        color(FileRole::DeleteChangedChars),
+                    ),
+                    ActiveSide::Right => (
+                        color(FileRole::InsertChangedTokens),
+                        color(FileRole::InsertChangedChars),
+                    ),
+                };
+                if marks.tokens {
+                    highlight_ranges(&mut layout_job, &row_text.changed_tokens, tokens_bg);
+                }
+                if marks.chars {
+                    highlight_ranges(&mut layout_job, &row_text.changed_chars, chars_bg);
+                }
+                let found = occurrences.ranges(side, row_index, &row_text.text);
+                highlight_ranges(&mut layout_job, &found, color(FileRole::Occurrence));
+                // After the occurrences, so a find match shows over one.
+                let (find_all, find_current) = find_ranges(&row_text.text, find);
+                highlight_ranges(&mut layout_job, &find_all, color(FileRole::Find));
+                if let Some(current) = find_current {
+                    highlight_ranges(&mut layout_job, &[current], color(FileRole::FindCurrent));
+                }
+
+                let font_id = egui::TextStyle::Monospace.resolve(ui.style());
+                let wrap_at = if wrap {
+                    gutter.text_width(width)
+                } else {
+                    f32::INFINITY
+                };
+                let ghost_color = color(FileRole::GhostText);
+                let side_text = ui.fonts_mut(|fonts| {
+                    layout_side_text(
+                        fonts,
+                        layout_job,
+                        &row_text.ghosts,
+                        ghost_color,
+                        &font_id,
+                        wrap_at,
+                    )
                 });
+                let galley = side_text.galley.clone();
+                // The hit area spans the rest of the row, not just the text, so a press
+                // anywhere in the block starts a selection. Drag sense on both sides:
+                // egui hit-tests against the previous frame, so the side that becomes
+                // selectable on a press needs it already, or that press is lost.
+                let hit_rect = egui::Rect::from_min_size(
+                    egui::pos2(text_left, rect.top()),
+                    egui::vec2(
+                        galley.size().x.max(rect.right() - text_left),
+                        side_text.height().max(cell_h),
+                    ),
+                );
+                let response = ui.allocate_rect(hit_rect, egui::Sense::click_and_drag());
+                code_hit = Some(response.clone());
+                let text_color = ui.style().visuals.text_color();
+                if selectable {
+                    let marker = if tokens.iter().all(|(_, _, is_ghost)| *is_ghost) {
+                        Some(COPY_MARKER_NO_LINE)
+                    } else if row_text.text.is_empty() {
+                        Some(COPY_MARKER_BLANK_LINE)
+                    } else {
+                        None
+                    };
+                    if marker.is_none() {
+                        occurrences.track(
+                            ui,
+                            &response,
+                            hit_rect.left_top(),
+                            &galley,
+                            side,
+                            row_index,
+                        );
+                    }
+                    let galley = match marker {
+                        Some(marker) => copy_marker_galley(ui, marker),
+                        None => galley,
+                    };
+                    let galley = if wrap {
+                        reach_down_to(galley, hit_rect.height())
+                    } else {
+                        galley
+                    };
+                    LabelSelectionState::label_text_selection(
+                        ui,
+                        &response,
+                        hit_rect.left_top(),
+                        galley,
+                        text_color,
+                        egui::Stroke::NONE,
+                    );
+                } else {
+                    ui.painter().add(egui::epaint::TextShape::new(
+                        hit_rect.left_top(),
+                        galley,
+                        text_color,
+                    ));
+                }
+                for (pos, ghost_galley) in side_text.ghosts {
+                    ui.painter().add(egui::epaint::TextShape::new(
+                        hit_rect.left_top() + pos,
+                        ghost_galley,
+                        text_color,
+                    ));
+                }
+
+                if marks.scope {
+                    let scope_bg = match side {
+                        ActiveSide::Left => color(FileRole::DeleteChangedScope),
+                        ActiveSide::Right => color(FileRole::InsertChangedScope),
+                    };
+                    ui.painter().rect_filled(extended_rect, 0.0, scope_bg);
+                }
+                let bg = match bg {
+                    RowBg::None => egui::Color32::TRANSPARENT,
+                    RowBg::Delete | RowBg::Insert if !marks.line => egui::Color32::TRANSPARENT,
+                    RowBg::Delete => role_color(ui.ctx(), SharedRole::DeleteBackground),
+                    RowBg::Insert => role_color(ui.ctx(), SharedRole::InsertBackground),
+                    RowBg::Custom(zdiff::diff_builder::Color32([r, g, b, a])) => {
+                        egui::Color32::from_rgba_unmultiplied(*r, *g, *b, *a)
+                    }
+                };
+                ui.painter().rect_filled(extended_rect, 0.0, bg);
+                if is_highlighted {
+                    ui.painter()
+                        .rect_filled(extended_rect, 0.0, color(FileRole::GotoRow));
+                }
+                if let Some(trace) = trace {
+                    let outlines = token_hunk_outlines(
+                        trace,
+                        tokens,
+                        &row_text,
+                        file_source.as_deref(),
+                        file_target.as_deref(),
+                    );
+                    paint_trace_row(
+                        ui.painter(),
+                        &outlines,
+                        &row_text,
+                        &side_text.galley,
+                        hit_rect.left_top(),
+                    );
+                }
             }
             LineContent::Void => {
                 let highlight = is_highlighted.then(|| role_color(ui.ctx(), FileRole::GotoRow));

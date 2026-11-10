@@ -67,6 +67,10 @@ fn run_frame(
     (start.elapsed(), output)
 }
 
+fn repaint_delay(output: &egui::FullOutput) -> Duration {
+    output.viewport_output[&egui::ViewportId::ROOT].repaint_delay
+}
+
 fn loaded_app(paths: &[PathBuf; 2], setup: impl FnOnce(&mut AppStateCtx)) -> (egui::Context, ZApp) {
     let mut app = ZApp::new();
     let state = app.state.as_mut().unwrap().ctx_mut();
@@ -106,6 +110,40 @@ fn median_frame(
     times[frames / 2]
 }
 
+fn pointer_over_rows(i: usize) -> (f32, Vec<egui::Event>) {
+    let pos = egui::pos2(300.0 + i as f32 * 23.0, 300.0 + i as f32 * 9.0);
+    (SCREEN.x, vec![egui::Event::PointerMoved(pos)])
+}
+
+fn assert_idle_and_pointer_moved_frames_fit(ctx: &egui::Context, app: &mut ZApp) {
+    let idle = median_frame(ctx, app, 31, |_| (SCREEN.x, Vec::new()));
+    let pointer_moved = median_frame(ctx, app, 31, pointer_over_rows);
+
+    assert!(idle < FRAME_AT_60_HZ, "idle frame took {idle:?}");
+    assert!(
+        pointer_moved < FRAME_AT_60_HZ,
+        "pointer-moved frame took {pointer_moved:?}"
+    );
+}
+
+#[test]
+fn idle_and_pointer_moved_frames_of_a_30k_line_diff_fit_a_60_hz_frame() {
+    let dir = tempdir().unwrap();
+    let (ctx, mut app) = loaded_app(&text_pair(dir.path()), |_| {});
+
+    assert_idle_and_pointer_moved_frames_fit(&ctx, &mut app);
+}
+
+#[test]
+fn idle_and_pointer_moved_frames_of_a_20k_string_strings_diff_fit_a_60_hz_frame() {
+    let dir = tempdir().unwrap();
+    let (ctx, mut app) = loaded_app(&strings_pair(dir.path()), |state| {
+        state.hex_settings.mode = HexMode::Strings;
+    });
+
+    assert_idle_and_pointer_moved_frames_fit(&ctx, &mut app);
+}
+
 fn assert_resizes_fit(paths: &[PathBuf; 2], strings: bool) {
     let (ctx, mut app) = loaded_app(paths, |state| {
         state.word_wrap = true;
@@ -133,3 +171,41 @@ fn resizing_a_wrapped_20k_string_strings_diff_fits_a_60_hz_frame() {
     assert_resizes_fit(&strings_pair(dir.path()), true);
 }
 
+fn repaint_delay_after_pointer_motion(
+    ctx: &egui::Context,
+    app: &mut ZApp,
+    at: egui::Pos2,
+) -> Duration {
+    for step in [egui::vec2(0.0, 0.0), egui::vec2(2.0, 1.0)] {
+        run_frame(
+            ctx,
+            app,
+            SCREEN.x,
+            vec![egui::Event::PointerMoved(at + step)],
+        );
+    }
+    for _ in 0..20 {
+        run_frame(ctx, app, SCREEN.x, Vec::new());
+    }
+    repaint_delay(&run_frame(ctx, app, SCREEN.x, Vec::new()).1)
+}
+
+#[test]
+fn an_idle_text_diff_stops_repainting_after_pointer_motion() {
+    let dir = tempdir().unwrap();
+    let (ctx, mut app) = loaded_app(&text_pair(dir.path()), |_| {});
+
+    for (place, at) in [
+        ("menu bar", egui::pos2(30.0, 8.0)),
+        ("path bar", egui::pos2(300.0, 90.0)),
+        ("left text row", egui::pos2(400.0, 400.0)),
+        ("center column", egui::pos2(SCREEN.x / 2.0, 400.0)),
+        ("right text row", egui::pos2(1200.0, 400.0)),
+    ] {
+        assert_eq!(
+            repaint_delay_after_pointer_motion(&ctx, &mut app, at),
+            Duration::MAX,
+            "kept repainting with the pointer over the {place}"
+        );
+    }
+}
