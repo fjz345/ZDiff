@@ -188,6 +188,7 @@ impl FileDiffPane {
                                 *diff_rows_num = (*diff_rows_num + 1).min(MAX_CONTEXT_ROWS)
                             }
                             Some(Step::Reset) => *diff_rows_num = DEFAULT_CONTEXT_ROWS,
+                            Some(Step::Set(rows)) => *diff_rows_num = rows,
                             None => {}
                         }
                     }
@@ -211,6 +212,7 @@ impl FileDiffPane {
                     Some(Step::Dec) => ctx.conflict_cursor.dec(),
                     Some(Step::Inc) => ctx.conflict_cursor.inc(),
                     Some(Step::Reset) => ctx.conflict_cursor.set(0),
+                    Some(Step::Set(cursor)) => ctx.conflict_cursor.set(cursor),
                     None => {}
                 }
             });
@@ -232,6 +234,7 @@ impl FileDiffPane {
                     Some(Step::Dec) => ctx.find_cursor.dec(),
                     Some(Step::Inc) => ctx.find_cursor.inc(),
                     Some(Step::Reset) => ctx.find_cursor.set(0),
+                    Some(Step::Set(cursor)) => ctx.find_cursor.set(cursor),
                     None => {}
                 }
             });

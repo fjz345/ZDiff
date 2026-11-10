@@ -16,7 +16,7 @@ GUI for zdiff crate
     - Side by side, Unified, or a single side at full width with its changed lines tinted
     - Next/previous conflict (Ctrl+1/2, Alt+Up/Down), goto line (Ctrl+G)
     - Find (Ctrl+F) with whole word and regex
-    - Toolbar `< X >` steppers (context rows, conflict, find match): double-click the value to reset it
+    - Toolbar `< X >` steppers (context rows, conflict, find match): drag the value sideways to pick one, double-click it to reset
     - Line pins: align chosen line pairs
     - Overview ruler beside the scrollbar; click or drag to scroll there
     - Collapsed context blocks expand, up to the enclosing scope's opening line
