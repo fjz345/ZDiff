@@ -134,7 +134,7 @@ impl ZApp {
                         &mut ctx.legacy_extension_map,
                     );
 
-                    let args: Vec<String> = env::args().skip(1).collect();
+                    let (_, args) = zcommon::console::take_log_flag(env::args().skip(1));
                     if args.is_empty() {
                         return;
                     }

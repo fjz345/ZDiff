@@ -5,8 +5,10 @@
 GUI for zdiff-folder crate
 
 ```
-zdiff-folder-gui [<dir1> [<dir2>]]
+zdiff-folder-gui [<dir1> [<dir2>]] [-log]
 ```
+
+No console window opens. `-log` writes the log to the terminal zdiff-folder-gui was started from, or to a new console window when there is none.
 
 # Features
 * Two-folder tree diff

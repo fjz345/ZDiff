@@ -1,3 +1,4 @@
+pub mod console;
 pub mod ffmpeg;
 pub mod find;
 pub mod hash;

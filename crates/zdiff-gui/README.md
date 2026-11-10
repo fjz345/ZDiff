@@ -64,6 +64,8 @@ A degenerate row such as 2000 times `a`, searched for `aa`, has a match at every
 ## Use as a diff and merge tool
 zdiff-gui takes p4merge-style, git-style, GNU-style and Tortoise-style arguments (`zdiff-gui --help` lists them). Each launch opens its own window, and the process exits when you close it. The examples use `C:\Tools\zdiff-gui.exe`. Replace it with your path (for example `target\release\zdiff-gui.exe`).
 
+No console window opens. Add `-log` anywhere in the arguments to write the log to the terminal zdiff-gui was started from, or to a new console window when there is none (from cmd or PowerShell the prompt returns right away and the log interleaves with it).
+
 A merge launch opens the merge view with the left file as theirs and the right file as yours. The process exits 0 only when the output was saved with no unresolved conflicts and not changed since; otherwise 1, including when the launch arguments are invalid.
 
 ### p4
@@ -115,7 +117,7 @@ Settings > External Programs (TortoiseSVN) or Settings > Diff Viewer / Merge Too
 
 ## Configuration
 
-zdiff-gui reads a `.env` file only from the folder of its executable (`target/<profile>/` for `cargo run`). The working directory and its parents are not searched. Real environment variables win over `.env` values. The log window shows which file was loaded, or that none was found.
+zdiff-gui reads a `.env` file only from the folder of its executable (`target/<profile>/` for `cargo run`). The working directory and its parents are not searched. Real environment variables win over `.env` values. The log (`-log`) shows which file was loaded, or that none was found.
 
 ## Known bugs
 * lost_focus not called correctly on paths when holding down mouse: https://github.com/emilk/egui/issues/2142

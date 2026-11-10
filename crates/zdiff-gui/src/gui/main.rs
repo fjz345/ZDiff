@@ -1,3 +1,5 @@
+#![windows_subsystem = "windows"]
+
 use std::{
     process::ExitCode,
     sync::{
@@ -7,6 +9,7 @@ use std::{
 };
 
 use eframe::egui;
+use zcommon::console::{LOG_FLAG, open_console, take_log_flag};
 
 use crate::app::ZApp;
 
@@ -38,11 +41,16 @@ use std::alloc::System;
 pub static STATS_ALLOC: &StatsAlloc<System> = &INSTRUMENTED_SYSTEM;
 
 fn main() -> ExitCode {
+    let (log_to_console, _) = take_log_flag(std::env::args_os().skip(1));
+    let console = log_to_console.then(open_console);
     #[cfg(feature = "pretty-backtrace")]
     {
         color_backtrace::install();
     }
     zcommon::logger::init_logging().expect("Failed to init logger");
+    if let Some(Err(e)) = console {
+        log::error!("{LOG_FLAG}: cannot open a console: {e}");
+    }
 
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()

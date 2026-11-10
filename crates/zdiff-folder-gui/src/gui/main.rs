@@ -1,22 +1,30 @@
-#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+#![windows_subsystem = "windows"]
 // #![allow(dead_code)]
 // #![allow(unreachable_patterns)]
 
 use eframe::egui::{self};
-use zcommon::logger::init_logging;
+use zcommon::{
+    console::{LOG_FLAG, open_console, take_log_flag},
+    logger::init_logging,
+};
 
 use crate::ui_egui::{app::ZApp, roots::parse_launch_args};
 
 mod ui_egui;
 
 fn main() -> eframe::Result {
+    let (log_to_console, args) = take_log_flag(std::env::args_os().skip(1));
+    let console = log_to_console.then(open_console);
     #[cfg(feature = "pretty-backtrace")]
     {
         color_backtrace::install();
     }
 
     let log_buffer = init_logging().expect("Failed to init logger");
-    let launch_args = parse_launch_args(std::env::args_os().skip(1));
+    if let Some(Err(e)) = console {
+        log::error!("{LOG_FLAG}: cannot open a console: {e}");
+    }
+    let launch_args = parse_launch_args(args);
 
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()

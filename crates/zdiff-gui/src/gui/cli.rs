@@ -127,6 +127,7 @@ TortoiseSVN / TortoiseGit:
   zdiff-gui /base:%base /theirs:%theirs /mine:%mine /merged:%merged
 
 Help: -h  --help  /?
+Log:  -log  log to the launching terminal, or to a new console window
 
 Labels replace the path in the path bar and window title; the path is in the tooltip.
 Unknown flags are ignored with a warning in the log.";
