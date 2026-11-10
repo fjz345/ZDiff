@@ -90,7 +90,8 @@ pub struct AppStateCtx {
     // A new key, so saves pinned to the old "rs" default load as Auto.
     #[cfg_attr(feature = "serde", serde(default))]
     pub code_language_override: Option<String>,
-    pub code_language_custom: String,
+    #[cfg_attr(feature = "serde", serde(skip), serde(default))]
+    pub syntax_filter: String,
     #[cfg_attr(feature = "serde", serde(skip), serde(default))]
     pub detected_languages: [DetectedLanguage; 2],
 
@@ -179,7 +180,7 @@ impl Default for AppStateCtx {
             regex_ignore_presets: Default::default(),
             myers_diff_algorithm: Default::default(),
             code_language_override: None,
-            code_language_custom: "".into(),
+            syntax_filter: String::new(),
             detected_languages: Default::default(),
         }
     }
@@ -262,6 +263,21 @@ mod tests {
         let restored: AppStateCtx = serde_json::from_str(&json).unwrap();
 
         assert!(restored.sides_swapped);
+    }
+
+    #[test]
+    fn a_save_with_an_old_custom_language_still_highlights_it() {
+        let mut json = serde_json::to_value(AppStateCtx::default()).unwrap();
+        let object = json.as_object_mut().unwrap();
+        object.insert("code_language_override".into(), "go".into());
+        object.insert("code_language_custom".into(), "go".into());
+
+        let restored: AppStateCtx = serde_json::from_value(json).unwrap();
+
+        let language = restored.code_language_override.as_deref().unwrap();
+        assert_eq!(crate::ui_egui::syntax::language_name(language), Some("Go"));
+        let resaved = serde_json::to_value(&restored).unwrap();
+        assert!(resaved.get("code_language_custom").is_none());
     }
 
     #[test]

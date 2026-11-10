@@ -66,12 +66,15 @@ pub fn sniff_viewer_kind(bytes: &[u8]) -> ViewerKind {
 /// The extension of the path's file name, normalized. Depot paths carry the revision outside
 /// the string, so `//depot/a.png#3` still gives `png`.
 pub fn path_extension(path: &UniversalPath) -> Option<String> {
-    let name = match path {
-        UniversalPath::Local(path) | UniversalPath::Git(path, _) => path.file_name()?.to_str()?,
-        UniversalPath::Depot(path, _) => path.rsplit('/').next()?,
-    };
-    let (stem, extension) = name.rsplit_once('.')?;
+    let (stem, extension) = path_file_name(path)?.rsplit_once('.')?;
     (!stem.is_empty() && !extension.is_empty()).then(|| normalize_extension(extension))
+}
+
+pub fn path_file_name(path: &UniversalPath) -> Option<&str> {
+    match path {
+        UniversalPath::Local(path) | UniversalPath::Git(path, _) => path.file_name()?.to_str(),
+        UniversalPath::Depot(path, _) => path.rsplit('/').next(),
+    }
 }
 
 pub fn viewer_for_kind(kind: FileKind) -> ViewerKind {

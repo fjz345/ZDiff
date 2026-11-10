@@ -15,7 +15,7 @@ const BADGE_CUSTOM: egui::Color32 = egui::Color32::from_rgb(0x7a, 0x4a, 0x9a);
 const BADGE_RS: egui::Color32 = egui::Color32::from_rgb(0xb7, 0x41, 0x0e);
 const BADGE_PY: egui::Color32 = egui::Color32::from_rgb(0x30, 0x70, 0xa8);
 
-pub fn language_icon(code: &str, renders: impl Fn(&str) -> bool) -> LanguageIcon {
+pub fn language_icon(syntax_name: &str, renders: impl Fn(&str) -> bool) -> LanguageIcon {
     let emoji_or = |emoji: &'static str, text: &'static str, color| {
         if renders(emoji) {
             LanguageIcon::Emoji(emoji)
@@ -23,14 +23,14 @@ pub fn language_icon(code: &str, renders: impl Fn(&str) -> bool) -> LanguageIcon
             LanguageIcon::Badge(text, color)
         }
     };
-    match code {
-        "rs" => emoji_or("🦀", "RS", BADGE_RS),
-        "py" => emoji_or("🐍", "PY", BADGE_PY),
-        "cpp" => LanguageIcon::Badge("C++", BADGE_CPP),
-        "js" => LanguageIcon::Badge("JS", BADGE_JS),
-        "json" => LanguageIcon::Badge("{}", BADGE_JSON),
-        "xml" => LanguageIcon::Badge("<>", BADGE_XML),
-        "md" => LanguageIcon::Badge("MD", BADGE_MD),
+    match syntax_name {
+        "Rust" => emoji_or("🦀", "RS", BADGE_RS),
+        "Python" => emoji_or("🐍", "PY", BADGE_PY),
+        "C++" => LanguageIcon::Badge("C++", BADGE_CPP),
+        "JavaScript" => LanguageIcon::Badge("JS", BADGE_JS),
+        "JSON" => LanguageIcon::Badge("{}", BADGE_JSON),
+        "XML" => LanguageIcon::Badge("<>", BADGE_XML),
+        "Markdown" => LanguageIcon::Badge("MD", BADGE_MD),
         _ => LanguageIcon::Badge("…", BADGE_CUSTOM),
     }
 }
@@ -69,17 +69,17 @@ mod tests {
 
     #[test]
     fn rust_and_python_use_emoji_when_they_render() {
-        assert_eq!(language_icon("rs", |_| true), LanguageIcon::Emoji("🦀"));
-        assert_eq!(language_icon("py", |_| true), LanguageIcon::Emoji("🐍"));
+        assert_eq!(language_icon("Rust", |_| true), LanguageIcon::Emoji("🦀"));
+        assert_eq!(language_icon("Python", |_| true), LanguageIcon::Emoji("🐍"));
     }
 
     #[test]
     fn an_emoji_that_does_not_render_falls_back_to_a_badge() {
-        assert_eq!(badge_text(language_icon("rs", |_| false)), "RS");
-        assert_eq!(badge_text(language_icon("py", |_| false)), "PY");
-        assert_eq!(badge_text(language_icon("rs", |e| e != "🦀")), "RS");
+        assert_eq!(badge_text(language_icon("Rust", |_| false)), "RS");
+        assert_eq!(badge_text(language_icon("Python", |_| false)), "PY");
+        assert_eq!(badge_text(language_icon("Rust", |e| e != "🦀")), "RS");
         assert_eq!(
-            language_icon("py", |e| e != "🦀"),
+            language_icon("Python", |e| e != "🦀"),
             LanguageIcon::Emoji("🐍")
         );
     }
@@ -87,14 +87,34 @@ mod tests {
     #[test]
     fn other_languages_are_badges_whether_or_not_emoji_render() {
         for renders in [true, false] {
-            let text = |code| badge_text(language_icon(code, |_| renders));
-            assert_eq!(text("cpp"), "C++");
-            assert_eq!(text("js"), "JS");
-            assert_eq!(text("json"), "{}");
-            assert_eq!(text("xml"), "<>");
-            assert_eq!(text("md"), "MD");
-            assert_eq!(text("go"), "…");
+            let text = |name| badge_text(language_icon(name, |_| renders));
+            assert_eq!(text("C++"), "C++");
+            assert_eq!(text("JavaScript"), "JS");
+            assert_eq!(text("JSON"), "{}");
+            assert_eq!(text("XML"), "<>");
+            assert_eq!(text("Markdown"), "MD");
+            assert_eq!(text("Go"), "…");
             assert_eq!(text(""), "…");
+        }
+    }
+
+    #[test]
+    fn every_named_icon_is_a_listed_language() {
+        let listed: Vec<&str> = crate::ui_egui::syntax::languages()
+            .iter()
+            .map(|l| l.name)
+            .collect();
+        for name in [
+            "Rust",
+            "Python",
+            "C++",
+            "JavaScript",
+            "JSON",
+            "XML",
+            "Markdown",
+        ] {
+            assert!(listed.contains(&name), "{name}");
+            assert_ne!(language_icon(name, |_| false), language_icon("", |_| false));
         }
     }
 }

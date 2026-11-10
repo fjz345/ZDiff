@@ -17,7 +17,7 @@ use crate::{
     language_icon::{emoji_renders, language_icon, show_language_icon},
     p4::{P4Profiles, ui_p4_profiles, update_p4_profiles},
     phase_trace_window::ui_phase_trace,
-    ui_egui::{export, file_role::FileRole},
+    ui_egui::{export, file_role::FileRole, syntax},
     viewer::{FfmpegSetting, SharedKinds, ui_extension_map, ui_ffmpeg_setting},
 };
 
@@ -35,7 +35,7 @@ pub(super) struct MenuCtx<'a> {
     pub myers_diff_algorithm: &'a mut MyersDiffAlgorithm,
     pub diff_phases: &'a mut DiffPhases,
     pub code_language_override: &'a mut Option<String>,
-    pub code_language_custom: &'a mut String,
+    pub syntax_filter: &'a mut String,
     pub detected_languages: [Option<&'a str>; 2],
     pub h_scroll_modifier: &'a mut WheelModifier,
     pub text_diff_shown: bool,
@@ -57,7 +57,7 @@ impl ZApp {
             myers_diff_algorithm,
             diff_phases,
             code_language_override,
-            code_language_custom,
+            syntax_filter,
             detected_languages,
             h_scroll_modifier,
             text_diff_shown,
@@ -154,10 +154,10 @@ impl ZApp {
                             );
                         });
                         diff_phases_menu(ui, diff_phases);
-                        ui.menu_button("Code Language", |ui| {
+                        ui.menu_button("Syntax Highlighting", |ui| {
                             let ctx = ui.ctx().clone();
-                            let icon_for = |code: &str| {
-                                language_icon(code, |emoji| emoji_renders(&ctx, emoji))
+                            let icon_for = |name: &str| {
+                                language_icon(name, |emoji| emoji_renders(&ctx, emoji))
                             };
                             let auto_label = match detected_languages {
                                 [Some(a), Some(b)] if a != b => format!("Auto ({a} / {b})"),
@@ -171,55 +171,36 @@ impl ZApp {
                                 *code_language_override = None;
                             }
                             ui.separator();
-                            for (code, label) in [
-                                ("rs", "Rust (.rs)"),
-                                ("py", "Python (.py)"),
-                                ("cpp", "C++ (.cpp)"),
-                                ("js", "JavaScript (.js)"),
-                                ("json", "JSON (.json)"),
-                                ("xml", "XML (.xml)"),
-                                ("md", "Markdown (.md)"),
-                            ] {
-                                ui.horizontal(|ui| {
-                                    show_language_icon(ui, icon_for(code));
-                                    if ui
-                                        .radio(
-                                            code_language_override.as_deref() == Some(code),
-                                            label,
-                                        )
-                                        .clicked()
+                            ui.add(
+                                egui::TextEdit::singleline(syntax_filter)
+                                    .hint_text("Filter (name or extension)"),
+                            );
+                            let selected = code_language_override
+                                .as_deref()
+                                .and_then(syntax::language_name);
+                            egui::ScrollArea::vertical()
+                                .max_height(320.0)
+                                .show(ui, |ui| {
+                                    for language in syntax::languages()
+                                        .iter()
+                                        .filter(|l| l.matches(syntax_filter))
                                     {
-                                        *code_language_override = Some(code.to_string());
+                                        ui.horizontal(|ui| {
+                                            show_language_icon(ui, icon_for(language.name));
+                                            if ui
+                                                .radio(
+                                                    selected == Some(language.name),
+                                                    language.name,
+                                                )
+                                                .clicked()
+                                            {
+                                                *code_language_override =
+                                                    Some(language.name.to_string());
+                                            }
+                                        });
                                     }
                                 });
-                            }
-                            ui.separator();
-                            ui.horizontal(|ui| {
-                                show_language_icon(ui, icon_for(""));
-                                if ui
-                                    .radio(
-                                        code_language_override.as_deref()
-                                            == Some(code_language_custom.as_str())
-                                            && !code_language_custom.is_empty(),
-                                        "Use Custom",
-                                    )
-                                    .clicked()
-                                {
-                                    *code_language_override =
-                                        Some(code_language_custom.trim().to_string());
-                                }
-                                let text_edit = egui::TextEdit::singleline(code_language_custom)
-                                    .hint_text("Custom (e.g. go, html)");
-                                let res = ui.add(text_edit);
-                                if res.changed() && !code_language_custom.is_empty() {
-                                    *code_language_override =
-                                        Some(code_language_custom.trim().to_string());
-                                }
-                            });
                         });
-                        if let Some(code) = code_language_override {
-                            *code = code.trim_matches('.').to_string();
-                        }
                         ui.menu_button("Horizontal Scroll Wheel", |ui| {
                             ui.radio_value(h_scroll_modifier, WheelModifier::Shift, "Shift+Wheel");
                             ui.radio_value(h_scroll_modifier, WheelModifier::Ctrl, "Ctrl+Wheel");

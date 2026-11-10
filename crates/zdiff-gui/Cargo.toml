@@ -34,6 +34,8 @@ egui_tiles =  {version = "0.14.1", features = ["serde"], optional = true}
 egui_extras = { version = "0.33.3", features = ["image", "syntect"] }
 # Direct, for the diff pane's own theme built from the syntax colors; same features as egui_extras.
 syntect = { version = "5.3.0", default-features = false, features = ["default-fancy"] }
+# bat's syntax set (TypeScript, TOML, ...); its regex feature must match syntect's (fancy, not onig).
+two-face = { version = "0.5.2", default-features = false, features = ["syntect-fancy"] }
 # Direct, for the image viewer's decoders: egui_extras pulls image without them.
 image = { version = "0.25.9", default-features = false, features = ["png", "jpeg", "bmp", "gif", "webp", "tga"] }
 serde = { version = "1.0.48", features = ["derive"], optional = true}

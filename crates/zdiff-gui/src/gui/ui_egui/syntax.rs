@@ -7,13 +7,13 @@ use eframe::egui::{
 use syntect::{
     easy::HighlightLines,
     highlighting::{Color, ScopeSelectors, StyleModifier, Theme, ThemeItem, ThemeSettings},
-    parsing::SyntaxSet,
+    parsing::{SyntaxReference, SyntaxSet},
     util::LinesWithEndings,
 };
 use zcommon::style::{Rgba8, SyntaxCategory, SyntaxColors};
 use zdiff::{cached_file::CachedFile, lexer::RawToken, universal_path::UniversalPath};
 
-use crate::viewer::path_extension;
+use crate::viewer::{path_extension, path_file_name};
 
 // The more specific punctuation selectors keep quotes and comment markers out of Punctuation.
 pub fn scopes(category: SyntaxCategory) -> Option<&'static str> {
@@ -65,21 +65,71 @@ pub fn syntect_theme(colors: &SyntaxColors) -> Theme {
 
 fn syntaxes() -> &'static SyntaxSet {
     static SYNTAXES: OnceLock<SyntaxSet> = OnceLock::new();
-    SYNTAXES.get_or_init(SyntaxSet::load_defaults_newlines)
+    SYNTAXES.get_or_init(two_face::syntax::extra_newlines)
+}
+
+// Saved overrides are syntax names, or extensions and custom text from older saves.
+fn find_syntax(language: &str) -> Option<&'static SyntaxReference> {
+    let syntaxes = syntaxes();
+    syntaxes
+        .find_syntax_by_name(language)
+        .or_else(|| syntaxes.find_syntax_by_token(language))
+}
+
+pub fn language_name(language: &str) -> Option<&'static str> {
+    find_syntax(language).map(|syntax| syntax.name.as_str())
+}
+
+pub struct Language {
+    pub name: &'static str,
+    extensions: &'static [String],
+}
+
+impl Language {
+    pub fn matches(&self, filter: &str) -> bool {
+        let filter = filter.trim().trim_start_matches('.');
+        filter.is_empty()
+            || self.name.to_lowercase().contains(&filter.to_lowercase())
+            || self
+                .extensions
+                .iter()
+                .any(|e| e.eq_ignore_ascii_case(filter))
+    }
+}
+
+pub fn languages() -> &'static [Language] {
+    static LANGUAGES: OnceLock<Vec<Language>> = OnceLock::new();
+    LANGUAGES.get_or_init(|| {
+        let mut languages: Vec<Language> = syntaxes()
+            .syntaxes()
+            .iter()
+            .filter(|syntax| !syntax.hidden)
+            .map(|syntax| Language {
+                name: &syntax.name,
+                extensions: &syntax.file_extensions,
+            })
+            .collect();
+        languages.sort_by_cached_key(|language| language.name.to_lowercase());
+        languages
+    })
 }
 
 pub fn detect_language(path: &UniversalPath, contents: &str) -> Option<&'static str> {
     let syntaxes = syntaxes();
     let plain = syntaxes.find_syntax_plain_text();
-    let by_extension = path_extension(path)
-        .and_then(|extension| match extension.as_str() {
+    let by_extension = || {
+        path_extension(path).and_then(|extension| match extension.as_str() {
             // C, C++ and Objective-C all claim `h`; syntect picks the last loaded (Objective-C).
             "h" => syntaxes.find_syntax_by_name("C++"),
             _ => syntaxes.find_syntax_by_extension(&extension),
         })
+    };
+    let by_path = path_file_name(path)
+        .and_then(|name| syntaxes.find_syntax_by_extension(name))
+        .or_else(by_extension)
         .filter(|syntax| syntax.name != plain.name);
     let first_line = contents.trim_start_matches('\u{feff}').lines().next();
-    by_extension
+    by_path
         .or_else(|| first_line.and_then(|line| syntaxes.find_syntax_by_first_line(line)))
         .map(|syntax| syntax.name.as_str())
 }
@@ -124,10 +174,7 @@ pub fn layout_job(
         )
     };
     let syntaxes = syntaxes();
-    let Some(syntax) = syntaxes
-        .find_syntax_by_name(language)
-        .or_else(|| syntaxes.find_syntax_by_extension(language))
-    else {
+    let Some(syntax) = find_syntax(language) else {
         return plain();
     };
     let mut lines = HighlightLines::new(syntax, theme);
@@ -391,6 +438,131 @@ mod tests {
                 ""
             ),
             Some("Rust")
+        );
+    }
+
+    #[test]
+    fn bat_languages_are_detected_by_extension() {
+        for (path, name) in [
+            ("a.ts", "TypeScript"),
+            ("a.tsx", "TypeScriptReact"),
+            ("a.toml", "TOML"),
+            ("a.kt", "Kotlin"),
+            ("a.swift", "Swift"),
+            ("a.go", "Go"),
+            ("a.zig", "Zig"),
+            ("a.cs", "C#"),
+            ("a.glsl", "GLSL"),
+            ("a.bat", "Batch File"),
+        ] {
+            assert_eq!(detect(path, ""), Some(name), "{path}");
+        }
+    }
+
+    #[test]
+    fn well_known_file_names_are_detected() {
+        assert_eq!(detect(r"C:\src\Dockerfile", ""), Some("Dockerfile"));
+        assert_eq!(detect(r"C:\src\CMakeLists.txt", ""), Some("CMake"));
+        assert_eq!(detect(r"C:\src\Makefile", ""), Some("Makefile"));
+        assert_eq!(detect(r"C:\src\Cargo.lock", ""), Some("TOML"));
+        assert_eq!(
+            detect(r"C:\home\.bashrc", ""),
+            Some("Bourne Again Shell (bash)")
+        );
+        assert_eq!(
+            detect_language(
+                &UniversalPath::Depot("//depot/app/Dockerfile".into(), Some(DepotRev::Rev(2))),
+                ""
+            ),
+            Some("Dockerfile")
+        );
+    }
+
+    #[test]
+    fn legacy_language_codes_still_resolve() {
+        for (code, name) in [
+            ("rs", "Rust"),
+            ("py", "Python"),
+            ("cpp", "C++"),
+            ("js", "JavaScript"),
+            ("json", "JSON"),
+            ("xml", "XML"),
+            ("md", "Markdown"),
+            ("go", "Go"),
+            ("html", "HTML"),
+        ] {
+            assert_eq!(language_name(code), Some(name), "{code}");
+        }
+    }
+
+    #[test]
+    fn a_language_name_resolves_ignoring_case() {
+        assert_eq!(language_name("Rust"), Some("Rust"));
+        assert_eq!(language_name("typescript"), Some("TypeScript"));
+        assert_eq!(language_name("no-such-lang"), None);
+    }
+
+    #[test]
+    fn every_listed_language_resolves_to_itself() {
+        let names: Vec<&str> = languages().iter().map(|l| l.name).collect();
+        for name in ["TypeScript", "TOML", "Rust", "Plain Text"] {
+            assert!(names.contains(&name), "{name}");
+        }
+        assert!(
+            !names.contains(&"PHP Source"),
+            "hidden syntaxes are not listed"
+        );
+        for name in &names {
+            assert_eq!(language_name(name), Some(*name));
+        }
+        assert!(
+            names
+                .windows(2)
+                .all(|w| w[0].to_lowercase() < w[1].to_lowercase()),
+            "sorted and unique"
+        );
+    }
+
+    #[test]
+    fn the_filter_matches_names_and_extensions() {
+        let rust = languages().iter().find(|l| l.name == "Rust").unwrap();
+        for filter in ["", "  ", "rus", "RUST", "rs", ".rs", "RS"] {
+            assert!(rust.matches(filter), "{filter:?}");
+        }
+        for filter in ["py", ".py", "rst"] {
+            assert!(!rust.matches(filter), "{filter:?}");
+        }
+    }
+
+    #[test]
+    fn typescript_code_is_colored() {
+        let colors = distinct_colors();
+        let theme = syntect_theme(&colors);
+        let code = "const x = 42; // c";
+        let job = layout_job(
+            &FontId::monospace(12.0),
+            &theme,
+            &colors,
+            code,
+            "TypeScript",
+        );
+        let color_at = |needle: &str| {
+            let start = code.find(needle).unwrap();
+            job.sections
+                .iter()
+                .find(|s| s.byte_range.contains(&start))
+                .unwrap()
+                .format
+                .color
+        };
+        assert_eq!(
+            color_at("const"),
+            color32(colors.get(SyntaxCategory::Keyword))
+        );
+        assert_eq!(color_at("42"), color32(colors.get(SyntaxCategory::Number)));
+        assert_eq!(
+            color_at("// c"),
+            color32(colors.get(SyntaxCategory::Comment))
         );
     }
 

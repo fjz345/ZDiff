@@ -20,7 +20,7 @@ GUI for zdiff crate
     - Overview ruler beside the scrollbar; click or drag to scroll there
     - Collapsed context blocks expand, up to the enclosing scope's opening line
     - Word wrap with aligned rows, horizontal scrolling with optional linked sides
-    - Syntax highlighting with the language per pane or auto-detected (Options > Code Language)
+    - Syntax highlighting for ~190 languages (bat's syntax set), auto-detected per pane by file name, extension or first line, or picked from a filterable list (Options > Syntax Highlighting)
     - Diff status with -/+ counts and compute time per stage
     - Revert a hunk on disk, with undo/redo (refused after an external change); read-only Perforce files are offered a `p4 edit`
     - Occurrence highlight: selecting text in a row highlights its other occurrences in the visible rows, on both sides
