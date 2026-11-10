@@ -26,8 +26,8 @@ use zdiff::{
 use crate::ui_egui::{
     active_side::{ActiveSide, ActiveSideState},
     diff_pane::{
-        CopyMarkerPlugin, FileDiffPane, RowCtx, measure_wrapped_rows, natural_row_widths,
-        side_content_widths, text_rows, wrap_width, wrapped_row_heights,
+        CopyMarkerPlugin, FileDiffPane, RowCtx, line_number_width_for, measure_wrapped_rows,
+        natural_row_widths, side_content_widths, text_rows, wrap_width, wrapped_row_heights,
     },
     occurrence::{OccurrenceState, RowFind},
 };
@@ -494,6 +494,8 @@ impl CopyHarness {
                 let row_h = ui.text_style_height(&egui::TextStyle::Monospace);
                 // Mirrors the table's heterogeneous rows with wrap on.
                 let row_heights = if wrap {
+                    let number_width =
+                        line_number_width_for(ui, [Some(&**file_source), Some(&**file_target)]);
                     ui.fonts_mut(|fonts| {
                         measure_rows(
                             fonts,
@@ -501,7 +503,7 @@ impl CopyHarness {
                             rows,
                             file_source,
                             file_target,
-                            side_widths.map(wrap_width),
+                            side_widths.map(|width| wrap_width(width, number_width)),
                         )
                     })
                 } else {

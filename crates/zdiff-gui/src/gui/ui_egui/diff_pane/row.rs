@@ -22,10 +22,12 @@ impl FileDiffPane {
         ui: &mut egui::Ui,
         row: RowCtx<T>,
     ) {
+        let number_width =
+            line_number_width_for(ui, [row.file_source.as_deref(), row.file_target.as_deref()]);
         let _ = Self::render_row(
             ui,
             row,
-            Gutter::Single,
+            Gutter::Single { number_width },
             Marks {
                 scope: false,
                 line: true,
@@ -87,7 +89,7 @@ impl FileDiffPane {
                         ui.spacing_mut().item_spacing.x = 0.0;
 
                         let line_number = |ui: &mut egui::Ui, text: String, width: f32| {
-                            let text = egui::RichText::new(text).size(10.0);
+                            let text = egui::RichText::new(text).font(line_number_font(ui.style()));
                             let text = if accent_line_num {
                                 text.color(role_color(ui.ctx(), FileRole::GotoLineNumber))
                                     .strong()
@@ -97,20 +99,25 @@ impl FileDiffPane {
                             ui.add_sized([width, row_h], egui::Label::new(text).selectable(false));
                         };
                         match gutter {
-                            Gutter::Single => {
+                            Gutter::Single { number_width } => {
                                 let line = (*line_num > 0).then(|| line_num.to_string());
-                                line_number(ui, line.unwrap_or_default(), GUTTER_WIDTH);
+                                line_number(ui, line.unwrap_or_default(), number_width);
                             }
                             Gutter::Offset(offset) => {
                                 let shown = offset.map(|o| format!("{o:08X}")).unwrap_or_default();
                                 line_number(ui, shown, OFFSET_GUTTER_WIDTH);
                             }
-                            Gutter::Unified { left, right, sign } => {
+                            Gutter::Unified {
+                                left,
+                                right,
+                                sign,
+                                number_width,
+                            } => {
                                 let shown = |line: Option<usize>| {
                                     line.map(|n| n.to_string()).unwrap_or_default()
                                 };
-                                line_number(ui, shown(left), GUTTER_WIDTH);
-                                line_number(ui, shown(right), GUTTER_WIDTH);
+                                line_number(ui, shown(left), number_width);
+                                line_number(ui, shown(right), number_width);
                                 let (sign, color) =
                                     sign.unwrap_or((' ', egui::Color32::PLACEHOLDER));
                                 ui.add_sized(

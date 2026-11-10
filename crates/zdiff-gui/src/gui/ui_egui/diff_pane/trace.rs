@@ -14,7 +14,13 @@ pub(super) const TOKEN_INSERT_OUTLINE: egui::Color32 = egui::Color32::from_rgb(9
 pub(super) const CHAR_UNDERLINE: egui::Color32 = egui::Color32::from_rgb(0, 220, 255);
 
 /// Scope hunks are numbered like the Phase Trace window's table.
-pub(super) fn paint_trace_gutter(ui: &egui::Ui, trace: &PhaseTrace, side: ActiveSide, content: &LineContent) {
+pub(super) fn paint_trace_gutter(
+    ui: &egui::Ui,
+    trace: &PhaseTrace,
+    side: ActiveSide,
+    content: &LineContent,
+    gutter_width: f32,
+) {
     let LineContent::Code { line_num, .. } = content else {
         return;
     };
@@ -38,7 +44,7 @@ pub(super) fn paint_trace_gutter(ui: &egui::Ui, trace: &PhaseTrace, side: Active
         );
         painter.rect_filled(bar, 0.0, LINE_HUNK_BAR);
     }
-    let x = rect.left() + GUTTER_WIDTH;
+    let x = rect.left() + gutter_width;
     for (i, pair) in trace.scope_hunks.iter().enumerate() {
         let lines = lines(pair);
         if !lines.contains(&line) {

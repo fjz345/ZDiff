@@ -32,6 +32,8 @@ use unified::*;
 pub(super) use copy::CopyMarkerPlugin;
 pub(super) use layout::wrap_width;
 #[cfg(test)]
+pub(super) use gutter::line_number_width_for;
+#[cfg(test)]
 pub(super) use layout::{
     measure_wrapped_rows, natural_row_widths, side_content_widths, wrapped_row_heights,
 };

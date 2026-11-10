@@ -121,8 +121,8 @@ impl FileDiffPane {
 }
 
 /// Width a side's text wraps at in a cell `cell_width` wide: what the gutter leaves.
-pub(in crate::ui_egui) fn wrap_width(cell_width: f32) -> f32 {
-    cell_width - GUTTER_WIDTH - GUTTER_GAP
+pub(in crate::ui_egui) fn wrap_width(cell_width: f32, gutter_width: f32) -> f32 {
+    cell_width - gutter_width - GUTTER_GAP
 }
 
 /// Width of each side's widest row: gutter, text and ghost text. Measured over all rows, since

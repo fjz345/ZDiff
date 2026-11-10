@@ -15,10 +15,18 @@ impl FileDiffPane {
             .hex_mode
             .as_ref()
             .is_some_and(|settings| settings.mode == HexMode::Strings);
+        let files = ctx.diff_ctx.map(|diff_ctx| &diff_ctx.input);
+        let number_width = line_number_width_for(
+            ui,
+            [
+                files.and_then(|input| input.file_1.as_deref()),
+                files.and_then(|input| input.file_2.as_deref()),
+            ],
+        );
         let side_gutter = if strings {
             Gutter::Offset(None)
         } else {
-            Gutter::Single
+            Gutter::Single { number_width }
         };
         let unified = match ctx.diff_ctx {
             Some(diff_ctx) if text_viewer && !strings && *ctx.text_mode != TextMode::SideBySide => {
@@ -38,12 +46,13 @@ impl FileDiffPane {
             SplitColumn::Right => [SplitColumn::Left, SplitColumn::Right][shown[1]],
         };
         let column_gutter = if single_side.is_some() {
-            Gutter::Single
+            Gutter::Single { number_width }
         } else {
             Gutter::Unified {
                 left: None,
                 right: None,
                 sign: None,
+                number_width,
             }
         };
         let content_widths = match (ctx.diff_ctx, &unified) {
@@ -818,7 +827,7 @@ impl FileDiffPane {
                                                             trace: None,
                                                         },
                                                         if single_side.is_some() {
-                                                            Gutter::Single
+                                                            Gutter::Single { number_width }
                                                         } else {
                                                             Gutter::Unified {
                                                                 left: u.left_line,
@@ -828,6 +837,7 @@ impl FileDiffPane {
                                                                     UnifiedKind::Insert => Some(('+', symbol_colors[1])),
                                                                     UnifiedKind::Context | UnifiedKind::Collapsed => None,
                                                                 },
+                                                                number_width,
                                                             }
                                                         },
                                                         row_marks(u.side, content),
@@ -913,7 +923,7 @@ impl FileDiffPane {
                                                             )
                                                         }
                                                         (true, _) => Gutter::Offset(None),
-                                                        (false, _) => Gutter::Single,
+                                                        (false, _) => Gutter::Single { number_width },
                                                     };
                                                         let hit = Self::render_row(
                                                             ui,
@@ -970,7 +980,7 @@ impl FileDiffPane {
                                                             paint_pin_marker(&cell_ui);
                                                         }
                                                         if let Some(trace) = overlay {
-                                                            paint_trace_gutter(&cell_ui, trace, side, content);
+                                                            paint_trace_gutter(&cell_ui, trace, side, content, gutter.width());
                                                         }
                                                     }
                                                 }
