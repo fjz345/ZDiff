@@ -7,7 +7,7 @@ use std::{
     io::Cursor,
     sync::{
         Arc, OnceLock,
-        atomic::{AtomicBool, Ordering},
+        atomic::AtomicBool,
     },
     time::{Duration, Instant},
 };
@@ -19,7 +19,10 @@ use eframe::egui::{
 use rayon::prelude::*;
 use zcommon::job::Job;
 use zcommon_ui::style_window::role_color;
-use zdiff::pixel::{PixelDiff, PixelStats, RgbaBuffer, pixel_diff};
+use zdiff::pixel::{PixelDiff, PixelStats, RgbaBuffer};
+use zdiff::pixel_metric::{
+    Alignment, MetricMap, PixelMetric, changed_pixels, metric_map, placement,
+};
 
 use super::{hex::is_same_side, path_extension};
 use crate::{file::LoadedFile, ui_egui::file_role::FileRole};
@@ -261,73 +264,6 @@ pub fn apply_channel(rgba: &[u8], channel: ImageChannel) -> Cow<'_, [u8]> {
     Cow::Owned(grays)
 }
 
-/// The union canvas of two images, aligned at the top-left corner.
-pub struct HeatMap {
-    pub width: u32,
-    pub height: u32,
-    /// Row-major: the largest per-channel difference of each pixel. Pixels outside either image
-    /// are the full 255.
-    pub magnitude: Vec<u8>,
-}
-
-/// `None` when cancelled.
-pub fn heat_magnitudes(
-    first: RgbaBuffer,
-    second: RgbaBuffer,
-    cancel_flag: &AtomicBool,
-) -> Option<HeatMap> {
-    let (width, height) = (
-        first.width.max(second.width) as usize,
-        first.height.max(second.height) as usize,
-    );
-    let (overlap_width, overlap_height) = (
-        first.width.min(second.width) as usize,
-        first.height.min(second.height) as usize,
-    );
-    let mut magnitude = vec![255; width * height];
-    fn row_bytes<'a>(image: RgbaBuffer<'a>, y: usize, width: usize) -> &'a [u8] {
-        let start = y * image.width as usize * 4;
-        &image.rgba[start..start + width * 4]
-    }
-    magnitude
-        .par_chunks_mut(width.max(1))
-        .take(overlap_height)
-        .enumerate()
-        .with_min_len(16)
-        .try_for_each(|(y, row)| {
-            if cancel_flag.load(Ordering::Acquire) {
-                return None;
-            }
-            let (a, b) = (
-                row_bytes(first, y, overlap_width),
-                row_bytes(second, y, overlap_width),
-            );
-            let row = &mut row[..overlap_width];
-            if a == b {
-                row.fill(0);
-            } else {
-                for (value, (a, b)) in row.iter_mut().zip(a.chunks_exact(4).zip(b.chunks_exact(4)))
-                {
-                    *value = a
-                        .iter()
-                        .zip(b)
-                        .map(|(a, b)| a.abs_diff(*b))
-                        .max()
-                        .unwrap_or(0);
-                }
-            }
-            Some(())
-        })?;
-    if cancel_flag.load(Ordering::Acquire) {
-        return None;
-    }
-    Some(HeatMap {
-        width: width as u32,
-        height: height as u32,
-        magnitude,
-    })
-}
-
 const HEAT_STOPS: [[u8; 3]; 5] = [
     [0, 0, 255],
     [0, 255, 255],
@@ -361,7 +297,7 @@ fn heat_color(magnitude: u8, tolerance: u8) -> Color32 {
     }
 }
 
-fn heat_image(heat: &HeatMap, tolerance: u8) -> ColorImage {
+fn heat_image(heat: &MetricMap, tolerance: u8) -> ColorImage {
     let pixels = heat
         .magnitude
         .par_iter()
@@ -460,6 +396,8 @@ pub struct ImageSettings {
     pub mode: ImageMode,
     pub channel: ImageChannel,
     pub blink_ms: u32,
+    pub metric: PixelMetric,
+    pub alignment: Alignment,
 }
 
 impl Default for ImageSettings {
@@ -469,6 +407,8 @@ impl Default for ImageSettings {
             mode: ImageMode::default(),
             channel: ImageChannel::default(),
             blink_ms: 500,
+            metric: PixelMetric::default(),
+            alignment: Alignment::default(),
         }
     }
 }
@@ -548,11 +488,17 @@ struct CompareKey {
     generation: u64,
     tolerance: u8,
     channel: ImageChannel,
+    metric: PixelMetric,
+    alignment: Alignment,
 }
 
 impl CompareKey {
     fn same_pixels(&self, other: &CompareKey) -> bool {
         self.generation == other.generation && self.channel == other.channel
+    }
+
+    fn same_map(&self, other: &CompareKey) -> bool {
+        self.same_pixels(other) && (self.metric, self.alignment) == (other.metric, other.alignment)
     }
 }
 
@@ -599,6 +545,7 @@ type DecodeResult = Result<DecodedImage, String>;
 
 struct CompareResult {
     key: CompareKey,
+    map: Option<Arc<MetricMap>>,
     diff: Option<(PixelStats, ColorImage)>,
     heat: Option<ColorImage>,
     histograms: Option<[Histogram; 2]>,
@@ -623,6 +570,8 @@ pub struct ImageDiffProcessor {
     shown_channel: ImageChannel,
     /// Mirrors the setting: only the heatmap and histogram modes make their data.
     shown_mode: ImageMode,
+    shown_metric: PixelMetric,
+    shown_alignment: Alignment,
     blink: Blink,
     /// The swipe divider, as a fraction of the view's width: it stays put while panning.
     swipe: f32,
@@ -635,6 +584,8 @@ pub struct ImageDiffProcessor {
     diff_map: Option<DiffMap>,
     heat: Option<HeatLayer>,
     histograms: Option<(CompareKey, Arc<[Histogram; 2]>)>,
+    // A tolerance change only thresholds this again.
+    metric_map: Option<(CompareKey, Arc<MetricMap>)>,
     /// The sampling the uploaded textures were made with.
     texture_sampling: ImageSampling,
     texture_channel: ImageChannel,
@@ -673,6 +624,8 @@ impl Default for ImageDiffProcessor {
             tolerance: 0,
             shown_channel: ImageChannel::default(),
             shown_mode: ImageMode::default(),
+            shown_metric: PixelMetric::default(),
+            shown_alignment: Alignment::default(),
             blink: Blink::default(),
             swipe: DEFAULT_SWIPE,
             opacity: DEFAULT_OPACITY,
@@ -681,6 +634,7 @@ impl Default for ImageDiffProcessor {
             diff_map: None,
             heat: None,
             histograms: None,
+            metric_map: None,
             texture_sampling: ImageSampling::default(),
             texture_channel: ImageChannel::default(),
             repaint,
@@ -727,6 +681,7 @@ impl ImageDiffProcessor {
         self.diff_map = None;
         self.heat = None;
         self.histograms = None;
+        self.metric_map = None;
     }
 
     fn key(&self) -> CompareKey {
@@ -734,6 +689,8 @@ impl ImageDiffProcessor {
             generation: self.generation,
             tolerance: self.tolerance,
             channel: self.shown_channel,
+            metric: self.shown_metric,
+            alignment: self.shown_alignment,
         }
     }
 
@@ -771,6 +728,11 @@ impl ImageDiffProcessor {
             if !stale.histograms {
                 result.histograms = None;
             }
+            if let Some(map) = result.map
+                && result.key.same_map(&self.key())
+            {
+                self.metric_map = Some((result.key, map));
+            }
             if let Some((stats, mask)) = result.diff {
                 self.diff_map = Some(DiffMap {
                     key: result.key,
@@ -805,6 +767,11 @@ impl ImageDiffProcessor {
         }
         self.requested = Some((key, missing));
 
+        let cached_map = self
+            .metric_map
+            .as_ref()
+            .filter(|(cached, _)| cached.same_map(&key))
+            .map(|(_, map)| map.clone());
         let (tolerance, channel) = (key.tolerance, key.channel);
         self.compare_job.start(move |job| {
             let cancel_flag: &AtomicBool = job.cancel_flag();
@@ -821,28 +788,32 @@ impl ImageDiffProcessor {
                 rgba: &second_rgba,
                 ..second
             };
-            let diff = if missing.diff {
-                let Some(diff) = pixel_diff(first, second, tolerance, cancel_flag) else {
-                    return;
-                };
+            let map = match cached_map {
+                _ if !missing.diff && !missing.heat => None,
+                Some(map) => Some(map),
+                None => {
+                    let map = metric_map(first, second, key.metric, key.alignment, cancel_flag);
+                    let Some(map) = map else {
+                        return;
+                    };
+                    Some(Arc::new(map))
+                }
+            };
+            let diff = map.as_deref().filter(|_| missing.diff).map(|map| {
+                let diff = changed_pixels(map, tolerance);
                 let mask = mask_image(&diff);
-                Some((diff.stats, mask))
-            } else {
-                None
-            };
-            let heat = if missing.heat {
-                let Some(heat) = heat_magnitudes(first, second, cancel_flag) else {
-                    return;
-                };
-                Some(heat_image(&heat, tolerance))
-            } else {
-                None
-            };
+                (diff.stats, mask)
+            });
+            let heat = map
+                .as_deref()
+                .filter(|_| missing.heat)
+                .map(|map| heat_image(map, tolerance));
             let histograms = missing
                 .histograms
                 .then(|| [histogram(first.rgba), histogram(second.rgba)]);
             job.send(CompareResult {
                 key,
+                map,
                 diff,
                 heat,
                 histograms,
@@ -930,6 +901,14 @@ impl ImageDiffProcessor {
             .as_ref()
             .map(|map| stats_text(&map.stats))
             .unwrap_or_default()
+    }
+
+    fn difference_text(&self) -> Option<String> {
+        let (key, map) = self.metric_map.as_ref()?;
+        Some(match key.metric {
+            PixelMetric::Ssim => format!("Mean SSIM {:.4}", 1.0 - map.difference),
+            _ => format!("Mean difference {:.2} of 255", map.difference * 255.0),
+        })
     }
 
     // Any pair's text fits in this, so the toolbar doesn't reflow as the stats change.
@@ -1076,7 +1055,7 @@ pub fn show(
                 ),
             ui.selectable_value(&mut settings.mode, ImageMode::Difference, "Difference"),
             ui.selectable_value(&mut settings.mode, ImageMode::Heatmap, "Heatmap")
-                .on_hover_text("Color each pixel by its largest channel difference"),
+                .on_hover_text("Color each pixel by its difference under the metric"),
             ui.selectable_value(&mut settings.mode, ImageMode::Histogram, "Histogram")
                 .on_hover_text("Overlay the value counts of both images, per channel"),
             ui.selectable_value(&mut settings.mode, ImageMode::Swipe, "Swipe")
@@ -1115,7 +1094,9 @@ pub fn show(
             .on_hover_text("Time each image is shown");
         }
         ui.add(egui::Slider::new(&mut processor.tolerance, 0..=255).text("Tolerance"))
-            .on_hover_text("The largest per-channel difference that still counts as unchanged");
+            .on_hover_text(
+                "The largest difference under the metric, 0 to 255, that still counts as unchanged",
+            );
         egui::ComboBox::from_id_salt("image_channel")
             .selected_text(format!("Channel: {}", settings.channel.label()))
             .show_ui(ui, |ui| {
@@ -1125,6 +1106,28 @@ pub fn show(
             })
             .response
             .on_hover_text("Show only one channel, in every mode");
+        egui::ComboBox::from_id_salt("image_metric")
+            .selected_text(format!("Metric: {}", settings.metric.label()))
+            .show_ui(ui, |ui| {
+                for metric in PixelMetric::ALL {
+                    ui.selectable_value(&mut settings.metric, metric, metric.label());
+                }
+            })
+            .response
+            .on_hover_text(
+                "Exact: the largest channel difference at the same pixel. Neighborhood: to the \
+                 closest match nearby, forgiving small shifts and resampling. SSIM: local \
+                 structure of the luma. Also used by the video difference timeline",
+            );
+        egui::ComboBox::from_id_salt("image_alignment")
+            .selected_text(format!("Align: {}", settings.alignment.label()))
+            .show_ui(ui, |ui| {
+                for alignment in Alignment::ALL {
+                    ui.selectable_value(&mut settings.alignment, alignment, alignment.label());
+                }
+            })
+            .response
+            .on_hover_text("Where differently sized images are drawn and compared");
         egui::ComboBox::from_id_salt("image_sampling")
             .selected_text(format!("Sampling: {:?}", settings.sampling))
             .show_ui(ui, |ui| {
@@ -1137,6 +1140,8 @@ pub fn show(
     });
     processor.shown_channel = settings.channel;
     processor.shown_mode = settings.mode;
+    processor.shown_metric = settings.metric;
+    processor.shown_alignment = settings.alignment;
     processor.set_texture_sampling(settings.sampling);
     if processor.texture_channel != settings.channel {
         processor.texture_channel = settings.channel;
@@ -1220,11 +1225,12 @@ pub fn show(
         .sides
         .iter()
         .any(|side| matches!(side, SideState::Decoding));
-    let canvas = (0..2)
+    let canvas_pixels = (0..2)
         .filter_map(|i| processor.decoded(i))
-        .fold(Vec2::ZERO, |canvas, image| {
-            canvas.max(vec2(image.width as f32, image.height as f32))
+        .fold((0, 0), |(width, height), image| {
+            (width.max(image.width), height.max(image.height))
         });
+    let canvas = vec2(canvas_pixels.0 as f32, canvas_pixels.1 as f32);
     let min_zoom = ImageView::min_zoom(canvas, viewport);
     if (processor.fit_pending && !decoding) || fit || response.double_clicked() {
         processor.view = ImageView::fit(canvas, viewport);
@@ -1355,10 +1361,15 @@ pub fn show(
                 if hidden {
                     continue;
                 }
+                let placed = placement(
+                    settings.alignment,
+                    (image.width, image.height),
+                    canvas_pixels,
+                );
                 let drawn = image_screen_rect(
                     view,
-                    image_rect.min,
-                    vec2(image.width as f32, image.height as f32),
+                    image_rect.min + vec2(placed.x.start as f32, placed.y.start as f32) * view.zoom,
+                    vec2(placed.x.len() as f32, placed.y.len() as f32),
                 );
                 // Swipe shows each side only on its side of the divider.
                 let painter =
@@ -1380,7 +1391,7 @@ pub fn show(
                 );
 
                 if let Some((mask, canvas, bounds, color)) = &diff_overlay {
-                    // The canvas is aligned top-left like both images, so the map lines up on
+                    // The map covers the canvas both images are placed on, so it lines up on
                     // either side.
                     let origin = image_rect.min + view.pan;
                     painter.image(
@@ -1415,7 +1426,7 @@ pub fn show(
     if settings.mode == ImageMode::Heatmap
         && let Some(heat) = &processor.heat
     {
-        paint_heat_legend(&ui.painter_at(area), area, heat.key.tolerance, font);
+        paint_heat_legend(&ui.painter_at(area), area, heat.key, font);
     }
 
     if let Some([left, _]) = swipe {
@@ -1438,15 +1449,19 @@ pub fn show(
 }
 
 // Fixed white on black, so the legend reads over any image.
-fn paint_heat_legend(painter: &egui::Painter, area: Rect, tolerance: u8, font: egui::FontId) {
+fn paint_heat_legend(painter: &egui::Painter, area: Rect, key: CompareKey, font: egui::FontId) {
     const SEGMENTS: usize = 128;
     const SEGMENT_WIDTH: f32 = 2.0;
     const BAR_HEIGHT: f32 = 14.0;
     const PAD: f32 = 6.0;
-    let title = if tolerance == 0 {
-        "Largest channel difference (0 = unchanged)".to_string()
-    } else {
-        format!("Largest channel difference (0 to {tolerance} = unchanged)")
+    let measure = match key.metric {
+        PixelMetric::Exact => "Largest channel difference",
+        PixelMetric::Neighborhood(_) => "Largest channel difference to the closest match nearby",
+        PixelMetric::Ssim => "(1 - SSIM) x 255",
+    };
+    let title = match key.tolerance {
+        0 => format!("{measure} (0 = unchanged)"),
+        tolerance => format!("{measure} (0 to {tolerance} = unchanged)"),
     };
     let title = painter.layout_no_wrap(title, font.clone(), Color32::WHITE);
     let bar_width = SEGMENTS as f32 * SEGMENT_WIDTH;
@@ -1499,9 +1514,12 @@ fn compare_status_ui(ui: &mut egui::Ui, processor: &ImageDiffProcessor) {
     let widest = painter.layout_no_wrap(processor.widest_compare_status(), font.clone(), color);
     let status = painter.layout_no_wrap(processor.compare_status(), font, color);
     let size = vec2(widest.size().x, ui.spacing().interact_size.y);
-    let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
+    let (rect, response) = ui.allocate_exact_size(size, Sense::hover());
     let top = rect.center().y - status.size().y / 2.0;
     ui.painter().galley(pos2(rect.left(), top), status, color);
+    if let Some(difference) = processor.difference_text() {
+        response.on_hover_text(difference);
+    }
 }
 
 // One plot per histogram channel, stacked, each scaled to its own tallest bin across both sides.
@@ -2129,13 +2147,15 @@ mod tests {
             mode: ImageMode::AB,
             channel: ImageChannel::Luminance,
             blink_ms: 250,
+            metric: PixelMetric::Neighborhood(zdiff::pixel_metric::NeighborhoodSize::Five),
+            alignment: Alignment::ScaleToFit,
         };
         let mut json = serde_json::to_value(&settings).unwrap();
         let restored: ImageSettings = serde_json::from_value(json.clone()).unwrap();
         assert_eq!(restored, settings);
 
         let fields = json.as_object_mut().unwrap();
-        for field in ["mode", "channel", "blink_ms"] {
+        for field in ["mode", "channel", "blink_ms", "metric", "alignment"] {
             fields.remove(field);
         }
         let older: ImageSettings = serde_json::from_value(json).unwrap();
@@ -2155,6 +2175,7 @@ mod tests {
             mode: ImageMode::Overlay,
             channel: ImageChannel::Red,
             blink_ms: 2000,
+            ..ImageSettings::default()
         };
         let reset = |mode| {
             let mut processor = ImageDiffProcessor {
@@ -2229,6 +2250,20 @@ mod tests {
         assert_eq!(heat_color(255, 255), Color32::TRANSPARENT);
     }
 
+    fn heat_magnitudes(
+        first: RgbaBuffer,
+        second: RgbaBuffer,
+        cancel_flag: &AtomicBool,
+    ) -> Option<MetricMap> {
+        metric_map(
+            first,
+            second,
+            PixelMetric::Exact,
+            Alignment::TopLeft,
+            cancel_flag,
+        )
+    }
+
     #[test]
     fn heat_magnitudes_are_the_largest_channel_difference() {
         let first = [10, 20, 30, 255, 7, 7, 7, 7];
@@ -2291,10 +2326,12 @@ mod tests {
 
     #[test]
     fn the_heat_image_cuts_at_the_tolerance() {
-        let heat = HeatMap {
+        let heat = MetricMap {
             width: 3,
             height: 1,
             magnitude: vec![0, 5, 200],
+            overlap: zdiff::pixel::PixelBounds { x: 0..3, y: 0..1 },
+            difference: 205.0 / 765.0,
         };
         let image = heat_image(&heat, 5);
         assert_eq!(image.size, [3, 1]);
@@ -2521,6 +2558,49 @@ mod tests {
         processor.poll(usize::MAX);
         assert_eq!(changed(&processor), Some((0, 1, 1)));
         assert!(!processor.comparing());
+    }
+
+    #[test]
+    fn a_tolerance_change_reuses_the_metric_map_and_a_metric_or_alignment_change_does_not() {
+        let mut processor = red_pair_processor(ImageMode::Heatmap);
+        poll_until(&mut processor, |p| !p.comparing());
+        let cached = processor.metric_map.as_ref().unwrap().1.clone();
+        assert_eq!(
+            processor.difference_text().as_deref(),
+            Some("Mean difference 30.00 of 255")
+        );
+
+        processor.tolerance = 10;
+        assert!(processor.comparing());
+        poll_until(&mut processor, |p| !p.comparing());
+        assert_eq!(changed(&processor), Some((10, 1, 1)));
+        assert!(Arc::ptr_eq(
+            &cached,
+            &processor.metric_map.as_ref().unwrap().1
+        ));
+
+        processor.shown_metric = PixelMetric::Ssim;
+        assert!(processor.comparing());
+        poll_until(&mut processor, |p| !p.comparing());
+        let (key, map) = processor.metric_map.as_ref().unwrap();
+        assert_eq!(key.metric, PixelMetric::Ssim);
+        assert!(!Arc::ptr_eq(&cached, map));
+        assert_eq!(
+            processor.difference_text().as_deref(),
+            Some("Mean SSIM 0.1378")
+        );
+        assert_eq!(
+            processor.heat.as_ref().unwrap().key.metric,
+            PixelMetric::Ssim
+        );
+
+        processor.shown_alignment = Alignment::Center;
+        assert!(processor.comparing());
+        poll_until(&mut processor, |p| !p.comparing());
+        assert_eq!(
+            processor.metric_map.as_ref().unwrap().0.alignment,
+            Alignment::Center
+        );
     }
 
     #[test]

@@ -15,6 +15,9 @@ use zcommon::ffmpeg::{FfmpegError, FfmpegPaths, run_ffmpeg, scaled_frames_args};
 use zcommon::job::{Job, JobCtx};
 use zcommon_ui::style_window::role_color;
 
+use zdiff::pixel::RgbaBuffer;
+use zdiff::pixel_metric::{Alignment, PixelMetric, metric_map};
+
 use super::video_frames::{VideoTrack, end_time, format_time};
 use crate::ui_egui::file_role::FileRole;
 
@@ -37,6 +40,32 @@ pub fn mean_abs_diff(a: &[u8], b: &[u8]) -> f32 {
         .map(|(a, b)| (0..3).map(|c| a[c].abs_diff(b[c]) as u64).sum::<u64>())
         .sum();
     (sum as f64 / (a.len() / 4 * 3) as f64) as f32
+}
+
+/// 0..=255. Exact keeps the mean over the RGB channels; the others are the metric's mean.
+pub fn frame_difference(
+    metric: PixelMetric,
+    (width, height): (u32, u32),
+    a: &[u8],
+    b: &[u8],
+) -> f32 {
+    if metric == PixelMetric::Exact {
+        return mean_abs_diff(a, b);
+    }
+    let frame = |rgba| RgbaBuffer {
+        width,
+        height,
+        rgba,
+    };
+    let map = metric_map(
+        frame(a),
+        frame(b),
+        metric,
+        Alignment::TopLeft,
+        &AtomicBool::new(false),
+    )
+    .expect("never cancelled");
+    (map.difference * 255.0) as f32
 }
 
 /// Joins stdout chunks into whole frames of `frame_len` bytes; a partial frame waits in `carry`.
@@ -69,6 +98,7 @@ pub fn split_frames(
 pub fn pair_frames(
     left: impl Iterator<Item = Result<Vec<u8>, String>>,
     right: impl Iterator<Item = Result<Vec<u8>, String>>,
+    difference: impl Fn(&[u8], &[u8]) -> f32,
     mut push: impl FnMut(f32) -> bool,
 ) -> Result<(), String> {
     let (mut left, mut right) = (left.fuse(), right.fuse());
@@ -86,7 +116,7 @@ pub fn pair_frames(
         let [Some(a), Some(b)] = &last else {
             break;
         };
-        if !push(mean_abs_diff(a, b)) {
+        if !push(difference(a, b)) {
             return Ok(());
         }
     }
@@ -142,7 +172,7 @@ fn decode_side(
 }
 
 /// Decodes both sides at once, so only a few frames are ever held, and sends one value per pair.
-fn run_job(job: TimelineJob, fps: f64, ctx: &JobCtx<TimelineMessage>) {
+fn run_job(job: TimelineJob, fps: f64, metric: PixelMetric, ctx: &JobCtx<TimelineMessage>) {
     let size = timeline_size(&job.tracks[0]);
     let receivers = job.inputs.map(|input| {
         let (frames, receiver) = mpsc::sync_channel(FRAMES_IN_FLIGHT);
@@ -151,9 +181,12 @@ fn run_job(job: TimelineJob, fps: f64, ctx: &JobCtx<TimelineMessage>) {
         receiver
     });
     let [left, right] = receivers;
-    let paired = pair_frames(left.into_iter(), right.into_iter(), |value| {
-        ctx.send(TimelineMessage::Value(value))
-    });
+    let paired = pair_frames(
+        left.into_iter(),
+        right.into_iter(),
+        |a, b| frame_difference(metric, size, a, b),
+        |value| ctx.send(TimelineMessage::Value(value)),
+    );
     let result = match paired {
         _ if ctx.is_cancelled() => Err(None),
         Err(reason) => Err(Some(reason)),
@@ -198,6 +231,7 @@ pub struct VideoTimeline {
     fps: f64,
     expected: usize,
     values: Vec<f32>,
+    metric: PixelMetric,
     run_job: Job<TimelineMessage>,
 }
 
@@ -209,6 +243,7 @@ impl Default for VideoTimeline {
             fps: 1.0,
             expected: 0,
             values: Vec::new(),
+            metric: PixelMetric::default(),
             run_job: Job::new(|| {}).on_panic(|e| TimelineMessage::Done(Err(Some(e)))),
         }
     }
@@ -236,8 +271,17 @@ impl VideoTimeline {
         self.expected = expected_samples(&job.tracks, self.fps);
         self.values.clear();
         self.state = TimelineState::Running;
-        let fps = self.fps;
-        self.run_job.start(move |ctx| run_job(job, fps, ctx));
+        let (fps, metric) = (self.fps, self.metric);
+        self.run_job
+            .start(move |ctx| run_job(job, fps, metric, ctx));
+    }
+
+    pub fn set_metric(&mut self, metric: PixelMetric) {
+        if self.metric == metric {
+            return;
+        }
+        self.metric = metric;
+        self.compute_again();
     }
 
     fn stop(&mut self) {
@@ -314,7 +358,10 @@ impl VideoTimeline {
             ),
             TimelineState::Failed(reason) => format!("Difference timeline failed: {reason}"),
             TimelineState::Done => match peak {
-                Some(peak) => format!("Mean pixel difference per frame, {peak}"),
+                Some(peak) if self.metric == PixelMetric::Exact => {
+                    format!("Mean pixel difference per frame, {peak}")
+                }
+                Some(peak) => format!("Mean {} difference per frame, {peak}", self.metric.label()),
                 None => "No difference between the frames".to_string(),
             },
         }
@@ -422,6 +469,27 @@ mod tests {
     }
 
     #[test]
+    fn the_frame_difference_follows_the_metric() {
+        let line = |x: usize| {
+            let mut pixels = [[0; 3]; 15];
+            for y in 0..3 {
+                pixels[y * 5 + x] = [200; 3];
+            }
+            frame(&pixels)
+        };
+        let (a, b) = (line(1), line(2));
+        assert_eq!(
+            frame_difference(PixelMetric::Exact, (5, 3), &a, &b),
+            mean_abs_diff(&a, &b)
+        );
+        assert!(mean_abs_diff(&a, &b) > 0.0);
+        let three = PixelMetric::Neighborhood(zdiff::pixel_metric::NeighborhoodSize::Three);
+        assert_eq!(frame_difference(three, (5, 3), &a, &b), 0.0);
+        assert_eq!(frame_difference(PixelMetric::Ssim, (5, 3), &a, &a), 0.0);
+        assert!(frame_difference(PixelMetric::Ssim, (5, 3), &a, &b) > 0.0);
+    }
+
+    #[test]
     fn frames_split_across_chunks_are_joined() {
         let bytes: Vec<u8> = (0..20).collect();
         let mut frames = Vec::new();
@@ -447,6 +515,7 @@ mod tests {
         pair_frames(
             ok_frames(left).into_iter(),
             ok_frames(right).into_iter(),
+            mean_abs_diff,
             |v| {
                 values.push(v);
                 true
@@ -470,10 +539,15 @@ mod tests {
         let right = ok_frames(&[1])
             .into_iter()
             .chain([Err("broken".to_string())]);
-        let result = pair_frames(ok_frames(&[1, 2, 3]).into_iter(), right, |v| {
-            values.push(v);
-            true
-        });
+        let result = pair_frames(
+            ok_frames(&[1, 2, 3]).into_iter(),
+            right,
+            mean_abs_diff,
+            |v| {
+                values.push(v);
+                true
+            },
+        );
         assert_eq!((result, values), (Err("broken".to_string()), vec![0.0]));
     }
 
@@ -483,6 +557,7 @@ mod tests {
         let result = pair_frames(
             ok_frames(&[1, 2, 3]).into_iter(),
             ok_frames(&[1, 2, 3]).into_iter(),
+            mean_abs_diff,
             |_| {
                 count += 1;
                 count < 2
@@ -573,5 +648,21 @@ mod tests {
             matches!(timeline.state, TimelineState::Failed(_)),
             "{timeline:?}"
         );
+    }
+
+    #[test]
+    fn a_metric_change_computes_a_started_timeline_again() {
+        let mut timeline = VideoTimeline::default();
+        timeline.set_metric(PixelMetric::Ssim);
+        assert!(!timeline.is_started() && !timeline.running());
+
+        start(&mut timeline);
+        poll_until_stopped(&mut timeline);
+        timeline.set_metric(PixelMetric::Ssim);
+        assert!(!timeline.running());
+
+        timeline.set_metric(PixelMetric::Exact);
+        assert!(timeline.running());
+        poll_until_stopped(&mut timeline);
     }
 }

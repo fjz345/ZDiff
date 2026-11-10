@@ -437,6 +437,7 @@ pub fn show(
             slider.surrender_focus();
         }
     });
+    processor.timeline.set_metric(image_settings.metric);
     if let Some(time) = video_timeline::show(ui, &mut processor.timeline, processor.time_secs, end)
     {
         processor.seek(time);

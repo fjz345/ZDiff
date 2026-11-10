@@ -12,6 +12,7 @@ Library diffing file contents.
 * Ignore options: whitespace, comments, regex patterns (matched tokens are ignored and dimmed), line endings (any two line breaks compare equal), file markers (a leading BOM, lexed as its own token, and the file's last line break)
 * Side-by-side rows built in parallel chunks, with ghost tokens and diff-only collapsing
 * Hex (byte) and pixel diffs
+* Pixel metrics (`pixel_metric`): per-pixel difference maps (0 alike to 255 totally different) plus their mean, from Exact (largest channel difference), Neighborhood 3x3/5x5/7x7 (to the closest match in the other image, the worse of both directions; forgives small shifts and resampling) or SSIM (premultiplied Rec. 709 luma, 7x7 window, as (1 - SSIM) x 255). Differently sized images are aligned top-left, centered, or both bilinearly scaled to the larger width by the larger height; pixels outside the overlap count as changed at any tolerance
 * 3-way merge model: chunking, resolution and output
 * Phase trace for debugging
 

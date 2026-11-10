@@ -1,9 +1,6 @@
-use std::{
-    ops::Range,
-    sync::atomic::{AtomicBool, Ordering},
-};
+use std::{ops::Range, sync::atomic::AtomicBool};
 
-use rayon::prelude::*;
+use crate::pixel_metric::{Alignment, PixelMetric, changed_pixels, metric_map};
 
 /// A straight (not premultiplied) RGBA8 image, row-major.
 #[derive(Debug, Clone, Copy)]
@@ -56,91 +53,14 @@ pub fn pixel_diff(
     tolerance: u8,
     cancel_flag: &AtomicBool,
 ) -> Option<PixelDiff> {
-    for image in [&first, &second] {
-        assert_eq!(
-            image.rgba.len(),
-            image.width as usize * image.height as usize * 4,
-            "RGBA length doesn't match {} x {}",
-            image.width,
-            image.height
-        );
-    }
-    if cancel_flag.load(Ordering::Acquire) {
-        return None;
-    }
-
-    let (width, height) = (
-        first.width.max(second.width) as usize,
-        first.height.max(second.height) as usize,
-    );
-    let (overlap_width, overlap_height) = (
-        first.width.min(second.width) as usize,
-        first.height.min(second.height) as usize,
-    );
-    // Everything outside the overlap stays changed.
-    let mut mask = vec![true; width * height];
-    let changed_rows: Vec<Option<(u64, usize, usize)>> = mask
-        .par_chunks_mut(width.max(1))
-        .enumerate()
-        .with_min_len(16)
-        .map(|(y, row)| {
-            if cancel_flag.load(Ordering::Acquire) {
-                return None;
-            }
-            if y < overlap_height {
-                let a = overlap_row(&first, y, overlap_width);
-                let b = overlap_row(&second, y, overlap_width);
-                // Equal rows (most of them, in a typical edit) skip the per-pixel walk.
-                if a == b {
-                    row[..overlap_width].fill(false);
-                } else {
-                    for (x, (a, b)) in a.chunks_exact(4).zip(b.chunks_exact(4)).enumerate() {
-                        row[x] = a.iter().zip(b).any(|(a, b)| a.abs_diff(*b) > tolerance);
-                    }
-                }
-            }
-            let (Some(first_x), Some(last_x)) =
-                (row.iter().position(|&c| c), row.iter().rposition(|&c| c))
-            else {
-                return Some(None);
-            };
-            let count = row.iter().filter(|&&c| c).count() as u64;
-            Some(Some((count, first_x, last_x)))
-        })
-        .collect::<Option<_>>()?;
-
-    let mut changed = 0;
-    let mut bounds: Option<PixelBounds> = None;
-    for (y, row) in changed_rows.into_iter().enumerate() {
-        let Some((count, first_x, last_x)) = row else {
-            continue;
-        };
-        changed += count;
-        let (x, y) = (first_x as u32..last_x as u32 + 1, y as u32);
-        bounds = Some(match bounds {
-            None => PixelBounds { x, y: y..y + 1 },
-            Some(b) => PixelBounds {
-                x: b.x.start.min(x.start)..b.x.end.max(x.end),
-                y: b.y.start..y + 1,
-            },
-        });
-    }
-
-    Some(PixelDiff {
-        width: width as u32,
-        height: height as u32,
-        mask,
-        stats: PixelStats {
-            changed,
-            total: (width * height) as u64,
-            bounds,
-        },
-    })
-}
-
-fn overlap_row<'a>(image: &RgbaBuffer<'a>, y: usize, overlap_width: usize) -> &'a [u8] {
-    let start = y * image.width as usize * 4;
-    &image.rgba[start..start + overlap_width * 4]
+    let map = metric_map(
+        first,
+        second,
+        PixelMetric::Exact,
+        Alignment::TopLeft,
+        cancel_flag,
+    )?;
+    Some(changed_pixels(&map, tolerance))
 }
 
 #[cfg(test)]

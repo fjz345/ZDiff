@@ -11,6 +11,7 @@ pub mod lexer;
 pub mod merge;
 pub mod myers;
 pub mod pixel;
+pub mod pixel_metric;
 pub mod row_text;
 pub mod scope;
 #[cfg(test)]

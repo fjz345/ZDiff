@@ -42,6 +42,7 @@ GUI for zdiff crate
 * Viewers, picked from the file kind (override per diff); mismatched types show each side in its own viewer
     - Hex: Bytes or Strings mode, overview strip, next/previous difference, goto offset, value inspector (ints, floats, string, endian toggle)
     - Image: side by side, A/B, difference, heatmap, histogram, swipe and overlay; channel filter, tolerance, Nearest/Linear sampling, linked zoom and pan
+    - Image metric (Exact, Neighborhood 3x3/5x5/7x7, SSIM) for the difference, heatmap and changed count, with the tolerance on its 0 to 255 scale; hover the count for the mean difference (mean SSIM). Alignment of differently sized images: top left, center or scale to fit, for drawing and comparing. Both are saved; the video difference timeline uses the same metric
     - Audio: waveform lanes, overlay, spectrograms with their dB difference, sample difference lanes, metadata table with loudness
     - Video: frame compare with timestamp matching, scrubber and frame steps, a difference timeline, Audio and Metadata tabs (the audio decodes when the Audio tab first opens and is kept until the pair changes)
     - Zooming out stops at fit: the whole image (or 1:1 for an image smaller than the view), the whole audio length
