@@ -165,7 +165,8 @@ pub enum ImageMode {
     #[default]
     SideBySide,
     /// One side at a time, alternating at the blink interval.
-    Blink,
+    #[cfg_attr(feature = "serde", serde(alias = "Blink"))]
+    AB,
     /// Both sides dimmed, with the changed pixels of the union canvas drawn over them.
     Difference,
     /// Both sides dimmed, with each pixel's difference colored by its size.
@@ -1042,7 +1043,7 @@ pub fn show(
         ui.label(format!("{:.0}%", processor.view.zoom * 100.0));
         ui.separator();
         ui.selectable_value(&mut settings.mode, ImageMode::SideBySide, "Side by side");
-        ui.selectable_value(&mut settings.mode, ImageMode::Blink, "Blink")
+        ui.selectable_value(&mut settings.mode, ImageMode::AB, "A/B")
             .on_hover_text("Alternate between the two images");
         ui.selectable_value(&mut settings.mode, ImageMode::Difference, "Difference");
         ui.selectable_value(&mut settings.mode, ImageMode::Heatmap, "Heatmap")
@@ -1056,7 +1057,7 @@ pub fn show(
             ui.add(egui::Slider::new(&mut processor.opacity, 0.0..=1.0).text("Opacity"))
                 .on_hover_text("How opaque the right image is over the left one");
         }
-        if settings.mode == ImageMode::Blink {
+        if settings.mode == ImageMode::AB {
             let mut paused = processor.blink.paused();
             if ui.toggle_value(&mut paused, "Pause").changed() {
                 processor.blink.set_paused(paused);
@@ -1108,7 +1109,7 @@ pub fn show(
         }
     }
     let options = texture_options(settings.sampling);
-    let blinking = settings.mode == ImageMode::Blink
+    let blinking = settings.mode == ImageMode::AB
         && processor.decoded(0).is_some()
         && processor.decoded(1).is_some();
     if blinking {
@@ -1136,7 +1137,7 @@ pub fn show(
     // side by side, where a spinner or a failure has its own column.
     let combined = matches!(
         settings.mode,
-        ImageMode::Blink | ImageMode::Swipe | ImageMode::Overlay
+        ImageMode::AB | ImageMode::Swipe | ImageMode::Overlay
     ) && processor.decoded(0).is_some()
         && processor.decoded(1).is_some();
     let columns = if combined {
@@ -2055,7 +2056,7 @@ mod tests {
     fn mode_channel_and_blink_interval_are_saved_and_older_saves_load() {
         let settings = ImageSettings {
             sampling: ImageSampling::Linear,
-            mode: ImageMode::Blink,
+            mode: ImageMode::AB,
             channel: ImageChannel::Luminance,
             blink_ms: 250,
         };
@@ -2075,6 +2076,13 @@ mod tests {
                 ..ImageSettings::default()
             }
         );
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn a_saved_blink_mode_loads_as_a_b() {
+        let mode: ImageMode = serde_json::from_value(serde_json::json!("Blink")).unwrap();
+        assert_eq!(mode, ImageMode::AB);
     }
 
     #[test]
