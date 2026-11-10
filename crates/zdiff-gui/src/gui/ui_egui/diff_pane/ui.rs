@@ -176,13 +176,17 @@ impl FileDiffPane {
                     Some(diff_rows_num) => {
                         match stepper(
                             ui,
-                            diff_rows_num.to_string(),
+                            *diff_rows_num,
+                            0..=MAX_CONTEXT_ROWS,
+                            |rows| rows.to_string(),
                             &action_hint(FileAction::FewerContextRows),
                             &action_hint(FileAction::MoreContextRows),
                             &format!("Reset to {DEFAULT_CONTEXT_ROWS} context rows"),
                         ) {
                             Some(Step::Dec) => *diff_rows_num = diff_rows_num.saturating_sub(1),
-                            Some(Step::Inc) => *diff_rows_num = (*diff_rows_num + 1).min(99),
+                            Some(Step::Inc) => {
+                                *diff_rows_num = (*diff_rows_num + 1).min(MAX_CONTEXT_ROWS)
+                            }
                             Some(Step::Reset) => *diff_rows_num = DEFAULT_CONTEXT_ROWS,
                             None => {}
                         }
@@ -194,13 +198,12 @@ impl FileDiffPane {
 
             ui.with_layout(Layout::left_to_right(egui::Align::Center), |ui| {
                 ui.spacing_mut().item_spacing.x = 4.0;
+                let conflict_max = ctx.conflict_cursor.get_max();
                 match stepper(
                     ui,
-                    format!(
-                        "{}/{}",
-                        ctx.conflict_cursor.get(),
-                        ctx.conflict_cursor.get_max()
-                    ),
+                    ctx.conflict_cursor.get(),
+                    0..=conflict_max,
+                    |cursor| format!("{cursor}/{conflict_max}"),
                     &action_hint(FileAction::PrevConflict),
                     &action_hint(FileAction::NextConflict),
                     "Clear conflict selection",
@@ -213,14 +216,15 @@ impl FileDiffPane {
             });
             ui.with_layout(Layout::left_to_right(egui::Align::Center), |ui| {
                 ui.spacing_mut().item_spacing.x = 4.0;
-                let find_k = if ctx.find_count == 0 {
-                    0
-                } else {
-                    ctx.find_cursor.get() + 1
-                };
+                let find_count = ctx.find_count;
                 match stepper(
                     ui,
-                    format!("{find_k} of {}", ctx.find_count),
+                    ctx.find_cursor.get(),
+                    0..=find_count.saturating_sub(1),
+                    |cursor| {
+                        let find_k = if find_count == 0 { 0 } else { cursor + 1 };
+                        format!("{find_k} of {find_count}")
+                    },
                     &action_hint(FileAction::PrevFind),
                     &action_hint(FileAction::NextFind),
                     "Go to first match",
