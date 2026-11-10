@@ -167,7 +167,7 @@ pub(super) fn render_diff_side(
         append(&name[at..], false);
         job.into()
     };
-    ui.horizontal(|ui| {
+    let mut add_contents = |ui: &mut egui::Ui| {
         if let Some(rel_path) = flat_rel_path {
             if let (Some(v), Some(id)) = (view, node_id) {
                 if v.file_system.get_node(id).is_some() {
@@ -234,8 +234,8 @@ pub(super) fn render_diff_side(
             }
         }
         None
-    })
-    .inner
+    };
+    add_contents(ui)
 }
 
 /// Must match what `render_diff_side` draws for a name `text_width` wide.
@@ -565,16 +565,19 @@ pub(super) fn render_center_cell(
         side_node(views[1], entry.diff_state.second()),
     ];
     let undiffable = undiffable(entry, diff_tool_config);
-    center.show(ui, |slot, ui| {
+    let opacity = if dimmed { 0.5 } else { 1.0 };
+    let body_height = ui.text_style_height(&egui::TextStyle::Body);
+    let cell_rect = ui.max_rect();
+    let (mut slot_left, mut slots_right) = (cell_rect.left(), cell_rect.left());
+    for (i, (slot, width)) in center.slots().enumerate() {
+        let rect = egui::Rect::from_x_y_ranges(slot_left..=slot_left + width, cell_rect.y_range());
+        (slot_left, slots_right) = (rect.right() + ui.spacing().item_spacing.x, rect.right());
         if let (CenterSlot::Tag(_), Some(reason)) = (slot, &undiffable) {
             let stroke = egui::Stroke::new(1.0_f32, ui.visuals().warn_fg_color);
             ui.painter()
-                .rect_stroke(ui.max_rect(), 2.0, stroke, egui::StrokeKind::Inside);
-            ui.interact(ui.max_rect(), ui.id().with("tag"), egui::Sense::hover())
+                .rect_stroke(rect, 2.0, stroke, egui::StrokeKind::Inside);
+            ui.interact(rect, ui.id().with(("tag", i)), egui::Sense::hover())
                 .on_hover_text(reason.to_string());
-        }
-        if dimmed {
-            ui.multiply_opacity(0.5);
         }
         match slot {
             CenterSlot::Tag(column) => {
@@ -585,16 +588,21 @@ pub(super) fn render_center_cell(
                     } else {
                         (kind.tag(), role_color(ui.ctx(), FolderRole::Tag(kind)))
                     };
-                    // Not selectable: a selectable label takes the hover, hiding the tag's tooltip.
-                    let text = RichText::new(text).monospace().color(color);
-                    ui.centered_and_justified(|ui| {
-                        ui.add(egui::Label::new(text).selectable(false));
-                    });
+                    let font = egui::TextStyle::Monospace.resolve(ui.style());
+                    paint_centered(ui, rect, text, font, color.gamma_multiply(opacity));
                 }
             }
             CenterSlot::State => {
-                let response =
-                    center.state_symbol(ui, |ui| ui_custom_diff_state(ui, &entry.diff_state));
+                let symbol_rect =
+                    egui::Rect::from_center_size(rect.center(), egui::vec2(width, body_height));
+                let Some((symbol, role)) = diff_state_symbol(&entry.diff_state) else {
+                    ui.put(symbol_rect, egui::Spinner::new().size(body_height))
+                        .on_hover_text("not compared");
+                    continue;
+                };
+                let font = egui::TextStyle::Body.resolve(ui.style());
+                let color = role_color(ui.ctx(), role).gamma_multiply(opacity);
+                paint_centered(ui, symbol_rect, symbol, font, color);
                 if matches!(entry.diff_state, DiffState::Similar(..)) {
                     let (sides, likeness) = match nodes {
                         [Some(left), Some(right)] if !entry.is_dir => (
@@ -605,18 +613,47 @@ pub(super) fn render_center_cell(
                         ),
                         _ => (None, None),
                     };
-                    response.on_hover_text(similar_tooltip(tolerance, sides, likeness));
+                    ui.interact(
+                        symbol_rect,
+                        ui.id().with(("state", i)),
+                        egui::Sense::hover(),
+                    )
+                    .on_hover_text(similar_tooltip(tolerance, sides, likeness));
                 }
             }
             CenterSlot::Likeness => {
-                ui_likeness_cell(ui, likeness_cell(entry, nodes, compare), row_height);
+                let mut child = ui.new_child(
+                    egui::UiBuilder::new()
+                        .id_salt(i)
+                        .max_rect(rect)
+                        .layout(egui::Layout::left_to_right(egui::Align::Center)),
+                );
+                child.style_mut().interaction.selectable_labels = false;
+                child.multiply_opacity(opacity);
+                ui_likeness_cell(&mut child, likeness_cell(entry, nodes, compare), row_height);
             }
         }
-    });
+    }
+    ui.advance_cursor_after_rect(egui::Rect::from_x_y_ranges(
+        cell_rect.left()..=slots_right,
+        cell_rect.y_range(),
+    ));
     CenterCell {
         clicked: cell.clicked() || cell.secondary_clicked(),
         double_clicked: cell.double_clicked(),
     }
+}
+
+fn paint_centered(
+    ui: &egui::Ui,
+    rect: egui::Rect,
+    text: &str,
+    font: egui::FontId,
+    color: egui::Color32,
+) {
+    let galley = ui.painter().layout_no_wrap(text.to_owned(), font, color);
+    ui.painter()
+        .galley(rect.center() - galley.size() / 2.0, galley, color);
 }
 
 pub(super) fn side_node(view: Option<&FileSystemView>, id: Option<FsNodeId>) -> Option<&FsNode> {

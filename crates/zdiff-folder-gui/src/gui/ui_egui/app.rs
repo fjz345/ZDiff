@@ -2887,6 +2887,45 @@ mod tests {
         );
     }
 
+    #[test]
+    fn idle_and_pointer_moved_frames_of_a_100k_file_diff_expanded_to_its_diffs_fit_a_60_hz_frame() {
+        let (left, right) = (tempdir().unwrap(), tempdir().unwrap());
+        let mut state = AppStateCtx {
+            file_system_1_root_path: Some(left.path().to_path_buf()),
+            file_system_2_root_path: Some(right.path().to_path_buf()),
+            file_system_model_1_view: Some(in_memory_view(left.path(), files_50k(1))),
+            file_system_model_2_view: Some(in_memory_view(right.path(), files_50k(2))),
+            ..Default::default()
+        };
+        finish_compare(&mut state);
+        let rows = state.two_folder_diff_visible_rows.clone().unwrap();
+        let views = [
+            state.file_system_model_1_view.as_mut().unwrap(),
+            state.file_system_model_2_view.as_mut().unwrap(),
+        ];
+        for row in rows.iter() {
+            if let DiffState::Same(first, second) = row.diff_state {
+                views[0].collapsed.insert(first, true);
+                views[1].collapsed.insert(second, true);
+            }
+        }
+        let mut app = ZApp::new(LogBuffer::default());
+        app.state = Some(AppState::Idle(state));
+        let ctx = egui::Context::default();
+
+        median_frame(&ctx, &mut app, 3, Vec::new);
+        let idle = median_frame(&ctx, &mut app, 31, Vec::new);
+        let pointer_moved = median_frame(&ctx, &mut app, 31, || {
+            vec![egui::Event::PointerMoved(egui::pos2(400.0, 500.0))]
+        });
+
+        assert!(idle < FRAME_AT_60_HZ, "idle frame took {idle:?}");
+        assert!(
+            pointer_moved < FRAME_AT_60_HZ,
+            "pointer-moved frame took {pointer_moved:?}"
+        );
+    }
+
     fn frame_texts(
         ctx: &egui::Context,
         app: &mut ZApp,

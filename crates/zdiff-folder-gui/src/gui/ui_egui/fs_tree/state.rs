@@ -1,9 +1,55 @@
 use super::*;
+use std::cell::Cell;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct FileSystemView {
     pub file_system: Arc<FileSystemModel>,
-    pub collapsed: HashMap<FsNodeId, bool>,
+    pub collapsed: CollapsedMap,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct CollapseVersion(u64);
+
+impl Default for CollapseVersion {
+    fn default() -> Self {
+        static NEXT: AtomicU64 = AtomicU64::new(1);
+        Self(NEXT.fetch_add(1, Ordering::Relaxed))
+    }
+}
+
+/// Every insert or remove takes a new version, so equal versions mean equal contents.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct CollapsedMap {
+    map: HashMap<FsNodeId, bool>,
+    #[serde(skip)]
+    version: CollapseVersion,
+    #[serde(skip)]
+    anything_collapsed: Cell<Option<(CollapseVersion, bool)>>,
+}
+
+impl CollapsedMap {
+    pub fn insert(&mut self, id: FsNodeId, collapsed: bool) -> Option<bool> {
+        self.version = CollapseVersion::default();
+        self.map.insert(id, collapsed)
+    }
+
+    pub fn remove(&mut self, id: &FsNodeId) -> Option<bool> {
+        self.version = CollapseVersion::default();
+        self.map.remove(id)
+    }
+
+    pub(super) fn version(&self) -> CollapseVersion {
+        self.version
+    }
+}
+
+impl std::ops::Deref for CollapsedMap {
+    type Target = HashMap<FsNodeId, bool>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.map
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -111,7 +157,7 @@ impl FileSystemView {
     pub fn new(model: Arc<FileSystemModel>) -> Self {
         Self {
             file_system: model,
-            collapsed: HashMap::new(),
+            collapsed: CollapsedMap::default(),
         }
     }
 
@@ -121,15 +167,26 @@ impl FileSystemView {
 
     // Expand Diffs Only also marks files collapsed; only folders below the root count.
     pub fn is_anything_collapsed(&self) -> bool {
+        // Cached by version alone: a view keeps its model, and so does a clone of its map.
+        let version = self.collapsed.version();
+        if let Some((cached, anything)) = self.collapsed.anything_collapsed.get()
+            && cached == version
+        {
+            return anything;
+        }
         let root = self.file_system.get_root_node_id();
-        self.collapsed.iter().any(|(&id, &collapsed)| {
+        let anything = self.collapsed.iter().any(|(&id, &collapsed)| {
             collapsed
                 && id != root
                 && self
                     .file_system
                     .get_node(id)
                     .is_some_and(|node| node.is_dir())
-        })
+        });
+        self.collapsed
+            .anything_collapsed
+            .set(Some((version, anything)));
+        anything
     }
 
     pub fn is_collapsed(&self, node_id: FsNodeId) -> bool {
@@ -515,7 +572,7 @@ impl RowsId {
 pub(super) struct CursorRowsKey {
     rows: RowsId,
     flat: bool,
-    collapsed: [Option<HashMap<FsNodeId, bool>>; 2],
+    collapsed: [Option<CollapseVersion>; 2],
 }
 
 /// `two_folder_cursor_rows` and the indices of the drawn rows, kept until the rows, a view's
@@ -541,11 +598,9 @@ impl CursorRowsCache {
         rows_id: RowsId,
         flat: bool,
     ) -> &[CursorRow] {
-        let collapsed = views.map(|view| view.map(|view| &view.collapsed));
+        let collapsed = views.map(|view| view.map(|view| view.collapsed.version()));
         let current = self.key.as_ref().is_some_and(|key| {
-            key.rows == rows_id
-                && key.flat == flat
-                && key.collapsed.iter().map(Option::as_ref).eq(collapsed)
+            key.rows == rows_id && key.flat == flat && key.collapsed == collapsed
         });
         if !current {
             if self.key.as_ref().is_some_and(|key| key.rows == rows_id) {
@@ -578,7 +633,7 @@ impl CursorRowsCache {
             self.key = Some(CursorRowsKey {
                 rows: rows_id,
                 flat,
-                collapsed: collapsed.map(|collapsed| collapsed.cloned()),
+                collapsed,
             });
             #[cfg(test)]
             {
@@ -793,18 +848,22 @@ impl DiffState {
     }
 }
 
-pub fn ui_custom_diff_state(ui: &mut egui::Ui, state: &DiffState) -> egui::response::Response {
-    let (symbol, role) = match state {
+pub(super) fn diff_state_symbol(state: &DiffState) -> Option<(&'static str, FolderRole)> {
+    Some(match state {
         DiffState::Same(..) => ("=", FolderRole::Same),
         DiffState::Different(..) => ("≠", FolderRole::Different),
         DiffState::Similar(..) => ("≈", FolderRole::Similar),
         DiffState::OnlyInFirst(..) => ("−", FolderRole::OnlyInFirst),
         DiffState::OnlyInSecond(..) => ("+", FolderRole::OnlyInSecond),
-        DiffState::Pending(..) => {
-            return ui
-                .add(egui::Spinner::new().size(ui.text_style_height(&egui::TextStyle::Body)))
-                .on_hover_text("not compared");
-        }
+        DiffState::Pending(..) => return None,
+    })
+}
+
+pub fn ui_custom_diff_state(ui: &mut egui::Ui, state: &DiffState) -> egui::response::Response {
+    let Some((symbol, role)) = diff_state_symbol(state) else {
+        return ui
+            .add(egui::Spinner::new().size(ui.text_style_height(&egui::TextStyle::Body)))
+            .on_hover_text("not compared");
     };
     ui.label(RichText::new(symbol).color(role_color(ui.ctx(), role)))
 }

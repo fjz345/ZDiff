@@ -1560,6 +1560,19 @@ fn cursor_rows_are_rebuilt_when_the_rows_collapse_state_or_flat_mode_change_and_
     assert_eq!(builds(&left, &right, id, true), 5);
 }
 
+#[test]
+fn anything_collapsed_follows_each_fold_of_a_folder() {
+    let (left_dir, _right_dir) = two_folder_trees();
+    let mut view = load_view(left_dir.path());
+    let sub = find_id_by_rel_path(&view.file_system, left_dir.path(), "sub");
+
+    assert!(!view.is_anything_collapsed());
+    view.toggle_collapse(sub);
+    assert!(view.is_anything_collapsed());
+    view.toggle_collapse(sub);
+    assert!(!view.is_anything_collapsed());
+}
+
 fn content_widths(
     widths: &mut ContentWidths,
     views: [&FileSystemView; 2],
