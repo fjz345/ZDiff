@@ -1,10 +1,10 @@
 //! A PDB as text for the text diff: one record per line, sorted, under `== Section ==` headers.
 
-use std::io::Cursor;
+use std::{collections::HashSet, io::Cursor};
 
 use pdb::{
     ClassKind, FallibleIterator, HeaderVersion, IdData, IdFinder, IdIndex, PdbInternalSectionOffset,
-    PrimitiveType, SymbolData, TypeData, TypeFinder, TypeIndex,
+    PrimitiveType, SymbolData, Type, TypeData, TypeFinder, TypeIndex,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -32,6 +32,7 @@ impl Default for PdbDumpOptions {
 pub const MAX_LINES: usize = 1_000_000;
 
 const MSF_7_MAGIC: &[u8] = b"Microsoft C/C++ MSF 7.00\r\n\x1aDS\0\0\0";
+const TPI_STREAM: pdb::StreamIndex = pdb::StreamIndex(2);
 const DBI_STREAM: pdb::StreamIndex = pdb::StreamIndex(3);
 // The DBI header's flags; the pdb crate doesn't expose fStripped (private data removed).
 const DBI_FLAGS_OFFSET: usize = 56;
@@ -102,16 +103,23 @@ pub fn extract(bytes: &[u8]) -> Result<PdbModel, pdb::Error> {
     };
 
     let type_info = pdb.type_information()?;
-    let mut types = type_info.finder();
+    let mut finder = type_info.finder();
     let mut iter = type_info.iter();
     while iter.next()?.is_some() {
-        types.update(&iter);
+        finder.update(&iter);
     }
+    let types = Types {
+        finder,
+        panicking: match pdb.raw_stream(TPI_STREAM)? {
+            Some(stream) => panicking_records(stream.as_slice()),
+            None => HashSet::new(),
+        },
+    };
     let mut iter = type_info.iter();
     while let Some(item) = iter.next()? {
-        match item.parse() {
-            Ok(data) => model.types.extend(type_line(&types, &data)),
-            Err(_) => model.undecoded += 1,
+        match types.parse_item(&item) {
+            Some(data) => model.types.extend(type_line(&types, &data)),
+            None => model.undecoded += 1,
         }
     }
     // Older PDBs have no IPI stream; their procedures reference the TPI.
@@ -184,8 +192,207 @@ pub fn extract(bytes: &[u8]) -> Result<PdbModel, pdb::Error> {
     Ok(model)
 }
 
+struct Types<'t> {
+    finder: TypeFinder<'t>,
+    panicking: HashSet<TypeIndex>,
+}
+
+impl<'t> Types<'t> {
+    fn parse_item(&self, item: &Type<'t>) -> Option<TypeData<'t>> {
+        if self.panicking.contains(&item.index()) {
+            return None;
+        }
+        item.parse().ok()
+    }
+
+    fn parse(&self, index: TypeIndex) -> Option<TypeData<'t>> {
+        self.parse_item(&self.finder.find(index).ok()?)
+    }
+}
+
+// pdb 0.8 panics on some malformed records (assert!, unreachable!, unbounded field list
+// recursion) instead of returning an error; release builds abort on a panic.
+fn panicking_records(tpi: &[u8]) -> HashSet<TypeIndex> {
+    let mut panicking = HashSet::new();
+    let (Some(header_size), Some(mut index)) = (le_u32(tpi, 4), le_u32(tpi, 8)) else {
+        return panicking;
+    };
+    let mut rest = tpi.get(header_size as usize..).unwrap_or_default();
+    while let Some(len) = take_u16(&mut rest) {
+        let Some(record) = take(&mut rest, len.into()) else {
+            break;
+        };
+        if check_record(record).is_none() {
+            panicking.insert(TypeIndex(index));
+        }
+        index += 1;
+    }
+    panicking
+}
+
+mod leaf {
+    pub const POINTER: u16 = 0x1002;
+    pub const ARRAY_ST: u16 = 0x1003;
+    pub const ARRAY: u16 = 0x1503;
+    pub const STRIDED_ARRAY: u16 = 0x1516;
+    pub const FIELDLIST: u16 = 0x1203;
+    pub const ST_MAX: u16 = 0x1500;
+    pub const INDEX: u16 = 0x1404;
+    pub const MEMBER: u16 = 0x150D;
+    pub const MEMBER_ST: u16 = 0x1405;
+    pub const STMEMBER: u16 = 0x150E;
+    pub const STMEMBER_ST: u16 = 0x1406;
+    pub const METHOD: u16 = 0x150F;
+    pub const METHOD_ST: u16 = 0x1407;
+    pub const NESTTYPE: u16 = 0x1510;
+    pub const NESTTYPE_ST: u16 = 0x1408;
+    pub const NESTTYPEEX: u16 = 0x1512;
+    pub const NESTTYPEEX_ST: u16 = 0x140D;
+    pub const ONEMETHOD: u16 = 0x1511;
+    pub const ONEMETHOD_ST: u16 = 0x140B;
+    pub const BCLASS: u16 = 0x1400;
+    pub const BINTERFACE: u16 = 0x151A;
+    pub const VBCLASS: u16 = 0x1401;
+    pub const IVBCLASS: u16 = 0x1402;
+    pub const VFUNCTAB: u16 = 0x1409;
+    pub const ENUMERATE: u16 = 0x1502;
+    pub const ENUMERATE_ST: u16 = 0x0403;
+    pub const NUMERIC: u16 = 0x8000;
+    pub const CHAR: u16 = 0x8000;
+    pub const SHORT: u16 = 0x8001;
+    pub const USHORT: u16 = 0x8002;
+    pub const LONG: u16 = 0x8003;
+    pub const ULONG: u16 = 0x8004;
+    pub const QUADWORD: u16 = 0x8009;
+    pub const UQUADWORD: u16 = 0x800A;
+}
+
+// None for any record whose parse could panic, and for malformed ones the parser rejects anyway.
+fn check_record(mut record: &[u8]) -> Option<()> {
+    let buf = &mut record;
+    match take_u16(buf)? {
+        leaf::POINTER => {
+            take(buf, 4)?;
+            let mode = (le_u32(take(buf, 4)?, 0)? >> 5) & 0x7;
+            (mode <= 4).then_some(())
+        }
+        kind @ (leaf::ARRAY | leaf::ARRAY_ST | leaf::STRIDED_ARRAY) => {
+            take(buf, if kind == leaf::STRIDED_ARRAY { 12 } else { 8 })?;
+            loop {
+                numeric(buf, false)?;
+                if *buf.first()? == 0 {
+                    take(buf, 1)?;
+                    break;
+                }
+            }
+            padding(buf)?;
+            buf.is_empty().then_some(())
+        }
+        leaf::FIELDLIST => {
+            while !buf.is_empty() {
+                field(buf)?;
+                padding(buf)?;
+            }
+            Some(())
+        }
+        _ => Some(()),
+    }
+}
+
+// Mirrors pdb's own field grammar, so record boundaries match its parse; any other kind there
+// is a type record, which a real field list never nests.
+fn field(buf: &mut &[u8]) -> Option<()> {
+    use leaf::*;
+    let kind = take_u16(buf)?;
+    match kind {
+        INDEX => take(buf, 4).map(drop),
+        MEMBER | MEMBER_ST => {
+            take(buf, 6)?;
+            numeric(buf, false)?;
+            string(buf, kind)
+        }
+        STMEMBER | STMEMBER_ST | METHOD | METHOD_ST | NESTTYPE | NESTTYPE_ST | NESTTYPEEX
+        | NESTTYPEEX_ST => {
+            take(buf, 6)?;
+            string(buf, kind)
+        }
+        ONEMETHOD | ONEMETHOD_ST => {
+            let intro_virtual = matches!((take_u16(buf)? >> 2) & 0x7, 4 | 6);
+            take(buf, if intro_virtual { 8 } else { 4 })?;
+            string(buf, kind)
+        }
+        BCLASS | BINTERFACE => {
+            take(buf, 6)?;
+            numeric(buf, false)
+        }
+        VBCLASS | IVBCLASS => {
+            take(buf, 10)?;
+            numeric(buf, false)?;
+            numeric(buf, false)
+        }
+        VFUNCTAB => take(buf, 6).map(drop),
+        ENUMERATE | ENUMERATE_ST => {
+            take(buf, 2)?;
+            numeric(buf, true)?;
+            string(buf, kind)
+        }
+        _ => None,
+    }
+}
+
+fn numeric(buf: &mut &[u8], signed: bool) -> Option<()> {
+    use leaf::*;
+    let size = match take_u16(buf)? {
+        ..NUMERIC => 0,
+        CHAR => 1,
+        USHORT => 2,
+        ULONG => 4,
+        UQUADWORD => 8,
+        SHORT if signed => 2,
+        LONG if signed => 4,
+        QUADWORD if signed => 8,
+        _ => return None,
+    };
+    take(buf, size).map(drop)
+}
+
+fn string(buf: &mut &[u8], kind: u16) -> Option<()> {
+    let len = if kind > leaf::ST_MAX {
+        buf.iter().position(|&byte| byte == 0)? + 1
+    } else {
+        usize::from(*take(buf, 1)?.first()?)
+    };
+    take(buf, len).map(drop)
+}
+
+fn padding(buf: &mut &[u8]) -> Option<()> {
+    while let Some(&pad @ 0xF0..) = buf.first() {
+        take(buf, 1)?;
+        if pad > 0xF0 {
+            take(buf, usize::from(pad & 0x0F) - 1)?;
+        }
+    }
+    Some(())
+}
+
+fn take<'b>(buf: &mut &'b [u8], n: usize) -> Option<&'b [u8]> {
+    let (head, tail) = buf.split_at_checked(n)?;
+    *buf = tail;
+    Some(head)
+}
+
+fn take_u16(buf: &mut &[u8]) -> Option<u16> {
+    let bytes = take(buf, 2)?;
+    Some(u16::from_le_bytes([bytes[0], bytes[1]]))
+}
+
+fn le_u32(bytes: &[u8], at: usize) -> Option<u32> {
+    let bytes = bytes.get(at..at + 4)?;
+    Some(u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+}
+
 fn global_symbol(
-    types: &TypeFinder,
+    types: &Types,
     data: &SymbolData,
     address: &impl Fn(PdbInternalSectionOffset) -> String,
 ) -> Option<Symbol> {
@@ -236,7 +443,7 @@ fn function_type(ids: &IdFinder, index: IdIndex) -> Option<TypeIndex> {
     }
 }
 
-fn type_line(types: &TypeFinder, data: &TypeData) -> Option<String> {
+fn type_line(types: &Types, data: &TypeData) -> Option<String> {
     let (kind, name, size, field_list) = match data {
         TypeData::Class(class) if !class.properties.forward_reference() => (
             match class.kind {
@@ -265,14 +472,14 @@ fn type_line(types: &TypeFinder, data: &TypeData) -> Option<String> {
     Some(format!("{kind} {name} size {size} {{ {members} }}"))
 }
 
-fn fields(types: &TypeFinder, index: TypeIndex) -> Vec<String> {
+fn fields(types: &Types, index: TypeIndex) -> Vec<String> {
     let mut out = Vec::new();
     let mut next = Some(index);
     for _ in 0..MAX_FIELD_LISTS {
         let Some(index) = next.take() else {
             break;
         };
-        let Ok(TypeData::FieldList(list)) = types.find(index).and_then(|item| item.parse()) else {
+        let Some(TypeData::FieldList(list)) = types.parse(index) else {
             out.push("?".to_owned());
             break;
         };
@@ -306,16 +513,16 @@ fn fields(types: &TypeFinder, index: TypeIndex) -> Vec<String> {
     out
 }
 
-fn type_name(types: &TypeFinder, index: TypeIndex) -> String {
+fn type_name(types: &Types, index: TypeIndex) -> String {
     type_name_at(types, index, 0)
 }
 
-fn type_name_at(types: &TypeFinder, index: TypeIndex, depth: u32) -> String {
+fn type_name_at(types: &Types, index: TypeIndex, depth: u32) -> String {
     if depth > MAX_TYPE_DEPTH {
         return "...".to_owned();
     }
     let inner = |index| type_name_at(types, index, depth + 1);
-    let Ok(data) = types.find(index).and_then(|item| item.parse()) else {
+    let Some(data) = types.parse(index) else {
         return "?".to_owned();
     };
     match data {
@@ -361,14 +568,14 @@ fn type_name_at(types: &TypeFinder, index: TypeIndex, depth: u32) -> String {
 }
 
 fn signature(
-    types: &TypeFinder,
+    types: &Types,
     return_type: Option<TypeIndex>,
     arguments: TypeIndex,
     depth: u32,
 ) -> String {
     let inner = |index| type_name_at(types, index, depth + 1);
-    let arguments = match types.find(arguments).and_then(|item| item.parse()) {
-        Ok(TypeData::ArgumentList(list)) => {
+    let arguments = match types.parse(arguments) {
+        Some(TypeData::ArgumentList(list)) => {
             let names: Vec<String> = list.arguments.iter().map(|&index| inner(index)).collect();
             names.join(", ")
         }
@@ -698,5 +905,102 @@ mod tests {
         for field in [" kind@", " name@", " detail@", " address@"] {
             assert!(symbol_type.contains(field), "{symbol_type}");
         }
+    }
+
+    #[cfg(all(windows, target_env = "msvc"))]
+    fn u32_at(bytes: &[u8], at: usize) -> usize {
+        u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap()) as usize
+    }
+
+    #[cfg(all(windows, target_env = "msvc"))]
+    fn record(leaf: u16, parts: &[&[u8]]) -> Vec<u8> {
+        let leaf = leaf.to_le_bytes();
+        [&leaf[..]].iter().chain(parts).copied().flatten().copied().collect()
+    }
+
+    // Rewrites the TPI stream in its own blocks; LF_MODIFIER fillers keep its size, so the
+    // stream directory stays valid.
+    #[cfg(all(windows, target_env = "msvc"))]
+    fn own_pdb_with_types(records: &[Vec<u8>]) -> Vec<u8> {
+        let path = std::env::current_exe().unwrap().with_extension("pdb");
+        let mut pdb = std::fs::read(&path).unwrap();
+        let block = u32_at(&pdb, 32);
+        let block_map = u32_at(&pdb, 52) * block;
+        let directory: Vec<u8> = (0..u32_at(&pdb, 44).div_ceil(block))
+            .flat_map(|i| {
+                let at = u32_at(&pdb, block_map + 4 * i) * block;
+                pdb[at..at + block].to_vec()
+            })
+            .collect();
+        let stream_count = u32_at(&directory, 0);
+        let size = |stream: usize| match u32_at(&directory, 4 + 4 * stream) {
+            0xFFFF_FFFF => 0,
+            size => size,
+        };
+        let first_block: usize = (0..2).map(|stream| size(stream).div_ceil(block)).sum();
+        let blocks: Vec<usize> = (0..size(2).div_ceil(block))
+            .map(|i| u32_at(&directory, 4 + 4 * (stream_count + first_block + i)))
+            .collect();
+        let header_size = u32_at(&pdb, blocks[0] * block + 4);
+
+        let mut tpi = pdb[blocks[0] * block..][..header_size].to_vec();
+        let mut count = 0;
+        let mut push = |tpi: &mut Vec<u8>, record: &[u8]| {
+            tpi.extend_from_slice(&u16::try_from(record.len()).unwrap().to_le_bytes());
+            tpi.extend_from_slice(record);
+            count += 1;
+        };
+        for record in records {
+            push(&mut tpi, record);
+        }
+        while tpi.len() < size(2) {
+            let remaining = size(2) - tpi.len() - 2;
+            let len = remaining.min(0xFFFF);
+            let len = if (1..10).contains(&(remaining - len)) { len - 10 } else { len };
+            let mut filler = record(0x1001, &[&0x74u32.to_le_bytes()]);
+            filler.resize(len, 0);
+            push(&mut tpi, &filler);
+        }
+        assert_eq!(tpi.len(), size(2));
+        let maximum = u32::try_from(u32_at(&tpi, 8) + count).unwrap();
+        tpi[12..16].copy_from_slice(&maximum.to_le_bytes());
+        for (chunk, b) in tpi.chunks(block).zip(&blocks) {
+            pdb[b * block..][..chunk.len()].copy_from_slice(chunk);
+        }
+        pdb
+    }
+
+    #[cfg(all(windows, target_env = "msvc"))]
+    #[test]
+    fn records_that_would_panic_the_pdb_parser_are_counted_undecoded() {
+        let i32 = 0x74u32.to_le_bytes();
+        let ptr64 = 0x0001_000Cu32.to_le_bytes();
+        let bad_mode = (0x0001_000Cu32 | 5 << 5).to_le_bytes();
+        let array_head = [0x1000u32.to_le_bytes(), 0x23u32.to_le_bytes()].concat();
+        let member = |kind: u32, offset: u8, name: &[u8]| {
+            record(0x150D, &[&[3, 0], &kind.to_le_bytes(), &[offset, 0], name])
+        };
+        let members = [member(0x1001, 0, b"a\0\xF1"), member(0x1000, 16, b"b\0\xF1")].concat();
+        let nested_lists = 0x1203u16.to_le_bytes().repeat(0x7FF0);
+        let records = [
+            record(0x1002, &[&i32, &ptr64]),
+            record(0x1503, &[&array_head, &[16, 0, 0, 0xF3, 0xF2, 0xF1]]),
+            record(0x1203, &[&members]),
+            record(0x1505, &[&[2, 0, 0, 0], &0x1002u32.to_le_bytes(), &[0; 8], &[24, 0], b"Good\0"]),
+            record(0x1002, &[&i32, &bad_mode]),
+            record(0x1503, &[&array_head, &[16, 0, 0, b'x']]),
+            record(0x1203, &[&0x1002u16.to_le_bytes(), &i32, &bad_mode]),
+            record(0x1203, &[&nested_lists]),
+            record(0x1505, &[&[1, 0, 0, 0], &0x1006u32.to_le_bytes(), &[0; 8], &[4, 0], b"Bad\0"]),
+        ];
+        let baseline = extract(&own_pdb_with_types(&[])).unwrap();
+
+        let model = extract(&own_pdb_with_types(&records)).unwrap();
+
+        assert_eq!(model.undecoded, baseline.undecoded + 4);
+        let good = "struct Good size 24 { i32*[16B] a@0; i32* b@16 }";
+        assert!(model.types.iter().any(|line| line == good), "{:?}", model.types);
+        let bad = "struct Bad size 4 { ? }";
+        assert!(model.types.iter().any(|line| line == bad), "{:?}", model.types);
     }
 }
