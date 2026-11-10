@@ -445,6 +445,15 @@ pub struct AudioSettings {
     pub spectrum: SpectrumSettings,
 }
 
+impl AudioSettings {
+    fn reset_mode(&mut self, mode: AudioMode) {
+        match mode {
+            AudioMode::Spectrogram => self.spectrum = SpectrumSettings::default(),
+            AudioMode::Lanes | AudioMode::Overlay => {}
+        }
+    }
+}
+
 type DecodeResult = Result<DecodedAudio, Option<String>>;
 
 /// Repaints the UI when a job posts; the context arrives after the jobs are created.
@@ -762,12 +771,20 @@ pub fn show(ui: &mut egui::Ui, processor: &mut AudioDiffProcessor, settings: &mu
     ui.horizontal(|ui| {
         fit = ui.button("Fit").clicked();
         ui.separator();
-        ui.selectable_value(&mut settings.mode, AudioMode::Lanes, "Lanes")
-            .on_hover_text("One lane per side and channel");
-        ui.selectable_value(&mut settings.mode, AudioMode::Overlay, "Overlay")
-            .on_hover_text("Both sides over each other, one lane per channel");
-        ui.selectable_value(&mut settings.mode, AudioMode::Spectrogram, "Spectrogram")
-            .on_hover_text("Each side's channel mix over frequency, and their level difference");
+        let modes = [
+            ui.selectable_value(&mut settings.mode, AudioMode::Lanes, "Lanes")
+                .on_hover_text("One lane per side and channel"),
+            ui.selectable_value(&mut settings.mode, AudioMode::Overlay, "Overlay")
+                .on_hover_text("Both sides over each other, one lane per channel"),
+            ui.selectable_value(&mut settings.mode, AudioMode::Spectrogram, "Spectrogram")
+                .on_hover_text(
+                    "Each side's channel mix over frequency, and their level difference. \
+                     Double-click to reset its settings",
+                ),
+        ];
+        if modes.iter().any(egui::Response::double_clicked) {
+            settings.reset_mode(settings.mode);
+        }
         if settings.mode == AudioMode::Spectrogram {
             ui.separator();
             audio_spectrum::show_controls(ui, &mut settings.spectrum);
@@ -1124,6 +1141,33 @@ mod tests {
         assert_eq!(deep.secs_per_px, MIN_SECS_PER_PX);
         assert_close(deep.time_at(600.0), under);
         assert_eq!(view.zoomed_about(600.0, 1e-12).secs_per_px, MAX_SECS_PER_PX);
+    }
+
+    #[test]
+    fn resetting_the_spectrogram_mode_restores_its_settings_only() {
+        let changed = AudioSettings {
+            mode: AudioMode::Spectrogram,
+            spectrum: SpectrumSettings {
+                window: 512,
+                floor_db: -60.0,
+                ceil_db: -6.0,
+                diff_range_db: 3.0,
+            },
+        };
+        for mode in [AudioMode::Lanes, AudioMode::Overlay] {
+            let mut settings = changed.clone();
+            settings.reset_mode(mode);
+            assert_eq!(settings, changed, "{mode:?}");
+        }
+        let mut settings = changed.clone();
+        settings.reset_mode(AudioMode::Spectrogram);
+        assert_eq!(
+            settings,
+            AudioSettings {
+                mode: AudioMode::Spectrogram,
+                spectrum: SpectrumSettings::default(),
+            }
+        );
     }
 
     #[test]

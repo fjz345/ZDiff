@@ -596,6 +596,9 @@ struct CompareResult {
     histograms: Option<[Histogram; 2]>,
 }
 
+const DEFAULT_SWIPE: f32 = 0.5;
+const DEFAULT_OPACITY: f32 = 0.5;
+
 /// Decodes each side on a worker thread when its load changes. A result for an older load of the
 /// side is dropped. Decoding can't be interrupted; a stale decode just runs to its end.
 pub struct ImageDiffProcessor {
@@ -663,8 +666,8 @@ impl Default for ImageDiffProcessor {
             shown_channel: ImageChannel::default(),
             shown_mode: ImageMode::default(),
             blink: Blink::default(),
-            swipe: 0.5,
-            opacity: 0.5,
+            swipe: DEFAULT_SWIPE,
+            opacity: DEFAULT_OPACITY,
             generation: 0,
             requested: None,
             diff_map: None,
@@ -959,6 +962,21 @@ impl ImageDiffProcessor {
         }
     }
 
+    fn reset_mode(&mut self, mode: ImageMode, settings: &mut ImageSettings) {
+        match mode {
+            ImageMode::AB => {
+                settings.blink_ms = ImageSettings::default().blink_ms;
+                self.blink.set_paused(false);
+            }
+            ImageMode::Swipe => self.swipe = DEFAULT_SWIPE,
+            ImageMode::Overlay => self.opacity = DEFAULT_OPACITY,
+            ImageMode::SideBySide
+            | ImageMode::Difference
+            | ImageMode::Heatmap
+            | ImageMode::Histogram => {}
+        }
+    }
+
     /// Shows images decoded elsewhere, such as video frames, in place of requested files. A
     /// pending side keeps its shown image; the view fits again only when an image's size changes.
     pub fn set_images(&mut self, sides: [ImageSide; 2], max_texture_side: usize) {
@@ -1042,17 +1060,29 @@ pub fn show(
         actual_size = ui.button("1:1").clicked();
         ui.label(format!("{:.0}%", processor.view.zoom * 100.0));
         ui.separator();
-        ui.selectable_value(&mut settings.mode, ImageMode::SideBySide, "Side by side");
-        ui.selectable_value(&mut settings.mode, ImageMode::AB, "A/B")
-            .on_hover_text("Alternate between the two images");
-        ui.selectable_value(&mut settings.mode, ImageMode::Difference, "Difference");
-        ui.selectable_value(&mut settings.mode, ImageMode::Heatmap, "Heatmap")
-            .on_hover_text("Color each pixel by its largest channel difference");
-        ui.selectable_value(&mut settings.mode, ImageMode::Histogram, "Histogram")
-            .on_hover_text("Overlay the value counts of both images, per channel");
-        ui.selectable_value(&mut settings.mode, ImageMode::Swipe, "Swipe")
-            .on_hover_text("Drag the divider to reveal the other image");
-        ui.selectable_value(&mut settings.mode, ImageMode::Overlay, "Overlay");
+        let modes = [
+            ui.selectable_value(&mut settings.mode, ImageMode::SideBySide, "Side by side"),
+            ui.selectable_value(&mut settings.mode, ImageMode::AB, "A/B")
+                .on_hover_text(
+                    "Alternate between the two images. Double-click to reset the interval",
+                ),
+            ui.selectable_value(&mut settings.mode, ImageMode::Difference, "Difference"),
+            ui.selectable_value(&mut settings.mode, ImageMode::Heatmap, "Heatmap")
+                .on_hover_text("Color each pixel by its largest channel difference"),
+            ui.selectable_value(&mut settings.mode, ImageMode::Histogram, "Histogram")
+                .on_hover_text("Overlay the value counts of both images, per channel"),
+            ui.selectable_value(&mut settings.mode, ImageMode::Swipe, "Swipe")
+                .on_hover_text(
+                    "Drag the divider to reveal the other image. Double-click to center it",
+                ),
+            ui.selectable_value(&mut settings.mode, ImageMode::Overlay, "Overlay")
+                .on_hover_text(
+                    "Draw the right image over the left one. Double-click to reset the opacity",
+                ),
+        ];
+        if modes.iter().any(egui::Response::double_clicked) {
+            processor.reset_mode(settings.mode, settings);
+        }
         if settings.mode == ImageMode::Overlay {
             ui.add(egui::Slider::new(&mut processor.opacity, 0.0..=1.0).text("Opacity"))
                 .on_hover_text("How opaque the right image is over the left one");
@@ -2076,6 +2106,59 @@ mod tests {
                 ..ImageSettings::default()
             }
         );
+    }
+
+    #[test]
+    fn resetting_a_mode_restores_only_its_own_parameters() {
+        let settings = ImageSettings {
+            sampling: ImageSampling::Linear,
+            mode: ImageMode::Overlay,
+            channel: ImageChannel::Red,
+            blink_ms: 2000,
+        };
+        let reset = |mode| {
+            let mut processor = ImageDiffProcessor {
+                opacity: 0.9,
+                swipe: 0.1,
+                tolerance: 7,
+                ..Default::default()
+            };
+            processor.blink.set_paused(true);
+            let mut settings = settings.clone();
+            processor.reset_mode(mode, &mut settings);
+            let ImageDiffProcessor {
+                opacity,
+                swipe,
+                tolerance,
+                blink,
+                ..
+            } = processor;
+            (opacity, swipe, tolerance, blink.paused(), settings)
+        };
+        let defaults = ImageDiffProcessor::default();
+
+        let unchanged = (0.9, 0.1, 7, true, settings.clone());
+        for mode in [
+            ImageMode::SideBySide,
+            ImageMode::Difference,
+            ImageMode::Heatmap,
+            ImageMode::Histogram,
+        ] {
+            assert_eq!(reset(mode), unchanged, "{mode:?}");
+        }
+        assert_eq!(
+            reset(ImageMode::Overlay),
+            (defaults.opacity, 0.1, 7, true, settings.clone())
+        );
+        assert_eq!(
+            reset(ImageMode::Swipe),
+            (0.9, defaults.swipe, 7, true, settings.clone())
+        );
+        let default_interval = ImageSettings {
+            blink_ms: ImageSettings::default().blink_ms,
+            ..settings.clone()
+        };
+        assert_eq!(reset(ImageMode::AB), (0.9, 0.1, 7, false, default_interval));
     }
 
     #[cfg(feature = "serde")]
