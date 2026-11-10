@@ -39,6 +39,32 @@ Build `zdiff-gui` before `zdiff-folder-gui`: zdiff-folder-gui's build script bak
 * ~2% CPU while moving the mouse over either app; the only mouse interactions should be drag and drop and hover
 * Patch view mode in the file diff, so the diff can be read as a patch without exporting it first
 * Folder view resets every so often on large folders (not reproduced yet)
+* Still performance issue when doing seemingly nothing. Specific case was "string diff view" and moving around window. This should not be expensive at all.
+* Implement frame rate performance counter, in fps always visible, but also include option that shows a breakdown of the frame time.
+* Found a bug where changing the "diff only" "line amount", when getting to around 8 in my specific case (do not have it any longer), the application just sets back the "diff only" "line amount" to 0.
+* "working tree" text should be renamed to "Source control" or something similar.
+* The "working tree" drop down shows "no git ..." and a lot of text. Improve this.
+* New feature, when showing a "progress bar" for likeness, should be able to hover to show a visualization of the likeness, idea is to be able to easily see what part of the file is changed for example. Another example is .png diff where it should show an image showing the likeness computation per texel (for example if a kernel is used to compute per pixel, we show the kernel result)
+* I want the Pane ui to be the same between ZDiff-Gui and ZDiff-Folder-Gui.
+* I want to refactor the non-unique specific diff & ui code to the zcommon & zcommon-ui crates.
+* New feature for ZDiff-Folder-Gui to visualize in a spatial representation the diff. This should be a novel and easy to use UX.
+* In ZDiff-Gui there should be a option button to ignore any text-file specific markers, such as crlf. Also another button for ignoring other etc things such as end of file, begining of line and such.
+* In ZDiff-Gui on large number of lines files the line number gets shorten, for example I can see it showing "1497..." which is not ok. Need to always see the full line number
+* Implement video/image diff calculations that not only check texel against texel but takes in to consideration the nearby texels. This should also allow for diffing differently sized images.
+* ZDiff UI should somewhere in a UX friendly location show the amount of "likeness". Also be able to change the likeness metric with a drop down, this should be tied to the current diff mode.
+* Switching between Frames/audio tabs for a video diff has to recompute the audio view. This should only be discarded if the diff is invalidated.
+* Make the Diff views a more final production UI/UX across ZDiff-Gui and ZDiff-Folder-Gui.
+* I want the < X/Y > slider ui to be slide/draggable to select a value.
+* Add different UI/UX options for customizing the diff mode colors. For example I want a option to select a color gradient for visualizing the "Mean pixel difference" bars instead at just looking at pink.
+* If possible, speed up the seeking speed for selecting a different frame in the frame view. Currently it takes ~0.5seconds. If possible I want to be able to live drag the cursor as a slider and the frame instantly shows the frame.
+* Rename "Blink" mode to "A/B"
+* Double clicking the diff modes such as "Overlay" should reset the diff mode sliders to the defaults for that view mode.
+* In the audio/video view I can "zoom out further out than the 'fit'". The zoom out should be clamped at the "fit" zoom level.
+* I want some kind of "action" undo behavior. Undo should be bound to "ctrl+z" and also "back mouse button" by default. And redo should also exist with their corrospending default keybindings.
+* If I click a "source control" option for the currently opened file, I need to be able to go back to the most previously selected item.
+* Should by default not open black terminal console window when starting the diff tool. Should have a commandline argument -log that opens it (both Gui crates)
+* More "code languages" should be supported. Also make it more broader, make it "highlight syntax" or similar (think about a better name, if you have a better one please use that one)
+* I want a easy but powerful caching code system that caches the results for different diff options in both applications.
 
 ---
 
