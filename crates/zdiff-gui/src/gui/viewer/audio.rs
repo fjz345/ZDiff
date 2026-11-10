@@ -527,6 +527,20 @@ impl AudioDiffProcessor {
         }
     }
 
+    pub fn video_pair_files(
+        &self,
+        audio_tab_open: bool,
+        files: [Option<LoadedFile>; 2],
+    ) -> [Option<LoadedFile>; 2] {
+        let held = self.files.iter().any(Option::is_some)
+            && (0..2).all(|index| is_same_side(&self.files[index], &files[index]));
+        if audio_tab_open || held {
+            files
+        } else {
+            [None, None]
+        }
+    }
+
     /// Drops both sides' samples and kills their decodes.
     pub fn clear(&mut self) {
         for index in 0..2 {
@@ -1115,6 +1129,43 @@ mod tests {
         assert_eq!(processor.difference.status_text(), None);
         poll_until(&mut processor, |p| !p.decoding());
         assert_eq!(processor.difference.status_text(), None);
+    }
+
+    #[test]
+    fn a_video_pairs_audio_decodes_from_the_first_audio_tab_until_the_pair_changes() {
+        fn frame(processor: &mut AudioDiffProcessor, audio_tab_open: bool, files: [LoadedFile; 2]) {
+            match processor.video_pair_files(audio_tab_open, files.map(Some)) {
+                [None, None] => processor.clear(),
+                [file_1, file_2] => processor.request(&missing_ffmpeg(), file_1, file_2),
+            }
+        }
+        let cleared = |p: &AudioDiffProcessor| {
+            matches!(p.sides, [SideState::Empty, SideState::Empty]) && p.failures().is_empty()
+        };
+        let mut processor = AudioDiffProcessor::default();
+        let (a, b) = (audio_file("a.mp4"), audio_file("b.mp4"));
+        let pair = || [a.clone(), b.clone()];
+
+        frame(&mut processor, false, pair());
+        assert!(cleared(&processor), "{processor:?}");
+
+        frame(&mut processor, true, pair());
+        poll_until(&mut processor, |p| !p.decoding());
+        assert_eq!(processor.failures().len(), 2, "{processor:?}");
+
+        frame(&mut processor, false, pair());
+        assert_eq!(processor.failures().len(), 2, "{processor:?}");
+        frame(&mut processor, true, pair());
+        assert_eq!(processor.failures().len(), 2, "{processor:?}");
+
+        frame(&mut processor, false, [b.clone(), a.clone()]);
+        assert!(cleared(&processor), "{processor:?}");
+        frame(&mut processor, false, pair());
+        assert!(cleared(&processor), "{processor:?}");
+
+        frame(&mut processor, true, pair());
+        frame(&mut processor, false, [a.clone(), audio_file("b.mp4")]);
+        assert!(cleared(&processor), "{processor:?}");
     }
 
     fn assert_close(a: f64, b: f64) {

@@ -371,12 +371,13 @@ impl eframe::App for ZApp {
                         r
                     }
                 });
-                // A video pair decodes its audio only while the Audio tab is open.
+                // Video audio decodes on the first Audio tab open and stays until the pair changes.
                 let viewers = resolution.as_ref().map(|r| r.viewers);
-                let video_audio = viewers == Some(Viewers::Pair(ViewerKind::Video))
-                    && state.video_meta.tab == VideoTab::Audio;
-                let [audio_1, audio_2] = if video_audio {
-                    [loaded_1.clone(), loaded_2.clone()]
+                let [audio_1, audio_2] = if viewers == Some(Viewers::Pair(ViewerKind::Video)) {
+                    state.audio_processor.video_pair_files(
+                        state.video_meta.tab == VideoTab::Audio,
+                        [loaded_1.clone(), loaded_2.clone()],
+                    )
                 } else {
                     files_for(&resolution, ViewerKind::Audio)
                 };
