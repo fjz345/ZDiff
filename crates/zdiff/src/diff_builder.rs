@@ -135,6 +135,15 @@ impl SideState {
         self.buf.iter().any(|(_, _, is_ghost)| !is_ghost)
     }
 
+    fn last_real_token(&self, is_left: bool) -> Option<u32> {
+        let (res, ..) = self.buf.iter().rev().find(|(_, _, is_ghost)| !is_ghost)?;
+        if is_left {
+            res.token_source_idx
+        } else {
+            res.token_target_idx
+        }
+    }
+
     fn flush(&mut self, line_num: i32, bg: RowBg) -> LineContent {
         if self.buf.is_empty() {
             LineContent::Void
@@ -252,6 +261,7 @@ impl<'a, 'b, T: RawTokenTrait> DiffBuilder<'a, 'b, T> {
             side.active_diff = true;
         }
 
+        let is_hidden = diff_result.hide_in_diff;
         side.push(diff_result.clone(), is_dimmed, false);
         let changed = ranges_in_span(char_ranges, &token.as_ref().span);
         side.changed_chars.extend_from_slice(changed);
@@ -263,13 +273,22 @@ impl<'a, 'b, T: RawTokenTrait> DiffBuilder<'a, 'b, T> {
         if is_newline {
             // The ghost of this newline must not end the other side's real line early: the other
             // side is flushed only when it holds nothing but ghosts, which then form a ghost-only row.
-            let other = if is_deletion { &self.right } else { &self.left };
+            let (other, other_tokens) = if is_deletion {
+                (&self.right, self.tokens_target)
+            } else {
+                (&self.left, self.tokens_source)
+            };
             let flush_other = self.options.ghost_rows && !other.has_real_tokens();
+            // An ignored line break also ends the other file's last line if that has no break.
+            let ends_other = is_hidden
+                && other
+                    .last_real_token(!is_deletion)
+                    .is_some_and(|i| i as usize + 1 == other_tokens.map_or(0, |t| t.len()));
             self.emit_row(
-                is_deletion || flush_other,
-                !is_deletion || flush_other,
-                is_deletion,
-                !is_deletion,
+                is_deletion || flush_other || ends_other,
+                !is_deletion || flush_other || ends_other,
+                is_deletion || ends_other,
+                !is_deletion || ends_other,
             );
         }
     }
@@ -979,6 +998,99 @@ mod tests {
                         })
                         .count();
                     assert_eq!(spans, 3, "{algorithm:?}, ghosts {ghost_rows}");
+                }
+            }
+        }
+
+        #[test]
+        fn line_ending_and_file_marker_changes_form_no_diff_span() {
+            let has_visible_change = |content: &LineContent| match content {
+                LineContent::Code { tokens, .. } => tokens.iter().any(|(res, _, _)| {
+                    !res.hide_in_diff && !matches!(res.operation, DiffOp::Equal(_))
+                }),
+                _ => false,
+            };
+            let line_endings = IgnoreOptions {
+                line_endings: true,
+                ..Default::default()
+            };
+            let file_markers = IgnoreOptions {
+                file_markers: true,
+                ..Default::default()
+            };
+            let both = IgnoreOptions {
+                line_endings: true,
+                file_markers: true,
+                ..Default::default()
+            };
+            let cases = [
+                (
+                    &line_endings,
+                    "a\r\nb\r\n",
+                    "a\nb\n",
+                    ["a\r\n", "b\r\n"],
+                    ["a\r\n", "b\r\n"],
+                ),
+                (
+                    &line_endings,
+                    "a\nb\r",
+                    "a\r\nb\n",
+                    ["a\n", "b\r"],
+                    ["a\n", "b\r"],
+                ),
+                (
+                    &file_markers,
+                    "\u{feff}a\nb",
+                    "a\nb\n",
+                    ["\u{feff}a\n", "b"],
+                    ["a\n", "b\n"],
+                ),
+                (
+                    &file_markers,
+                    "a\nb\n",
+                    "a\nb",
+                    ["a\n", "b\n"],
+                    ["a\n", "b"],
+                ),
+                (
+                    &both,
+                    "\u{feff}a\r\nb\r\n",
+                    "a\nb",
+                    ["\u{feff}a\r\n", "b\r\n"],
+                    ["a\r\n", "b"],
+                ),
+            ];
+            for algorithm in ALGORITHMS {
+                for ghost_rows in [false, true] {
+                    for (ignore, s1, s2, left, right) in &cases {
+                        let options = DiffBuilderOptions {
+                            ignore: (*ignore).clone(),
+                            ghost_rows,
+                            ..Default::default()
+                        };
+                        let h = harness_with(algorithm, s1, s2, options);
+                        if !ghost_rows {
+                            h.assert_row(0, 1, 1, left[0], right[0]);
+                            h.assert_row(1, 2, 2, left[1], right[1]);
+                        }
+                        assert_eq!(h.rows().len(), 2, "{algorithm:?}, {ghost_rows}, {s1:?}");
+                        for (idx, row) in h.rows().iter().enumerate() {
+                            assert!(
+                                !has_visible_change(&row.left) && !has_visible_change(&row.right),
+                                "{algorithm:?}, {s1:?}: row {idx} is a diff span"
+                            );
+                        }
+                    }
+                }
+                for (_, s1, s2, ..) in &cases {
+                    let h = harness(algorithm, s1, s2, false);
+                    assert!(
+                        h.rows()
+                            .iter()
+                            .any(|row| has_visible_change(&row.left)
+                                || has_visible_change(&row.right)),
+                        "{algorithm:?}, {s1:?}: no diff span with the options off"
+                    );
                 }
             }
         }

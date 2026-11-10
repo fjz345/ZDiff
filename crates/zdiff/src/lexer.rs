@@ -20,6 +20,7 @@ pub enum TokenKind {
     Newline,
     Keyword,
     Preprocessor,
+    Bom,
 }
 
 impl TokenKind {
@@ -331,6 +332,10 @@ impl Lexer<'_> {
     fn next_code_token(&mut self) -> TokenKind {
         if let Some(kind) = self.lex_newline().or_else(|| self.lex_blank()) {
             return kind;
+        }
+        if self.cursor == 0 && self.rest().starts_with('\u{feff}') {
+            self.consume();
+            return TokenKind::Bom;
         }
         let c = self.peek().expect("next_code_token at end of source");
         match c {
@@ -1209,5 +1214,29 @@ mod tests {
             .map(|t| &src[t.span.clone()])
             .collect();
         assert_eq!(keywords, ["if", "else"]);
+    }
+
+    #[test]
+    fn a_bom_is_a_token_of_its_own_only_at_the_start_of_the_file() {
+        let kinds = |src: &str| -> Vec<(TokenKind, String)> {
+            lex(src)
+                .iter()
+                .map(|t| (t.kind, src[t.span.clone()].to_string()))
+                .collect()
+        };
+        assert_eq!(
+            kinds("\u{feff}if x"),
+            [
+                (TokenKind::Bom, "\u{feff}".into()),
+                (TokenKind::Keyword, "if".into()),
+                (TokenKind::Whitespace, " ".into()),
+                (TokenKind::Identifier, "x".into()),
+            ]
+        );
+        assert_eq!(kinds("\u{feff}"), [(TokenKind::Bom, "\u{feff}".into())]);
+        assert_eq!(
+            kinds("a\u{feff}b"),
+            [(TokenKind::Identifier, "a\u{feff}b".into())]
+        );
     }
 }

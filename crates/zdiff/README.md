@@ -9,7 +9,7 @@ Library diffing file contents.
 * Myers diffing: `Trace`, `Linear` and `LinearMT` (rayon)
 * Phase driver (`DiffPhases`): scope (top-level brace scopes), line, token and character, each refining inside the coarser one's changes
 * Pins: forced line pairs split the diff into stretches
-* Ignore options: whitespace, comments, regex patterns (matched tokens are ignored and dimmed)
+* Ignore options: whitespace, comments, regex patterns (matched tokens are ignored and dimmed), line endings (any two line breaks compare equal), file markers (a leading BOM, lexed as its own token, and the file's last line break)
 * Side-by-side rows built in parallel chunks, with ghost tokens and diff-only collapsing
 * Hex (byte) and pixel diffs
 * 3-way merge model: chunking, resolution and output
@@ -64,7 +64,7 @@ Cost of the full rerun it would save: `generated/scattered_20k` (20k lines, ~2% 
 ### 2. Parallel row building: yes (built in issue 08)
 * Ghost carry-over: ghosts live in the builder's side buffers, which a seam flushes. A non-last chunk asserts it ends clean, so ghosts never cross a chunk.
 * Line numbering: the only state across seams. Each chunk's line count is added to the next chunks' `line_num > 0`. It is also known without building: at a seam both sides are at a line start, so the offset is the line of the next token (`line_starts`).
-* Constraint, no seam means no split: a pair whose line endings differ on every line (CRLF vs LF) has no Equal Newline. Without ignore-whitespace the whole file is one hunk; with it, every break is a hidden Delete + Insert. `chunk_ranges` returns one range and the rows build on one thread.
+* Constraint, no seam means no split: a pair whose line endings differ on every line (CRLF vs LF) has no Equal Newline. Without ignore-whitespace the whole file is one hunk; with it, every break is a hidden Delete + Insert; ignoring line endings pairs them as Equal. `chunk_ranges` returns one range and the rows build on one thread.
 * The token phase is just as independent per hunk and could run on rayon with offset concatenation, with no format change. It doesn't pay on the fixtures: token is 2.6 ms on `scattered_20k`, and the 504 ms of `local/extreme_size_log` is a single hunk covering 97,648 of its 97,758 tokens. That case needs a faster diff of one large hunk, not hunk parallelism.
 
 ### 3. Lazy building of off-screen rows: conditional, not without a row-format change

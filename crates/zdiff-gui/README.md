@@ -27,6 +27,8 @@ GUI for zdiff crate
     - Occurrence highlight: selecting text in a row highlights its other occurrences in the visible rows, on both sides
     - Diff options (toolbar)
         + Ignore whitespace, comments, and regex patterns (with presets); ignored regex matches are dimmed
+        + Ignore line endings (Alt+E): CRLF, LF and CR compare equal
+        + Ignore file markers (Alt+M): a UTF-8 BOM at the start and the presence of a final line break
         + Highlight rows that differ: switches the diff marks on/off; its dropdown picks changed scopes, lines, tokens and/or characters
         + Diff phases (Options): Scope, Line and Token (both default), Character. Each runs only where the coarser one found a change; with none on, the lines just sit side by side
         + Inline ghost tokens

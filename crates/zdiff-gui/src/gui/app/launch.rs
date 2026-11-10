@@ -89,6 +89,8 @@ pub(super) fn toggle_option(ctx: &mut AppStateCtx, action: FileAction) {
         FileAction::IgnoreWhitespace => flip(&mut options.ignore.whitespace),
         FileAction::IgnoreComments => flip(&mut options.ignore.comments),
         FileAction::IgnoreRegex => flip(&mut options.ignore.regex_enabled),
+        FileAction::IgnoreLineEndings => flip(&mut options.ignore.line_endings),
+        FileAction::IgnoreFileMarkers => flip(&mut options.ignore.file_markers),
         FileAction::HighlightRows => flip(&mut options.highlight_rows),
         FileAction::GhostRows => flip(&mut options.ghost_rows),
         FileAction::LinkHScroll => flip(&mut ctx.h_scroll_linked),
@@ -121,7 +123,7 @@ mod tests {
     #[test]
     fn each_toggle_action_flips_its_option_and_back() {
         type Get = fn(&AppStateCtx) -> bool;
-        let toggles: [(FileAction, Get); 8] = [
+        let toggles: [(FileAction, Get); 10] = [
             (FileAction::IgnoreWhitespace, |c| {
                 c.diff_options.ignore.whitespace
             }),
@@ -130,6 +132,12 @@ mod tests {
             }),
             (FileAction::IgnoreRegex, |c| {
                 c.diff_options.ignore.regex_enabled
+            }),
+            (FileAction::IgnoreLineEndings, |c| {
+                c.diff_options.ignore.line_endings
+            }),
+            (FileAction::IgnoreFileMarkers, |c| {
+                c.diff_options.ignore.file_markers
             }),
             (FileAction::HighlightRows, |c| c.diff_options.highlight_rows),
             (FileAction::GhostRows, |c| c.diff_options.ghost_rows),

@@ -238,6 +238,31 @@ mod tests {
 
     #[cfg(feature = "serde")]
     #[test]
+    fn ignore_line_endings_and_file_markers_are_persisted_with_the_diff_options() {
+        let options = DiffBuilderOptions {
+            ignore: IgnoreOptions {
+                line_endings: true,
+                file_markers: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let json = serde_json::to_value(&options).unwrap();
+        assert_eq!(json["ignore_line_endings"], true);
+        assert_eq!(json["ignore_file_markers"], true);
+        let loaded: DiffBuilderOptions = serde_json::from_value(json.clone()).unwrap();
+        assert_eq!(loaded, options);
+
+        let mut old = json;
+        for key in ["ignore_line_endings", "ignore_file_markers"] {
+            old.as_object_mut().unwrap().remove(key).unwrap();
+        }
+        let loaded: DiffBuilderOptions = serde_json::from_value(old).unwrap();
+        assert_eq!(loaded, DiffBuilderOptions::default());
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
     fn ignore_patterns_are_persisted_with_the_diff_options() {
         // The invalid line is kept, so a typo isn't lost on restart.
         let text = "\\d\\d:\\d\\d\n(";

@@ -2261,6 +2261,43 @@ mod tests {
         }
 
         #[test]
+        fn ignoring_line_endings_and_file_markers_recomputes_and_leaves_no_diff_span() {
+            let dir = tempfile::tempdir().unwrap();
+            let write = |name: &str, contents: &str| {
+                let path = dir.path().join(name);
+                std::fs::write(&path, contents).unwrap();
+                load(&UniversalPath::from(path))
+            };
+            let mut current = input(
+                &write("crlf.rs", "\u{feff}fn a() {}\r\nfn b() {}\r\n"),
+                &write("lf.rs", "fn a() {}\nfn b() {}"),
+            );
+            let mut processor = DiffProcessor::default();
+            open(&mut processor, &current);
+            let ctx = settle(&mut processor).expect("first diff never completed");
+            assert!(!ctx.precomputed_diffs.is_empty());
+
+            current.options.ignore.line_endings = true;
+            open(&mut processor, &current);
+            assert!(processor.ctx.myers_inflight_input.is_some());
+            let ctx = settle(&mut processor).expect("line endings toggle never completed");
+            assert!(ctx.input == current, "diff shows {:?}", ctx.input);
+            assert!(!ctx.precomputed_diffs.is_empty());
+
+            current.options.ignore.file_markers = true;
+            open(&mut processor, &current);
+            assert!(processor.ctx.myers_inflight_input.is_some());
+            let ctx = settle(&mut processor).expect("file markers toggle never completed");
+            assert!(ctx.input == current, "diff shows {:?}", ctx.input);
+            assert!(
+                ctx.precomputed_diffs.is_empty(),
+                "{:?}",
+                ctx.precomputed_diffs
+            );
+            assert_eq!(ctx.diff_rows.len(), 2);
+        }
+
+        #[test]
         fn editing_ignore_patterns_recomputes_the_diff_stage() {
             let dir = tempfile::tempdir().unwrap();
             let a = (

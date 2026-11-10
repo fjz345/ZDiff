@@ -236,6 +236,7 @@ where
         phases.is_valid(),
         "invalid diff phases {phases:?}: Character needs Token"
     );
+    let cmp = ignore.tokens_equal(&cmp);
     if phases.all_off() {
         return Some(line_pairs_path(source, target, &cmp));
     }
@@ -308,11 +309,15 @@ pub(crate) fn slice_mask(
     target: Range<usize>,
 ) -> IgnoreMask {
     if ignore.is_empty() {
-        return IgnoreMask::default();
+        return IgnoreMask {
+            line_endings: ignore.line_endings,
+            ..Default::default()
+        };
     }
     IgnoreMask {
         source: ignore.source[source].to_vec(),
         target: ignore.target[target].to_vec(),
+        line_endings: ignore.line_endings,
         ..Default::default()
     }
 }
@@ -591,7 +596,7 @@ where
         let key = &key;
         line.clone()
             .filter(move |&i| !ignored(mask, i))
-            .map(move |i| key(side, &tokens[i]))
+            .map(move |i| ignore.line_key(key(side, &tokens[i])))
     };
 
     let mut heads: HashMap<u64, u32, BuildHasherDefault<IdentityHasher>> = HashMap::default();
@@ -728,6 +733,7 @@ where
     T: RawTokenTrait,
     F: Fn(&T, &T) -> bool + Sync,
 {
+    let cmp = ignore.tokens_equal(&cmp);
     let locals: Vec<Option<MyersPath>> = hunks
         .par_iter()
         .map(|hunk| {
@@ -2411,7 +2417,13 @@ mod tests {
                 let entry = match (x2 - x, y2 - y) {
                     (1, 1) => {
                         let (s, t) = (s.unwrap(), t.unwrap());
-                        assert!(cmp(s, t), "{algorithm:?}: Equal pairs unequal tokens");
+                        let line_breaks = ignore.line_endings
+                            && s.kind == TokenKind::Newline
+                            && t.kind == TokenKind::Newline;
+                        assert!(
+                            line_breaks || cmp(s, t),
+                            "{algorithm:?}: Equal pairs unequal tokens"
+                        );
                         rebuilt_source.push_str(&source[s.span.clone()]);
                         rebuilt_target.push_str(&target[t.span.clone()]);
                         (
@@ -3245,6 +3257,180 @@ mod tests {
                                 || kind.is_whitespace()
                                 || is_matched_text(text)),
                             "{algorithm:?}: {s:?} -> {t:?}: {edited:?}"
+                        );
+                    }
+                }
+            }
+        }
+
+        mod ignore_line_endings {
+            use super::{ignore_comments::edited, ignore_whitespace::hunks, *};
+
+            fn on() -> IgnoreOptions {
+                IgnoreOptions {
+                    line_endings: true,
+                    ..Default::default()
+                }
+            }
+
+            const LINE_ENDINGS_ONLY: [(&str, &str); 3] = [
+                ("a\r\nb\r\n", "a\nb\n"),
+                ("a\rb\r", "a\r\nb\n"),
+                ("a\r\nb\nc\r", "a\nb\r\nc\n"),
+            ];
+
+            #[test]
+            fn crlf_lf_and_cr_lines_are_equal_only_with_the_option_on() {
+                for algorithm in ALGORITHMS {
+                    for (source, target) in LINE_ENDINGS_ONLY {
+                        for (s, t) in [(source, target), (target, source)] {
+                            assert_eq!(hunks(algorithm, s, t, &on()), vec![], "{algorithm:?}");
+                            let script = diff_with(algorithm, s, t, &on(), false).unwrap();
+                            assert_eq!(edited(s, t, &script), vec![], "{algorithm:?}: {s:?}");
+                            let off = diff(algorithm, s, t, false).unwrap();
+                            assert_ne!(edited(s, t, &off), vec![], "{algorithm:?}: {s:?}");
+                        }
+                    }
+                }
+            }
+
+            #[test]
+            fn every_phase_combination_pairs_the_line_breaks() {
+                let (source, target) = ("fn f() {\r\n  x();\r\n}\r\n", "fn f() {\n  x();\n}\n");
+                for algorithm in ALGORITHMS {
+                    for bits in 1..16u8 {
+                        let phases = DiffPhases {
+                            scope: bits & 1 != 0,
+                            line: bits & 2 != 0,
+                            token: bits & 4 != 0,
+                            character: bits & 8 != 0,
+                        };
+                        if !phases.is_valid() {
+                            continue;
+                        }
+                        let script =
+                            diff_phases(algorithm, source, target, &on(), phases, false).unwrap();
+                        assert!(
+                            script.iter().all(|(op, ..)| *op == Op::Equal),
+                            "{algorithm:?} {phases:?}: {script:?}"
+                        );
+                    }
+                }
+            }
+
+            #[test]
+            fn a_real_change_next_to_changed_line_endings_edits_only_the_change() {
+                let (source, target) = ("a\r\nb c\r\nd\r\n", "a\nb x\nd\n");
+                for algorithm in ALGORITHMS {
+                    assert_eq!(
+                        hunks(algorithm, source, target, &on()),
+                        vec![("b c\r\n".into(), "b x\n".into())],
+                        "{algorithm:?}"
+                    );
+                    let script = diff_with(algorithm, source, target, &on(), false).unwrap();
+                    assert_eq!(
+                        edited(source, target, &script),
+                        [
+                            (TokenKind::Identifier, "c".into()),
+                            (TokenKind::Identifier, "x".into())
+                        ],
+                        "{algorithm:?}"
+                    );
+                }
+            }
+
+            #[test]
+            fn a_missing_final_line_break_still_differs() {
+                for algorithm in ALGORITHMS {
+                    assert_eq!(
+                        hunks(algorithm, "a\r\nb", "a\nb\n", &on()),
+                        vec![("b".into(), "b\n".into())],
+                        "{algorithm:?}"
+                    );
+                }
+            }
+        }
+
+        mod ignore_file_markers {
+            use super::{ignore_comments::edited, ignore_whitespace::hunks, *};
+
+            fn on() -> IgnoreOptions {
+                IgnoreOptions {
+                    file_markers: true,
+                    ..Default::default()
+                }
+            }
+
+            const MARKERS_ONLY: [(&str, &str); 3] = [
+                ("\u{feff}a\nb\n", "a\nb\n"),
+                ("a\nb", "a\nb\n"),
+                ("\u{feff}if x {\n}", "if x {\n}\n"),
+            ];
+
+            #[test]
+            fn a_bom_and_a_missing_final_line_break_are_ignored_only_with_the_option_on() {
+                for algorithm in ALGORITHMS {
+                    for (source, target) in MARKERS_ONLY {
+                        for (s, t) in [(source, target), (target, source)] {
+                            assert_eq!(hunks(algorithm, s, t, &on()), vec![], "{algorithm:?}");
+                            assert_ne!(
+                                hunks(algorithm, s, t, &IgnoreOptions::default()),
+                                vec![],
+                                "{algorithm:?}: {s:?}"
+                            );
+                            let script = diff_with(algorithm, s, t, &on(), false).unwrap();
+                            let edited = edited(s, t, &script);
+                            assert!(
+                                edited.iter().all(|(kind, _)| matches!(
+                                    kind,
+                                    TokenKind::Bom | TokenKind::Newline
+                                )),
+                                "{algorithm:?}: {s:?} -> {t:?}: {edited:?}"
+                            );
+                        }
+                    }
+                }
+            }
+
+            #[test]
+            fn blanks_line_endings_and_extra_blank_lines_still_differ() {
+                let pairs = [
+                    ("a b\n", "a  b\n"),
+                    (" a\n", "a\n"),
+                    ("a \n", "a\n"),
+                    ("a\n", "a\n\n"),
+                    ("a\r\nb\n", "a\nb\n"),
+                ];
+                for algorithm in ALGORITHMS {
+                    for (s, t) in pairs {
+                        assert_ne!(
+                            hunks(algorithm, s, t, &on()),
+                            vec![],
+                            "{algorithm:?}: {s:?}"
+                        );
+                    }
+                }
+            }
+
+            #[test]
+            fn with_line_endings_ignored_too_only_the_markers_are_edited() {
+                let both = IgnoreOptions {
+                    line_endings: true,
+                    file_markers: true,
+                    ..Default::default()
+                };
+                let (source, target) = ("\u{feff}a\r\nb\r\n", "a\nb");
+                for algorithm in ALGORITHMS {
+                    for (s, t) in [(source, target), (target, source)] {
+                        assert_eq!(hunks(algorithm, s, t, &both), vec![], "{algorithm:?}");
+                        let script = diff_with(algorithm, s, t, &both, false).unwrap();
+                        assert_eq!(
+                            edited(s, t, &script),
+                            [
+                                (TokenKind::Bom, "\u{feff}".into()),
+                                (TokenKind::Newline, "\r\n".into())
+                            ],
+                            "{algorithm:?}: {s:?}"
                         );
                     }
                 }

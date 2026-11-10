@@ -130,6 +130,24 @@ impl FileDiffPane {
                     egui::RichText::new("//").monospace().strong(),
                     &hint(FileAction::IgnoreComments, "Ignore Comments"),
                 );
+                toggle_button(
+                    ui,
+                    &mut ctx.diff_options.ignore.line_endings,
+                    egui::RichText::new("↵").monospace().strong(),
+                    &hint(
+                        FileAction::IgnoreLineEndings,
+                        "Ignore Line Endings: CRLF, LF and CR are equal",
+                    ),
+                );
+                toggle_button(
+                    ui,
+                    &mut ctx.diff_options.ignore.file_markers,
+                    egui::RichText::new("⇤⇥").monospace().strong(),
+                    &hint(
+                        FileAction::IgnoreFileMarkers,
+                        "Ignore File Markers: a BOM at the start and the line break at the end of the file",
+                    ),
+                );
                 ignore_patterns_btn(
                     ui,
                     TOGGLE_BUTTON_SIZE,

@@ -187,6 +187,8 @@ impl ZApp {
                         FileAction::IgnoreWhitespace
                         | FileAction::IgnoreComments
                         | FileAction::IgnoreRegex
+                        | FileAction::IgnoreLineEndings
+                        | FileAction::IgnoreFileMarkers
                         | FileAction::HighlightRows
                         | FileAction::GhostRows
                         | FileAction::LinkHScroll

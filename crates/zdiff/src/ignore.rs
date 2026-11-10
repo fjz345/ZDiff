@@ -20,6 +20,10 @@ pub struct IgnoreOptions {
     pub patterns: IgnorePatterns,
     #[cfg_attr(feature = "serde", serde(rename = "ignore_regex_enabled"))]
     pub regex_enabled: bool,
+    #[cfg_attr(feature = "serde", serde(rename = "ignore_line_endings"))]
+    pub line_endings: bool,
+    #[cfg_attr(feature = "serde", serde(rename = "ignore_file_markers"))]
+    pub file_markers: bool,
 }
 
 impl Default for IgnoreOptions {
@@ -29,6 +33,8 @@ impl Default for IgnoreOptions {
             comments: false,
             patterns: IgnorePatterns::default(),
             regex_enabled: true,
+            line_endings: false,
+            file_markers: false,
         }
     }
 }
@@ -44,8 +50,11 @@ impl IgnoreOptions {
         target_text: &str,
     ) -> IgnoreMask {
         let patterns_on = self.regex_enabled && !self.patterns.is_empty();
-        if !self.whitespace && !self.comments && !patterns_on {
-            return IgnoreMask::default();
+        if !self.whitespace && !self.comments && !patterns_on && !self.file_markers {
+            return IgnoreMask {
+                line_endings: self.line_endings,
+                ..Default::default()
+            };
         }
         let (matched_source, matched_target) = if patterns_on {
             (
@@ -63,7 +72,14 @@ impl IgnoreOptions {
             };
             for (i, (flag, t)) in flags.iter_mut().zip(tokens).enumerate() {
                 *flag |= self.whitespace && t.as_ref().kind.is_whitespace();
+                *flag |= self.file_markers && t.as_ref().kind == TokenKind::Bom;
                 *flag |= matched.get(i).copied().unwrap_or(false);
+            }
+            if self.file_markers
+                && let Some(last) = tokens.last()
+                && last.as_ref().kind == TokenKind::Newline
+            {
+                flags[tokens.len() - 1] = true;
             }
             flags
         };
@@ -72,6 +88,7 @@ impl IgnoreOptions {
             target: flags(target, &matched_target),
             matched_source,
             matched_target,
+            line_endings: self.line_endings,
         }
     }
 }
@@ -227,7 +244,7 @@ fn comment_flags<T: RawTokenTrait>(tokens: &[T]) -> Vec<bool> {
     flags
 }
 
-/// Per token, true when it is dropped from the line key. Both sides empty means nothing is
+/// Per token, true when it is dropped from the line key. Both sides empty means no token is
 /// ignored; otherwise each side has one flag per token.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct IgnoreMask {
@@ -236,11 +253,36 @@ pub struct IgnoreMask {
     /// The regex-matched subset of `source`/`target`, shown dimmed. Empty without patterns.
     pub matched_source: Vec<bool>,
     pub matched_target: Vec<bool>,
+    // Any two line breaks compare equal; they aren't flagged as they shape the lines.
+    pub line_endings: bool,
 }
 
 impl IgnoreMask {
     pub fn is_empty(&self) -> bool {
         self.source.is_empty() && self.target.is_empty()
+    }
+
+    pub(crate) fn line_key<'k>(
+        &self,
+        (kind, bytes): (TokenKind, &'k [u8]),
+    ) -> (TokenKind, &'k [u8]) {
+        if self.line_endings && kind == TokenKind::Newline {
+            (kind, b"\n")
+        } else {
+            (kind, bytes)
+        }
+    }
+
+    pub(crate) fn tokens_equal<'a, T: RawTokenTrait, F: Fn(&T, &T) -> bool + Sync>(
+        &'a self,
+        cmp: &'a F,
+    ) -> impl Fn(&T, &T) -> bool + Sync + 'a {
+        move |a, b| {
+            cmp(a, b)
+                || (self.line_endings
+                    && a.as_ref().kind == TokenKind::Newline
+                    && b.as_ref().kind == TokenKind::Newline)
+        }
     }
 }
 
@@ -391,6 +433,37 @@ mod tests {
         options.whitespace = false;
         options.regex_enabled = true;
         assert_eq!(ignored(&options, text), (vec!["1234"], vec!["1234"]));
+    }
+
+    #[test]
+    fn file_markers_are_a_leading_bom_and_the_last_line_break() {
+        let file_markers = IgnoreOptions {
+            file_markers: true,
+            ..Default::default()
+        };
+        let flags = |text: &str| {
+            let tokens = lex(text);
+            file_markers.mask(&tokens, text, &[], "").source
+        };
+        assert_eq!(
+            flags("\u{feff}a\r\n\nb\n"),
+            [true, false, false, false, false, true]
+        );
+        assert_eq!(flags(" a \n\n"), [false, false, false, false, true]);
+        assert_eq!(flags("a\nb"), [false, false, false]);
+        assert_eq!(flags("\u{feff}"), [true]);
+    }
+
+    #[test]
+    fn ignoring_line_endings_flags_no_token() {
+        let line_endings = IgnoreOptions {
+            line_endings: true,
+            ..Default::default()
+        };
+        let tokens = lex("a\r\nb\n");
+        let mask = line_endings.mask(&tokens, "a\r\nb\n", &tokens, "a\r\nb\n");
+        assert!(mask.is_empty());
+        assert!(mask.line_endings);
     }
 
     #[test]

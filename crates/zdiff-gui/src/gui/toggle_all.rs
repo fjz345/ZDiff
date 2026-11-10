@@ -5,6 +5,8 @@ pub struct OptionSet {
     pub whitespace: bool,
     pub comments: bool,
     pub regex_enabled: bool,
+    pub line_endings: bool,
+    pub file_markers: bool,
     pub highlight_rows: bool,
     pub ghost_rows: bool,
     pub h_scroll_linked: bool,
@@ -17,6 +19,8 @@ impl OptionSet {
         whitespace: false,
         comments: false,
         regex_enabled: false,
+        line_endings: false,
+        file_markers: false,
         highlight_rows: false,
         ghost_rows: false,
         h_scroll_linked: false,
@@ -29,6 +33,8 @@ impl OptionSet {
             whitespace: options.ignore.whitespace,
             comments: options.ignore.comments,
             regex_enabled: options.ignore.regex_enabled,
+            line_endings: options.ignore.line_endings,
+            file_markers: options.ignore.file_markers,
             highlight_rows: options.highlight_rows,
             ghost_rows: options.ghost_rows,
             h_scroll_linked,
@@ -46,6 +52,8 @@ impl OptionSet {
         options.ignore.whitespace = self.whitespace;
         options.ignore.comments = self.comments;
         options.ignore.regex_enabled = self.regex_enabled;
+        options.ignore.line_endings = self.line_endings;
+        options.ignore.file_markers = self.file_markers;
         options.highlight_rows = self.highlight_rows;
         options.ghost_rows = self.ghost_rows;
         *h_scroll_linked = self.h_scroll_linked;
@@ -91,6 +99,8 @@ mod tests {
             whitespace: true,
             comments: false,
             regex_enabled: true,
+            line_endings: true,
+            file_markers: false,
             highlight_rows: true,
             ghost_rows: false,
             h_scroll_linked: true,
@@ -155,6 +165,8 @@ mod tests {
         options.ignore.comments = true;
         options.ignore.regex_enabled = true;
         options.ignore.patterns = IgnorePatterns::new("foo\\d+");
+        options.ignore.line_endings = true;
+        options.ignore.file_markers = true;
         options.highlight_rows = true;
         options.ghost_rows = true;
         options.diff_only_with_extra_rows = Some(7);
@@ -167,6 +179,8 @@ mod tests {
                 whitespace: true,
                 comments: true,
                 regex_enabled: true,
+                line_endings: true,
+                file_markers: true,
                 highlight_rows: true,
                 ghost_rows: true,
                 h_scroll_linked: true,
