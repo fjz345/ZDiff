@@ -26,7 +26,7 @@ No console window opens. `-log` writes the log to the terminal zdiff-folder-gui 
     - L: likeness bar, how alike each pair is (lines, pixels or bytes)
     - T: tolerance, differing files that pass the size, modification time or likeness criteria count as Similar
     - Link horizontal scroll of both sides
-* Roots at a git revision or a Perforce depot folder, changelist or shelf, picked from a revision dropdown next to each path bar
+* Roots at a git revision or a Perforce depot folder, changelist or shelf, picked from a "Source control" dropdown next to each path bar
 * External diff tools
     - Tools window with presets (zdiff-gui, TortoiseMerge, WinMerge, Beyond Compare, p4merge, VS Code, ...), argument templates, rules and a Test button
     - Executables are found next to the app, at the build path or on PATH

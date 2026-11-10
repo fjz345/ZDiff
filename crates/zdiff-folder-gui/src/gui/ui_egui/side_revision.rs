@@ -12,7 +12,8 @@ use zcommon::{
     },
 };
 
-const WORKING_TREE: &str = "Working tree";
+const SOURCE_CONTROL: &str = "Source control";
+const LOCAL_FOLDER: &str = "Local folder";
 const HEAD: &str = "Head";
 const MAX_LABEL_CHARS: usize = 24;
 
@@ -133,7 +134,7 @@ pub fn pick_revision(
 
 fn revision_text(rev: &SideRev) -> String {
     match rev {
-        SideRev::Git(None) => WORKING_TREE.to_owned(),
+        SideRev::Git(None) => LOCAL_FOLDER.to_owned(),
         SideRev::Git(Some(GitRev::Index)) => "Index".to_owned(),
         SideRev::Git(Some(GitRev::Rev(rev))) => rev.clone(),
         SideRev::Depot(None) => HEAD.to_owned(),
@@ -217,13 +218,15 @@ pub fn revision_dropdown(
     root: Option<&Path>,
 ) -> Option<PathBuf> {
     let Some(root) = root else {
-        ui.add_enabled(false, egui::Button::new(WORKING_TREE));
+        ui.add_enabled(false, egui::Button::new(SOURCE_CONTROL));
         return None;
     };
     let (folder, current) = split_side(root);
     let state_id = ui.make_persistent_id(("side_revision_menu", id_salt));
     let text = revision_text(&current);
-    let shown = if text.chars().count() > MAX_LABEL_CHARS {
+    let shown = if current == SideRev::Git(None) {
+        SOURCE_CONTROL.to_owned()
+    } else if text.chars().count() > MAX_LABEL_CHARS {
         let head: String = text.chars().take(MAX_LABEL_CHARS - 1).collect();
         format!("{head}…")
     } else {
@@ -281,7 +284,7 @@ fn menu_contents(
     }
     if !matches!(current, SideRev::Depot(_))
         && ui
-            .selectable_label(*current == SideRev::Git(None), WORKING_TREE)
+            .selectable_label(*current == SideRev::Git(None), LOCAL_FOLDER)
             .clicked()
     {
         pick = Some(RootPick::WorkingTree);

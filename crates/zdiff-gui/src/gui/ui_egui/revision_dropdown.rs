@@ -12,6 +12,9 @@ use zdiff::universal_path::{DepotRev, GitRev, UniversalPath};
 
 use crate::p4::{P4Command, P4Stream, depot_file_of_local, list_streams};
 
+const SOURCE_CONTROL: &str = "Source control";
+const LOCAL_FILE: &str = "Local file";
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RevisionPick {
     WorkingTree,
@@ -104,7 +107,7 @@ fn stream_of<'a>(file: &str, streams: &'a [P4Stream]) -> Option<&'a P4Stream> {
 
 pub fn revision_label(path: &UniversalPath) -> String {
     match path {
-        UniversalPath::Local(_) => "Working tree".to_owned(),
+        UniversalPath::Local(_) => SOURCE_CONTROL.to_owned(),
         UniversalPath::Git(_, GitRev::Index) => "Index".to_owned(),
         UniversalPath::Git(_, rev) => rev.to_string(),
         UniversalPath::Depot(_, None) => "Head".to_owned(),
@@ -189,7 +192,7 @@ pub fn revision_dropdown(
     let (response, inner) = MenuButton::from_button(button)
         .config(MenuConfig::new().close_behavior(PopupCloseBehavior::CloseOnClickOutside))
         .ui(ui, |ui| menu(ui, id, path));
-    response.on_hover_text("Revision");
+    response.on_hover_text("Source control revision");
     let Some(inner) = inner else {
         ui.data_mut(|d| d.remove::<State>(id));
         return None;
@@ -245,7 +248,7 @@ fn menu(ui: &mut egui::Ui, id: egui::Id, path: &UniversalPath) -> Option<Univers
         item(
             ui,
             matches!(path, UniversalPath::Local(_)),
-            "Working tree",
+            LOCAL_FILE,
             RevisionPick::WorkingTree,
         );
     }
@@ -618,7 +621,7 @@ mod tests {
     #[test]
     fn the_label_names_the_current_revision() {
         let label = |p: &str| revision_label(&UniversalPath::from(p));
-        assert_eq!(label(r"C:\ws\a.rs"), "Working tree");
+        assert_eq!(label(r"C:\ws\a.rs"), "Source control");
         assert_eq!(label(r"C:\ws\a.rs@git:main"), "main");
         assert_eq!(label(r"C:\ws\a.rs@git:index"), "Index");
         assert_eq!(label("//depot/a.txt"), "Head");
