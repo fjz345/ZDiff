@@ -16,24 +16,10 @@ use crate::diff_ctx::{MinimalDiffCtx, finalize_diff_rows};
 const CONTEXT_LINES: usize = 3;
 
 pub fn export_diff(diff_ctx: &MinimalDiffCtx) {
-    let (Some(source), Some(target)) = (&diff_ctx.input.file_1, &diff_ctx.input.file_2) else {
+    let Some(text) = patch_text(diff_ctx) else {
         log::info!("Export Diff: both sides need a file");
         return;
     };
-    let options = DiffBuilderOptions {
-        ghost_rows: false,
-        ..diff_ctx.input.options.clone()
-    };
-    let rows = build_diff_rows(
-        (*diff_ctx.diff_ir).clone(),
-        Some(&source.tokens),
-        Some(&target.tokens),
-        &source.contents,
-        &target.contents,
-        &options,
-        source.metadata.num_lines().max(target.metadata.num_lines()),
-    );
-    let text = unified_diff_text(rows, [source, target]);
     if text.is_empty() {
         log::info!("Export Diff: the files have no differences");
         return;
@@ -52,6 +38,26 @@ pub fn export_diff(diff_ctx: &MinimalDiffCtx) {
             Err(e) => log::error!("Export Diff: can not write {}: {e}", path.display()),
         }
     });
+}
+
+pub fn patch_text(diff_ctx: &MinimalDiffCtx) -> Option<String> {
+    let (Some(source), Some(target)) = (&diff_ctx.input.file_1, &diff_ctx.input.file_2) else {
+        return None;
+    };
+    let options = DiffBuilderOptions {
+        ghost_rows: false,
+        ..diff_ctx.input.options.clone()
+    };
+    let rows = build_diff_rows(
+        (*diff_ctx.diff_ir).clone(),
+        Some(&source.tokens),
+        Some(&target.tokens),
+        &source.contents,
+        &target.contents,
+        &options,
+        source.metadata.num_lines().max(target.metadata.num_lines()),
+    );
+    Some(unified_diff_text(rows, [source, target]))
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -143,12 +149,17 @@ fn write_hunk(
 
 #[cfg(test)]
 mod tests {
+    use std::time::{Duration, Instant};
+
     use zdiff::{
         cached_file::FileMetadata, diff_builder::DiffBuilderOptions, universal_path::UniversalPath,
     };
 
     use super::*;
-    use crate::ui_egui::copy_harness::CopyHarness;
+    use crate::{
+        diff_ctx::{DiffProcessor, UpdateDiffRowsInput},
+        ui_egui::copy_harness::CopyHarness,
+    };
 
     fn cached_file(path: &str, contents: &str) -> CachedFile<RawToken> {
         CachedFile {
@@ -274,6 +285,51 @@ mod tests {
         assert_eq!(
             export_with("a\nb \nc\n", "a\nb\nX\n", ignoring_whitespace()),
             "--- a.txt\n+++ b.txt\n@@ -1,3 +1,3 @@\n a\n b \n-c\n+X\n"
+        );
+    }
+
+    fn settled_diff(source: &str, target: &str, options: DiffBuilderOptions) -> MinimalDiffCtx {
+        let file = |path: &str, contents: &str| {
+            Some(Arc::new(CachedFile::from_contents(
+                UniversalPath::from(path),
+                contents.to_owned(),
+            )))
+        };
+        let mut processor = DiffProcessor::default();
+        processor.request_update(UpdateDiffRowsInput {
+            file_1: file("a.txt", source),
+            file_2: file("b.txt", target),
+            options,
+            ..Default::default()
+        });
+        let start = Instant::now();
+        loop {
+            processor.update();
+            if !processor.is_in_progress() {
+                return processor
+                    .get_minimal_diff_ctx()
+                    .expect("the diff completed");
+            }
+            assert!(
+                start.elapsed() < Duration::from_secs(30),
+                "the diff never completed"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+
+    #[test]
+    fn the_patch_ignores_how_the_pane_collapses_and_pads_its_rows() {
+        let source = numbered(1..=9);
+        let target = source.replace("5\n", "X\n");
+        let pane_options = DiffBuilderOptions {
+            diff_only_with_extra_rows: Some(0),
+            ghost_rows: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            patch_text(&settled_diff(&source, &target, pane_options)).as_deref(),
+            Some("--- a.txt\n+++ b.txt\n@@ -2,7 +2,7 @@\n 2\n 3\n 4\n-5\n+X\n 6\n 7\n 8\n")
         );
     }
 

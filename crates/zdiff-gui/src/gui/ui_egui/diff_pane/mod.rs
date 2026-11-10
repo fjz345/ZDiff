@@ -5,6 +5,7 @@ mod gutter;
 mod highlight;
 mod layout;
 mod line_menu;
+mod patch;
 mod path_bar;
 mod pins;
 mod row;
@@ -22,6 +23,7 @@ use highlight::*;
 use layout::*;
 pub(crate) use line_menu::line_text;
 use line_menu::*;
+use patch::*;
 use path_bar::*;
 use pins::*;
 use row::*;
@@ -219,6 +221,8 @@ pub struct FileDiffPane {
     center_layout: Option<CenterLayoutCache>,
     #[serde(skip)]
     unified: Option<Arc<UnifiedView>>,
+    #[serde(skip)]
+    patch: Option<PatchView>,
 }
 
 /// The text rows' rects of the last drawn frame, taken by the app's raw input hook, which runs
@@ -249,6 +253,7 @@ impl FileDiffPane {
             header_height: 0.0,
             center_layout: None,
             unified: None,
+            patch: None,
         }
     }
 

@@ -8,7 +8,7 @@ use tempfile::tempdir;
 use zdiff::universal_path::UniversalPath;
 
 use super::{ZApp, state::AppStateCtx};
-use crate::viewer::hex_strings::HexMode;
+use crate::{ui_egui::text_mode::TextMode, viewer::hex_strings::HexMode};
 
 const FRAME_AT_60_HZ: Duration = Duration::from_micros(16_667);
 const SCREEN: egui::Vec2 = egui::vec2(1600.0, 1000.0);
@@ -139,6 +139,16 @@ fn idle_and_pointer_moved_frames_of_a_20k_string_strings_diff_fit_a_60_hz_frame(
     let dir = tempdir().unwrap();
     let (ctx, mut app) = loaded_app(&strings_pair(dir.path()), |state| {
         state.hex_settings.mode = HexMode::Strings;
+    });
+
+    assert_idle_and_pointer_moved_frames_fit(&ctx, &mut app);
+}
+
+#[test]
+fn idle_and_pointer_moved_frames_of_a_30k_line_patch_fit_a_60_hz_frame() {
+    let dir = tempdir().unwrap();
+    let (ctx, mut app) = loaded_app(&text_pair(dir.path()), |state| {
+        state.text_mode = TextMode::Patch;
     });
 
     assert_idle_and_pointer_moved_frames_fit(&ctx, &mut app);

@@ -10,14 +10,16 @@ pub enum TextMode {
     Unified,
     SingleLeft,
     SingleRight,
+    Patch,
 }
 
 impl TextMode {
-    pub const ALL: [Self; 4] = [
+    pub const ALL: [Self; 5] = [
         Self::SideBySide,
         Self::Unified,
         Self::SingleLeft,
         Self::SingleRight,
+        Self::Patch,
     ];
 
     pub fn label(self) -> &'static str {
@@ -26,6 +28,7 @@ impl TextMode {
             Self::Unified => "Unified",
             Self::SingleLeft => "Single file: left",
             Self::SingleRight => "Single file: right",
+            Self::Patch => "Patch",
         }
     }
 
@@ -33,7 +36,7 @@ impl TextMode {
         match self {
             Self::SingleLeft => Some(ActiveSide::Left),
             Self::SingleRight => Some(ActiveSide::Right),
-            Self::SideBySide | Self::Unified => None,
+            Self::SideBySide | Self::Unified | Self::Patch => None,
         }
     }
 }
@@ -48,6 +51,7 @@ mod tests {
         assert_eq!(TextMode::Unified.single_side(), None);
         assert_eq!(TextMode::SingleLeft.single_side(), Some(ActiveSide::Left));
         assert_eq!(TextMode::SingleRight.single_side(), Some(ActiveSide::Right));
+        assert_eq!(TextMode::Patch.single_side(), None);
     }
 
     #[test]
@@ -58,5 +62,6 @@ mod tests {
         }
         assert!(TextMode::ALL.contains(&TextMode::SingleLeft));
         assert!(TextMode::ALL.contains(&TextMode::SingleRight));
+        assert!(TextMode::ALL.contains(&TextMode::Patch));
     }
 }

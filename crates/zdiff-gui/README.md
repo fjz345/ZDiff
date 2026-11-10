@@ -14,6 +14,7 @@ GUI for zdiff crate
     - P4 integrated commands and quick diffs (F1-F4)
 * Text diff view
     - Side by side, Unified, or a single side at full width with its changed lines tinted
+    - Patch: the diff as the unified patch Export Diff writes (3 context lines, current ignore options), with a Copy patch button; find, goto line and hunk revert work only in the row views
     - Next/previous conflict (Ctrl+1/2, Alt+Up/Down), goto line (Ctrl+G)
     - Find (Ctrl+F) with whole word and regex
     - Toolbar `< X >` steppers (context rows, conflict, find match): drag the value sideways to pick one, double-click it to reset

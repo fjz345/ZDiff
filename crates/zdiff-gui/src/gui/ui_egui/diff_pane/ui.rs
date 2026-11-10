@@ -28,8 +28,11 @@ impl FileDiffPane {
         } else {
             Gutter::Single { number_width }
         };
+        let patch = text_viewer && !strings && *ctx.text_mode == TextMode::Patch;
         let unified = match ctx.diff_ctx {
-            Some(diff_ctx) if text_viewer && !strings && *ctx.text_mode != TextMode::SideBySide => {
+            Some(diff_ctx)
+                if text_viewer && !strings && !patch && *ctx.text_mode != TextMode::SideBySide =>
+            {
                 Some(unified_view(
                     &mut self.unified,
                     &diff_ctx.diff_rows,
@@ -77,6 +80,10 @@ impl FileDiffPane {
         if !wrap {
             self.row_heights = None;
         }
+        let patch_rows = ctx
+            .diff_ctx
+            .filter(|_| patch)
+            .map(|diff_ctx| patch_view(&mut self.patch, diff_ctx));
         let row_heights = &mut self.row_heights;
         let ruler_cache = &mut self.ruler_spans;
         let ruler_bins = &mut self.ruler_bins;
@@ -386,7 +393,7 @@ impl FileDiffPane {
         let show_ruler = if ctx.hex_view.is_some() {
             hex_len > 0
         } else {
-            !other_viewer && !do_not_render_diff && diff_rows_len > 0
+            !other_viewer && !patch && !do_not_render_diff && diff_rows_len > 0
         };
         let ruler_id = egui::Id::new("file_diff_ruler");
 
@@ -713,6 +720,7 @@ impl FileDiffPane {
                             let header_only = ctx.image_view.is_some()
                                 || ctx.media_view.is_some()
                                 || side_viewers.is_some()
+                                || patch
                                 || do_not_render_diff;
                             let mut offsets = [
                                 *ctx.scroll_left,
@@ -1153,6 +1161,9 @@ impl FileDiffPane {
                                 image_left_width,
                             ) {
                                 image::show(ui, image_view, image_cfg, left_width, shown);
+                            }
+                            if let Some(view) = patch_rows.filter(|_| !do_not_render_diff) {
+                                view.ui(ui);
                             }
                             if let (Some(meta), Some(frames), Some(image_cfg), Some(left_width)) = (
                                 ctx.video_meta.as_deref_mut(),
