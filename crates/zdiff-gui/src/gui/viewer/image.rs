@@ -122,9 +122,17 @@ impl ImageView {
         }
     }
 
+    pub fn min_zoom(canvas: Vec2, viewport: Vec2) -> f32 {
+        if canvas.min_elem() <= 0.0 || viewport.min_elem() <= 0.0 {
+            return MIN_ZOOM;
+        }
+        Self::fit(canvas, viewport).zoom.min(1.0)
+    }
+
     /// Zooms by `factor`, clamped, keeping the image pixel under `point` (side-relative) in place.
-    pub fn zoomed_about(self, point: Vec2, factor: f32) -> Self {
-        let zoom = (self.zoom * factor).clamp(MIN_ZOOM, MAX_ZOOM);
+    pub fn zoomed_about(self, point: Vec2, factor: f32, min_zoom: f32) -> Self {
+        // A view already below the floor (the viewport grew) is not pushed in by a zoom out.
+        let zoom = (self.zoom * factor).clamp(min_zoom.min(self.zoom), MAX_ZOOM);
         Self {
             zoom,
             pan: point - (point - self.pan) * (zoom / self.zoom),
@@ -1212,19 +1220,21 @@ pub fn show(
         .sides
         .iter()
         .any(|side| matches!(side, SideState::Decoding));
+    let canvas = (0..2)
+        .filter_map(|i| processor.decoded(i))
+        .fold(Vec2::ZERO, |canvas, image| {
+            canvas.max(vec2(image.width as f32, image.height as f32))
+        });
+    let min_zoom = ImageView::min_zoom(canvas, viewport);
     if (processor.fit_pending && !decoding) || fit || response.double_clicked() {
-        let canvas = (0..2)
-            .filter_map(|i| processor.decoded(i))
-            .fold(Vec2::ZERO, |canvas, image| {
-                canvas.max(vec2(image.width as f32, image.height as f32))
-            });
         processor.view = ImageView::fit(canvas, viewport);
         processor.fit_pending = false;
     }
     if actual_size {
+        let to_actual_size = 1.0 / processor.view.zoom;
         processor.view = processor
             .view
-            .zoomed_about(viewport / 2.0, 1.0 / processor.view.zoom);
+            .zoomed_about(viewport / 2.0, to_actual_size, min_zoom);
     }
     if response.dragged() {
         processor.view.pan += response.drag_delta();
@@ -1236,7 +1246,9 @@ pub fn show(
         if let Some(side_rect) = hovered_side
             && factor != 1.0
         {
-            processor.view = processor.view.zoomed_about(pointer - side_rect.min, factor);
+            processor.view = processor
+                .view
+                .zoomed_about(pointer - side_rect.min, factor, min_zoom);
         }
     }
 
@@ -1657,7 +1669,7 @@ mod tests {
             pan: vec2(10.0, 20.0),
         };
         let cursor = vec2(50.0, 60.0);
-        let zoomed = view.zoomed_about(cursor, 1.5);
+        let zoomed = view.zoomed_about(cursor, 1.5, MIN_ZOOM);
         assert_eq!(zoomed.zoom, 3.0);
         assert_near(pixel_under(zoomed, cursor), pixel_under(view, cursor));
     }
@@ -1666,14 +1678,42 @@ mod tests {
     fn zoom_is_clamped_and_still_keeps_the_cursor_pixel() {
         let view = ImageView::default();
         let cursor = vec2(30.0, 40.0);
-        let zoomed = view.zoomed_about(cursor, 1e6);
+        let zoomed = view.zoomed_about(cursor, 1e6, MIN_ZOOM);
         assert_eq!(zoomed.zoom, MAX_ZOOM);
         assert_near(pixel_under(zoomed, cursor), pixel_under(view, cursor));
-        assert_eq!(view.zoomed_about(cursor, 1e-6).zoom, MIN_ZOOM);
+        assert_eq!(view.zoomed_about(cursor, 1e-6, MIN_ZOOM).zoom, MIN_ZOOM);
         assert_eq!(
             ImageView::fit(vec2(1.0, 1.0), vec2(1e6, 1e6)).zoom,
             MAX_ZOOM
         );
+    }
+
+    #[test]
+    fn zoom_out_stops_at_the_fit_or_at_1_to_1_for_a_small_canvas() {
+        let viewport = vec2(100.0, 100.0);
+        let large = vec2(200.0, 100.0);
+        assert_eq!(ImageView::min_zoom(large, viewport), 0.5);
+        let small = vec2(10.0, 20.0);
+        assert_eq!(ImageView::min_zoom(small, viewport), 1.0);
+        assert_eq!(ImageView::min_zoom(Vec2::ZERO, viewport), MIN_ZOOM);
+        assert_eq!(ImageView::min_zoom(large, Vec2::ZERO), MIN_ZOOM);
+
+        let view = ImageView::fit(large, viewport);
+        let cursor = vec2(30.0, 40.0);
+        let out = view.zoomed_about(cursor, 1e-6, ImageView::min_zoom(large, viewport));
+        assert_eq!(out.zoom, 0.5);
+        assert_near(pixel_under(out, cursor), pixel_under(view, cursor));
+    }
+
+    #[test]
+    fn a_view_below_the_zoom_floor_does_not_jump_in_on_zoom_out() {
+        let view = ImageView {
+            zoom: 0.25,
+            pan: vec2(10.0, 20.0),
+        };
+        let cursor = vec2(30.0, 40.0);
+        assert_eq!(view.zoomed_about(cursor, 0.5, 0.5), view);
+        assert_eq!(view.zoomed_about(cursor, 1.5, 0.5).zoom, 0.375);
     }
 
     fn encode(image: &RgbaImage, format: ImageFormat) -> Vec<u8> {

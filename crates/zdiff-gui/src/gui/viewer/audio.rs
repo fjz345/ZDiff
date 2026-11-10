@@ -226,12 +226,17 @@ impl TimeView {
         }
     }
 
-    /// Scrolls no further than the ends; a view wider than `duration` starts at zero.
+    /// Scrolls no further than the ends and zooms out no further than the whole `duration`.
     pub fn clamped(self, duration: f64, width: f32) -> Self {
-        let last_start = (duration - width as f64 * self.secs_per_px).max(0.0);
+        let secs_per_px = if duration > 0.0 {
+            self.secs_per_px.min(Self::fit(duration, width).secs_per_px)
+        } else {
+            self.secs_per_px
+        };
+        let last_start = (duration - width as f64 * secs_per_px).max(0.0);
         Self {
             start: self.start.clamp(0.0, last_start),
-            ..self
+            secs_per_px,
         }
     }
 }
@@ -1141,6 +1146,33 @@ mod tests {
         assert_eq!(deep.secs_per_px, MIN_SECS_PER_PX);
         assert_close(deep.time_at(600.0), under);
         assert_eq!(view.zoomed_about(600.0, 1e-12).secs_per_px, MAX_SECS_PER_PX);
+    }
+
+    #[test]
+    fn zoom_out_stops_at_the_whole_duration() {
+        let fit = TimeView::fit(10.0, 1000.0);
+        let out = fit.zoomed_about(600.0, 1e-12).clamped(10.0, 1000.0);
+        assert_close(out.secs_per_px, fit.secs_per_px);
+        assert_eq!(out.start, 0.0);
+
+        let zoomed = fit.zoomed_about(250.0, 4.0).clamped(10.0, 1000.0);
+        assert_close(zoomed.secs_per_px, fit.secs_per_px / 4.0);
+        let back = zoomed.zoomed_about(250.0, 0.1).clamped(10.0, 1000.0);
+        assert_close(back.secs_per_px, fit.secs_per_px);
+        assert_eq!(back.start, 0.0);
+
+        let wider = fit.clamped(10.0, 2000.0);
+        assert_close(wider.secs_per_px, TimeView::fit(10.0, 2000.0).secs_per_px);
+        assert_eq!(fit.clamped(10.0, 500.0), fit);
+    }
+
+    #[test]
+    fn a_view_with_nothing_decoded_keeps_its_zoom() {
+        let view = TimeView {
+            start: 0.0,
+            secs_per_px: 0.5,
+        };
+        assert_eq!(view.clamped(0.0, 1000.0), view);
     }
 
     #[test]
