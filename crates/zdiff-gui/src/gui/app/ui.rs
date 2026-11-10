@@ -125,6 +125,7 @@ impl ZApp {
                     text_diff_shown,
                 },
             );
+            self.frame_stats.mark("menu");
             let code_language = match code_language_override.as_deref() {
                 Some(code) => [code; 2],
                 None => detected.map(|language| language.unwrap_or("")),
@@ -349,6 +350,7 @@ impl ZApp {
                     ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
                 }
             }
+            self.frame_stats.mark("other");
             ui.with_layout(
                 Layout::left_to_right(egui::Align::Min),
                 |ui| match &mut self.merge {
@@ -359,6 +361,7 @@ impl ZApp {
                     None => self.tree.ui(&mut behavior, ui),
                 },
             );
+            self.frame_stats.mark("panes");
             if let Some(closing) = close_merge {
                 let merge = self.merge.take().expect("only an open merge closes");
                 self.exit_code.store(merge.exit_code(), Ordering::Relaxed);
@@ -555,6 +558,7 @@ impl ZApp {
                     break;
                 }
             }
+            self.frame_stats.mark("other");
         });
     }
 }

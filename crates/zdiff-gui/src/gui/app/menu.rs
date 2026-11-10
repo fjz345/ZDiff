@@ -1,6 +1,7 @@
 use super::{ZApp, quickdiff::run_diff_against_shelf_base};
 use eframe::egui::{self, containers::menu::MenuConfig};
 use zcommon_ui::common::{show_custom_popup, show_settings_window};
+use zcommon_ui::frame_stats;
 use zcommon_ui::h_scroll::WheelModifier;
 use zcommon_ui::keymap::menu_item;
 use zdiff::{
@@ -228,6 +229,7 @@ impl ZApp {
                         if menu_item(ui, "Style", keymap, FileAction::OpenStyle).clicked() {
                             self.style_window.open(ui.ctx());
                         }
+                        ui.checkbox(&mut self.show_frame_breakdown, "Frame Time Breakdown");
                     });
 
                     #[cfg(debug_assertions)]
@@ -346,8 +348,16 @@ impl ZApp {
                             "../../test/test_log/1.txt",
                         );
                     });
+                    frame_stats::fps_label(ui, &self.frame_stats, &mut self.show_frame_breakdown);
                 });
         });
+        if self.show_frame_breakdown {
+            frame_stats::breakdown_window(
+                ui.ctx(),
+                &self.frame_stats,
+                &mut self.show_frame_breakdown,
+            );
+        }
 
         if self.open_shortcuts_window {
             show_settings_window(

@@ -21,6 +21,7 @@ use std::{
         atomic::{AtomicU8, Ordering},
     },
 };
+use zcommon_ui::frame_stats::FrameStats;
 use zcommon_ui::h_scroll::{self};
 
 use zcommon_ui::keymap_editor::KeymapEditor;
@@ -91,6 +92,10 @@ pub struct ZApp {
     window_title: Option<String>,
     #[serde(skip)]
     window_memory: WindowMemory,
+    #[serde(skip)]
+    frame_stats: FrameStats,
+    #[serde(default)]
+    show_frame_breakdown: bool,
 }
 
 fn default_zoom() -> f32 {
@@ -186,6 +191,8 @@ impl ZApp {
             exit_code: Arc::default(),
             window_title: None,
             window_memory: WindowMemory::default(),
+            frame_stats: FrameStats::default(),
+            show_frame_breakdown: false,
         }
     }
 
@@ -258,6 +265,7 @@ impl eframe::App for ZApp {
     }
 
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        self.frame_stats.begin_frame(ctx, frame);
         // Update conflict cursor before input processing
         {
             let app_ctx = self
@@ -300,6 +308,7 @@ impl eframe::App for ZApp {
         }
 
         self.process_ctx_inputs(ctx, frame);
+        self.frame_stats.mark("inputs");
 
         let current_state = self
             .state
@@ -452,6 +461,7 @@ impl eframe::App for ZApp {
                 } else {
                     state.hex_strings.clear();
                 }
+                self.frame_stats.mark("viewers");
                 let strings_files = state
                     .hex_strings
                     .sides()
@@ -519,6 +529,7 @@ impl eframe::App for ZApp {
                 }
 
                 state.diff_processor.update();
+                self.frame_stats.mark("diff");
 
                 self.ui(ctx, frame, &mut state);
 

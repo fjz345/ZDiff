@@ -201,6 +201,36 @@ fn repaint_delay_after_pointer_motion(
 }
 
 #[test]
+fn an_idle_diff_with_the_frame_time_breakdown_open_stops_repainting() {
+    let dir = tempdir().unwrap();
+    let pair = write_pair(dir.path(), "txt", b"a\nb\n", b"a\nc\n");
+    let (ctx, mut app) = loaded_app(&pair, |_| {});
+    app.show_frame_breakdown = true;
+
+    assert_eq!(
+        repaint_delay_after_pointer_motion(&ctx, &mut app, egui::pos2(400.0, 400.0)),
+        Duration::MAX
+    );
+}
+
+#[test]
+fn the_fps_label_turning_idle_costs_one_frame() {
+    let dir = tempdir().unwrap();
+    let pair = write_pair(dir.path(), "txt", b"a\nb\n", b"a\nc\n");
+    let (ctx, mut app) = loaded_app(&pair, |_| {});
+    app.show_frame_breakdown = true;
+    repaint_delay_after_pointer_motion(&ctx, &mut app, egui::pos2(400.0, 400.0));
+
+    std::thread::sleep(Duration::from_millis(1300));
+    assert!(ctx.has_requested_repaint());
+    let idle_frame = repaint_delay(&run_frame(&ctx, &mut app, SCREEN.x, Vec::new()).1);
+    std::thread::sleep(Duration::from_millis(1300));
+
+    assert_eq!(idle_frame, Duration::MAX);
+    assert!(!ctx.has_requested_repaint());
+}
+
+#[test]
 fn an_idle_text_diff_stops_repainting_after_pointer_motion() {
     let dir = tempdir().unwrap();
     let (ctx, mut app) = loaded_app(&text_pair(dir.path()), |_| {});

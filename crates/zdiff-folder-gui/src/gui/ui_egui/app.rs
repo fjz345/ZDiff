@@ -21,6 +21,7 @@ use zcommon::{
 };
 use zcommon_ui::{
     find_popup::{FindPopupEvent, find_popup},
+    frame_stats::{self, FrameStats},
     keymap::{Keymap, menu_item},
     shared_keymap::load_shared,
     style_window::StyleWindow,
@@ -733,6 +734,10 @@ pub struct ZApp {
     export_requested: bool,
     #[serde(skip)]
     title: String,
+    #[serde(skip)]
+    frame_stats: FrameStats,
+    #[serde(default)]
+    show_frame_breakdown: bool,
 }
 
 const LONG_FRAME: Duration = Duration::from_millis(200);
@@ -788,6 +793,8 @@ impl ZApp {
             find_open: false,
             export_requested: false,
             title: String::new(),
+            frame_stats: FrameStats::default(),
+            show_frame_breakdown: false,
         }
     }
 
@@ -933,6 +940,7 @@ impl ZApp {
                         {
                             self.style_window.open(ui.ctx());
                         }
+                        ui.checkbox(&mut self.show_frame_breakdown, "Frame Time Breakdown");
                     });
 
                     let diff_mode_text = if self.diff_mode_path_diff {
@@ -995,8 +1003,16 @@ impl ZApp {
                             }
                         }
                     });
+                    frame_stats::fps_label(ui, &self.frame_stats, &mut self.show_frame_breakdown);
                 });
         });
+        if self.show_frame_breakdown {
+            frame_stats::breakdown_window(
+                ui.ctx(),
+                &self.frame_stats,
+                &mut self.show_frame_breakdown,
+            );
+        }
         if self.tools_window.open {
             self.tools_window.show(ui.ctx(), &mut app_ctx.diff_config);
         }
@@ -1111,8 +1127,10 @@ impl ZApp {
                 ui_tool_message(ui, app_ctx.tool_message.as_ref());
             });
         }
+        self.frame_stats.mark("other");
         egui::CentralPanel::default().show(ctx, |ui| {
             self.show_menu(ui, app_ctx);
+            self.frame_stats.mark("menu");
 
             ui.separator();
 
@@ -1162,6 +1180,7 @@ impl ZApp {
 
                 self.tree.ui(&mut behavior, ui);
                 let chip_event = behavior.find.chip_event;
+                self.frame_stats.mark("panes");
 
                 for (_tile_id, tile) in self.tree.tiles.iter() {
                     if let Tile::Pane(Pane::DuplicateFiles(_file_explorer)) = tile {
@@ -1206,6 +1225,7 @@ impl ZApp {
                     ctx.request_repaint();
                 }
             });
+            self.frame_stats.mark("other");
         });
     }
 
@@ -1329,6 +1349,7 @@ impl eframe::App for ZApp {
     }
 
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        self.frame_stats.begin_frame(ctx, frame);
         let mut app_state = self
             .state
             .take()
@@ -1377,7 +1398,9 @@ impl eframe::App for ZApp {
                 state.update_scans(ctx);
                 state.tree_compare.set_repaint(ctx);
                 state.update_compare(Instant::now());
+                self.frame_stats.mark("jobs");
                 state.build_two_folder_diff_rows_if_stale();
+                self.frame_stats.mark("rows");
                 if state.file_system_1_scan.is_scanning()
                     || state.file_system_2_scan.is_scanning()
                     || state.tree_compare.is_comparing()
@@ -1394,10 +1417,12 @@ impl eframe::App for ZApp {
                 if fetching {
                     ctx.request_repaint_after(Duration::from_millis(100));
                 }
+                self.frame_stats.mark("jobs");
 
                 self.ui(ctx, frame, &mut state);
 
                 self.process_ctx_inputs(ctx, frame);
+                self.frame_stats.mark("inputs");
                 let frame_time = frame_start.elapsed();
                 if frame_time > LONG_FRAME {
                     log::warn!("UI frame took {} ms", frame_time.as_millis());
@@ -3092,6 +3117,36 @@ mod tests {
         let (_left, _right, mut app) = shown_app(HashService::new(0));
 
         assert_eq!(settled_repaint_delay(&mut app), Duration::MAX);
+    }
+
+    #[test]
+    fn an_idle_folder_diff_with_the_frame_time_breakdown_open_stops_repainting() {
+        let (_left, _right, mut app) = shown_app(HashService::new(0));
+        app.show_frame_breakdown = true;
+        let ctx = egui::Context::default();
+        for _ in 0..20 {
+            repaint_delay(&ctx, &mut app);
+        }
+
+        assert_eq!(repaint_delay(&ctx, &mut app), Duration::MAX);
+    }
+
+    #[test]
+    fn the_fps_label_turning_idle_costs_one_frame() {
+        let (_left, _right, mut app) = shown_app(HashService::new(0));
+        app.show_frame_breakdown = true;
+        let ctx = egui::Context::default();
+        for _ in 0..20 {
+            repaint_delay(&ctx, &mut app);
+        }
+
+        std::thread::sleep(Duration::from_millis(1300));
+        assert!(ctx.has_requested_repaint());
+        let idle_frame = repaint_delay(&ctx, &mut app);
+        std::thread::sleep(Duration::from_millis(1300));
+
+        assert_eq!(idle_frame, Duration::MAX);
+        assert!(!ctx.has_requested_repaint());
     }
 
     #[test]

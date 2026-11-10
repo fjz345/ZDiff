@@ -37,6 +37,7 @@ No console window opens. `-log` writes the log to the terminal zdiff-folder-gui 
     - Duplicate groups shown inline in the tree; Duplicates only, Flat, Show parent folders and Hash column toggles
     - Keep this, next/previous group, then Resolve recycles the non-keepers
 * Customizable keybindings (Ctrl+O), style window
+* Frame rate counter at the right end of the menu bar, marked idle once frames stop; clicking it (or Options > Frame Time Breakdown) shows the average and max time per frame stage over the last 120 frames
 
 ## Configuration
 

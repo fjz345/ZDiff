@@ -1,5 +1,6 @@
 pub mod common;
 pub mod find_popup;
+pub mod frame_stats;
 pub mod h_scroll;
 pub mod keymap;
 pub mod keymap_editor;
