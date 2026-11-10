@@ -28,6 +28,7 @@ use crate::ui_egui::{
     tree_cursor::TreeCursor,
     tree_filter::{DiffFilter, StateFilter},
     tree_find::TreeFindView,
+    tree_map::{MapCtx, TreeMap},
     tree_sort::TreeSort,
     tree_tolerance::{SizeDelta, Tolerance},
 };
@@ -73,6 +74,17 @@ pub struct PathDiffPane {
     table: TreeTable,
     #[serde(skip)]
     rows_cache: CursorRowsCache,
+    #[serde(default)]
+    view: PaneView,
+    #[serde(skip)]
+    map: TreeMap,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PaneView {
+    #[default]
+    Tree,
+    Map,
 }
 
 impl ZAppPane for PathDiffPane {
@@ -91,6 +103,8 @@ impl PathDiffPane {
             cursor_roots: (None, None),
             table: TreeTable::default(),
             rows_cache: CursorRowsCache::default(),
+            view: PaneView::Tree,
+            map: TreeMap::default(),
         }
     }
 
@@ -107,6 +121,7 @@ impl PathDiffPane {
         let roots = (root(file_system_1_view), root(file_system_2_view));
         if roots != self.cursor_roots {
             self.cursor = TreeCursor::default();
+            self.map.clear_zoom();
             self.cursor_roots = roots;
         }
     }
@@ -116,8 +131,21 @@ impl PathDiffPane {
             ctx.path_diff_view.file_system_1_view.as_ref(),
             ctx.path_diff_view.file_system_2_view.as_ref(),
         );
+        if ctx.actions.contains(&FolderAction::ToggleMap) {
+            self.view = match self.view {
+                PaneView::Tree => PaneView::Map,
+                PaneView::Map => PaneView::Tree,
+            };
+        }
 
         ui.horizontal(|ui| {
+            ui.selectable_value(&mut self.view, PaneView::Tree, "Tree");
+            ui.selectable_value(&mut self.view, PaneView::Map, "Map")
+                .on_hover_text(
+                    "Treemap: a box per file, sized by its larger side, colored by state",
+                );
+            ui.separator();
+
             let views = [
                 ctx.path_diff_view.file_system_1_view.as_mut(),
                 ctx.path_diff_view.file_system_2_view.as_mut(),
@@ -131,8 +159,8 @@ impl PathDiffPane {
                 "Collapse All"
             };
 
-            // Folding doesn't show in flat mode.
-            let foldable = !ctx.diff_filter.is_flat(*ctx.tree_sort);
+            // Folding doesn't show in flat mode or the map.
+            let foldable = self.view == PaneView::Tree && !ctx.diff_filter.is_flat(*ctx.tree_sort);
             if ui
                 .add_enabled(foldable, egui::Button::new(button_text))
                 .clicked()
@@ -218,6 +246,29 @@ impl PathDiffPane {
         });
 
         ui.separator();
+
+        let shown = ctx.path_diff_view.file_system_1_view.is_some()
+            || ctx.path_diff_view.file_system_2_view.is_some();
+        if self.view == PaneView::Map
+            && shown
+            && let Some(rows) = ctx.path_diff_view.visible_rows.as_deref()
+        {
+            self.map.ui(
+                ui,
+                MapCtx {
+                    file_system_1_view: ctx.path_diff_view.file_system_1_view,
+                    file_system_2_view: ctx.path_diff_view.file_system_2_view,
+                    rows,
+                    rows_id: ctx.path_diff_view.rows_id,
+                    compare: ctx.tree_compare,
+                    diff_tool_config: ctx.diff_tool_config,
+                    tool_message: ctx.tool_message,
+                    cursor: &mut self.cursor,
+                    keyboard_taken: ctx.keyboard_taken,
+                },
+            );
+            return egui_tiles::UiResponse::None;
+        }
 
         // Not inside a ScrollArea: the table scrolls itself, and at fractional DPI an outer
         // area overflows by a subpixel and lays its own bar over the table's.
@@ -478,7 +529,9 @@ fn draw_pattern_field(
 
 #[cfg(test)]
 mod tests {
-    use super::{BLACKLIST_PRESETS, FilterField, FilterPresets, PathDiffPane, WHITELIST_PRESETS};
+    use super::{
+        BLACKLIST_PRESETS, FilterField, FilterPresets, PaneView, PathDiffPane, WHITELIST_PRESETS,
+    };
     use crate::ui_egui::{fs_tree::FileSystemView, tree_cursor::TreeCursor};
     use std::{path::Path, sync::Arc};
     use tempfile::tempdir;
@@ -680,5 +733,17 @@ mod tests {
         // New models of the same roots, as a rescan makes.
         pane.forget_cursor_of_other_roots(Some(&load_view(a.path())), Some(&load_view(b.path())));
         assert_eq!(pane.cursor, TreeCursor::at("x"));
+    }
+
+    #[test]
+    fn a_pane_saved_before_the_map_opens_as_the_tree_and_the_map_view_is_kept() {
+        let old: PathDiffPane = serde_json::from_str(r#"{"title":"Folder Diff"}"#).unwrap();
+        assert_eq!(old.view, PaneView::Tree);
+
+        let mut pane = PathDiffPane::new(None);
+        pane.view = PaneView::Map;
+        let saved = serde_json::to_string(&pane).unwrap();
+        let restored: PathDiffPane = serde_json::from_str(&saved).unwrap();
+        assert_eq!(restored.view, PaneView::Map);
     }
 }

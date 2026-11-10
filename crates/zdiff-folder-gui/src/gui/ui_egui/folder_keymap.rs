@@ -31,6 +31,7 @@ pub enum FolderAction {
     OpenDiffTools,
     ToggleDiffMode,
     Export,
+    ToggleMap,
 }
 
 impl Action for FolderAction {
@@ -52,6 +53,7 @@ impl Action for FolderAction {
             Self::OpenDiffTools,
             Self::ToggleDiffMode,
             Self::Export,
+            Self::ToggleMap,
         ]
     }
 
@@ -73,6 +75,7 @@ impl Action for FolderAction {
             Self::OpenDiffTools => "open_diff_tools",
             Self::ToggleDiffMode => "toggle_diff_mode",
             Self::Export => "export",
+            Self::ToggleMap => "toggle_map",
         }
     }
 
@@ -94,6 +97,7 @@ impl Action for FolderAction {
             Self::OpenDiffTools => "Open External Diff Tools",
             Self::ToggleDiffMode => "Switch Path / Duplicate Diff",
             Self::Export => "Export Folder Diff / Duplicates",
+            Self::ToggleMap => "Switch Tree / Map View",
         }
     }
 
@@ -130,6 +134,10 @@ impl Action for FolderAction {
                 modifiers: CTRL,
             }],
             Self::Export => SharedAction::Export.defaults(),
+            Self::ToggleMap => &[Shortcut {
+                key: Key::M,
+                modifiers: CTRL,
+            }],
         }
     }
 
@@ -157,7 +165,8 @@ impl Action for FolderAction {
             | Self::NextGroup
             | Self::PrevGroup
             | Self::OpenDiffTools
-            | Self::ToggleDiffMode => None,
+            | Self::ToggleDiffMode
+            | Self::ToggleMap => None,
         }
     }
 }

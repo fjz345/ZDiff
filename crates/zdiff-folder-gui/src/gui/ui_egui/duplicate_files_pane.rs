@@ -886,7 +886,8 @@ impl DuplicateFilesPane {
                 | FolderAction::OpenStyle
                 | FolderAction::OpenDiffTools
                 | FolderAction::ToggleDiffMode
-                | FolderAction::Export => continue,
+                | FolderAction::Export
+                | FolderAction::ToggleMap => continue,
             };
             let Some((cursor, expand)) =
                 group_jump(&self.cursor, view, rows, groups, flat, forward)

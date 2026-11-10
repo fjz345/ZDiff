@@ -16,6 +16,7 @@ pub mod tree_filter;
 pub mod tree_find;
 pub mod tree_guides;
 pub mod tree_likeness;
+pub mod tree_map;
 pub mod tree_menu;
 pub mod tree_sort;
 pub mod tree_tolerance;

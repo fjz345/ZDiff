@@ -170,7 +170,8 @@ pub fn draw_ui_folder_tree(
             | FolderAction::OpenStyle
             | FolderAction::OpenDiffTools
             | FolderAction::ToggleDiffMode
-            | FolderAction::Export => continue,
+            | FolderAction::Export
+            | FolderAction::ToggleMap => continue,
         };
         let Some((moved, expand)) = target else {
             log::info!("No more diffs");

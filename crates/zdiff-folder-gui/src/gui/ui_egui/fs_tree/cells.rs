@@ -679,7 +679,7 @@ pub(super) fn paint_guides(ui: &egui::Ui, guides: &[Guide]) {
     }
 }
 
-pub(super) fn apply_cursor_request(
+pub(crate) fn apply_cursor_request(
     file_system_1_view: Option<&mut FileSystemView>,
     file_system_2_view: Option<&mut FileSystemView>,
     rows: &[VisibleRowTwoFolderDiff],

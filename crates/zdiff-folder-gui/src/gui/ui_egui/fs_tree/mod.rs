@@ -55,6 +55,7 @@ mod table;
 #[cfg(test)]
 mod tests;
 
+pub(crate) use cells::apply_cursor_request;
 use cells::*;
 pub use look::*;
 pub use state::*;

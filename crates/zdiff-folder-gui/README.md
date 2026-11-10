@@ -20,6 +20,11 @@ No console window opens. `-log` writes the log to the terminal zdiff-folder-gui 
     - Sort by Name or State, cursor with keyboard navigation, next/previous differing file
     - Find with highlighted names
     - Blacklist and whitelist filters with presets
+* Map view: Tree | Map in the pane toolbar (Ctrl+M)
+    - Squarified treemap of the rows the tree shows (filters and find apply): a box per file sized by its larger side, colored by its diff state, equal files muted
+    - A thin bar on a differing file shows the smaller side's share of the larger one
+    - Hover shows the path, both sizes, the state and the likeness; click selects (the tree follows), double-click opens the diff
+    - Click a folder to zoom in; the breadcrumb, Backspace or the mouse back button zoom out
 * Options bar
     - F: flat list by depth
     - D: diff only
