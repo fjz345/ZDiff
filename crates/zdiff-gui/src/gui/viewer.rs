@@ -79,7 +79,7 @@ pub fn path_file_name(path: &UniversalPath) -> Option<&str> {
 
 pub fn viewer_for_kind(kind: FileKind) -> ViewerKind {
     match kind {
-        FileKind::Text => ViewerKind::Text,
+        FileKind::Text | FileKind::DebugSymbols => ViewerKind::Text,
         FileKind::Image => ViewerKind::Image,
         FileKind::Audio => ViewerKind::Audio,
         FileKind::Video => ViewerKind::Video,
@@ -834,6 +834,7 @@ mod tests {
             (FileKind::Model, ViewerKind::Hex),
             (FileKind::Archive, ViewerKind::Hex),
             (FileKind::Executable, ViewerKind::Hex),
+            (FileKind::DebugSymbols, ViewerKind::Text),
             (FileKind::Intermediate, ViewerKind::Hex),
             (FileKind::UnrealAsset, ViewerKind::Hex),
             (FileKind::UnrealMap, ViewerKind::Hex),

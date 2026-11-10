@@ -54,6 +54,8 @@ pub struct UpdateDiffRowsInput {
     pub pins: Vec<Pin>,
     #[cfg_attr(feature = "serde", serde(skip))]
     pub collect_trace: bool,
+    #[cfg_attr(feature = "serde", serde(skip))]
+    pub pdb_dumps: [bool; 2],
 }
 impl PartialEq for UpdateDiffRowsInput {
     fn eq(&self, other: &Self) -> bool {
@@ -63,6 +65,7 @@ impl PartialEq for UpdateDiffRowsInput {
             && self.myers_diff_algorithm == other.myers_diff_algorithm
             && self.pins == other.pins
             && self.collect_trace == other.collect_trace
+            && self.pdb_dumps == other.pdb_dumps
     }
 }
 
@@ -488,6 +491,7 @@ impl Default for DiffCtx {
                 myers_diff_algorithm: Default::default(),
                 pins: Vec::new(),
                 collect_trace: false,
+                pdb_dumps: [false; 2],
             },
             RepaintContext::default(),
         )

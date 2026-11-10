@@ -11,6 +11,7 @@ pub enum FileKind {
     Model,
     Archive,
     Executable,
+    DebugSymbols,
     Intermediate,
     UnrealAsset,
     UnrealMap,
@@ -18,7 +19,7 @@ pub enum FileKind {
 }
 
 impl FileKind {
-    pub const ALL: [FileKind; 11] = [
+    pub const ALL: [FileKind; 12] = [
         FileKind::Text,
         FileKind::Image,
         FileKind::Video,
@@ -26,6 +27,7 @@ impl FileKind {
         FileKind::Model,
         FileKind::Archive,
         FileKind::Executable,
+        FileKind::DebugSymbols,
         FileKind::Intermediate,
         FileKind::UnrealAsset,
         FileKind::UnrealMap,
@@ -41,6 +43,7 @@ impl FileKind {
             FileKind::Model => "3d",
             FileKind::Archive => "arc",
             FileKind::Executable => "exe",
+            FileKind::DebugSymbols => "dbg",
             FileKind::Intermediate => "int",
             FileKind::UnrealAsset => "UASS",
             FileKind::UnrealMap => "UMAP",
@@ -64,7 +67,8 @@ impl FileKind {
             ],
             FileKind::Model => &["fbx", "gltf", "glb", "blend", "abc", "usd"],
             FileKind::Archive => &["zip", "7z", "rar", "pak", "utoc", "ucas"],
-            FileKind::Executable => &["exe", "dll", "pdb", "lib", "so"],
+            FileKind::Executable => &["exe", "dll", "lib", "so"],
+            FileKind::DebugSymbols => &["pdb"],
             FileKind::Intermediate => &[
                 "obj", "o", "pch", "gch", "ipch", "ilk", "iobj", "ipdb", "exp", "idb", "rlib",
                 "rmeta", "class", "pyc", "pyo", "bc", "spv", "dxil", "cso",
@@ -235,7 +239,8 @@ mod tests {
             FileKind::Archive,
             &["zip", "7z", "rar", "pak", "utoc", "ucas"],
         ),
-        (FileKind::Executable, &["exe", "dll", "pdb", "lib", "so"]),
+        (FileKind::Executable, &["exe", "dll", "lib", "so"]),
+        (FileKind::DebugSymbols, &["pdb"]),
         (
             FileKind::Intermediate,
             &[
@@ -304,6 +309,7 @@ mod tests {
             (FileKind::Model, "3d"),
             (FileKind::Archive, "arc"),
             (FileKind::Executable, "exe"),
+            (FileKind::DebugSymbols, "dbg"),
             (FileKind::Intermediate, "int"),
             (FileKind::UnrealAsset, "UASS"),
             (FileKind::UnrealMap, "UMAP"),

@@ -52,6 +52,7 @@ use crate::{
     diff_phases::{Marks, diff_marks_checkboxes, in_scopes},
     file::FileProcessor,
     keybindings::FileAction,
+    pdb_dump::PdbDumpOptions,
     revert::{self, RevertRequest, RevertTarget},
     ui_egui::{
         active_side::{ActiveSide, ActiveSideState, outline_stroke, shown_sides},
@@ -170,6 +171,7 @@ pub struct FileDiffPaneCtx<'a> {
     /// Set when the pair resolved to the Hex viewer. In Strings mode the table shows the text diff
     /// of the extracted strings, with `string_offsets` in the gutter.
     pub hex_mode: Option<&'a mut HexSettings>,
+    pub pdb_options: Option<&'a mut PdbDumpOptions>,
     pub string_offsets: [&'a [usize]; 2],
     /// Set when the pair resolved to the Image viewer; the images replace the table rows.
     pub image_view: Option<&'a mut ImageDiffProcessor>,

@@ -10,6 +10,7 @@ use crate::{
     file::FileProcessor,
     keybindings::Keybindings,
     p4::P4Profiles,
+    pdb_dump::PdbDumpOptions,
     revert::RevertHistory,
     toggle_all::ToggleAll,
     ui_egui::{syntax::DetectedLanguage, text_mode::TextMode},
@@ -78,6 +79,8 @@ pub struct AppStateCtx {
     pub kinds: SharedKinds,
     #[cfg_attr(feature = "serde", serde(default))]
     pub ffmpeg: FfmpegSetting,
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub pdb_options: PdbDumpOptions,
     /// Undo and redo of reverts; in memory only.
     #[cfg_attr(feature = "serde", serde(skip), serde(default))]
     pub revert_history: RevertHistory,
@@ -160,6 +163,7 @@ impl Default for AppStateCtx {
             legacy_extension_map: None,
             kinds: Default::default(),
             ffmpeg: Default::default(),
+            pdb_options: Default::default(),
             revert_history: Default::default(),
             toggle_all: Default::default(),
             scroll_left: Default::default(),
@@ -278,6 +282,29 @@ mod tests {
         assert_eq!(crate::ui_egui::syntax::language_name(language), Some("Go"));
         let resaved = serde_json::to_value(&restored).unwrap();
         assert!(resaved.get("code_language_custom").is_none());
+    }
+
+    #[test]
+    fn pdb_options_survive_a_restart_and_an_old_save_loads_the_defaults() {
+        let state = AppStateCtx {
+            pdb_options: PdbDumpOptions {
+                public_only: true,
+                ignore_addresses: true,
+                ignore_identity: false,
+            },
+            ..Default::default()
+        };
+        let mut json = serde_json::to_value(&state).unwrap();
+        let restored: AppStateCtx = serde_json::from_value(json.clone()).unwrap();
+        assert_eq!(restored.pdb_options, state.pdb_options);
+
+        json["pdb_options"].as_object_mut().unwrap().remove("ignore_identity");
+        let partial: AppStateCtx = serde_json::from_value(json.clone()).unwrap();
+        assert!(partial.pdb_options.public_only && partial.pdb_options.ignore_identity);
+
+        json.as_object_mut().unwrap().remove("pdb_options");
+        let old: AppStateCtx = serde_json::from_value(json).unwrap();
+        assert_eq!(old.pdb_options, PdbDumpOptions::default());
     }
 
     #[test]

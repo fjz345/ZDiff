@@ -323,6 +323,8 @@ impl eframe::App for ZApp {
             AppState::Idle(mut state) => {
                 self.sync_zoom(ctx);
 
+                state.file_1.set_pdb_options(&state.pdb_options);
+                state.file_2.set_pdb_options(&state.pdb_options);
                 let loaded_1 = state.file_1.get_loaded_file();
                 let loaded_2 = state.file_2.get_loaded_file();
                 let path_1 = state.file_1.get_full_path();
@@ -460,20 +462,24 @@ impl eframe::App for ZApp {
                 } else {
                     state.viewers.is_none_or(|v| v.shows(ViewerKind::Text))
                 };
-                let cached = [
-                    state.file_1.get_cached_file().clone(),
-                    state.file_2.get_cached_file().clone(),
-                ];
+                let loaded = [state.file_1.get_loaded_file(), state.file_2.get_loaded_file()];
+                let cached = loaded.each_ref().map(|f| f.as_ref().and_then(|f| f.text().cloned()));
+                let dumps = loaded.each_ref().map(|f| f.as_ref().is_some_and(LoadedFile::is_dump));
                 // A mismatched pair's text side is diffed alone, so its rows are all one side's.
                 // Pins pair lines of both sides, and the cursor may hold another viewer's stop.
                 // The strings of a hex pair are other lines than the pins' files.
-                let ([text_1, text_2], pins) = match (&strings_files, state.viewers) {
-                    (Some(files), _) => (files.clone(), Vec::new()),
+                let ([text_1, text_2], pins, pdb_dumps) = match (&strings_files, state.viewers) {
+                    (Some(files), _) => (files.clone(), Vec::new(), [false; 2]),
                     (None, Some(viewers @ Viewers::Sides(_))) => {
                         state.diff_processor.conflict_cursor.set(0);
-                        (viewers.files_for(ViewerKind::Text, cached), Vec::new())
+                        let dumps = viewers.files_for(ViewerKind::Text, dumps.map(Some));
+                        (
+                            viewers.files_for(ViewerKind::Text, cached),
+                            Vec::new(),
+                            dumps.map(|dump| dump == Some(true)),
+                        )
                     }
-                    _ => (cached, state.diff_processor.pins().to_vec()),
+                    _ => (cached, state.diff_processor.pins().to_vec(), dumps),
                 };
 
                 let update_input = UpdateDiffRowsInput {
@@ -483,6 +489,7 @@ impl eframe::App for ZApp {
                     myers_diff_algorithm: state.myers_diff_algorithm.clone(),
                     pins,
                     collect_trace: self.open_phase_trace_window || self.phase_overlay,
+                    pdb_dumps,
                 };
 
                 let diff_ctx_invalidated = if state.file_1.get_loading_path().is_some()

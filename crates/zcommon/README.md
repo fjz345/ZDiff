@@ -8,7 +8,7 @@ Common library crate shared by both apps.
 * `path`: path segments and common parent
 * `universal_path`: local paths, Perforce depot paths (`//depot/...#rev`, changelists, shelves) and git revisions
 * `vcs`: `git` and `p4` runners and parsers (streams, digests, shelves, print at a revision)
-* `kinds`: file kind table (text, image, video, audio, model, archive, executable, Unreal asset/map, binary)
+* `kinds`: file kind table (text, image, video, audio, model, archive, executable, debug symbols (`pdb`), Unreal asset/map, binary)
 * `ffmpeg`: ffmpeg/ffprobe lookup, runner and probe
 * `find`: find matcher (whole word, regex)
 * `presets`: preset store for filters and regex ignore patterns

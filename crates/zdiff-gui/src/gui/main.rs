@@ -23,6 +23,7 @@ mod file;
 mod keybindings;
 mod language_icon;
 mod p4;
+mod pdb_dump;
 mod phase_trace_window;
 mod revert;
 mod scope;

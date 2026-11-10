@@ -101,6 +101,9 @@ impl FileDiffPane {
                 if text_viewer && !strings {
                     text_mode_combo(ui, ctx.text_mode);
                 }
+                if let Some(options) = ctx.pdb_options.as_deref_mut() {
+                    pdb_options_menu(ui, options);
+                }
             });
             ui.separator();
 

@@ -41,6 +41,7 @@ pub enum RevertRefusal {
     MissingFile,
     NotLocalTarget,
     TempTarget,
+    PdbDump,
     NoSuchHunk,
 }
 
@@ -50,6 +51,7 @@ impl std::fmt::Display for RevertRefusal {
             RevertRefusal::MissingFile => "both files must be loaded",
             RevertRefusal::NotLocalTarget => "the target is not a local file",
             RevertRefusal::TempTarget => "the target is a temporary file",
+            RevertRefusal::PdbDump => "the target is shown as a PDB dump, not its bytes",
             RevertRefusal::NoSuchHunk => "the hunk is not in the current diff",
         })
     }
@@ -157,10 +159,13 @@ pub fn check_revert(
     let (Some(left), Some(right)) = (&ctx.input.file_1, &ctx.input.file_2) else {
         return Err(RevertRefusal::MissingFile);
     };
-    let target_file = match target {
-        RevertTarget::Left => left,
-        RevertTarget::Right => right,
+    let (target_file, is_dump) = match target {
+        RevertTarget::Left => (left, ctx.input.pdb_dumps[0]),
+        RevertTarget::Right => (right, ctx.input.pdb_dumps[1]),
     };
+    if is_dump {
+        return Err(RevertRefusal::PdbDump);
+    }
     if target_file.path.as_path().is_none() {
         return Err(RevertRefusal::NotLocalTarget);
     }
@@ -833,6 +838,26 @@ mod tests {
                 loaded_hash: hash_file_mmap(&pair.right).unwrap(),
             })
         );
+    }
+
+    #[test]
+    fn pdb_dump_target_is_refused_and_the_other_side_still_reverts() {
+        let pair = Pair::new("a\nb\n", "a\nB\n");
+        let left = cached(UniversalPath::from(pair.left.clone()), &pair.left);
+        let right = cached(UniversalPath::from(pair.right.clone()), &pair.right);
+        let mut ctx = diff_files(left, right, DiffBuilderOptions::default());
+        ctx.input.pdb_dumps = [true, false];
+        let request = |target| RevertRequest { hunk: 0, target };
+
+        assert_eq!(
+            check_revert(&ctx, Left, no_temp_root()),
+            Err(RevertRefusal::PdbDump)
+        );
+        assert_eq!(
+            plan_hunk_revert(&ctx, request(Left), no_temp_root()),
+            Err(RevertRefusal::PdbDump)
+        );
+        assert_eq!(check_revert(&ctx, Right, no_temp_root()), Ok(()));
     }
 
     #[test]

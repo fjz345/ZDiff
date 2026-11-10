@@ -139,6 +139,24 @@ pub(super) fn viewer_override_combo(
     }
 }
 
+pub(super) fn pdb_options_menu(ui: &mut egui::Ui, options: &mut PdbDumpOptions) {
+    egui::containers::menu::MenuButton::new("PDB ⏷")
+        .config(
+            egui::containers::menu::MenuConfig::new()
+                .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside),
+        )
+        .ui(ui, |ui| {
+            ui.checkbox(&mut options.public_only, "Public only (as stripped)")
+                .on_hover_text(
+                    "Drop private symbols and types, so a full PDB compares clean against a stripped one",
+                );
+            ui.checkbox(&mut options.ignore_addresses, "Ignore addresses/RVAs");
+            ui.checkbox(&mut options.ignore_identity, "Ignore GUID/age/timestamp");
+        })
+        .0
+        .on_hover_text("What the PDB dumps contain; a change reloads them");
+}
+
 /// Label and per-stage tooltip of a completed diff. Plain text so the segment can move into a
 /// shared status line.
 pub(super) fn diff_status_text(

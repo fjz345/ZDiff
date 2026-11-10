@@ -10,8 +10,9 @@ use zdiff::lexer::RawToken;
 use zdiff::universal_path::{DepotRev, GitRev, UniversalPath};
 
 use crate::p4::{P4Command, P4Runner, print_file};
+use crate::pdb_dump::{self, PdbDumpOptions};
 use crate::viewer::audio::{RepaintContext, repaint_job};
-use crate::viewer::{ViewerKind, sniff_viewer_kind};
+use crate::viewer::{ViewerKind, path_extension, sniff_viewer_kind};
 
 /// A file whose content was sniffed as not text, kept as raw bytes for the Hex viewer.
 pub struct BinaryFile {
@@ -33,12 +34,17 @@ impl std::fmt::Debug for BinaryFile {
 pub enum LoadedFile {
     Text(Arc<CachedFile<RawToken>>),
     Binary(Arc<BinaryFile>),
+    /// A PDB shown as its text dump; `source` keeps the file's bytes for the byte viewers.
+    Dump {
+        text: Arc<CachedFile<RawToken>>,
+        source: Arc<BinaryFile>,
+    },
 }
 
 impl LoadedFile {
     pub fn path(&self) -> &UniversalPath {
         match self {
-            LoadedFile::Text(file) => &file.path,
+            LoadedFile::Text(file) | LoadedFile::Dump { text: file, .. } => &file.path,
             LoadedFile::Binary(file) => &file.path,
         }
     }
@@ -47,22 +53,26 @@ impl LoadedFile {
     pub fn bytes(&self) -> &[u8] {
         match self {
             LoadedFile::Text(file) => file.contents.as_bytes(),
-            LoadedFile::Binary(file) => &file.bytes,
+            LoadedFile::Binary(file) | LoadedFile::Dump { source: file, .. } => &file.bytes,
         }
     }
 
     pub fn viewer_kind(&self) -> ViewerKind {
         match self {
-            LoadedFile::Text(_) => ViewerKind::Text,
+            LoadedFile::Text(_) | LoadedFile::Dump { .. } => ViewerKind::Text,
             LoadedFile::Binary(_) => ViewerKind::Hex,
         }
     }
 
     pub fn text(&self) -> Option<&Arc<CachedFile<RawToken>>> {
         match self {
-            LoadedFile::Text(file) => Some(file),
+            LoadedFile::Text(file) | LoadedFile::Dump { text: file, .. } => Some(file),
             LoadedFile::Binary(_) => None,
         }
+    }
+
+    pub fn is_dump(&self) -> bool {
+        matches!(self, LoadedFile::Dump { .. })
     }
 
     /// Same load, not just equal content: every load makes new `Arc`s.
@@ -70,7 +80,33 @@ impl LoadedFile {
         match (self, other) {
             (LoadedFile::Text(a), LoadedFile::Text(b)) => Arc::ptr_eq(a, b),
             (LoadedFile::Binary(a), LoadedFile::Binary(b)) => Arc::ptr_eq(a, b),
+            (LoadedFile::Dump { text: a, .. }, LoadedFile::Dump { text: b, .. }) => {
+                Arc::ptr_eq(a, b)
+            }
             _ => false,
+        }
+    }
+}
+
+fn is_pdb_path(path: &UniversalPath) -> bool {
+    path_extension(path).as_deref() == Some("pdb")
+}
+
+pub fn with_pdb_dump(file: LoadedFile, options: &PdbDumpOptions) -> LoadedFile {
+    let LoadedFile::Binary(source) = &file else {
+        return file;
+    };
+    if !is_pdb_path(&source.path) || !pdb_dump::is_msf(&source.bytes) {
+        return file;
+    }
+    match pdb_dump::dump(&source.bytes, options) {
+        Ok(text) => LoadedFile::Dump {
+            text: Arc::new(CachedFile::from_contents(source.path.clone(), text)),
+            source: source.clone(),
+        },
+        Err(e) => {
+            log::warn!("{}: not parsed as a PDB, shown as bytes: {e}", source.path);
+            file
         }
     }
 }
@@ -198,6 +234,8 @@ pub struct FileProcessor {
     label: Option<String>,
     #[cfg_attr(feature = "serde", serde(skip))]
     load_error: Option<String>,
+    #[cfg_attr(feature = "serde", serde(skip))]
+    pdb_options: PdbDumpOptions,
 }
 
 impl Default for FileProcessor {
@@ -213,6 +251,7 @@ impl Default for FileProcessor {
             loading_path: None,
             label: None,
             load_error: None,
+            pdb_options: PdbDumpOptions::default(),
         }
     }
 }
@@ -395,6 +434,16 @@ impl FileProcessor {
         self.load_error = None;
     }
 
+    pub fn set_pdb_options(&mut self, options: &PdbDumpOptions) {
+        if self.pdb_options == *options {
+            return;
+        }
+        self.pdb_options = options.clone();
+        if is_pdb_path(&self.file_path) {
+            self.invalidate_cache_file();
+        }
+    }
+
     pub fn get_loading_path(&self) -> Option<&UniversalPath> {
         self.loading_path.as_ref()
     }
@@ -428,6 +477,7 @@ impl FileProcessor {
             log::debug!("Loading file asynchronously: {}", path);
 
             let path_clone = path.clone();
+            let pdb_options = self.pdb_options.clone();
 
             let load_job = self
                 .load_job
@@ -447,7 +497,9 @@ impl FileProcessor {
                         &GitCommand::default(),
                     ),
                 };
-                let loaded = loaded.inspect_err(|e| log::error!("{e}"));
+                let loaded = loaded
+                    .map(|file| with_pdb_dump(file, &pdb_options))
+                    .inspect_err(|e| log::error!("{e}"));
 
                 ctx.send(loaded);
             });
@@ -584,6 +636,78 @@ mod tests {
         let loaded = load_bytes(bytes);
         assert_eq!(loaded.viewer_kind(), ViewerKind::Hex);
         assert_eq!(loaded.bytes(), bytes);
+    }
+
+    fn load_named(name: &str, bytes: &[u8]) -> LoadedFile {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(name);
+        std::fs::write(&path, bytes).unwrap();
+        let loaded = load_file(UniversalPath::from(path.clone()), &path).unwrap();
+        with_pdb_dump(loaded, &PdbDumpOptions::default())
+    }
+
+    #[test]
+    fn a_pdb_named_file_that_is_no_msf_pdb_loads_as_before() {
+        let protein = load_named("protein.pdb", b"HEADER    PROTEIN\nATOM      1  N\n");
+        assert!(matches!(protein, LoadedFile::Text(_)));
+
+        for bytes in [
+            &b"\x00\x01binary"[..],
+            &b"Microsoft C/C++ MSF 7.00\r\n\x1aDS\0\0\0truncated"[..],
+        ] {
+            let loaded = load_named("broken.pdb", bytes);
+            assert!(matches!(loaded, LoadedFile::Binary(_)));
+            assert_eq!(loaded.bytes(), bytes);
+        }
+    }
+
+    #[cfg(all(windows, target_env = "msvc"))]
+    #[test]
+    fn a_real_pdb_loads_as_its_dump_and_keeps_its_bytes() {
+        let path = std::env::current_exe().unwrap().with_extension("pdb");
+        let display = UniversalPath::from(path.clone());
+
+        let loaded = with_pdb_dump(
+            load_file(display.clone(), &path).unwrap(),
+            &PdbDumpOptions::default(),
+        );
+
+        assert!(loaded.is_dump());
+        assert_eq!(loaded.viewer_kind(), ViewerKind::Text);
+        assert_eq!(loaded.path(), &display);
+        assert_eq!(loaded.bytes(), std::fs::read(&path).unwrap());
+        let text = &loaded.text().unwrap().contents;
+        assert!(text.starts_with("== Header ==\n"), "{}", &text[..200]);
+        assert!(!text.contains("\nGUID: "));
+    }
+
+    #[test]
+    fn changing_the_pdb_options_reloads_only_a_pdb() {
+        let dir = tempfile::tempdir().unwrap();
+        let wait = |file: &mut FileProcessor| {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            while file.get_loaded_file().is_none() {
+                assert!(std::time::Instant::now() < deadline, "load never finished");
+                std::thread::yield_now();
+            }
+        };
+        let changed = PdbDumpOptions {
+            ignore_identity: false,
+            ..Default::default()
+        };
+        for (name, reloads) in [("a.pdb", true), ("a.txt", false)] {
+            let path = dir.path().join(name);
+            std::fs::write(&path, b"\x00bytes").unwrap();
+            let mut file = FileProcessor::new();
+            file.set_path(UniversalPath::from(path));
+            wait(&mut file);
+
+            file.set_pdb_options(&PdbDumpOptions::default());
+            assert!(file.get_loading_path().is_none(), "{name}");
+            file.set_pdb_options(&changed);
+            assert_eq!(file.get_loaded_file().is_none(), reloads, "{name}");
+            wait(&mut file);
+        }
     }
 
     struct BytesP4<'a>(Result<&'a [u8], &'a str>);

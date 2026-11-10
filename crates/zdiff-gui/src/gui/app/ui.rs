@@ -69,6 +69,7 @@ impl ZApp {
                 viewer_fallback,
                 kinds,
                 ffmpeg,
+                pdb_options,
                 legacy_extension_map: _,
                 revert_history,
                 toggle_all,
@@ -89,6 +90,10 @@ impl ZApp {
             };
             let side_shows = |kind| sides.is_some_and(|s| s.contains(&kind));
             let is_hex = pair_kind == Some(ViewerKind::Hex);
+            let pdb_dump_shown = viewers.is_some_and(|v| v.shows(ViewerKind::Text))
+                && [&mut *file_1, &mut *file_2]
+                    .into_iter()
+                    .any(|file| file.get_loaded_file().is_some_and(|f| f.is_dump()));
             let strings_view = is_hex && hex_settings.mode == HexMode::Strings;
             let hex_bytes = is_hex && !strings_view;
             let goto_hex =
@@ -295,6 +300,7 @@ impl ZApp {
                     toggle_all_request: &mut toggle_all_request,
                     hex_view: hex_bytes.then(|| hex_processor.view_ctx()),
                     hex_mode: is_hex.then_some(&mut *hex_settings),
+                    pdb_options: pdb_dump_shown.then_some(&mut *pdb_options),
                     string_offsets,
                     image_view: (is_image || side_shows(ViewerKind::Image))
                         .then_some(image_processor),

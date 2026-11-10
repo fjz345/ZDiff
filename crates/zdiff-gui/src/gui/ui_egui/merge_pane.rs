@@ -914,6 +914,10 @@ enum Input {
 
 fn input(file: &mut FileProcessor) -> Input {
     match file.get_loaded_file() {
+        Some(loaded) if loaded.is_dump() => Input::Failed(format!(
+            "{} is a PDB; its dump can't be merged",
+            file.get_path_as_string()
+        )),
         Some(loaded) => match loaded.text() {
             Some(text) => Input::Text(text.clone()),
             None => Input::Failed(format!("{} is not a text file", file.get_path_as_string())),
