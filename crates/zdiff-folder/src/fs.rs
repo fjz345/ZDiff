@@ -1,4 +1,5 @@
 use std::{
+    borrow::Cow,
     ffi::OsStr,
     io,
     path::{Path, PathBuf},
@@ -68,12 +69,12 @@ impl FsNode {
         }
     }
 
-    pub fn name(&self) -> &str {
-        self.name.to_str().expect("failed to get str")
+    pub fn name(&self) -> &OsStr {
+        &self.name
     }
 
-    pub fn display_name(&self) -> &str {
-        self.name()
+    pub fn display_name(&self) -> Cow<'_, str> {
+        self.name.to_string_lossy()
     }
 }
 
@@ -357,7 +358,7 @@ mod tests {
             assert_eq!(node.parent, Some(0));
 
             match &node.kind {
-                FsNodeKind::File => file_names.push(node.name().to_string()),
+                FsNodeKind::File => file_names.push(node.display_name().into_owned()),
                 _ => panic!("expected file"),
             }
         }
@@ -438,11 +439,8 @@ mod tests {
         let (_temp, model) = build_large_test_tree();
         for id in model.iter_nodes().skip(1) {
             let node = model.get_node(id).unwrap();
-            assert_eq!(
-                Some(node.name()),
-                model.path(id).file_name().and_then(|n| n.to_str())
-            );
-            assert_eq!(node.display_name(), node.name());
+            assert_eq!(Some(node.name()), model.path(id).file_name());
+            assert_eq!(node.display_name(), node.name().to_str().unwrap());
         }
     }
 
@@ -502,5 +500,26 @@ mod tests {
             FsNodeKind::File => assert_eq!(nested_node.name(), "nested.txt"),
             _ => panic!("expected file"),
         }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_non_utf8_name_keeps_its_real_path_and_shows_lossy() {
+        use std::os::windows::ffi::OsStringExt;
+        let dir = tempdir().unwrap();
+        let name = std::ffi::OsString::from_wide(&[0xD800, u16::from(b'a')]);
+        fs::create_dir(dir.path().join(&name)).unwrap();
+        create_file(&dir.path().join(&name).join("inner.txt"));
+
+        let model = FileSystemModel::new(dir.path()).unwrap();
+
+        let shown: Vec<_> = model
+            .iter_tree()
+            .map(|(_, node, _)| node.display_name())
+            .collect();
+        assert_eq!(shown[1..], ["\u{FFFD}a", "inner.txt"]);
+        let inner = model.iter_nodes().last().unwrap();
+        assert_eq!(model.path(inner), dir.path().join(&name).join("inner.txt"));
+        assert!(model.path(inner).is_file());
     }
 }

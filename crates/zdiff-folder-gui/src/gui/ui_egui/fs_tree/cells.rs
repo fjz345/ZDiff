@@ -205,7 +205,7 @@ pub(super) fn render_diff_side(
                     }
 
                     let label_resp = ui
-                        .label(name_label(ui, "📁 ", node.display_name()))
+                        .label(name_label(ui, "📁 ", &node.display_name()))
                         .interact(egui::Sense::click());
 
                     if label_resp.clicked() {
@@ -217,7 +217,7 @@ pub(super) fn render_diff_side(
                     return Some(label_resp);
                 } else {
                     let mut label_resp = ui
-                        .label(name_label(ui, "", node.display_name()))
+                        .label(name_label(ui, "", &node.display_name()))
                         .interact(egui::Sense::click());
                     if let Some(rel_path) = list_rel_path {
                         label_resp = label_resp.on_hover_text(rel_path);

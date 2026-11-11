@@ -2,7 +2,7 @@ use std::{
     collections::HashMap,
     ffi::OsStr,
     io,
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf, Prefix},
     sync::atomic::{AtomicBool, AtomicUsize, Ordering},
     time::SystemTime,
 };
@@ -243,13 +243,16 @@ pub fn scan(
 
 fn entry_name(path: &Path) -> &OsStr {
     // A depot root at the server level ("//depot") is a UNC prefix on Windows: its children have no file_name.
-    path.file_name().unwrap_or_else(|| {
-        let text = path
-            .as_os_str()
-            .to_str()
-            .expect("listing entry path is not UTF-8");
-        OsStr::new(text.rsplit(['/', '\\']).next().unwrap_or(text))
-    })
+    let unc_share = || match path.components().next()? {
+        Component::Prefix(prefix) => match prefix.kind() {
+            Prefix::UNC(_, share) | Prefix::VerbatimUNC(_, share) => Some(share),
+            _ => None,
+        },
+        _ => None,
+    };
+    path.file_name()
+        .or_else(unc_share)
+        .unwrap_or(path.as_os_str())
 }
 
 enum Listed {
@@ -819,5 +822,20 @@ mod tests {
         let result = scan(&source, Path::new("root"), &cancel, &AtomicUsize::new(0));
 
         assert!(result.is_none());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_child_of_a_server_level_root_is_named_by_its_last_segment() {
+        use std::{ffi::OsString, os::windows::ffi::OsStringExt};
+        let name = OsString::from_wide(&[0xD800, u16::from(b'a')]);
+        let wide: Vec<u16> = "//depot/"
+            .encode_utf16()
+            .chain([0xD800, u16::from(b'a')])
+            .collect();
+
+        assert_eq!(entry_name(Path::new("//depot/proj")), "proj");
+        assert_eq!(entry_name(Path::new(r"\\depot\proj")), "proj");
+        assert_eq!(entry_name(Path::new(&OsString::from_wide(&wide))), name);
     }
 }

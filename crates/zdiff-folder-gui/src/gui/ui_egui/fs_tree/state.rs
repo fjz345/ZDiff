@@ -1,5 +1,5 @@
 use super::*;
-use std::cell::Cell;
+use std::{borrow::Cow, cell::Cell};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct FileSystemView {
@@ -437,7 +437,7 @@ pub(super) fn filtered_out(view: &FileSystemView, filter: &PathFilter) -> Vec<bo
         let Some(parent) = node.parent else {
             continue;
         };
-        hidden[id] = hidden[parent] || !filter.keeps(node.name(), node.is_dir());
+        hidden[id] = hidden[parent] || !filter.keeps(&node.display_name(), node.is_dir());
     }
     hidden
 }
@@ -453,9 +453,9 @@ pub(super) fn rel_paths(view: &FileSystemView) -> Vec<String> {
         };
         let rel = &rels[parent];
         rels[id] = if rel.is_empty() {
-            node.name().to_owned()
+            node.display_name().into_owned()
         } else {
-            format!("{rel}/{}", node.name())
+            format!("{rel}/{}", node.display_name())
         };
     }
     rels
@@ -761,11 +761,11 @@ impl ContentWidths {
                     };
                     if cached.is_nan() {
                         let name = if layout == RowLayout::RelPaths {
-                            entry.rel_path.as_str()
+                            Cow::Borrowed(entry.rel_path.as_str())
                         } else {
                             node.display_name()
                         };
-                        *cached = text_width(name, &mut |c| fonts.glyph_width(font, c));
+                        *cached = text_width(&name, &mut |c| fonts.glyph_width(font, c));
                         #[cfg(test)]
                         {
                             self.measured += 1;
