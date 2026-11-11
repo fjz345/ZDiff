@@ -17,7 +17,7 @@ A crash (panic) appends its message, source location and backtrace to `crash.log
     - Background scan and compare, rows show Pending until compared; counts and timings in the status line
     - Rebuilt rows (compare finished, sort, filters) keep the top row of the view in place, or its nearest shown folder
     - Compared rows are cached in memory per path filter and tolerance (last 6), so sort, diff only, flat and switching a filter or tolerance back skip the rebuild (about 130 ms down to 20 ms for 52,000 rows); a rescan or new compare results drop them
-    - Breadcrumb path bars, right-click menu on rows (set as root, set as Folder 1/2, open in Explorer, copy path)
+    - Breadcrumb path bars, right-click menu on rows (set as root, set as Left/Right folder, open in Explorer, copy path)
     - Tree guide lines, folder tint, dimmed equal rows
     - File type tag column per side (`img`, `bin`, `BP` for Blueprint `.uasset`, ...)
     - Sort by Name or State, cursor with keyboard navigation, next/previous differing file
@@ -28,13 +28,14 @@ A crash (panic) appends its message, source location and backtrace to `crash.log
     - A thin bar on a differing file shows the smaller side's share of the larger one
     - Hover shows the path, both sizes, the state and the likeness; click selects (the tree follows), double-click opens the diff
     - Click a folder to zoom in; the breadcrumb, Backspace or the mouse back button zoom out
-* Options bar
+* Pane toolbar: Tree | Map, Expand All / Expand Diffs Only and the option toggles in one row, the filters below; the same toolbar look and text-labelled toggles as zdiff-gui
     - F: flat list by depth
     - D: diff only
     - P: show parent folders (with diff only)
     - L: likeness bar, how alike each pair is (lines, pixels or bytes); hovering a file's bar shows where it differs, computed on the first hover: text a strip of changed lines per side, binary a strip of unequal bytes, images a thumbnail of the per-pixel difference
     - T: tolerance, differing files that pass the size, modification time or likeness criteria count as Similar
-    - Link horizontal scroll of both sides
+    - Link: horizontal scroll of both sides together
+* Sides named Left and Right (menus, shortcuts, status line); an empty pane offers Open Left / Open Right and takes dropped folders, and shows a spinner while the first scan runs
 * Roots at a git revision or a Perforce depot folder, changelist or shelf, picked from a "Source control" dropdown next to each path bar; its "Back to ..." entry returns to the side's previous revision of the same folder
 * External diff tools
     - Tools window with presets (zdiff-gui, TortoiseMerge, WinMerge, Beyond Compare, p4merge, VS Code, ...), argument templates, rules and a Test button

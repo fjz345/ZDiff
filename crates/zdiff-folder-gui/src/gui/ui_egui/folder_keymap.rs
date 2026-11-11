@@ -87,8 +87,8 @@ impl Action for FolderAction {
 
     fn label(self) -> &'static str {
         match self {
-            Self::OpenFolder1 => "Open Folder 1",
-            Self::OpenFolder2 => "Open Folder 2",
+            Self::OpenFolder1 => "Open Left Folder",
+            Self::OpenFolder2 => "Open Right Folder",
             Self::NextDiff => "Next Differing File",
             Self::PrevDiff => "Previous Differing File",
             Self::Refresh => "Refresh",

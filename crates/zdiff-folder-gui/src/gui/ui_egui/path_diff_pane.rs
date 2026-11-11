@@ -1,12 +1,10 @@
 use std::path::PathBuf;
 
-use eframe::egui::{
-    self, PopupCloseBehavior, RichText,
-    containers::menu::{MenuButton, MenuConfig},
-};
+use eframe::egui::{self, RichText};
 use serde::{Deserialize, Serialize};
 use zcommon::presets::{BuiltinPreset, UserPresets};
 use zcommon_ui::{
+    pane::{ZAppPane, options_menu_button, toolbar},
     presets::presets_menu,
     toggle::{TOGGLE_BUTTON_SIZE, toggle_button},
 };
@@ -21,7 +19,7 @@ use crate::ui_egui::{
         CursorRowsCache, DiffState, FileSystemView, FolderTreeCtx, HScrollLink, TreeMode,
         TreeTable, TwoFolderTable, draw_ui_folder_tree,
     },
-    panes::{PathDiffView, ZAppPane},
+    panes::PathDiffView,
     roots::{Side, set_root},
     status_line::ToolMessage,
     tree_compare::TreeCompare,
@@ -138,7 +136,7 @@ impl PathDiffPane {
             };
         }
 
-        ui.horizontal(|ui| {
+        toolbar(ui, |ui| {
             ui.selectable_value(&mut self.view, PaneView::Tree, "Tree");
             ui.selectable_value(&mut self.view, PaneView::Map, "Map")
                 .on_hover_text(
@@ -198,14 +196,8 @@ impl PathDiffPane {
                     }
                 }
             }
-        });
+            ui.separator();
 
-        ui.horizontal(|ui| {
-            draw_filter_bar(ui, ctx.path_filter, ctx.filter_presets);
-        });
-
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 4.0;
             // Like the filter, the app reorders the rows on the next update.
             toggle_button(
                 ui,
@@ -234,15 +226,19 @@ impl PathDiffPane {
                 RichText::new("T").strong(),
                 "Tolerance: differing files that pass every enabled criterion count as Similar (≈)",
             );
-            MenuButton::new("⏷")
-                .config(MenuConfig::new().close_behavior(PopupCloseBehavior::CloseOnClickOutside))
-                .ui(ui, |ui| draw_tolerance_settings(ui, ctx.tolerance));
+            options_menu_button(ui, "Tolerance criteria", |ui| {
+                draw_tolerance_settings(ui, ctx.tolerance)
+            });
             toggle_button(
                 ui,
                 &mut ctx.h_scroll_link.0,
-                "🔗",
+                RichText::new("Link").strong(),
                 "Link horizontal scroll: scroll both folder sides sideways together",
             );
+        });
+
+        toolbar(ui, |ui| {
+            draw_filter_bar(ui, ctx.path_filter, ctx.filter_presets);
         });
 
         ui.separator();
@@ -296,6 +292,7 @@ impl PathDiffPane {
                     .previous_roots
                     .each_ref()
                     .map(|r| r.as_deref()),
+                scanning: ctx.path_diff_view.scanning,
             },
             TreeMode::TwoFolder(TwoFolderTable {
                 compare: ctx.tree_compare,

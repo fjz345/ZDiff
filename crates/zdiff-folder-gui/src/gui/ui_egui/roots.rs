@@ -15,8 +15,8 @@ pub enum Side {
 impl fmt::Display for Side {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Side::Folder1 => write!(f, "Folder 1"),
-            Side::Folder2 => write!(f, "Folder 2"),
+            Side::Folder1 => write!(f, "Left"),
+            Side::Folder2 => write!(f, "Right"),
         }
     }
 }

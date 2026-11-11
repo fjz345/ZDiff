@@ -67,7 +67,6 @@ use crate::{
             self, BinCache, ChangeKind, ChangeSpan, RULER_WIDTH, RulerColors, row_at,
             row_change_spans, row_tops,
         },
-        panes::ZAppPane,
         revision_dropdown::revision_dropdown,
         side_viewers::{self, SideViewers},
         syntax,
@@ -97,7 +96,11 @@ use zcommon::{
 use zcommon_ui::{
     h_scroll,
     keymap::{Action, Keymap},
-    pathbar::{PathBarAction, path_bar},
+    pane::{
+        ZAppPane, empty_state, error_state, loading_state, options_menu_button, toolbar,
+        toolbar_group,
+    },
+    pathbar::{PathBarAction, paint_busy, path_bar},
     presets::presets_menu,
     style_window::{collapsed_look, role_color, syntax_colors, void_look},
     table::{Rows, Split, SplitColumn, SplitTable, shared_width},
@@ -168,6 +171,7 @@ pub struct FileDiffPaneCtx<'a> {
     pub load_file_2_request: &'a mut Option<UniversalPath>,
     pub set_file_1_root_request: &'a mut Option<UniversalPath>,
     pub set_file_2_root_request: &'a mut Option<UniversalPath>,
+    pub open_file_request: &'a mut Option<ActiveSide>,
     pub pins: &'a [Pin],
     /// The whole pin list after an add, remove or clear.
     pub pins_request: &'a mut Option<Vec<Pin>>,

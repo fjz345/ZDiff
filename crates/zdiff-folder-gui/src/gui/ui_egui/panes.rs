@@ -6,6 +6,7 @@ use zcommon::{
     hash::HashService,
     logger::LogBuffer,
 };
+use zcommon_ui::pane::ZAppPane;
 use zdiff_folder::{external_diff_tool::DiffToolConfig, filter::PathFilter};
 
 use crate::ui_egui::{
@@ -31,6 +32,7 @@ pub struct PathDiffView<'a> {
     pub visible_rows: &'a mut Option<Vec<VisibleRowTwoFolderDiff>>,
     pub rows_id: RowsId,
     pub previous_roots: [Option<PathBuf>; 2],
+    pub scanning: bool,
 }
 
 pub struct TreeBehavior<'a, 'b> {
@@ -114,7 +116,7 @@ impl egui_tiles::Behavior<Pane> for TreeBehavior<'_, '_> {
         _tile_id: egui_tiles::TileId,
         pane: &mut Pane,
     ) -> egui_tiles::UiResponse {
-        let response = match pane {
+        match pane {
             Pane::Log(pane) => {
                 let response = pane.ui(ui, &mut self.log_buffer);
                 egui_tiles::UiResponse::from(response)
@@ -129,15 +131,6 @@ impl egui_tiles::Behavior<Pane> for TreeBehavior<'_, '_> {
                 let response = path_diff_pane.ui(ui, &mut ctx);
                 egui_tiles::UiResponse::from(response)
             }
-        };
-
-        if ui
-            .add(egui::Button::new("Drag me!").sense(egui::Sense::drag()))
-            .drag_started()
-        {
-            egui_tiles::UiResponse::DragStarted
-        } else {
-            response
         }
     }
 }
@@ -156,12 +149,6 @@ impl Pane {
             Pane::DuplicateFiles(p) => p.title(),
             Pane::PathDiff(p) => p.title(),
         }
-    }
-}
-
-pub trait ZAppPane {
-    fn title(&self) -> String {
-        "Pane".to_string()
     }
 }
 

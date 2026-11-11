@@ -14,6 +14,10 @@ use zcommon::hash::Blake3Hash;
 use zcommon::hash::HashService;
 use zcommon::job::Job;
 use zcommon_ui::common::show_custom_popup;
+use zcommon_ui::pane::ZAppPane;
+use zcommon_ui::pane::empty_state;
+use zcommon_ui::pane::loading_state;
+use zcommon_ui::pane::toolbar;
 use zcommon_ui::style_window::role_color;
 use zcommon_ui::toggle::toggle_button;
 use zdiff_folder::conflict::DuplicateGroup;
@@ -45,7 +49,6 @@ use crate::ui_egui::fs_tree::single_side_rows;
 use crate::ui_egui::fs_tree::tree_hidden;
 use crate::ui_egui::fs_tree::two_folder_cursor_rows;
 use crate::ui_egui::panes::PathDiffView;
-use crate::ui_egui::panes::ZAppPane;
 use crate::ui_egui::roots::Side;
 use crate::ui_egui::roots::set_root;
 use crate::ui_egui::status_line::ToolMessage;
@@ -451,8 +454,8 @@ fn non_disk_root_message(sides: [Option<(&Path, &ContentSource)>; 2]) -> Option<
                 ContentSource::Depot(_) => "a depot path",
             };
             Some(format!(
-                "Folder {} ({}) is {kind}",
-                index + 1,
+                "{} folder ({}) is {kind}",
+                [Side::Folder1, Side::Folder2][index],
                 root.display()
             ))
         })
@@ -1186,8 +1189,7 @@ impl DuplicateFilesPane {
                 ui.ctx().request_repaint_after(Duration::from_millis(100));
             }
 
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 4.0;
+            toolbar(ui, |ui| {
                 let filter = &mut *ctx.duplicates_filter;
                 toggle_button(
                     ui,
@@ -1304,6 +1306,7 @@ impl DuplicateFilesPane {
                     actions: &[],
                     diff_filter: ctx.duplicates_filter.diff_filter(),
                     previous_roots: [ctx.path_diff_view.previous_roots[0].as_deref(), None],
+                    scanning: ctx.path_diff_view.scanning,
                 },
                 TreeMode::SingleSide {
                     pending_deletion: &pending_deletion.ids,
@@ -1317,9 +1320,16 @@ impl DuplicateFilesPane {
             if let (Some(node_id), Some(groups)) = (keep_clicked, groups) {
                 toggle_keep(groups, ctx.conflict_map, ctx.conflict_map_resolved, node_id);
             }
+        } else if ctx.path_diff_view.file_system_1_scan.is_scanning() {
+            loading_state(ui, "Scanning folder...");
         } else {
-            ui.label("No root dir set...");
-            if ui.button("Open Folder").clicked() {
+            let (_, clicked) = empty_state(
+                ui,
+                "Find Duplicate Files",
+                "Open a folder to group its files by content.",
+                &["Open Folder"],
+            );
+            if clicked.is_some() {
                 self.open_dir_window = true;
             }
         }
@@ -1628,6 +1638,7 @@ mod tests {
                 visible_rows: &mut self.visible_rows,
                 rows_id: RowsId::default(),
                 previous_roots: Default::default(),
+                scanning: false,
             };
             let mut ctx = DuplicateFilesPaneCtx {
                 hash_service: &mut self.hash_service,
@@ -2124,7 +2135,7 @@ mod tests {
 
         let message =
             non_disk_root_message([Some((Path::new("repo@git:abc"), &git)), None]).unwrap();
-        assert!(message.contains("Folder 1"), "{message}");
+        assert!(message.contains("Left folder"), "{message}");
         assert!(message.contains("repo@git:abc"), "{message}");
 
         let message = non_disk_root_message([
@@ -2132,9 +2143,9 @@ mod tests {
             Some((Path::new("//depot/main"), &depot)),
         ])
         .unwrap();
-        assert!(message.contains("Folder 2"), "{message}");
+        assert!(message.contains("Right folder"), "{message}");
         assert!(message.contains("//depot/main"), "{message}");
-        assert!(!message.contains("Folder 1"), "{message}");
+        assert!(!message.contains("Left folder"), "{message}");
 
         let message = non_disk_root_message([
             Some((Path::new("repo@git:abc"), &git)),
@@ -2142,7 +2153,7 @@ mod tests {
         ])
         .unwrap();
         assert!(
-            message.contains("Folder 1") && message.contains("Folder 2"),
+            message.contains("Left folder") && message.contains("Right folder"),
             "{message}"
         );
     }

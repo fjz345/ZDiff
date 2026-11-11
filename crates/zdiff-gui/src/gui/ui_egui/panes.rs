@@ -1,5 +1,6 @@
 use eframe::egui::{self};
 use serde::{Deserialize, Serialize};
+use zcommon_ui::pane::ZAppPane;
 
 use crate::ui_egui::diff_pane::{FileDiffPane, FileDiffPaneCtx};
 
@@ -40,11 +41,5 @@ impl Pane {
         match self {
             Pane::FileDiff(p) => p.title(),
         }
-    }
-}
-
-pub trait ZAppPane {
-    fn title(&self) -> String {
-        "Pane".to_string()
     }
 }

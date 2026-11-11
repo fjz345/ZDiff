@@ -72,12 +72,12 @@ impl ZApp {
                 .ui(ui, |ui| {
                     ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
                     ui.menu_button("File", |ui| {
-                        if menu_item(ui, "Open Source", keymap, FileAction::OpenFileSource)
+                        if menu_item(ui, "Open Left", keymap, FileAction::OpenFileSource)
                             .clicked()
                         {
                             Self::open_file_picker(file_1.get_tx(), ui.ctx().clone());
                         }
-                        if menu_item(ui, "Open Target", keymap, FileAction::OpenFileTarget)
+                        if menu_item(ui, "Open Right", keymap, FileAction::OpenFileTarget)
                             .clicked()
                         {
                             Self::open_file_picker(file_2.get_tx(), ui.ctx().clone());

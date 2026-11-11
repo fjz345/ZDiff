@@ -54,8 +54,8 @@ impl CellState {
             Self::Same => "Same",
             Self::Similar => "Similar",
             Self::Different => "Different",
-            Self::OnlyInFirst => "Only in Folder 1",
-            Self::OnlyInSecond => "Only in Folder 2",
+            Self::OnlyInFirst => "Only in Left",
+            Self::OnlyInSecond => "Only in Right",
             Self::Pending => "Not compared yet",
         }
     }

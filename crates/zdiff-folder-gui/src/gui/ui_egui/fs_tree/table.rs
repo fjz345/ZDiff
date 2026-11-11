@@ -49,6 +49,7 @@ pub struct FolderTreeCtx<'a> {
     pub actions: &'a [FolderAction],
     pub diff_filter: DiffFilter,
     pub previous_roots: [Option<&'a Path>; 2],
+    pub scanning: bool,
 }
 
 pub fn draw_ui_folder_tree(
@@ -74,30 +75,33 @@ pub fn draw_ui_folder_tree(
         actions,
         diff_filter,
         previous_roots,
+        scanning,
     } = ctx;
     if file_system_1_view.is_none() && file_system_2_view.is_none() {
-        return ui
-            .vertical_centered(|ui| {
-                ui.add_space(100.0);
-                ui.heading("Welcome to ZDiffFolder");
-                ui.label("Drag and drop folders here or use the buttons below to start comparing.");
-                ui.horizontal(|ui| {
-                    if ui.button("Open Folder 1").clicked() {
-                        *open_dir_window_1 = true;
-                    }
-                    if ui.button("Open Folder 2").clicked() {
-                        *open_dir_window_2 = true;
-                    }
-                });
-                handle_drops(
-                    ui,
-                    root_1,
-                    root_2,
-                    egui::Rect::EVERYTHING,
-                    egui::Rect::EVERYTHING,
-                )
-            })
-            .response;
+        let response = if scanning {
+            loading_state(ui, "Scanning folders...")
+        } else {
+            let (response, clicked) = empty_state(
+                ui,
+                "Welcome to ZDiffFolder",
+                "Drag and drop folders here or use the buttons below to start comparing.",
+                &["Open Left", "Open Right"],
+            );
+            match clicked {
+                Some(0) => *open_dir_window_1 = true,
+                Some(_) => *open_dir_window_2 = true,
+                None => {}
+            }
+            response
+        };
+        handle_drops(
+            ui,
+            root_1,
+            root_2,
+            egui::Rect::EVERYTHING,
+            egui::Rect::EVERYTHING,
+        );
+        return response;
     }
 
     let visible_rows = visible_rows.expect("the app builds the rows of a shown view");
@@ -482,7 +486,7 @@ pub fn draw_ui_folder_tree(
                             if ui
                                 .add_sized(
                                     [available, row_height_header],
-                                    egui::Button::new(format!("Open {side}")),
+                                    egui::Button::new("Open Folder"),
                                 )
                                 .clicked()
                             {
@@ -603,7 +607,7 @@ pub(super) fn folder_header(
             if ui
                 .add_sized(
                     [available, button_height],
-                    egui::Button::new(format!("Open {side}")),
+                    egui::Button::new("Open Folder"),
                 )
                 .clicked()
             {

@@ -976,7 +976,7 @@ impl ZApp {
                     ui.menu_button("File", |ui| {
                         if menu_item(
                             ui,
-                            "Open Folder 1",
+                            "Open Left",
                             &app_ctx.keymap,
                             FolderAction::OpenFolder1,
                         )
@@ -986,7 +986,7 @@ impl ZApp {
                         }
                         if menu_item(
                             ui,
-                            "Open Folder 2",
+                            "Open Right",
                             &app_ctx.keymap,
                             FolderAction::OpenFolder2,
                         )
@@ -1279,7 +1279,10 @@ impl ZApp {
             ui.with_layout(Layout::left_to_right(egui::Align::Min), |ui| {
                 let mut diff_action_triggered = false;
                 let previous_roots = app_ctx.previous_roots();
+                let scanning = app_ctx.file_system_1_scan.is_scanning()
+                    || app_ctx.file_system_2_scan.is_scanning();
                 let mut path_diff_view = PathDiffView {
+                    scanning,
                     file_system_1_view: &mut app_ctx.file_system_model_1_view,
                     file_system_2_view: &mut app_ctx.file_system_model_2_view,
                     file_system_1_scan: &mut app_ctx.file_system_1_scan,
@@ -3085,19 +3088,19 @@ mod tests {
         let local = Path::new(r"D:\repo\src");
         assert_eq!(
             scan_progress_text(Side::Folder1, depot, 0),
-            "Listing Folder 1 from p4: //depot/main@12"
+            "Listing Left from p4: //depot/main@12"
         );
         assert_eq!(
             scan_progress_text(Side::Folder2, git, 0),
-            r"Listing Folder 2 from git: D:\repo\src@git:main"
+            r"Listing Right from git: D:\repo\src@git:main"
         );
         assert_eq!(
             scan_progress_text(Side::Folder1, depot, 7),
-            "Scanning Folder 1: 7 entries in //depot/main@12"
+            "Scanning Left: 7 entries in //depot/main@12"
         );
         assert_eq!(
             scan_progress_text(Side::Folder1, local, 0),
-            r"Scanning Folder 1: 0 entries in D:\repo\src"
+            r"Scanning Left: 0 entries in D:\repo\src"
         );
     }
 

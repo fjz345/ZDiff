@@ -90,10 +90,10 @@ pub fn show_row_menu(
     item(ui, menu.set_as_root, "Set as root", &|| {
         RowAction::SetRoots([path(Side::Folder1), path(Side::Folder2)])
     });
-    item(ui, menu.set_as_folder, "Set as Folder 1", &|| {
+    item(ui, menu.set_as_folder, "Set as Left Folder", &|| {
         RowAction::SetRoot(Side::Folder1, path(clicked))
     });
-    item(ui, menu.set_as_folder, "Set as Folder 2", &|| {
+    item(ui, menu.set_as_folder, "Set as Right Folder", &|| {
         RowAction::SetRoot(Side::Folder2, path(clicked))
     });
     item(ui, menu.open_in_explorer, "Open in Explorer", &|| {

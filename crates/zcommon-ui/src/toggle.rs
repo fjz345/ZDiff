@@ -8,12 +8,16 @@ pub fn toggle_button(
     label: impl Into<egui::WidgetText>,
     tooltip: &str,
 ) -> bool {
-    let btn = egui::Button::new(label).selected(*value);
-    if ui
-        .add_sized(TOGGLE_BUTTON_SIZE, btn)
-        .on_hover_text(tooltip)
-        .clicked()
-    {
+    let label = label.into().into_galley(
+        ui,
+        Some(egui::TextWrapMode::Extend),
+        f32::INFINITY,
+        egui::TextStyle::Button,
+    );
+    let width = label.size().x + 2.0 * ui.spacing().button_padding.x;
+    let size = egui::vec2(width.max(TOGGLE_BUTTON_SIZE.x), TOGGLE_BUTTON_SIZE.y);
+    let btn = egui::Button::new(egui::WidgetText::from(label)).selected(*value);
+    if ui.add_sized(size, btn).on_hover_text(tooltip).clicked() {
         *value = !*value;
         return true;
     }

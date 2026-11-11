@@ -98,9 +98,8 @@ impl FileDiffPane {
         let hint = |action: FileAction, text: &str| keymap.with_shortcut(action, text);
         let action_hint = |action: FileAction| hint(action, action.label());
 
-        ui.horizontal(|ui| {
-            ui.with_layout(Layout::left_to_right(egui::Align::Center), |ui| {
-                ui.spacing_mut().item_spacing.x = 4.0;
+        toolbar(ui, |ui| {
+            toolbar_group(ui, |ui| {
                 viewer_override_combo(ui, ctx.viewer_override, ctx.viewer_fallback);
                 if let Some(settings) = ctx.hex_mode.as_deref_mut() {
                     hex_mode_ui(ui, settings);
@@ -114,8 +113,7 @@ impl FileDiffPane {
             });
             ui.separator();
 
-            ui.with_layout(Layout::left_to_right(egui::Align::Center), |ui| {
-                ui.spacing_mut().item_spacing.x = 4.0;
+            toolbar_group(ui, |ui| {
                 let mut held = ctx.toggle_all_held;
                 if toggle_button(
                     ui,
@@ -128,7 +126,7 @@ impl FileDiffPane {
                 toggle_button(
                     ui,
                     &mut ctx.diff_options.ignore.whitespace,
-                    egui::RichText::new("·").strong(),
+                    egui::RichText::new("WS").strong(),
                     &hint(FileAction::IgnoreWhitespace, "Ignore Whitespace"),
                 );
                 toggle_button(
@@ -140,7 +138,7 @@ impl FileDiffPane {
                 toggle_button(
                     ui,
                     &mut ctx.diff_options.ignore.line_endings,
-                    egui::RichText::new("↵").monospace().strong(),
+                    egui::RichText::new("EOL").strong(),
                     &hint(
                         FileAction::IgnoreLineEndings,
                         "Ignore Line Endings: CRLF, LF and CR are equal",
@@ -149,7 +147,7 @@ impl FileDiffPane {
                 toggle_button(
                     ui,
                     &mut ctx.diff_options.ignore.file_markers,
-                    egui::RichText::new("⇤⇥").monospace().strong(),
+                    egui::RichText::new("BOM").strong(),
                     &hint(
                         FileAction::IgnoreFileMarkers,
                         "Ignore File Markers: a BOM at the start and the line break at the end of the file",
@@ -169,33 +167,28 @@ impl FileDiffPane {
                 toggle_button(
                     ui,
                     &mut ctx.diff_options.highlight_rows,
-                    egui::RichText::new("▬").monospace().strong(),
+                    egui::RichText::new("HL").strong(),
                     &hint(FileAction::HighlightRows, "Highlight Rows"),
                 );
-                egui::containers::menu::MenuButton::new("⏷")
-                    .config(
-                        egui::containers::menu::MenuConfig::new()
-                            .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside),
-                    )
-                    .ui(ui, |ui| diff_marks_checkboxes(ui, ctx.diff_options))
-                    .0
-                    .on_hover_text("Diff marks");
+                options_menu_button(ui, "Diff marks", |ui| {
+                    diff_marks_checkboxes(ui, ctx.diff_options)
+                });
                 toggle_button(
                     ui,
                     &mut ctx.diff_options.ghost_rows,
-                    "👻",
+                    egui::RichText::new("GR").strong(),
                     &hint(FileAction::GhostRows, "Ghost Rows"),
                 );
                 toggle_button(
                     ui,
                     ctx.h_scroll_linked,
-                    "🔗",
+                    egui::RichText::new("Link").strong(),
                     &hint(FileAction::LinkHScroll, "Link Horizontal Scrolling"),
                 );
                 toggle_button(
                     ui,
                     ctx.word_wrap,
-                    "↩",
+                    egui::RichText::new("Wrap").strong(),
                     &hint(FileAction::WordWrap, "Word Wrap"),
                 );
 
@@ -203,7 +196,7 @@ impl FileDiffPane {
                 if toggle_button(
                     ui,
                     &mut active,
-                    egui::RichText::new("±").strong(),
+                    egui::RichText::new("D").strong(),
                     &hint(FileAction::DiffOnly, "Diff Only"),
                 ) {
                     ctx.diff_options.diff_only_with_extra_rows =
@@ -234,8 +227,7 @@ impl FileDiffPane {
             });
             ui.separator();
 
-            ui.with_layout(Layout::left_to_right(egui::Align::Center), |ui| {
-                ui.spacing_mut().item_spacing.x = 4.0;
+            toolbar_group(ui, |ui| {
                 let conflict_max = ctx.conflict_cursor.get_max();
                 match stepper(
                     ui,
@@ -253,8 +245,7 @@ impl FileDiffPane {
                     None => {}
                 }
             });
-            ui.with_layout(Layout::left_to_right(egui::Align::Center), |ui| {
-                ui.spacing_mut().item_spacing.x = 4.0;
+            toolbar_group(ui, |ui| {
                 let find_count = ctx.find_count;
                 match stepper(
                     ui,
@@ -275,8 +266,7 @@ impl FileDiffPane {
                     None => {}
                 }
             });
-            ui.with_layout(Layout::left_to_right(egui::Align::Center), |ui| {
-                ui.spacing_mut().item_spacing.x = 4.0;
+            toolbar_group(ui, |ui| {
                 pins_ui(ui, pin_input, ctx.pins, ctx.pins_request, ctx.diff_ctx);
             });
             ui.with_layout(Layout::right_to_left(egui::Align::Center), |ui| {
@@ -458,111 +448,30 @@ impl FileDiffPane {
                                 table = table.scroll_to_row(row, None);
                             }
 
-                            let editable_path_test =
-                                |ui: &mut egui::Ui,
-                                 id: egui::Id,
-                                 file: &UniversalPath,
-                                 label: Option<&str>,
-                                 is_valid: bool,
-                                 spinner_active: bool|
-                                 -> Option<UniversalPath> {
-                                    let original_path = file.to_string();
-                                    let shown = label.unwrap_or(&original_path).to_string();
-
-                                    let mut text = ui.memory_mut(|mem| {
-                                        mem.data
-                                            .get_temp::<String>(id)
-                                            .unwrap_or_else(|| shown.clone())
-                                    });
-
-                                    let response = ui
-                                        .scope(|ui| {
-                                            if !is_valid {
-                                                let bg = egui::Color32::from_rgb(45, 10, 10);
-                                                let stroke =
-                                                    egui::Stroke::new(1.0_f32, egui::Color32::RED);
-
-                                                {
-                                                    let visuals = &mut ui.visuals_mut();
-                                                    visuals.text_edit_bg_color = Some(bg);
-                                                }
-                                                let visuals = &mut ui.visuals_mut().widgets;
-
-                                                visuals.inactive.bg_fill = bg;
-                                                visuals.inactive.bg_stroke = stroke;
-
-                                                visuals.hovered.bg_fill = bg;
-                                                visuals.hovered.bg_stroke = stroke;
-
-                                                visuals.active.bg_fill = bg;
-                                                visuals.active.bg_stroke = stroke;
-                                            }
-
-                                            let response = ui.horizontal(|ui| {
-                                                let spinner = egui::Spinner::new();
-                                                let res = ui.add_sized(
-                                                    [
-                                                        ui.available_width(),
-                                                        ui.spacing().interact_size.y,
-                                                    ],
-                                                    egui::TextEdit::singleline(&mut text).id(id),
-                                                );
-                                                if spinner_active {
-                                                    let spinner_size = res.rect.size().y * 0.5;
-                                                    let spinner_x = res.rect.right() - spinner_size;
-                                                    let spinner_pos = egui::Pos2::new(
-                                                        spinner_x,
-                                                        res.rect.top() + spinner_size,
-                                                    );
-                                                    let spinner_rect = egui::Rect::from_center_size(
-                                                        spinner_pos,
-                                                        Vec2::new(spinner_size, spinner_size),
-                                                    );
-                                                    spinner.paint_at(ui, spinner_rect);
-                                                }
-
-                                                res
-                                            });
-                                            response.inner
-                                        })
-                                        .inner;
-
-                                    if response.changed() {
-                                        ui.memory_mut(|mem| mem.data.insert_temp(id, text.clone()));
-                                    } else if response.gained_focus() && label.is_some() {
-                                        ui.memory_mut(|mem| {
-                                            mem.data.insert_temp(id, original_path.clone())
-                                        });
-                                    }
-
-                                    // lost_focus not called correctly, quick fix: https://github.com/emilk/egui/issues/2142
-                                    // Does not handle holding down mouse on another text field.....
-                                    if response.lost_focus() || response.clicked_elsewhere() {
-                                        ui.memory_mut(|mem| mem.data.remove::<String>(id));
-
-                                        // clicked_elsewhere also fires unfocused, with the label as text.
-                                        if text != original_path && text != shown {
-                                            return Some(UniversalPath::from(&text));
-                                        }
-                                    }
-
-                                    match (label.is_some(), is_valid) {
-                                        (true, true) => {
-                                            response.on_hover_text(&original_path);
-                                        }
-                                        (true, false) => {
-                                            response.on_hover_text(format!(
-                                                "{original_path}\nInvalid path"
-                                            ));
-                                        }
-                                        (false, false) => {
-                                            response.on_hover_text("Invalid path");
-                                        }
-                                        (false, true) => {}
-                                    }
-
-                                    None
-                                };
+                            let root_path_bar = |ui: &mut egui::Ui,
+                                                 id_salt: &str,
+                                                 root: Option<&UniversalPath>,
+                                                 is_valid: bool,
+                                                 spinner_active: bool|
+                             -> Option<UniversalPath> {
+                                let root = root.cloned().unwrap_or_default();
+                                let segments = file_path_segments(&root, None);
+                                let bar = ui.scope(|ui| {
+                                    path_bar(
+                                        ui,
+                                        id_salt,
+                                        &segments,
+                                        0,
+                                        |i| i + 1 < segments.len(),
+                                        (!is_valid).then_some("Invalid path"),
+                                        true,
+                                    )
+                                });
+                                if spinner_active {
+                                    paint_busy(ui, bar.response.rect);
+                                }
+                                root_path_request(bar.inner?, &root)
+                            };
                             let dim = file_path_dim(
                                 [&ctx.file_source_path, &ctx.file_target_path],
                                 ctx.file_source_label.is_some() || ctx.file_target_label.is_some(),
@@ -609,15 +518,7 @@ impl FileDiffPane {
                                     bar.response.show_tooltip_text(&full_path);
                                 }
                                 if spinner_active {
-                                    let spinner_size = rect.height() * 0.5;
-                                    let spinner_rect = egui::Rect::from_center_size(
-                                        egui::pos2(
-                                            rect.right() - spinner_size,
-                                            rect.top() + spinner_size,
-                                        ),
-                                        Vec2::splat(spinner_size),
-                                    );
-                                    egui::Spinner::new().paint_at(ui, spinner_rect);
+                                    paint_busy(ui, rect);
                                 }
                                 match bar.inner {
                                     Some(PathBarAction::Segment(i)) => {
@@ -641,11 +542,10 @@ impl FileDiffPane {
                                     SplitColumn::Left => {
                                         header_rects[0] = ui
                                             .vertical(|ui| {
-                                                *ctx.set_file_1_root_request = editable_path_test(
+                                                *ctx.set_file_1_root_request = root_path_bar(
                                                     ui,
-                                                    "file_1_path_editor_path".into(),
-                                                    &ctx.file_source_root.clone().unwrap_or_default(),
-                                                    None,
+                                                    "file_1_root_path_bar",
+                                                    ctx.file_source_root.as_ref(),
                                                     ctx.file_source_root_valid,
                                                     ctx.file_source_loading,
                                                 );
@@ -670,11 +570,10 @@ impl FileDiffPane {
                                     SplitColumn::Right => {
                                         header_rects[1] = ui
                                             .vertical(|ui| {
-                                                *ctx.set_file_2_root_request = editable_path_test(
+                                                *ctx.set_file_2_root_request = root_path_bar(
                                                     ui,
-                                                    "file_2_path_editor_path".into(),
-                                                    &ctx.file_target_root.clone().unwrap_or_default(),
-                                                    None,
+                                                    "file_2_root_path_bar",
+                                                    ctx.file_target_root.as_ref(),
                                                     ctx.file_target_root_valid,
                                                     ctx.file_target_loading,
                                                 );
@@ -1243,23 +1142,23 @@ impl FileDiffPane {
             }
 
             if waiting_for_diff {
-                ui.vertical_centered(|ui| {
-                    // Hack to simulate ui.centered_and_justified to make spinner work
-                    let height = ui.available_height();
-                    ui.add_space(height / 2.0 - 30.0);
-
-                    ui.label("Waiting for diff results...");
-                    ui.add_space(8.0);
-                    ui.add(egui::Spinner::new().size(64.0));
-                });
+                loading_state(ui, "Waiting for diff results...");
             } else if do_not_render_diff {
-                ui.centered_and_justified(|ui| {
-                    if let Some(error) = ctx.launch_error {
-                        ui.colored_label(ui.visuals().error_fg_color, error);
-                    } else {
-                        ui.label("Load Source & Target files to see diff.");
-                    }
-                });
+                if let Some(error) = ctx.launch_error {
+                    error_state(ui, error);
+                } else {
+                    let (_, clicked) = empty_state(
+                        ui,
+                        "Welcome to ZDiff",
+                        "Drag and drop files here or use the buttons below to start comparing.",
+                        &["Open Left", "Open Right"],
+                    );
+                    *ctx.open_file_request = match clicked {
+                        Some(0) => Some(ActiveSide::Left),
+                        Some(_) => Some(ActiveSide::Right),
+                        None => None,
+                    };
+                }
             }
         })
         .response

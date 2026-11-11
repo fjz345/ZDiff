@@ -180,8 +180,8 @@ impl Action for FileAction {
 
     fn label(self) -> &'static str {
         match self {
-            Self::OpenFileSource => "Open Source File",
-            Self::OpenFileTarget => "Open Target File",
+            Self::OpenFileSource => "Open Left File",
+            Self::OpenFileTarget => "Open Right File",
             Self::RefreshDiff => "Refresh",
             Self::RefreshDiffRowsOnly => "Recompute Diff (Keep Loaded Files)",
             Self::OpenKeybindings => "Open Keyboard Shortcuts",
@@ -196,7 +196,7 @@ impl Action for FileAction {
             Self::TimelapseView => "P4V Timelapse View",
             Self::Undo => "Undo",
             Self::Redo => "Redo",
-            Self::DiffLocalFile => "Diff Source Against Local File",
+            Self::DiffLocalFile => "Diff Left Against Local File",
             Self::DiffShelfBase => "Diff Shelved File Against Its Base Revision",
             Self::SwapSides => "Swap Sides",
             Self::IgnoreWhitespace => "Ignore Whitespace",
@@ -721,7 +721,7 @@ fn ui_quick_diff_rows(
     ui_shortcut_row(ui, "Shortcut", user_qd);
     ui_quick_diff_path_row(
         ui,
-        "Target path",
+        "Right path",
         &mut quick_diff_path.target.0,
         &mut quick_diff_path.target.1,
     );
@@ -729,7 +729,7 @@ fn ui_quick_diff_rows(
     let mut action_remove = false;
     let mut action_add = false;
 
-    ui.label("Source path");
+    ui.label("Left path");
     match &mut quick_diff_path.source {
         Some((root, path)) => {
             ui.horizontal(|ui| {
@@ -739,13 +739,13 @@ fn ui_quick_diff_rows(
                 let widget =
                     egui::TextEdit::singleline(path).desired_width(ui.available_width() - 24.0);
                 ui.add(widget);
-                if icon_button(ui, "✖", "Remove the source path").clicked() {
+                if icon_button(ui, "✖", "Remove the left path").clicked() {
                     action_remove = true;
                 }
             });
         }
         None => {
-            if ui.button("➕ Add Source").clicked() {
+            if ui.button("➕ Add Left").clicked() {
                 action_add = true;
             }
         }

@@ -77,7 +77,7 @@ impl std::fmt::Display for LocalFileRefusal {
         match self {
             LocalFileRefusal::LocalSource(path) => write!(
                 f,
-                "the source {} is a local file, not a depot path",
+                "the left file {} is a local file, not a depot path",
                 path.display()
             ),
             LocalFileRefusal::Where(e) => write!(f, "p4 where: {e}"),

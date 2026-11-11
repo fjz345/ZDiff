@@ -80,6 +80,15 @@ pub fn path_bar(
     }
 }
 
+pub fn paint_busy(ui: &egui::Ui, bar: egui::Rect) {
+    let size = bar.height() * 0.5;
+    let center = egui::pos2(bar.right() - size, bar.top() + size);
+    egui::Spinner::new().paint_at(
+        ui,
+        egui::Rect::from_center_size(center, egui::Vec2::splat(size)),
+    );
+}
+
 fn edit(
     ui: &mut egui::Ui,
     id: egui::Id,

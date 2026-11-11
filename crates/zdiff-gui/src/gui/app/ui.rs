@@ -262,6 +262,7 @@ impl ZApp {
                     load_file_2_request: &mut None,
                     set_file_1_root_request: &mut None,
                     set_file_2_root_request: &mut None,
+                    open_file_request: &mut None,
                     file_source_path: file_1.get_full_path(),
                     file_target_path: file_2.get_full_path(),
                     file_source_label: file_1.label().map(str::to_owned),
@@ -400,6 +401,15 @@ impl ZApp {
                 app_ctx.file_2.set_root(file_path);
             }
 
+            match behavior.ctx_file_diff.open_file_request.take() {
+                Some(ActiveSide::Left) => {
+                    Self::open_file_picker(app_ctx.file_1.get_tx(), ctx.clone())
+                }
+                Some(ActiveSide::Right) => {
+                    Self::open_file_picker(app_ctx.file_2.get_tx(), ctx.clone())
+                }
+                None => {}
+            }
             if let Some(file_path) = behavior.ctx_file_diff.load_file_1_request.take() {
                 log::debug!("Set new path from file_1_request: {}", file_path);
                 app_ctx.file_1.set_path(file_path);

@@ -8,6 +8,7 @@ pub mod keymap;
 pub mod keymap_editor;
 pub mod likeness;
 pub mod log_window;
+pub mod pane;
 pub mod pathbar;
 pub mod presets;
 pub mod revision;

@@ -70,6 +70,17 @@ pub(super) fn file_path_request(
     Some(relative.map_or(path, |relative| UniversalPath::from(relative.to_string())))
 }
 
+pub(super) fn root_path_request(
+    action: PathBarAction,
+    root: &UniversalPath,
+) -> Option<UniversalPath> {
+    let text = match action {
+        PathBarAction::Segment(i) => file_path_segments(root, None)[i].path.clone(),
+        PathBarAction::Commit(text) => text.trim().trim_matches('"').to_owned(),
+    };
+    (text != root.to_string()).then(|| UniversalPath::from(text.as_str()))
+}
+
 pub(super) fn browser_pick(
     side: ActiveSide,
     picked: &str,
@@ -88,7 +99,11 @@ mod tests {
         use zcommon::path::PathSegment;
         use zdiff::universal_path::UniversalPath;
 
-        use super::super::{browser_pick, file_path_dim, file_path_request, file_path_segments};
+        use zcommon_ui::pathbar::PathBarAction;
+
+        use super::super::{
+            browser_pick, file_path_dim, file_path_request, file_path_segments, root_path_request,
+        };
         use crate::file::FileProcessor;
         use crate::ui_egui::active_side::ActiveSide;
 
@@ -163,6 +178,34 @@ mod tests {
             assert_eq!(
                 file_path_request(" //depot/main/a.rs#3 ", &depot, None),
                 None
+            );
+        }
+
+        #[test]
+        fn an_unchanged_root_is_not_a_request() {
+            let root = UniversalPath::from(r"C:\ws\src");
+            let commit = PathBarAction::Commit(r#" "C:\ws\src" "#.to_owned());
+            assert_eq!(root_path_request(commit, &root), None);
+            let last = file_path_segments(&root, None).len() - 1;
+            assert_eq!(root_path_request(PathBarAction::Segment(last), &root), None);
+        }
+
+        #[test]
+        fn a_committed_root_is_trimmed_and_unquoted() {
+            let root = UniversalPath::from(r"C:\ws\src");
+            let commit = PathBarAction::Commit(r#" "C:\other dir" "#.to_owned());
+            assert_eq!(
+                root_path_request(commit, &root),
+                Some(UniversalPath::from(r"C:\other dir"))
+            );
+        }
+
+        #[test]
+        fn a_clicked_root_segment_sets_the_root_to_that_folder() {
+            let root = UniversalPath::from("//depot/main/src");
+            assert_eq!(
+                root_path_request(PathBarAction::Segment(1), &root),
+                Some(UniversalPath::from("//depot/main"))
             );
         }
 
