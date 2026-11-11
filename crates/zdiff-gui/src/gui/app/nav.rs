@@ -39,17 +39,32 @@ impl AppStateCtx {
     }
 }
 
+pub fn back_to_previous_revision(file: &mut FileProcessor, history: &NavHistory, side: usize) {
+    let current = file.get_full_path();
+    match previous_side(history, side, &current) {
+        Some((path, label)) => file.restore_path(path.clone(), label.clone()),
+        None => log::error!("No previous revision of {current} to go back to"),
+    }
+}
+
+fn previous_side<'a>(
+    history: &'a NavHistory,
+    side: usize,
+    current: &UniversalPath,
+) -> Option<&'a (UniversalPath, Option<String>)> {
+    history
+        .newest_first()
+        .map(|snapshot| &snapshot.sides[side])
+        .find(|(path, _)| path != current)
+        .filter(|(path, _)| !path.is_empty() && file_name(path) == file_name(current))
+}
+
 pub fn previous_revision(
     history: &NavHistory,
     side: usize,
     current: &UniversalPath,
 ) -> Option<UniversalPath> {
-    history
-        .newest_first()
-        .map(|snapshot| &snapshot.sides[side].0)
-        .find(|path| *path != current)
-        .filter(|path| !path.is_empty() && file_name(path) == file_name(current))
-        .cloned()
+    previous_side(history, side, current).map(|(path, _)| path.clone())
 }
 
 fn file_name(path: &UniversalPath) -> String {
@@ -134,6 +149,21 @@ mod tests {
             paths(&mut ctx)[0],
             UniversalPath::from("//depot/main/a.rs#3")
         );
+        assert_eq!(ctx.file_1.label(), Some("Shelf base"));
+    }
+
+    #[test]
+    fn back_to_the_previous_revision_restores_its_label() {
+        let mut ctx = AppStateCtx::default();
+        let shelf_base = UniversalPath::from("//depot/main/a.rs#3");
+        ctx.file_1.set_path(shelf_base.clone());
+        ctx.file_1.set_label(Some("Shelf base".to_owned()));
+        ctx.observe_history();
+        ctx.file_1.set_path(UniversalPath::from(r"C:\ws\a.rs"));
+        ctx.observe_history();
+
+        back_to_previous_revision(&mut ctx.file_1, &ctx.nav_history, 0);
+        assert_eq!(paths(&mut ctx)[0], shelf_base);
         assert_eq!(ctx.file_1.label(), Some("Shelf base"));
     }
 

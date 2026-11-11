@@ -1,5 +1,9 @@
 use super::{
-    ZApp, launch::toggle_all_options, menu::MenuCtx, nav::previous_revision, state::AppStateCtx,
+    ZApp,
+    launch::toggle_all_options,
+    menu::MenuCtx,
+    nav::{back_to_previous_revision, previous_revision},
+    state::AppStateCtx,
 };
 use eframe::egui::{self, Layout};
 use std::sync::atomic::Ordering;
@@ -259,6 +263,7 @@ impl ZApp {
                     scroll_to_row_span: &scroll_to_rows,
                     load_file_1_request: &mut None,
                     load_file_2_request: &mut None,
+                    back_to_previous_request: &mut None,
                     set_file_1_root_request: &mut None,
                     set_file_2_root_request: &mut None,
                     open_file_request: &mut None,
@@ -406,6 +411,15 @@ impl ZApp {
             if let Some(file_path) = behavior.ctx_file_diff.load_file_2_request.take() {
                 log::debug!("Set new path from file_2_request: {}", file_path);
                 app_ctx.file_2.set_path(file_path);
+            }
+            match behavior.ctx_file_diff.back_to_previous_request.take() {
+                Some(ActiveSide::Left) => {
+                    back_to_previous_revision(&mut app_ctx.file_1, nav_history, 0)
+                }
+                Some(ActiveSide::Right) => {
+                    back_to_previous_revision(&mut app_ctx.file_2, nav_history, 1)
+                }
+                None => {}
             }
             if let Some(revert_request) = *behavior.ctx_file_diff.revert_request {
                 log::debug!(

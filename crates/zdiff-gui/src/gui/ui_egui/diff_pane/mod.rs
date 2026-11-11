@@ -169,6 +169,7 @@ pub struct FileDiffPaneCtx<'a> {
     pub toggle_active_side: bool,
     pub load_file_1_request: &'a mut Option<UniversalPath>,
     pub load_file_2_request: &'a mut Option<UniversalPath>,
+    pub back_to_previous_request: &'a mut Option<ActiveSide>,
     pub set_file_1_root_request: &'a mut Option<UniversalPath>,
     pub set_file_2_root_request: &'a mut Option<UniversalPath>,
     pub open_file_request: &'a mut Option<ActiveSide>,

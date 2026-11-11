@@ -387,6 +387,7 @@ impl FileDiffPane {
         let mut side_rects = [egui::Rect::NOTHING; 2];
         let mut header_rects = [egui::Rect::NOTHING; 2];
         let mut browse: [Option<String>; 2] = [None, None];
+        let mut back = [false; 2];
         let content_rect = ui.vertical(|ui| {
             ui.set_min_width(available_width);
 
@@ -490,7 +491,7 @@ impl FileDiffPane {
                                                  is_valid: bool,
                                                  load_error: Option<&str>,
                                                  spinner_active: bool|
-                             -> (Option<UniversalPath>, Option<String>) {
+                             -> (Option<UniversalPath>, Option<String>, bool) {
                                 let segments = bar_segments(path, label, "No file");
                                 let dim = if path.is_empty() { segments.len() } else { dim };
                                 let full_path = path.to_string();
@@ -528,17 +529,23 @@ impl FileDiffPane {
                                 }
                                 match bar.inner {
                                     Some(PathBarAction::Segment(i)) => {
-                                        (None, Some(segments[i].path.clone()))
+                                        (None, Some(segments[i].path.clone()), false)
                                     }
                                     Some(PathBarAction::Commit(text)) => {
-                                        (file_path_request(&text, path, root), None)
+                                        (file_path_request(&text, path, root), None, false)
                                     }
-                                    None => (
-                                        picked.and_then(|picked| {
-                                            file_path_request(&picked.to_string(), path, root)
-                                        }),
-                                        None,
-                                    ),
+                                    None => match picked {
+                                        Some(picked) if Some(&picked) == previous => {
+                                            (None, None, true)
+                                        }
+                                        picked => (
+                                            picked.and_then(|picked| {
+                                                file_path_request(&picked.to_string(), path, root)
+                                            }),
+                                            None,
+                                            false,
+                                        ),
+                                    },
                                 }
                             };
                             let mut header = |column: SplitColumn, ui: &mut egui::Ui| {
@@ -556,7 +563,7 @@ impl FileDiffPane {
                                                     ctx.file_source_loading,
                                                 );
                                                 ui.separator();
-                                                (*ctx.load_file_1_request, browse[0]) = file_path_bar(
+                                                (*ctx.load_file_1_request, browse[0], back[0]) = file_path_bar(
                                                     ui,
                                                     "file_1_path_bar",
                                                     &ctx.file_source_path,
@@ -584,7 +591,7 @@ impl FileDiffPane {
                                                     ctx.file_target_loading,
                                                 );
                                                 ui.separator();
-                                                (*ctx.load_file_2_request, browse[1]) = file_path_bar(
+                                                (*ctx.load_file_2_request, browse[1], back[1]) = file_path_bar(
                                                     ui,
                                                     "file_2_path_bar",
                                                     &ctx.file_target_path,
@@ -1182,6 +1189,9 @@ impl FileDiffPane {
             .into_iter()
             .enumerate()
         {
+            if back[i] {
+                *ctx.back_to_previous_request = Some(side);
+            }
             if let Some(folder) = browse[i].take() {
                 // Opened anew even when one is open: the side may have switched local <-> depot.
                 let source: Arc<dyn FolderSource> =
