@@ -1,10 +1,10 @@
-use std::collections::HashMap;
 use std::fs::File;
 use std::io::{self, Read};
 use std::path::Path;
 use std::time::SystemTime;
 
 use md5::{Digest, Md5};
+use zcommon::lru::LruMap;
 
 use crate::scan::{ContentHash, HashKind, P4Recipe};
 
@@ -203,26 +203,37 @@ fn is_version_of(version: &SideVersion, side: &PairSide) -> bool {
     version.0 == side.meta && version.1.as_ref() == side.hash
 }
 
+/// Keyed by the left path: a left file compared with another right path replaces its pair.
 #[derive(Debug, Default)]
 pub struct PairCompareCache {
-    entries: HashMap<String, HashMap<String, (SideVersion, SideVersion, PairState)>>,
+    entries: LruMap<String, CachedPair>,
+}
+
+struct CachedPair {
+    right_rel_path: String,
+    versions: [SideVersion; 2],
+    state: PairState,
 }
 
 impl PairCompareCache {
     pub fn get(&self, left: &PairSide, right: &PairSide) -> Option<PairState> {
-        let (left_version, right_version, state) =
-            self.entries.get(left.rel_path)?.get(right.rel_path)?;
-        (is_version_of(left_version, left) && is_version_of(right_version, right)).then_some(*state)
+        let cached = self.entries.get(left.rel_path)?;
+        (cached.right_rel_path == right.rel_path
+            && is_version_of(&cached.versions[0], left)
+            && is_version_of(&cached.versions[1], right))
+        .then_some(cached.state)
     }
 
     pub fn insert(&mut self, left: &PairSide, right: &PairSide, state: PairState) {
-        self.entries
-            .entry(left.rel_path.to_owned())
-            .or_default()
-            .insert(
-                right.rel_path.to_owned(),
-                (side_version(left), side_version(right), state),
-            );
+        let side_bytes =
+            |side: &PairSide| side.rel_path.len() + side.hash.map_or(0, |hash| hash.value.len());
+        let bytes = size_of::<(String, CachedPair)>() + side_bytes(left) + side_bytes(right);
+        let cached = CachedPair {
+            right_rel_path: right.rel_path.to_owned(),
+            versions: [side_version(left), side_version(right)],
+            state,
+        };
+        self.entries.insert(left.rel_path.to_owned(), cached, bytes);
     }
 
     /// Read errors are not cached, so the next compare of the pair retries it.
@@ -247,6 +258,7 @@ impl PairCompareCache {
 mod tests {
     use super::*;
     use std::cell::Cell;
+    use std::collections::HashMap;
     use std::path::PathBuf;
     use std::rc::Rc;
     use std::time::Duration;
@@ -725,6 +737,24 @@ mod tests {
         );
         assert_eq!(cache.get(&local, &hashed("b", 10, &new)), None);
         assert_eq!(reader.reads(), (0, 0));
+    }
+
+    #[test]
+    fn past_its_budget_the_cache_forgets_the_pairs_unused_longest() {
+        let mut cache = PairCompareCache {
+            entries: LruMap::new(64 << 10),
+        };
+        let used = side("used", 1, time(1));
+        cache.insert(&used, &used, PairState::Same);
+        let names: Vec<String> = (0..10_000).map(|i| format!("f{i}")).collect();
+        for name in &names {
+            let pair = side(name, 1, time(1));
+            cache.insert(&pair, &pair, PairState::Same);
+            assert_eq!(cache.get(&used, &used), Some(PairState::Same));
+        }
+        let [first, last] = [&names[0], &names[9_999]].map(|name| side(name, 1, time(1)));
+        assert_eq!(cache.get(&first, &first), None);
+        assert_eq!(cache.get(&last, &last), Some(PairState::Same));
     }
 
     #[test]

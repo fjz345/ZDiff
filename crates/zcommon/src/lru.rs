@@ -1,3 +1,10 @@
+use std::{
+    borrow::Borrow,
+    collections::HashMap,
+    hash::Hash,
+    sync::atomic::{AtomicU64, Ordering},
+};
+
 pub const DEFAULT_MAX_ENTRIES: usize = 6;
 pub const DEFAULT_MAX_BYTES: usize = 256 << 20;
 
@@ -70,6 +77,100 @@ impl<K, V> std::fmt::Debug for LruCache<K, V> {
             .field("len", &self.entries.len())
             .field("bytes", &self.bytes)
             .field("max_entries", &self.max_entries)
+            .field("max_bytes", &self.max_bytes)
+            .finish()
+    }
+}
+
+/// `LruCache` for many entries; `get` takes `&self` and still counts as a use.
+pub struct LruMap<K, V> {
+    entries: HashMap<K, MapEntry<V>>,
+    clock: AtomicU64,
+    max_bytes: usize,
+    bytes: usize,
+}
+
+struct MapEntry<V> {
+    value: V,
+    bytes: usize,
+    used: AtomicU64,
+}
+
+impl<K: Hash + Eq, V> LruMap<K, V> {
+    pub fn new(max_bytes: usize) -> Self {
+        Self {
+            entries: HashMap::new(),
+            clock: AtomicU64::new(0),
+            max_bytes,
+            bytes: 0,
+        }
+    }
+
+    pub fn get<Q>(&self, key: &Q) -> Option<&V>
+    where
+        K: Borrow<Q>,
+        Q: Hash + Eq + ?Sized,
+    {
+        let entry = self.entries.get(key)?;
+        entry.used.store(self.tick(), Ordering::Relaxed);
+        Some(&entry.value)
+    }
+
+    pub fn insert(&mut self, key: K, value: V, bytes: usize) {
+        if let Some(replaced) = self.entries.remove(&key) {
+            self.bytes -= replaced.bytes;
+        }
+        if bytes > self.max_bytes {
+            return;
+        }
+        let used = AtomicU64::new(self.tick());
+        self.entries.insert(key, MapEntry { value, bytes, used });
+        self.bytes += bytes;
+        if self.bytes > self.max_bytes {
+            // Evicting a quarter at once keeps the sort below rare.
+            self.evict_down_to(self.max_bytes - self.max_bytes / 4);
+        }
+    }
+
+    fn tick(&self) -> u64 {
+        self.clock.fetch_add(1, Ordering::Relaxed) + 1
+    }
+
+    fn evict_down_to(&mut self, target: usize) {
+        let mut uses: Vec<(u64, usize)> = self
+            .entries
+            .values()
+            .map(|e| (e.used.load(Ordering::Relaxed), e.bytes))
+            .collect();
+        uses.sort_unstable();
+        // The newest is the entry just inserted.
+        uses.pop();
+        let mut last_evicted = 0;
+        let mut kept = self.bytes;
+        for (used, bytes) in uses {
+            if kept <= target {
+                break;
+            }
+            kept -= bytes;
+            last_evicted = used;
+        }
+        self.entries
+            .retain(|_, e| e.used.load(Ordering::Relaxed) > last_evicted);
+        self.bytes = kept;
+    }
+}
+
+impl<K: Hash + Eq, V> Default for LruMap<K, V> {
+    fn default() -> Self {
+        Self::new(DEFAULT_MAX_BYTES)
+    }
+}
+
+impl<K, V> std::fmt::Debug for LruMap<K, V> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LruMap")
+            .field("len", &self.entries.len())
+            .field("bytes", &self.bytes)
             .field("max_bytes", &self.max_bytes)
             .finish()
     }
@@ -151,6 +252,73 @@ mod tests {
         assert_eq!(keys(&cache), [2, 1]);
         assert_eq!(cache.get(&1), Some(&"uno"));
         assert_eq!(cache.bytes, 40);
+    }
+
+    fn map_keys(map: &LruMap<u32, &str>) -> Vec<u32> {
+        let mut keys: Vec<u32> = map.entries.keys().copied().collect();
+        keys.sort_unstable();
+        keys
+    }
+
+    #[test]
+    fn a_map_hit_returns_the_inserted_value_and_a_miss_none() {
+        let mut map = LruMap::new(100);
+        map.insert(1, "one", 10);
+        assert_eq!(map.get(&1), Some(&"one"));
+        assert_eq!(map.get(&2), None);
+    }
+
+    #[test]
+    fn past_the_byte_budget_the_map_drops_least_recently_used_entries_first() {
+        let mut map = LruMap::new(100);
+        for key in 1..=4 {
+            map.insert(key, "v", 25);
+        }
+        map.get(&1);
+        map.insert(5, "v", 25);
+        assert_eq!(map_keys(&map), [1, 4, 5]);
+        assert_eq!(map.bytes, 75);
+    }
+
+    #[test]
+    fn a_map_lookup_through_a_shared_borrow_counts_as_a_use() {
+        let mut map = LruMap::new(100);
+        for key in 1..=3 {
+            map.insert(key, "v", 30);
+        }
+        let shared = &map;
+        shared.get(&1);
+        map.insert(4, "v", 30);
+        assert_eq!(map_keys(&map), [1, 4]);
+    }
+
+    #[test]
+    fn a_map_entry_over_the_byte_budget_is_not_kept_and_evicts_nothing() {
+        let mut map = LruMap::new(100);
+        map.insert(1, "one", 10);
+        map.insert(2, "huge", 101);
+        assert_eq!(map_keys(&map), [1]);
+        map.insert(1, "huge", 101);
+        assert_eq!(map.get(&1), None);
+        assert_eq!(map.bytes, 0);
+    }
+
+    #[test]
+    fn a_map_entry_near_the_byte_budget_evicts_the_others_but_stays() {
+        let mut map = LruMap::new(100);
+        map.insert(1, "one", 30);
+        map.insert(2, "big", 80);
+        assert_eq!(map_keys(&map), [2]);
+        assert_eq!(map.bytes, 80);
+    }
+
+    #[test]
+    fn inserting_an_equal_map_key_replaces_its_value_and_bytes() {
+        let mut map = LruMap::new(100);
+        map.insert(1, "one", 30);
+        map.insert(1, "uno", 10);
+        assert_eq!(map.get(&1), Some(&"uno"));
+        assert_eq!(map.bytes, 10);
     }
 
     #[test]

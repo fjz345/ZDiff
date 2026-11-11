@@ -11,7 +11,7 @@ use std::{
 };
 
 use memmap2::Mmap;
-use zcommon::{change_map::ChangeMap, job::Job, kinds::KindTable};
+use zcommon::{change_map::ChangeMap, job::Job, kinds::KindTable, lru::LruMap};
 use zdiff_folder::{
     comparison::{FileMeta, PairCompare, PairCompareCache, PairSide, PairState, compare_pair_with},
     fs::{FileSystemModel, FsNode},
@@ -27,8 +27,30 @@ const MAX_COMPARE_WORKERS: usize = 4;
 const ROWS_PATCH_INTERVAL: Duration = Duration::from_millis(250);
 // The gap after a patch is at least this many times its cost, so big trees don't patch every frame.
 const PATCH_COST_FACTOR: u32 = 4;
-// The image viewer's default. The likeness cache doesn't key on it.
+// The image viewer's default.
 const PIXEL_TOLERANCE: u8 = 0;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LikenessSettings {
+    kinds: KindTable,
+    pixel_tolerance: u8,
+}
+
+impl Default for LikenessSettings {
+    fn default() -> Self {
+        Self {
+            kinds: KindTable::default(),
+            pixel_tolerance: PIXEL_TOLERANCE,
+        }
+    }
+}
+
+#[derive(Debug)]
+struct CachedLikeness {
+    metas: [FileMeta; 2],
+    settings: Arc<LikenessSettings>,
+    likeness: PairLikeness,
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum PairLikeness {
@@ -110,14 +132,15 @@ impl PendingPair {
     /// `None` when cancelled.
     fn likeness(
         &self,
-        kinds: &KindTable,
+        settings: &LikenessSettings,
         cancel: &Arc<AtomicBool>,
     ) -> Option<io::Result<Likeness>> {
         let ([left, right], extension) = match map_pair(&self.paths, &self.rel_path) {
             Ok(mapped) => mapped,
             Err(e) => return Some(Err(e)),
         };
-        likeness(kinds, &extension, &left, &right, PIXEL_TOLERANCE, cancel).map(Ok)
+        let (kinds, tolerance) = (&settings.kinds, settings.pixel_tolerance);
+        likeness(kinds, &extension, &left, &right, tolerance, cancel).map(Ok)
     }
 
     fn cache_metas(&self) -> Option<[FileMeta; 2]> {
@@ -242,6 +265,7 @@ struct CompareJob {
     tasks: Arc<[PairTask]>,
     job: Job<(usize, PairResult)>,
     likeness: Arc<AtomicBool>,
+    settings: Arc<LikenessSettings>,
     received: usize,
     started: Instant,
     patched: Instant,
@@ -273,6 +297,7 @@ impl CompareJob {
     fn new(
         tasks: Vec<PairTask>,
         likeness: bool,
+        settings: Arc<LikenessSettings>,
         now: Instant,
         wake: impl Fn() + Send + Sync + 'static,
     ) -> Self {
@@ -280,6 +305,7 @@ impl CompareJob {
             tasks: tasks.into(),
             job: Job::new(wake),
             likeness: Arc::new(AtomicBool::new(likeness)),
+            settings,
             received: 0,
             started: now,
             patched: now,
@@ -293,11 +319,13 @@ impl CompareJob {
     fn start(
         tasks: Vec<PairTask>,
         likeness: bool,
+        settings: Arc<LikenessSettings>,
         now: Instant,
         wake: impl Fn() + Send + Sync + 'static,
     ) -> Self {
-        let mut compare = Self::new(tasks, likeness, now, wake);
+        let mut compare = Self::new(tasks, likeness, settings, now, wake);
         let (tasks, likeness) = (compare.tasks.clone(), compare.likeness.clone());
+        let settings = compare.settings.clone();
         let workers = std::thread::available_parallelism()
             .map_or(1, |n| n.get())
             .min(MAX_COMPARE_WORKERS)
@@ -309,7 +337,6 @@ impl CompareJob {
                     std::thread::Builder::new()
                         .name("folder compare".into())
                         .spawn_scoped(scope, || {
-                            let kinds = KindTable::default();
                             while !ctx.is_cancelled() {
                                 let i = next.fetch_add(1, Ordering::Relaxed);
                                 let Some(task) = tasks.get(i) else {
@@ -323,7 +350,7 @@ impl CompareJob {
                                     });
                                 let likeness = if measure {
                                     let Some(result) =
-                                        task.pair.likeness(&kinds, ctx.cancel_flag())
+                                        task.pair.likeness(&settings, ctx.cancel_flag())
                                     else {
                                         break;
                                     };
@@ -363,8 +390,9 @@ pub struct TreeCompare {
     states: HashMap<String, PairState>,
     cache: PairCompareCache,
     measure_likeness: bool,
+    likeness_settings: Arc<LikenessSettings>,
     likeness: HashMap<String, PairLikeness>,
-    likeness_cache: HashMap<String, ([FileMeta; 2], PairLikeness)>,
+    likeness_cache: LruMap<String, CachedLikeness>,
     job: Option<CompareJob>,
     cancelled: bool,
     compare_time: Option<Duration>,
@@ -418,8 +446,9 @@ impl TreeCompare {
             file_meta(nodes[0].size, nodes[0].modified)?,
             file_meta(nodes[1].size, nodes[1].modified)?,
         ];
-        let (cached_metas, likeness) = self.likeness_cache.get(rel_path)?;
-        (*cached_metas == metas).then_some(likeness)
+        let cached = self.likeness_cache.get(rel_path)?;
+        (cached.metas == metas && cached.settings == self.likeness_settings)
+            .then_some(&cached.likeness)
     }
 
     /// Returns whether it changed. On measures again after a cancel; off skips the likeness
@@ -448,7 +477,13 @@ impl TreeCompare {
         let tasks = self.tasks(rows, views);
         let started = self.job.as_ref().map_or(now, |job| job.started);
         self.job = (!self.cancelled && !tasks.is_empty()).then(|| {
-            let mut job = CompareJob::start(tasks, self.measure_likeness, now, self.wake());
+            let mut job = CompareJob::start(
+                tasks,
+                self.measure_likeness,
+                self.likeness_settings.clone(),
+                now,
+                self.wake(),
+            );
             job.started = started;
             job
         });
@@ -537,7 +572,13 @@ impl TreeCompare {
                 job.unpatched = true;
             }
             if let Some(likeness) = result.likeness {
-                apply_likeness(&mut self.likeness, &mut self.likeness_cache, pair, likeness);
+                apply_likeness(
+                    &mut self.likeness,
+                    &mut self.likeness_cache,
+                    &job.settings,
+                    pair,
+                    likeness,
+                );
                 // A likeness tolerance can turn the row Similar.
                 job.unpatched = true;
             }
@@ -605,7 +646,8 @@ fn apply_result(
 /// Like a compare read error, a failed measure stays out of the cache.
 fn apply_likeness(
     likeness: &mut HashMap<String, PairLikeness>,
-    cache: &mut HashMap<String, ([FileMeta; 2], PairLikeness)>,
+    cache: &mut LruMap<String, CachedLikeness>,
+    settings: &Arc<LikenessSettings>,
     pair: &PendingPair,
     result: io::Result<Likeness>,
 ) {
@@ -621,7 +663,13 @@ fn apply_likeness(
         }
     };
     if let (PairLikeness::Measured(_), Some(metas)) = (&measured, pair.cache_metas()) {
-        cache.insert(pair.rel_path.clone(), (metas, measured.clone()));
+        let cached = CachedLikeness {
+            metas,
+            settings: settings.clone(),
+            likeness: measured.clone(),
+        };
+        let bytes = size_of::<(String, CachedLikeness)>() + pair.rel_path.len();
+        cache.insert(pair.rel_path.clone(), cached, bytes);
     }
     likeness.insert(pair.rel_path.clone(), measured);
 }
@@ -642,6 +690,7 @@ impl TreeCompare {
         let mut job = CompareJob::new(
             tasks,
             running.likeness.load(Ordering::Relaxed),
+            running.settings.clone(),
             now,
             self.wake(),
         );
@@ -664,8 +713,8 @@ impl TreeCompare {
 #[cfg(test)]
 mod tests {
     use super::{
-        CompareUpdate, PairLikeness, PairResult, ROWS_PATCH_INTERVAL, TreeCompare, apply_result,
-        pending_pairs,
+        CompareUpdate, LikenessSettings, PairLikeness, PairResult, ROWS_PATCH_INTERVAL,
+        TreeCompare, apply_result, pending_pairs,
     };
     use crate::ui_egui::fs_tree::{DiffState, FileSystemView, VisibleRowTwoFolderDiff};
     use crate::ui_egui::tree_likeness::{LikenessCell, likeness_cell};
@@ -681,7 +730,7 @@ mod tests {
         time::{Duration, Instant, SystemTime},
     };
     use tempfile::{TempDir, tempdir};
-    use zcommon::kinds::KindTable;
+    use zcommon::kinds::{FileKind, KindTable};
     use zdiff_folder::{
         comparison::{PairCompare, PairState},
         filter::PathFilter,
@@ -1347,6 +1396,39 @@ mod tests {
         let rows = build(&mut compare, &left, &right);
         compare.start(&rows, [Some(&left), Some(&right)], Instant::now());
         assert_eq!(compare.queued(), [("b.txt", true, true)]);
+    }
+
+    #[test]
+    fn a_rescan_measures_again_under_other_likeness_settings() {
+        let (left_dir, right_dir) = trees();
+        let left = load_view(left_dir.path());
+        let mut right = load_view(right_dir.path());
+        let mut compare = TreeCompare::default();
+        compare.set_likeness(true);
+        let rows = build(&mut compare, &left, &right);
+        compare.start(&rows, [Some(&left), Some(&right)], Instant::now());
+        poll_until_finished(&mut compare);
+
+        let mut kinds = KindTable::default();
+        kinds.set_override("txt", FileKind::Binary);
+        for settings in [
+            LikenessSettings {
+                pixel_tolerance: 8,
+                ..LikenessSettings::default()
+            },
+            LikenessSettings {
+                kinds,
+                ..LikenessSettings::default()
+            },
+        ] {
+            compare.likeness_settings = Arc::new(settings);
+            right = load_view(right_dir.path());
+            let rows = build(&mut compare, &left, &right);
+            assert_eq!(likeness_at(&mut compare, &left, &right, "b.txt"), None);
+            compare.start(&rows, [Some(&left), Some(&right)], Instant::now());
+            assert_eq!(compare.queued(), [("b.txt", false, true)]);
+            poll_until_finished(&mut compare);
+        }
     }
 
     #[test]

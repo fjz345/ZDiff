@@ -15,6 +15,7 @@ A crash (panic) appends its message, source location and backtrace to `crash.log
 # Features
 * Two-folder tree diff
     - Background scan and compare, rows show Pending until compared; counts and timings in the status line
+    - Compare and likeness results survive rescans in memory-bounded caches (256 MiB each, least recently used pairs dropped first); a likeness is only reused when measured with the same file kinds and pixel tolerance
     - Rebuilt rows (compare finished, sort, filters) keep the top row of the view in place, or its nearest shown folder
     - Compared rows are cached in memory per path filter and tolerance (last 6), so sort, diff only, flat and switching a filter or tolerance back skip the rebuild (about 130 ms down to 20 ms for 52,000 rows); a rescan or new compare results drop them
     - Breadcrumb path bars, right-click menu on rows (set as root, set as Left/Right folder, open in Explorer, copy path)
