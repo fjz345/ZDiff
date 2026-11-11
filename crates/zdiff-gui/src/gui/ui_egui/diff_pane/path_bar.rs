@@ -81,6 +81,23 @@ pub(super) fn load_error_text(errors: [Option<&str>; 2]) -> Option<String> {
     (!lines.is_empty()).then(|| lines.join("\n"))
 }
 
+#[derive(Debug, PartialEq)]
+pub(super) enum NoDiffState {
+    Error(String),
+    Loading(&'static str),
+    Welcome,
+}
+
+pub(super) fn no_diff_state(error: Option<String>, loading: bool, any_path: bool) -> NoDiffState {
+    match error {
+        Some(error) => NoDiffState::Error(error),
+        None if loading => NoDiffState::Loading("Loading files..."),
+        // A load can finish after this frame's diff request was decided; the diff starts next.
+        None if any_path => NoDiffState::Loading("Comparing files..."),
+        None => NoDiffState::Welcome,
+    }
+}
+
 pub(super) fn file_path_dim([a, b]: [&UniversalPath; 2], labelled: bool) -> usize {
     if labelled {
         return 0;
@@ -386,6 +403,25 @@ mod tests {
                 Rect::NOTHING,
             ];
             assert_eq!(drop_rects(rows, pane, shown_sides(true)), rows);
+        }
+
+        #[test]
+        fn a_pane_with_a_file_but_no_diff_yet_waits_for_it_instead_of_welcoming() {
+            use super::super::{NoDiffState, no_diff_state};
+
+            assert_eq!(no_diff_state(None, false, false), NoDiffState::Welcome);
+            assert_eq!(
+                no_diff_state(None, true, true),
+                NoDiffState::Loading("Loading files...")
+            );
+            assert_eq!(
+                no_diff_state(None, false, true),
+                NoDiffState::Loading("Comparing files...")
+            );
+            assert_eq!(
+                no_diff_state(Some("Left: gone".to_owned()), true, true),
+                NoDiffState::Error("Left: gone".to_owned())
+            );
         }
 
         #[test]

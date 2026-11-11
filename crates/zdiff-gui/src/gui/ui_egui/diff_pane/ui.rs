@@ -1170,22 +1170,28 @@ impl FileDiffPane {
                     .launch_error
                     .map(str::to_owned)
                     .or_else(|| load_error_text(load_errors));
-                if let Some(error) = error {
-                    error_state(ui, &error);
-                } else if ctx.file_source_loading || ctx.file_target_loading {
-                    loading_state(ui, "Loading files...");
-                } else {
-                    let (_, clicked) = empty_state(
-                        ui,
-                        "Welcome to ZDiff",
-                        "Drag and drop files here or use the buttons below to start comparing.",
-                        &["Open Left", "Open Right"],
-                    );
-                    *ctx.open_file_request = match clicked {
-                        Some(0) => Some(ActiveSide::Left),
-                        Some(_) => Some(ActiveSide::Right),
-                        None => None,
-                    };
+                let loading = ctx.file_source_loading || ctx.file_target_loading;
+                let any_path = !(ctx.file_source_path.is_empty() && ctx.file_target_path.is_empty());
+                match no_diff_state(error, loading, any_path) {
+                    NoDiffState::Error(error) => {
+                        error_state(ui, &error);
+                    }
+                    NoDiffState::Loading(text) => {
+                        loading_state(ui, text);
+                    }
+                    NoDiffState::Welcome => {
+                        let (_, clicked) = empty_state(
+                            ui,
+                            "Welcome to ZDiff",
+                            "Drag and drop files here or use the buttons below to start comparing.",
+                            &["Open Left", "Open Right"],
+                        );
+                        *ctx.open_file_request = match clicked {
+                            Some(0) => Some(ActiveSide::Left),
+                            Some(_) => Some(ActiveSide::Right),
+                            None => None,
+                        };
+                    }
                 }
             }
         })
