@@ -4,9 +4,7 @@ use crate::{
     char_diff::CharRanges,
     ignore::IgnoreMask,
     lexer::RawTokenTrait,
-    myers::{
-        DiffPhases, MyersNumAddDelete, Step, myers_count_add_deletes, path_steps, split_lines,
-    },
+    myers::{DiffInput, DiffPhases, MyersNumAddDelete, Step, path_steps, split_lines},
     scope::scope_units,
 };
 
@@ -47,14 +45,21 @@ impl ChangeUnit {
 pub fn count_changes<T: RawTokenTrait>(
     unit: ChangeUnit,
     path: &[(i32, i32)],
-    source: &[T],
-    target: &[T],
-    source_text: &str,
-    target_text: &str,
+    input: DiffInput<T>,
     char_ranges: &CharRanges,
 ) -> MyersNumAddDelete {
+    let DiffInput {
+        source,
+        target,
+        source_text,
+        target_text,
+        ignore,
+    } = input;
     match unit {
-        ChangeUnit::Token => myers_count_add_deletes(path),
+        ChangeUnit::Token => {
+            let (deleted, inserted) = edited_tokens(path, ignore);
+            (inserted.len() as u32, deleted.len() as u32)
+        }
         ChangeUnit::Character => {
             let chars = |text: &str, ranges: &[Range<usize>]| {
                 ranges
@@ -72,7 +77,7 @@ pub fn count_changes<T: RawTokenTrait>(
                 ChangeUnit::Scope => scope_units(tokens, text),
                 _ => split_lines(tokens),
             };
-            let (deleted, inserted) = edited_tokens(path);
+            let (deleted, inserted) = edited_tokens(path, ignore);
             (
                 units_hit(&units(target, target_text), &inserted),
                 units_hit(&units(source, source_text), &deleted),
@@ -93,16 +98,7 @@ pub fn text_likeness<T: RawTokenTrait>(
     target: &[T],
     ignore: &IgnoreMask,
 ) -> TextLikeness {
-    let ignored = |mask: &[bool], i: usize| mask.get(i).copied().unwrap_or(false);
-    let (deleted, inserted) = edited_tokens(path);
-    let deleted: Vec<usize> = deleted
-        .into_iter()
-        .filter(|&i| !ignored(&ignore.source, i))
-        .collect();
-    let inserted: Vec<usize> = inserted
-        .into_iter()
-        .filter(|&i| !ignored(&ignore.target, i))
-        .collect();
+    let (deleted, inserted) = edited_tokens(path, ignore);
     let counted = |len: usize, mask: &[bool]| (0..len).filter(|&i| !ignored(mask, i)).count();
     let counted_lines = |tokens: &[T], mask: &[bool]| -> Vec<Range<usize>> {
         split_lines(tokens)
@@ -133,24 +129,32 @@ fn unchanged_share(changed: usize, total: usize) -> f64 {
     }
 }
 
-/// Ascending indices of the deleted source tokens and the inserted target tokens.
-fn edited_tokens(path: &[(i32, i32)]) -> (Vec<usize>, Vec<usize>) {
+/// Ascending indices of the edited tokens that aren't ignored: (deleted source, inserted target).
+fn edited_tokens(path: &[(i32, i32)], ignore: &IgnoreMask) -> (Vec<usize>, Vec<usize>) {
     let (mut deleted, mut inserted) = (Vec::new(), Vec::new());
     let (mut x, mut y) = (0, 0);
     for step in path_steps(path) {
         match step {
             Step::Equal => (x, y) = (x + 1, y + 1),
             Step::Delete => {
-                deleted.push(x);
+                if !ignored(&ignore.source, x) {
+                    deleted.push(x);
+                }
                 x += 1;
             }
             Step::Insert => {
-                inserted.push(y);
+                if !ignored(&ignore.target, y) {
+                    inserted.push(y);
+                }
                 y += 1;
             }
         }
     }
     (deleted, inserted)
+}
+
+fn ignored(mask: &[bool], i: usize) -> bool {
+    mask.get(i).copied().unwrap_or(false)
 }
 
 /// How many of the sorted, disjoint `units` hold one of the ascending `indices`.
@@ -205,13 +209,22 @@ mod tests {
     };
 
     fn count(phases: DiffPhases, source: &str, target: &str) -> (ChangeUnit, MyersNumAddDelete) {
+        count_with(phases, &IgnoreOptions::default(), source, target)
+    }
+
+    fn count_with(
+        phases: DiffPhases,
+        ignore: &IgnoreOptions,
+        source: &str,
+        target: &str,
+    ) -> (ChangeUnit, MyersNumAddDelete) {
         let (ts, tt): (Vec<RawToken>, Vec<RawToken>) =
             (Lexer::new(source).collect(), Lexer::new(target).collect());
         let cmp = |a: &RawToken, b: &RawToken| {
             a.kind == b.kind && source[a.span.clone()] == target[b.span.clone()]
         };
         let algorithm = MyersDiffAlgorithm::Linear;
-        let mask = IgnoreMask::default();
+        let mask = ignore.mask(&ts, source, &tt, target);
         let path = myers_diff_path(
             algorithm,
             DiffInput {
@@ -227,25 +240,20 @@ mod tests {
             Arc::default(),
         )
         .unwrap();
+        let input = || DiffInput {
+            source: &ts,
+            target: &tt,
+            source_text: source,
+            target_text: target,
+            ignore: &mask,
+        };
         let char_ranges = if phases.character {
-            character_diff(
-                algorithm,
-                &path,
-                DiffInput {
-                    source: &ts,
-                    target: &tt,
-                    source_text: source,
-                    target_text: target,
-                    ignore: &mask,
-                },
-                Arc::default(),
-            )
-            .unwrap()
+            character_diff(algorithm, &path, input(), Arc::default()).unwrap()
         } else {
             CharRanges::default()
         };
         let unit = ChangeUnit::finest(phases).unwrap();
-        let counts = count_changes(unit, &path, &ts, &tt, source, target, &char_ranges);
+        let counts = count_changes(unit, &path, input(), &char_ranges);
         (unit, counts)
     }
 
@@ -402,5 +410,45 @@ mod tests {
         for phases in [SCOPE, LINE, LINE_TOKEN, ALL] {
             assert_eq!(count(phases, text, text).1, (0, 0), "{phases:?}");
         }
+    }
+
+    #[test]
+    fn edits_of_ignored_tokens_count_nothing_in_any_unit() {
+        let all = IgnoreOptions {
+            whitespace: true,
+            comments: true,
+            line_endings: true,
+            file_markers: true,
+            ..IgnoreOptions::default()
+        };
+        let pairs = [
+            ("\u{feff}fn a() {}\r\n", "fn a() {}\n"),
+            ("fn a() {}\n", "fn a() {}"),
+            ("fn a() { 1; }\n", "fn  a() {1;} // one\n"),
+        ];
+        for (source, target) in pairs {
+            assert_ne!(count(LINE_TOKEN, source, target).1, (0, 0), "{source:?}");
+            for phases in [SCOPE, LINE, LINE_TOKEN, ALL] {
+                assert_eq!(
+                    count_with(phases, &all, source, target).1,
+                    (0, 0),
+                    "{phases:?}: {source:?} -> {target:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_line_with_ignored_and_real_edits_counts_once() {
+        let whitespace = IgnoreOptions {
+            whitespace: true,
+            ..IgnoreOptions::default()
+        };
+        let (source, target) = ("a b\nc\n", "a  b\nx\n");
+        assert_eq!(count_with(LINE, &whitespace, source, target).1, (1, 1));
+        assert_eq!(
+            count_with(LINE_TOKEN, &whitespace, source, target).1,
+            (1, 1)
+        );
     }
 }

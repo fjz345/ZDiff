@@ -820,10 +820,13 @@ impl DiffCtx {
                         count_changes(
                             unit,
                             &path,
-                            t1,
-                            t2,
-                            &c1.contents,
-                            &c2.contents,
+                            DiffInput {
+                                source: t1,
+                                target: t2,
+                                source_text: &c1.contents,
+                                target_text: &c2.contents,
+                                ignore: &ignore,
+                            },
                             &char_ranges,
                         )
                     });
@@ -2601,7 +2604,7 @@ mod tests {
             }
 
             #[test]
-            fn the_likeness_honors_the_ignore_options_and_needs_two_sides() {
+            fn counts_and_likeness_honor_the_ignore_options_and_likeness_needs_two_sides() {
                 let dir = tempfile::tempdir().unwrap();
                 let write = |name: &str, contents: &str| {
                     let path = dir.path().join(name);
@@ -2618,12 +2621,14 @@ mod tests {
                 let plain = settle(&mut processor).expect("diff never completed");
                 let likeness = plain.likeness.expect("two sides with phases on");
                 assert_eq!(likeness.lines, 1.0 - 3.0 / 5.0);
+                assert_eq!(plain.num_add_deletes, (3, 1));
 
                 current.options.ignore.whitespace = true;
                 open(&mut processor, &current);
                 let ignoring = settle(&mut processor).expect("ignore toggle never completed");
                 let likeness = ignoring.likeness.expect("two sides with phases on");
                 assert_eq!(likeness.lines, 1.0 - 1.0 / 5.0);
+                assert_eq!(ignoring.num_add_deletes, (1, 0));
 
                 open(&mut processor, &input(&left, &None));
                 let one_sided = settle(&mut processor).expect("one-sided diff never completed");
