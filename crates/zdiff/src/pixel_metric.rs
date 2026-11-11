@@ -11,11 +11,9 @@ use crate::pixel::{PixelBounds, PixelDiff, PixelStats, RgbaBuffer};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum PixelMetric {
-    /// The largest channel difference at the same pixel.
     #[default]
     Exact,
-    /// The largest channel difference to the closest match within the window in the other image,
-    /// the worse of both directions.
+    /// Closest match within the window in the other image, the worse of both directions.
     Neighborhood(NeighborhoodSize),
     /// Luma SSIM over a 7x7 window, as (1 - SSIM) x 255.
     Ssim,
@@ -67,7 +65,6 @@ pub enum Alignment {
     #[default]
     TopLeft,
     Center,
-    /// Each image bilinearly resampled to the whole canvas.
     ScaleToFit,
 }
 
@@ -95,7 +92,6 @@ pub struct MetricMap {
     pub difference: f64,
 }
 
-/// An empty image has no pixels to scale, so it stays empty at the canvas origin.
 pub fn placement(
     alignment: Alignment,
     (width, height): (u32, u32),
@@ -509,7 +505,6 @@ mod tests {
 
     const THREE: PixelMetric = PixelMetric::Neighborhood(NeighborhoodSize::Three);
 
-    // A one-pixel vertical line at `line_x` on black.
     fn line(width: u32, height: u32, line_x: u32) -> Vec<u8> {
         let row: Vec<u8> = (0..width)
             .map(|x| if x == line_x { 200 } else { 0 })

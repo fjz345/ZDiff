@@ -362,9 +362,7 @@ pub enum CellKind {
     Folder {
         header: bool,
     },
-    /// A folder too small to show its entries.
     Closed,
-    /// The entries of `node` too small to show, merged.
     Rest {
         count: usize,
     },

@@ -156,7 +156,6 @@ impl PathDiffPane {
                     views.iter().flatten().any(|v| v.is_anything_collapsed()),
                 );
 
-                // Folding doesn't show in flat mode or the map.
                 let foldable =
                     self.view == PaneView::Tree && !ctx.diff_filter.is_flat(*ctx.tree_sort);
                 if ui

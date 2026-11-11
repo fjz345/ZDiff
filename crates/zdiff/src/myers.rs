@@ -131,7 +131,7 @@ pub fn validate_pins(
     Ok(())
 }
 
-/// The two token streams being diffed, the texts their spans index and their ignore mask.
+/// `source`/`target` may be sub-slices; their spans still index the whole `*_text`.
 pub struct DiffInput<'a, T> {
     pub source: &'a [T],
     pub target: &'a [T],

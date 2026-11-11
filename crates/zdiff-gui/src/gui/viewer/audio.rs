@@ -227,7 +227,6 @@ impl TimeView {
         }
     }
 
-    /// Scrolls no further than the ends and zooms out no further than the whole `duration`.
     pub fn clamped(self, duration: f64, width: f32) -> Self {
         let secs_per_px = if duration > 0.0 {
             self.secs_per_px.min(Self::fit(duration, width).secs_per_px)

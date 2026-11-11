@@ -124,7 +124,6 @@ pub fn resampled_decode_args(input: &Path, sample_rate: u32, channels: u32) -> V
     decode_args(input, Some((sample_rate, channels)))
 }
 
-/// `count` back-to-back RGBA frames at the file's own resolution.
 pub fn frames_at_args(input: &Path, time_secs: f64, count: u64) -> Vec<OsString> {
     assert!(
         time_secs.is_finite() && time_secs >= 0.0,

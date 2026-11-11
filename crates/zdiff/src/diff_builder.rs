@@ -446,7 +446,6 @@ pub fn build_diff_rows_cancellable<T: RawTokenTrait>(
     )
 }
 
-/// Rows of `diff_ir` (ignored entries already hidden), built in at most `num_chunks` chunks.
 /// The rows don't depend on the chunk count.
 fn build_diff_rows_chunked<T: RawTokenTrait>(
     diff_ir: &DiffIR,
