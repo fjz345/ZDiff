@@ -15,7 +15,7 @@ use zcommon::{
     hash::HashService,
     job::Job,
     kinds::KindTable,
-    logger::LogBuffer,
+    logger::{self, LogBuffer},
     universal_path::UniversalPath,
     vcs::{git::GitCommand, p4::P4Command},
 };
@@ -714,7 +714,7 @@ pub struct ZApp {
     // Option > Hack to avoid cloning state when matching &mut self.state in update loop
     state: Option<AppState>,
     tree: egui_tiles::Tree<Pane>,
-    #[serde(skip)]
+    #[serde(skip, default = "restored_log_buffer")]
     log_buffer: LogBuffer,
 
     open_dir_window_1: bool,
@@ -754,6 +754,10 @@ fn clamp_zoom(zoom: f32) -> f32 {
 
 fn deserialize_zoom<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<f32, D::Error> {
     f32::deserialize(deserializer).map(clamp_zoom)
+}
+
+fn restored_log_buffer() -> LogBuffer {
+    logger::global_log_buffer().unwrap_or_default()
 }
 
 impl ZApp {
@@ -1473,7 +1477,7 @@ mod tests {
     };
     use tempfile::{TempDir, tempdir};
     use zcommon::hash::HashService;
-    use zcommon::logger::LogBuffer;
+    use zcommon::logger::{LogBuffer, LogCollector};
     use zcommon_ui::keymap::{Action, Keymap, Shortcut};
     use zdiff_folder::likeness::{Likeness, Measure};
     use zdiff_folder::{
@@ -1732,6 +1736,14 @@ mod tests {
         json.as_object_mut().unwrap().remove("zoom").unwrap();
         let restored: ZApp = serde_json::from_value(json).unwrap();
         assert_eq!(restored.zoom, 1.0);
+    }
+
+    #[test]
+    fn a_restored_app_shows_the_global_log_buffer() {
+        let global = LogCollector::init().expect("no other logger in the test binary");
+        let json = serde_json::to_string(&ZApp::new(global.clone())).unwrap();
+        let restored: ZApp = serde_json::from_str(&json).unwrap();
+        assert!(Arc::ptr_eq(&restored.log_buffer, &global));
     }
 
     #[test]

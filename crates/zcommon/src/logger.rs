@@ -11,6 +11,10 @@ pub type LogBuffer = Arc<Mutex<VecDeque<String>>>;
 
 static GLOBAL_LOG_BUFFER: OnceLock<LogBuffer> = OnceLock::new();
 
+pub fn global_log_buffer() -> Option<LogBuffer> {
+    GLOBAL_LOG_BUFFER.get().cloned()
+}
+
 pub fn log_filter(rust_log: Option<&str>) -> &str {
     rust_log.unwrap_or(DEFAULT_LOG_FILTER)
 }
