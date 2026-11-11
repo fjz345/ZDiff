@@ -704,8 +704,12 @@ impl P4Command {
         let status = loop {
             if cancel.load(Ordering::Relaxed) {
                 // The readers end once the killed child's pipes close.
-                let _ = child.kill();
-                let _ = child.wait();
+                if let Err(e) = child.kill() {
+                    log::warn!("Killing a cancelled {}: {e}", self.exe_path);
+                }
+                if let Err(e) = child.wait() {
+                    log::warn!("Waiting for a cancelled {}: {e}", self.exe_path);
+                }
                 return Err("cancelled".to_string());
             }
             match child.try_wait() {

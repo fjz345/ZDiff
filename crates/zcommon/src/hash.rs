@@ -159,7 +159,13 @@ impl HashService {
                     Ok(path) => {
                         in_progress.fetch_add(1, Ordering::SeqCst);
                         queued.fetch_sub(1, Ordering::SeqCst);
-                        let hash = hash_file_mmap(&path).ok();
+                        let hash = match hash_file_mmap(&path) {
+                            Ok(hash) => Some(hash),
+                            Err(e) => {
+                                log::warn!("Hashing {}: {e}", path.display());
+                                None
+                            }
+                        };
                         hashes.write().unwrap().insert(path, hash);
                         in_progress.fetch_sub(1, Ordering::SeqCst);
                     }
