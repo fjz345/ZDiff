@@ -620,6 +620,7 @@ where
     }
     assert_mask_fits(ignore, source, target);
     if source.len() == target.len()
+        && ignore.source == ignore.target
         && source
             .iter()
             .zip(target)
@@ -3639,6 +3640,29 @@ mod tests {
                         h.assert_row(2, 2, 3, "  x = 1;\n", "x  =  1;\n");
                         h.assert_row(3, 3, -1, "b\n", "VOID");
                         assert_eq!(h.rows().len(), 4, "{algorithm:?} {phases:?}");
+                    }
+                }
+            }
+
+            #[test]
+            fn a_pinned_pair_of_equal_lines_where_only_one_ends_the_file_still_diffs() {
+                let s = "x\nx\n";
+                let ignore = IgnoreOptions {
+                    file_markers: true,
+                    ..Default::default()
+                };
+                for algorithm in ALGORITHMS {
+                    for phases in PHASE_SETS {
+                        let path = path(algorithm, s, s, &ignore, phases, &[pin(0, 1)]);
+                        let options = DiffBuilderOptions {
+                            ignore: ignore.clone(),
+                            ..options()
+                        };
+                        let h = DiffTestHarness::new(s, s, path, options, 8);
+                        h.assert_row(0, -1, 1, "VOID", "x\n");
+                        h.assert_row(1, 1, 2, "x\n", "x\n");
+                        h.assert_row(2, 2, -1, "x\n", "VOID");
+                        assert_eq!(h.rows().len(), 3, "{algorithm:?} {phases:?}");
                     }
                 }
             }
