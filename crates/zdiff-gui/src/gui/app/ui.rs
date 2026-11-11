@@ -664,6 +664,44 @@ mod tests {
     }
 
     #[test]
+    fn a_single_loaded_file_shows_on_its_own_side_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("only.txt");
+        std::fs::write(&path, "only_side_line\n").unwrap();
+        let mut app = super::super::ZApp::new();
+        let state = app.state.as_mut().unwrap().ctx_mut();
+        state.file_1.set_path(UniversalPath::from(path));
+        let ctx = egui::Context::default();
+        let mut frame = eframe::Frame::_new_kittest();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        let mut diffed = false;
+        loop {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1600.0, 1000.0),
+                )),
+                ..Default::default()
+            };
+            let output = ctx.run(input, |ctx| eframe::App::update(&mut app, ctx, &mut frame));
+            if diffed {
+                let mut texts = Vec::new();
+                output
+                    .shapes
+                    .iter()
+                    .for_each(|clipped| shape_texts(&clipped.shape, &mut texts));
+                let count = |wanted: &str| texts.iter().filter(|text| *text == wanted).count();
+                assert_eq!(count("only_side_line"), 1);
+                assert_eq!(count("No file"), 1);
+                break;
+            }
+            let state = app.state.as_mut().unwrap().ctx_mut();
+            diffed = state.diff_processor.get_minimal_diff_ctx().is_some();
+            assert!(std::time::Instant::now() < deadline, "the diff never came");
+        }
+    }
+
+    #[test]
     fn a_pane_loading_its_files_shows_no_welcome_screen() {
         let dir = tempfile::tempdir().unwrap();
         let text: String = (0..400_000).map(|i| format!("line {i}\n")).collect();

@@ -853,6 +853,13 @@ impl FileDiffPane {
                                                     } else {
                                                         (ActiveSide::Right, &diff_row.right)
                                                     };
+                                                    // A one-sided diff is the file against itself.
+                                                    let side_has_file = ctx.diff_ctx.is_some_and(|d| {
+                                                        [&d.input.file_1, &d.input.file_2][side as usize].is_some()
+                                                    });
+                                                    if !side_has_file {
+                                                        return;
+                                                    }
                                                     let width = ui.max_rect().width();
                                                     let gutter = match (strings, content) {
                                                         (true, LineContent::Code { line_num, .. }) => {
