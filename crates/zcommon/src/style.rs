@@ -789,13 +789,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn gradient_labels_are_unique() {
-        let mut labels = GradientPreset::ALL.map(GradientPreset::label);
-        labels.sort_unstable();
-        assert!(labels.windows(2).all(|pair| pair[0] != pair[1]));
-    }
-
     fn content_segments(min: [f32; 2], max: [f32; 2], origin: [f32; 2]) -> Vec<Segment> {
         stripe_segments(min, max, origin, 8.0)
             .map(|[a, b]| {

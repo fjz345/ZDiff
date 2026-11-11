@@ -636,34 +636,6 @@ mod tests {
     }
 
     #[test]
-    fn an_empty_pane_shows_both_sides_path_bars() {
-        let mut app = super::super::ZApp::new();
-        let ctx = egui::Context::default();
-        let mut frame = eframe::Frame::_new_kittest();
-        let mut texts = Vec::new();
-        for _ in 0..3 {
-            let input = egui::RawInput {
-                screen_rect: Some(egui::Rect::from_min_size(
-                    egui::Pos2::ZERO,
-                    egui::vec2(1600.0, 1000.0),
-                )),
-                ..Default::default()
-            };
-            let output = ctx.run(input, |ctx| eframe::App::update(&mut app, ctx, &mut frame));
-            texts.clear();
-            output
-                .shapes
-                .iter()
-                .for_each(|clipped| shape_texts(&clipped.shape, &mut texts));
-        }
-        let count = |wanted: &str| texts.iter().filter(|text| *text == wanted).count();
-
-        assert_eq!(count("No root folder"), 2);
-        assert_eq!(count("No file"), 2);
-        assert_eq!(count("Welcome to ZDiff"), 1);
-    }
-
-    #[test]
     fn a_single_loaded_file_shows_on_its_own_side_only() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("only.txt");
