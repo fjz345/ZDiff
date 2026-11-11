@@ -115,6 +115,14 @@ pub fn revision_label(path: &UniversalPath) -> String {
     }
 }
 
+fn back_text(previous: &UniversalPath) -> String {
+    match previous {
+        UniversalPath::Local(_) => LOCAL_FILE.to_owned(),
+        UniversalPath::Git(..) => revision_label(previous),
+        UniversalPath::Depot(..) => previous.to_string(),
+    }
+}
+
 enum Listing {
     Git(Vec<GitRef>),
     Streams(Vec<P4Stream>),
@@ -191,12 +199,25 @@ pub fn revision_dropdown(
     ui: &mut egui::Ui,
     id_salt: &str,
     path: &UniversalPath,
+    previous: Option<&UniversalPath>,
 ) -> Option<UniversalPath> {
     let id = ui.make_persistent_id((id_salt, "revision_dropdown"));
     let button = egui::Button::new(format!("{} \u{23f7}", revision_label(path))).truncate();
     let (response, inner) = MenuButton::from_button(button)
         .config(MenuConfig::new().close_behavior(PopupCloseBehavior::CloseOnClickOutside))
-        .ui(ui, |ui| menu(ui, id, path));
+        .ui(ui, |ui| {
+            if let Some(previous) = previous {
+                let back = ui
+                    .selectable_label(false, format!("Back to {}", back_text(previous)))
+                    .on_hover_text(previous.to_string());
+                ui.separator();
+                if back.clicked() {
+                    ui.close();
+                    return Some(previous.clone());
+                }
+            }
+            menu(ui, id, path)
+        });
     response.on_hover_text("Source control revision");
     let Some(inner) = inner else {
         ui.data_mut(|d| d.remove::<State>(id));

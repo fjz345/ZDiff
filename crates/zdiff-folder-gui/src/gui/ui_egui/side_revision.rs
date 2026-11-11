@@ -142,6 +142,13 @@ fn revision_text(rev: &SideRev) -> String {
     }
 }
 
+fn back_text(previous: &Path) -> String {
+    match split_side(previous).1 {
+        SideRev::Depot(_) => previous.to_string_lossy().into_owned(),
+        rev => revision_text(&rev),
+    }
+}
+
 enum Listing {
     Git(Vec<GitRef>),
     Streams(Vec<P4Stream>),
@@ -221,6 +228,7 @@ pub fn revision_dropdown(
     ui: &mut egui::Ui,
     id_salt: usize,
     root: Option<&Path>,
+    previous: Option<&Path>,
 ) -> Option<PathBuf> {
     let Some(root) = root else {
         ui.add_enabled(false, egui::Button::new(SOURCE_CONTROL));
@@ -239,6 +247,17 @@ pub fn revision_dropdown(
     };
     let mut picked = None;
     let menu = ui.menu_button(shown, |ui| {
+        if let Some(previous) = previous {
+            let back = ui
+                .selectable_label(false, format!("Back to {}", back_text(previous)))
+                .on_hover_text(previous.to_string_lossy());
+            ui.separator();
+            if back.clicked() {
+                picked = Some(previous.to_path_buf());
+                ui.close();
+                return;
+            }
+        }
         let mut state = ui
             .data(|d| d.get_temp::<MenuState>(state_id))
             .filter(|state| state.folder == folder)

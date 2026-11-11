@@ -45,6 +45,7 @@ use crate::ui_egui::{
     path_diff_pane::{FilterPresets, PathDiffPane},
     revision_open,
     roots::{LaunchArgs, Side, apply_launch_args, clear_root, set_root},
+    side_revision::split_side,
     status_line::{
         RowCounts, ScanSummary, ToolMessage, count_rows, counts_text, ui_status_summary,
         ui_tool_message,
@@ -182,6 +183,30 @@ fn built_rows_bytes(rows: &[VisibleRowTwoFolderDiff]) -> usize {
     paths + size_of_val(rows)
 }
 
+fn previous_root(
+    history: &SnapshotHistory<FolderNav>,
+    side: usize,
+    current: &Path,
+) -> Option<PathBuf> {
+    history
+        .newest_first()
+        .map(|nav| nav.roots[side].as_deref())
+        .find(|root| *root != Some(current))
+        .flatten()
+        .filter(|root| folder_name(root) == folder_name(current))
+        .map(Path::to_path_buf)
+}
+
+fn folder_name(root: &Path) -> String {
+    let folder = split_side(root).0.to_string_lossy().into_owned();
+    let folder = folder.trim_end_matches(['/', '\\']);
+    folder
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or_default()
+        .to_owned()
+}
+
 impl AppStateCtx {
     fn observe_nav(&mut self) {
         let now = FolderNav {
@@ -208,6 +233,11 @@ impl AppStateCtx {
         self.file_system_1_root_path = root_1;
         self.file_system_2_root_path = root_2;
         self.sides_swapped = sides_swapped;
+    }
+
+    fn previous_roots(&self) -> [Option<PathBuf>; 2] {
+        let roots = [&self.file_system_1_root_path, &self.file_system_2_root_path];
+        std::array::from_fn(|side| previous_root(&self.nav_history, side, roots[side].as_deref()?))
     }
 
     /// Rebuilds the two-folder rows when they were dropped or the filter or sort changed since
@@ -1259,6 +1289,7 @@ impl ZApp {
 
             ui.with_layout(Layout::left_to_right(egui::Align::Min), |ui| {
                 let mut diff_action_triggered = false;
+                let previous_roots = app_ctx.previous_roots();
                 let mut path_diff_view = PathDiffView {
                     file_system_1_view: &mut app_ctx.file_system_model_1_view,
                     file_system_2_view: &mut app_ctx.file_system_model_2_view,
@@ -1267,6 +1298,7 @@ impl ZApp {
                     file_system_2_root_path: &mut app_ctx.file_system_2_root_path,
                     visible_rows: &mut app_ctx.two_folder_diff_visible_rows,
                     rows_id: app_ctx.two_folder_diff_rows_id,
+                    previous_roots,
                 };
                 let mut find_view = TreeFindView {
                     matcher: app_ctx.find_matcher.as_ref(),
@@ -2950,6 +2982,35 @@ mod tests {
         state.step_nav(Redo);
         assert_eq!(state.file_system_1_root_path.as_ref(), Some(&branch));
         assert!(state.sides_swapped);
+    }
+
+    #[test]
+    fn the_previous_root_is_the_same_folder_before_its_latest_change() {
+        let local = PathBuf::from(r"C:\ws\src");
+        let branch = PathBuf::from(r"C:\ws\src@git:main");
+        let mut state = AppStateCtx {
+            file_system_1_root_path: Some(local.clone()),
+            ..Default::default()
+        };
+        state.observe_nav();
+        assert_eq!(state.previous_roots(), [None, None]);
+
+        state.file_system_1_root_path = Some(branch.clone());
+        state.observe_nav();
+        state.file_system_2_root_path = Some(PathBuf::from(r"C:\ws\docs"));
+        state.observe_nav();
+        assert_eq!(state.previous_roots(), [Some(local), None]);
+
+        state.file_system_1_root_path = Some(PathBuf::from("//stream/main/src"));
+        state.observe_nav();
+        assert_eq!(state.previous_roots()[0], Some(branch.clone()));
+
+        state.file_system_1_root_path = Some(PathBuf::from(r"C:\ws\docs"));
+        state.observe_nav();
+        assert_eq!(state.previous_roots()[0], None, "another folder");
+
+        state.step_nav(zcommon::history::HistoryStep::Undo);
+        assert_eq!(state.previous_roots()[0], Some(branch));
     }
 
     #[test]

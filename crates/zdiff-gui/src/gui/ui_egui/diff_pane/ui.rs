@@ -574,6 +574,7 @@ impl FileDiffPane {
                                                  id_salt: &str,
                                                  path: &UniversalPath,
                                                  label: Option<&str>,
+                                                 previous: Option<&UniversalPath>,
                                                  root: Option<&UniversalPath>,
                                                  is_valid: bool,
                                                  load_error: Option<&str>,
@@ -590,7 +591,7 @@ impl FileDiffPane {
                                 let (picked, bar) = ui
                                     .horizontal(|ui| {
                                         let picked = (label.is_none() && !path.is_empty())
-                                            .then(|| revision_dropdown(ui, id_salt, path))
+                                            .then(|| revision_dropdown(ui, id_salt, path, previous))
                                             .flatten();
                                         let bar = ui.scope(|ui| {
                                             path_bar(
@@ -657,6 +658,7 @@ impl FileDiffPane {
                                                     "file_1_path_bar",
                                                     &ctx.file_source_path,
                                                     ctx.file_source_label.as_deref(),
+                                                    ctx.file_source_previous.as_ref(),
                                                     ctx.file_source_root.as_ref(),
                                                     ctx.file_source_path_valid,
                                                     ctx.file_source_load_error.as_deref(),
@@ -685,6 +687,7 @@ impl FileDiffPane {
                                                     "file_2_path_bar",
                                                     &ctx.file_target_path,
                                                     ctx.file_target_label.as_deref(),
+                                                    ctx.file_target_previous.as_ref(),
                                                     ctx.file_target_root.as_ref(),
                                                     ctx.file_target_path_valid,
                                                     ctx.file_target_load_error.as_deref(),

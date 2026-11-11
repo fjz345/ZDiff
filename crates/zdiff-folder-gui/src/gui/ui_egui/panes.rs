@@ -30,6 +30,7 @@ pub struct PathDiffView<'a> {
     pub file_system_1_scan: &'a mut SideScan,
     pub visible_rows: &'a mut Option<Vec<VisibleRowTwoFolderDiff>>,
     pub rows_id: RowsId,
+    pub previous_roots: [Option<PathBuf>; 2],
 }
 
 pub struct TreeBehavior<'a, 'b> {

@@ -120,6 +120,8 @@ pub struct FileDiffPaneCtx<'a> {
     pub file_target_path: UniversalPath,
     pub file_source_label: Option<String>,
     pub file_target_label: Option<String>,
+    pub file_source_previous: Option<UniversalPath>,
+    pub file_target_previous: Option<UniversalPath>,
     pub file_source_root: Option<UniversalPath>,
     pub file_target_root: Option<UniversalPath>,
     pub file_source_root_valid: bool,

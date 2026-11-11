@@ -48,6 +48,7 @@ pub struct FolderTreeCtx<'a> {
     pub keyboard_taken: bool,
     pub actions: &'a [FolderAction],
     pub diff_filter: DiffFilter,
+    pub previous_roots: [Option<&'a Path>; 2],
 }
 
 pub fn draw_ui_folder_tree(
@@ -72,6 +73,7 @@ pub fn draw_ui_folder_tree(
         keyboard_taken,
         actions,
         diff_filter,
+        previous_roots,
     } = ctx;
     if file_system_1_view.is_none() && file_system_2_view.is_none() {
         return ui
@@ -370,7 +372,10 @@ pub fn draw_ui_folder_tree(
                                 ui,
                                 sort,
                                 &mut *open_dir_windows[0],
-                                [&mut *root_1, &mut *root_2],
+                                SideRoots {
+                                    current: [&mut *root_1, &mut *root_2],
+                                    previous: previous_roots,
+                                },
                                 row_height_header,
                                 None,
                                 Side::Folder1,
@@ -443,7 +448,10 @@ pub fn draw_ui_folder_tree(
                             ui,
                             sort,
                             &mut *open_dir_windows[shown[0]],
-                            [&mut *root_1, &mut *root_2],
+                            SideRoots {
+                                current: [&mut *root_1, &mut *root_2],
+                                previous: previous_roots,
+                            },
                             row_height_header,
                             find_chip_query,
                             side_of(0),
@@ -480,7 +488,11 @@ pub fn draw_ui_folder_tree(
                             {
                                 *open_dir_windows[shown[1]] = true;
                             }
-                            root_path_bar(ui, [&mut *root_1, &mut *root_2], side);
+                            let roots = SideRoots {
+                                current: [&mut *root_1, &mut *root_2],
+                                previous: previous_roots,
+                            };
+                            root_path_bar(ui, roots, side);
                         });
                     }
                 },
@@ -566,11 +578,16 @@ pub(super) fn shown_sides(swapped: bool) -> [usize; 2] {
     if swapped { [1, 0] } else { [0, 1] }
 }
 
+pub(super) struct SideRoots<'a> {
+    pub current: [&'a mut Option<PathBuf>; 2],
+    pub previous: [Option<&'a Path>; 2],
+}
+
 pub(super) fn folder_header(
     ui: &mut egui::Ui,
     sort: &mut TreeSort,
     open_dir_window: &mut bool,
-    roots: [&mut Option<PathBuf>; 2],
+    roots: SideRoots,
     button_height: f32,
     find_chip_query: Option<&str>,
     side: Side,
@@ -665,7 +682,11 @@ pub(super) struct PathBarError {
     reason: String,
 }
 
-pub(super) fn root_path_bar(ui: &mut egui::Ui, roots: [&mut Option<PathBuf>; 2], side: Side) {
+pub(super) fn root_path_bar(ui: &mut egui::Ui, roots: SideRoots, side: Side) {
+    let SideRoots {
+        current: roots,
+        previous: previous_roots,
+    } = roots;
     let folders = roots.each_ref().map(|r| {
         r.as_deref()
             .map(|p| split_side(p).0.to_string_lossy().into_owned())
@@ -693,7 +714,8 @@ pub(super) fn root_path_bar(ui: &mut egui::Ui, roots: [&mut Option<PathBuf>; 2],
         .filter(|e| e.root == *roots[index]);
     let (picked, action) = ui
         .horizontal(|ui| {
-            let picked = revision_dropdown(ui, index, roots[index].as_deref());
+            let picked =
+                revision_dropdown(ui, index, roots[index].as_deref(), previous_roots[index]);
             let action = path_bar(
                 ui,
                 ("root_path_bar", index),

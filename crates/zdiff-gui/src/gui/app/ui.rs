@@ -1,4 +1,6 @@
-use super::{ZApp, launch::toggle_all_options, menu::MenuCtx, state::AppStateCtx};
+use super::{
+    ZApp, launch::toggle_all_options, menu::MenuCtx, nav::previous_revision, state::AppStateCtx,
+};
 use eframe::egui::{self, Layout};
 use std::sync::atomic::Ordering;
 use zcommon_ui::common::show_custom_popup;
@@ -262,6 +264,16 @@ impl ZApp {
                     file_target_path: file_2.get_full_path(),
                     file_source_label: file_1.label().map(str::to_owned),
                     file_target_label: file_2.label().map(str::to_owned),
+                    file_source_previous: previous_revision(
+                        nav_history,
+                        0,
+                        &file_1.get_full_path(),
+                    ),
+                    file_target_previous: previous_revision(
+                        nav_history,
+                        1,
+                        &file_2.get_full_path(),
+                    ),
                     launch_error: self.launch_error.as_deref(),
                     file_source_root: file_1.get_root(),
                     file_target_root: file_2.get_root(),

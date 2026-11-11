@@ -35,7 +35,7 @@ A crash (panic) appends its message, source location and backtrace to `crash.log
     - L: likeness bar, how alike each pair is (lines, pixels or bytes)
     - T: tolerance, differing files that pass the size, modification time or likeness criteria count as Similar
     - Link horizontal scroll of both sides
-* Roots at a git revision or a Perforce depot folder, changelist or shelf, picked from a "Source control" dropdown next to each path bar
+* Roots at a git revision or a Perforce depot folder, changelist or shelf, picked from a "Source control" dropdown next to each path bar; its "Back to ..." entry returns to the side's previous revision of the same folder
 * External diff tools
     - Tools window with presets (zdiff-gui, TortoiseMerge, WinMerge, Beyond Compare, p4merge, VS Code, ...), argument templates, rules and a Test button
     - Executables are found next to the app, at the build path or on PATH

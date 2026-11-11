@@ -39,6 +39,32 @@ impl AppStateCtx {
     }
 }
 
+pub fn previous_revision(
+    history: &NavHistory,
+    side: usize,
+    current: &UniversalPath,
+) -> Option<UniversalPath> {
+    history
+        .newest_first()
+        .map(|snapshot| &snapshot.sides[side].0)
+        .find(|path| *path != current)
+        .filter(|path| !path.is_empty() && file_name(path) == file_name(current))
+        .cloned()
+}
+
+fn file_name(path: &UniversalPath) -> String {
+    let full = match path {
+        UniversalPath::Depot(file, _) => file.clone(),
+        UniversalPath::Local(file) | UniversalPath::Git(file, _) => {
+            file.to_string_lossy().into_owned()
+        }
+    };
+    full.rsplit(['/', '\\'])
+        .next()
+        .unwrap_or_default()
+        .to_owned()
+}
+
 impl ZApp {
     pub(super) fn step_history(app_ctx: &mut AppStateCtx, step: HistoryStep) {
         app_ctx.observe_history();
@@ -109,5 +135,46 @@ mod tests {
             UniversalPath::from("//depot/main/a.rs#3")
         );
         assert_eq!(ctx.file_1.label(), Some("Shelf base"));
+    }
+
+    #[test]
+    fn the_previous_revision_is_the_same_file_before_its_latest_change() {
+        let mut ctx = AppStateCtx::default();
+        let previous = |ctx: &mut AppStateCtx, side: usize| {
+            let current = paths(ctx)[side].clone();
+            previous_revision(&ctx.nav_history, side, &current)
+        };
+        let local = UniversalPath::from(r"C:\ws\a.rs");
+        let branch = UniversalPath::from(r"C:\ws\a.rs@git:main");
+        ctx.file_1.set_path(local.clone());
+        ctx.observe_history();
+        assert_eq!(previous(&mut ctx, 0), None);
+
+        ctx.file_1.set_path(branch.clone());
+        ctx.observe_history();
+        ctx.file_2.set_path(UniversalPath::from(r"C:\ws\b.rs"));
+        ctx.observe_history();
+        assert_eq!(previous(&mut ctx, 0), Some(local.clone()));
+        assert_eq!(previous(&mut ctx, 1), None, "was empty");
+
+        ctx.file_1
+            .set_path(UniversalPath::from("//stream/main/a.rs#3"));
+        assert_eq!(
+            previous(&mut ctx, 0),
+            Some(branch.clone()),
+            "not observed yet"
+        );
+        ctx.observe_history();
+        assert_eq!(previous(&mut ctx, 0), Some(branch));
+
+        ctx.file_1.set_path(UniversalPath::from(r"C:\ws\other.rs"));
+        ctx.observe_history();
+        assert_eq!(previous(&mut ctx, 0), None, "another file");
+
+        ZApp::step_history(&mut ctx, Undo);
+        assert_eq!(
+            previous(&mut ctx, 0),
+            Some(UniversalPath::from(r"C:\ws\a.rs@git:main"))
+        );
     }
 }

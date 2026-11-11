@@ -54,6 +54,10 @@ impl<S: Clone + PartialEq> SnapshotHistory<S> {
     pub fn clear_redo(&mut self) {
         self.redo.clear();
     }
+
+    pub fn newest_first(&self) -> impl Iterator<Item = &S> {
+        self.current.iter().chain(self.undo.iter().rev())
+    }
 }
 
 #[cfg(test)]
@@ -138,5 +142,17 @@ mod tests {
         history.clear_redo();
         assert_eq!(history.step(Redo), None);
         assert_eq!(history.step(Undo), Some(1));
+    }
+
+    #[test]
+    fn newest_first_lists_the_current_then_the_undo_stack() {
+        let mut history = observed(&[1, 2, 3]);
+        assert_eq!(
+            history.newest_first().copied().collect::<Vec<_>>(),
+            [3, 2, 1]
+        );
+        history.step(Undo);
+        assert_eq!(history.newest_first().copied().collect::<Vec<_>>(), [2, 1]);
+        assert_eq!(SnapshotHistory::<i32>::default().newest_first().count(), 0);
     }
 }

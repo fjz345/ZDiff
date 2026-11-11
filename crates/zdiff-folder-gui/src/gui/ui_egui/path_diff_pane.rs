@@ -291,6 +291,11 @@ impl PathDiffPane {
                 keyboard_taken: ctx.keyboard_taken,
                 actions: ctx.actions,
                 diff_filter: *ctx.diff_filter,
+                previous_roots: ctx
+                    .path_diff_view
+                    .previous_roots
+                    .each_ref()
+                    .map(|r| r.as_deref()),
             },
             TreeMode::TwoFolder(TwoFolderTable {
                 compare: ctx.tree_compare,

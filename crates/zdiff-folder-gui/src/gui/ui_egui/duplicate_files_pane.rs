@@ -1303,6 +1303,7 @@ impl DuplicateFilesPane {
                     keyboard_taken: ctx.keyboard_taken,
                     actions: &[],
                     diff_filter: ctx.duplicates_filter.diff_filter(),
+                    previous_roots: [ctx.path_diff_view.previous_roots[0].as_deref(), None],
                 },
                 TreeMode::SingleSide {
                     pending_deletion: &pending_deletion.ids,
@@ -1626,6 +1627,7 @@ mod tests {
                 file_system_1_scan: &mut self.scan_1,
                 visible_rows: &mut self.visible_rows,
                 rows_id: RowsId::default(),
+                previous_roots: Default::default(),
             };
             let mut ctx = DuplicateFilesPaneCtx {
                 hash_service: &mut self.hash_service,
