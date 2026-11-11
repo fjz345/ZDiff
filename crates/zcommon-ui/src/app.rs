@@ -1,7 +1,7 @@
 use std::ffi::OsString;
 
 use eframe::egui;
-use serde::de::DeserializeOwned;
+use serde::{Deserialize, de::DeserializeOwned};
 use zcommon::{
     console::{LOG_FLAG, open_console, take_log_flag},
     logger::{LogBuffer, init_logging},
@@ -52,6 +52,28 @@ where
             Ok(Box::new(app))
         }),
     )
+}
+
+pub fn default_zoom() -> f32 {
+    1.0
+}
+
+fn clamp_zoom(zoom: f32) -> f32 {
+    zoom.clamp(0.5, 3.0)
+}
+
+pub fn deserialize_zoom<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<f32, D::Error> {
+    f32::deserialize(deserializer).map(clamp_zoom)
+}
+
+pub fn sync_zoom(ctx: &egui::Context) -> f32 {
+    let zoom = clamp_zoom(ctx.zoom_factor());
+    if zoom != ctx.zoom_factor() {
+        ctx.set_zoom_factor(zoom);
+    }
+    zoom
 }
 
 fn restored<A: DeserializeOwned>(storage: Option<&dyn eframe::Storage>) -> Option<A> {

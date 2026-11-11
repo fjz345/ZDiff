@@ -22,6 +22,7 @@ use zcommon::{
     vcs::{git::GitCommand, p4::P4Command},
 };
 use zcommon_ui::{
+    app::{default_zoom, deserialize_zoom, sync_zoom},
     find_popup::{FindPopupEvent, find_popup},
     frame_stats::{self, FrameStats},
     keymap::{Keymap, menu_item},
@@ -874,18 +875,6 @@ const LONG_FRAME: Duration = Duration::from_millis(200);
 const SCAN_PROGRESS_INTERVAL: Duration = Duration::from_millis(100);
 const BLUEPRINT_APPLY_INTERVAL: Duration = Duration::from_millis(250);
 
-fn default_zoom() -> f32 {
-    1.0
-}
-
-fn clamp_zoom(zoom: f32) -> f32 {
-    zoom.clamp(0.5, 3.0)
-}
-
-fn deserialize_zoom<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<f32, D::Error> {
-    f32::deserialize(deserializer).map(clamp_zoom)
-}
-
 fn restored_log_buffer() -> LogBuffer {
     logger::global_log_buffer().unwrap_or_default()
 }
@@ -946,14 +935,6 @@ impl ZApp {
         );
         ctx.set_zoom_factor(self.zoom);
         // ctx.set_debug_on_hover(true);
-    }
-
-    fn sync_zoom(&mut self, ctx: &egui::Context) {
-        let zoom = clamp_zoom(ctx.zoom_factor());
-        if zoom != ctx.zoom_factor() {
-            ctx.set_zoom_factor(zoom);
-        }
-        self.zoom = zoom;
     }
 
     fn create_tree() -> egui_tiles::Tree<Pane> {
@@ -1533,7 +1514,7 @@ impl eframe::App for ZApp {
             }
             AppState::Idle(mut state) => {
                 let frame_start = Instant::now();
-                self.sync_zoom(ctx);
+                self.zoom = sync_zoom(ctx);
                 if ctx.input(|i| i.events.contains(&egui::Event::WindowFocused(true))) {
                     load_shared(&mut state.keymap);
                 }
