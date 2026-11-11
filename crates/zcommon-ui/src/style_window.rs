@@ -205,7 +205,15 @@ impl StyleWindow {
     pub fn show<R: Role>(&mut self, ctx: &egui::Context, app_group: &str) {
         let picked = diff_gradient(ctx);
         if picked != self.style.diff_gradient {
+            // Reloads first for the same reason as open().
+            if !self.open
+                && !self.dirty
+                && let Some(path) = &self.path
+            {
+                self.style = Style::load_or_default(path);
+            }
             self.style.diff_gradient = picked;
+            publish(ctx, &self.style);
             self.dirty = true;
         }
         if self.open {
@@ -460,5 +468,29 @@ mod tests {
             Style::load(&path).unwrap().diff_gradient,
             Some(GradientPreset::Inferno)
         );
+    }
+
+    #[test]
+    fn a_gradient_pick_keeps_what_the_other_app_saved_since_the_load() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("style.json");
+        let ctx = egui::Context::default();
+        let mut window = StyleWindow {
+            path: Some(path.clone()),
+            ..StyleWindow::default()
+        };
+        window.show::<NoRole>(&ctx, "Test");
+        let other_app = Style {
+            mode: Mode::Light,
+            ..Style::default()
+        };
+        other_app.save(&path).unwrap();
+
+        set_diff_gradient(&ctx, Some(GradientPreset::Inferno));
+        window.show::<NoRole>(&ctx, "Test");
+        let saved = Style::load(&path).unwrap();
+        assert_eq!(saved.diff_gradient, Some(GradientPreset::Inferno));
+        assert_eq!(saved.mode, Mode::Light);
+        assert_eq!(window.style.mode, Mode::Light);
     }
 }
