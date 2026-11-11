@@ -13,4 +13,5 @@ Common library crate shared by both apps.
 * `find`: find matcher (whole word, regex)
 * `presets`: preset store for filters and regex ignore patterns
 * `style`: style model and the shared style file
+* `crash`: panic hook that appends the message, location and backtrace to `crash.log`
 * `zcommon-ui` crate (separate): split table with per-side horizontal scroll, keymap and keymap editor, find popup, breadcrumb path bar, presets menu, style window, toggle button

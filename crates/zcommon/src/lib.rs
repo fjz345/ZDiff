@@ -1,4 +1,5 @@
 pub mod console;
+pub mod crash;
 pub mod ffmpeg;
 pub mod find;
 pub mod hash;

@@ -76,6 +76,8 @@ zdiff-gui takes p4merge-style, git-style, GNU-style and Tortoise-style arguments
 
 No console window opens. Add `-log` anywhere in the arguments to write the log to the terminal zdiff-gui was started from, or to a new console window when there is none (from cmd or PowerShell the prompt returns right away and the log interleaves with it).
 
+A crash (panic) appends its message, source location and backtrace to `crash.log` next to the saved state (`%APPDATA%\ZDiff\data\crash.log` on Windows) before the process exits.
+
 A merge launch opens the merge view with the left file as theirs and the right file as yours. The process exits 0 only when the output was saved with no unresolved conflicts and not changed since; otherwise 1, including when the launch arguments are invalid.
 
 ### p4

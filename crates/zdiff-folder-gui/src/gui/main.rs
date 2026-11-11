@@ -12,6 +12,8 @@ use crate::ui_egui::{app::ZApp, roots::parse_launch_args};
 
 mod ui_egui;
 
+const APP_ID: &str = "ZDiffFolder";
+
 fn main() -> eframe::Result {
     let (log_to_console, args) = take_log_flag(std::env::args_os().skip(1));
     let console = log_to_console.then(open_console);
@@ -19,10 +21,15 @@ fn main() -> eframe::Result {
     {
         color_backtrace::install();
     }
+    let crash_log = zcommon::crash::install_crash_log(eframe::storage_dir(APP_ID));
 
     let log_buffer = init_logging().expect("Failed to init logger");
     if let Some(Err(e)) = console {
         log::error!("{LOG_FLAG}: cannot open a console: {e}");
+    }
+    match crash_log {
+        Some(path) => log::info!("Panics are appended to {}", path.display()),
+        None => log::error!("No folder for crash.log: panics are not recorded"),
     }
     let launch_args = parse_launch_args(args);
 
@@ -40,7 +47,7 @@ fn main() -> eframe::Result {
     };
 
     eframe::run_native(
-        "ZDiffFolder",
+        APP_ID,
         native_options,
         Box::new(move |cc: &eframe::CreationContext<'_>| {
             egui_extras::install_image_loaders(&cc.egui_ctx);

@@ -41,6 +41,8 @@ use std::alloc::System;
 #[global_allocator]
 pub static STATS_ALLOC: &StatsAlloc<System> = &INSTRUMENTED_SYSTEM;
 
+const APP_ID: &str = "ZDiff";
+
 fn main() -> ExitCode {
     let (log_to_console, _) = take_log_flag(std::env::args_os().skip(1));
     let console = log_to_console.then(open_console);
@@ -48,9 +50,14 @@ fn main() -> ExitCode {
     {
         color_backtrace::install();
     }
+    let crash_log = zcommon::crash::install_crash_log(eframe::storage_dir(APP_ID));
     zcommon::logger::init_logging().expect("Failed to init logger");
     if let Some(Err(e)) = console {
         log::error!("{LOG_FLAG}: cannot open a console: {e}");
+    }
+    match crash_log {
+        Some(path) => log::info!("Panics are appended to {}", path.display()),
+        None => log::error!("No folder for crash.log: panics are not recorded"),
     }
 
     let native_options = eframe::NativeOptions {
@@ -67,7 +74,7 @@ fn main() -> ExitCode {
     let exit_code = Arc::new(AtomicU8::new(0));
     let app_exit_code = exit_code.clone();
     let result = eframe::run_native(
-        "ZDiff",
+        APP_ID,
         native_options,
         Box::new(move |cc: &eframe::CreationContext<'_>| {
             egui_extras::install_image_loaders(&cc.egui_ctx);

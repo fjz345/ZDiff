@@ -10,6 +10,8 @@ zdiff-folder-gui [<dir1> [<dir2>]] [-log]
 
 No console window opens. `-log` writes the log to the terminal zdiff-folder-gui was started from, or to a new console window when there is none.
 
+A crash (panic) appends its message, source location and backtrace to `crash.log` next to the saved state (`%APPDATA%\ZDiffFolder\data\crash.log` on Windows) before the process exits.
+
 # Features
 * Two-folder tree diff
     - Background scan and compare, rows show Pending until compared; counts and timings in the status line
