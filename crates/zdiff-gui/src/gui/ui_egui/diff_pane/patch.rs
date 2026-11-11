@@ -79,7 +79,7 @@ pub(super) fn patch_view<'a>(
         Arc::ptr_eq(&view.ir, &diff_ctx.diff_ir)
             && same_file(&view.files[0], &files[0])
             && same_file(&view.files[1], &files[1])
-            && view.options == diff_ctx.input.options
+            && !DiffBuilderOptions::need_invalidation(&view.options, &diff_ctx.input.options)
     });
     if !fresh {
         let patch = patch_text(diff_ctx).map(|text| {
