@@ -60,6 +60,7 @@ fn main() -> eframe::Result {
                         match serde_json::from_str::<ZApp>(&json) {
                             Ok(mut app) => {
                                 log::info!("Found previous app storage");
+                                app.remember_window_from(cc.storage);
                                 app.request_init();
                                 app.apply_launch_args(&launch_args);
                                 return Ok(Box::new(app));
@@ -73,6 +74,7 @@ fn main() -> eframe::Result {
             }
 
             let mut app = ZApp::new(log_buffer.clone());
+            app.remember_window_from(cc.storage);
             app.request_init();
             app.apply_launch_args(&launch_args);
             Ok(Box::<ZApp>::new(app))

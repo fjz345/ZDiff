@@ -14,3 +14,4 @@ pub mod shared_keymap;
 pub mod style_window;
 pub mod table;
 pub mod toggle;
+pub mod window_memory;

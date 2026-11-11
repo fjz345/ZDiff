@@ -27,6 +27,7 @@ use zcommon_ui::{
     keymap::{Keymap, menu_item},
     shared_keymap::load_shared,
     style_window::StyleWindow,
+    window_memory::WindowMemory,
 };
 use zdiff_folder::{
     external_diff_tool::DiffToolConfig, filter::PathFilter, fs::FileSystemModel, scan::ScanOutput,
@@ -862,6 +863,8 @@ pub struct ZApp {
     #[serde(skip)]
     title: String,
     #[serde(skip)]
+    window_memory: WindowMemory,
+    #[serde(skip)]
     frame_stats: FrameStats,
     #[serde(default)]
     show_frame_breakdown: bool,
@@ -888,6 +891,10 @@ fn restored_log_buffer() -> LogBuffer {
 }
 
 impl ZApp {
+    pub fn remember_window_from(&mut self, storage: Option<&dyn eframe::Storage>) {
+        self.window_memory = WindowMemory::load(storage);
+    }
+
     pub fn request_init(&mut self) {
         // if self.state.ctx().hash_service.is_none() {
         // self.state.ctx().hash_service = HashService::default();
@@ -924,6 +931,7 @@ impl ZApp {
             find_open: false,
             export_requested: false,
             title: String::new(),
+            window_memory: WindowMemory::default(),
             frame_stats: FrameStats::default(),
             show_frame_breakdown: false,
         }
@@ -1492,6 +1500,7 @@ impl ZApp {
 
 impl eframe::App for ZApp {
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
+        self.window_memory.keep_restorable(storage);
         #[cfg(feature = "serde")]
         if let Ok(json) = serde_json::to_string(self) {
             storage.set_string(eframe::APP_KEY, json);
@@ -1974,6 +1983,36 @@ mod tests {
         json.as_object_mut().unwrap().remove("zoom").unwrap();
         let restored: ZApp = serde_json::from_value(json).unwrap();
         assert_eq!(restored.zoom, 1.0);
+    }
+
+    #[derive(Default)]
+    struct MemoryStorage(std::collections::HashMap<String, String>);
+
+    impl eframe::Storage for MemoryStorage {
+        fn get_string(&self, key: &str) -> Option<String> {
+            self.0.get(key).cloned()
+        }
+
+        fn set_string(&mut self, key: &str, value: String) {
+            self.0.insert(key.to_owned(), value);
+        }
+
+        fn flush(&mut self) {}
+    }
+
+    #[test]
+    fn a_window_minimized_at_exit_is_saved_as_it_was_at_startup() {
+        const RESTORED: &str = "(inner_position_pixels:Some((x:169.0,y:262.0)),outer_position_pixels:Some((x:160.0,y:224.0)),fullscreen:false,maximized:false,inner_size_points:Some((x:1508.8,y:704.8)))";
+        const MINIMIZED: &str = "(inner_position_pixels:Some((x:-32000.0,y:-32000.0)),outer_position_pixels:Some((x:-32000.0,y:-32000.0)),fullscreen:false,maximized:false,inner_size_points:Some((x:0.0,y:0.0)))";
+        let mut storage = MemoryStorage::default();
+        storage.0.insert("window".to_owned(), RESTORED.to_owned());
+        let mut app = ZApp::new(LogBuffer::default());
+        app.remember_window_from(Some(&storage));
+
+        storage.0.insert("window".to_owned(), MINIMIZED.to_owned());
+        eframe::App::save(&mut app, &mut storage);
+
+        assert_eq!(storage.0["window"], RESTORED);
     }
 
     #[test]

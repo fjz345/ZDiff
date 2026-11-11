@@ -6,11 +6,10 @@ mod quickdiff;
 mod revert_write;
 mod state;
 mod ui;
-mod window_memory;
 #[cfg(test)]
 mod frame_tests;
 use launch::{LaunchOutcome, apply_launch};
-use window_memory::WindowMemory;
+use zcommon_ui::window_memory::WindowMemory;
 use state::AppState;
 
 use eframe::egui::{self};
