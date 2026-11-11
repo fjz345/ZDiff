@@ -149,22 +149,6 @@ pub fn load_depot_file(
     let UniversalPath::Depot(depot_str, rev) = &display_path else {
         return Err(format!("{display_path:?} is not a depot path"));
     };
-    let mut temp_path = temp_root.join(depot_str.trim_start_matches('/'));
-    if let Some(r) = rev {
-        let mut filename = temp_path.file_name().unwrap_or_default().to_os_string();
-        filename.push(match r {
-            DepotRev::Rev(n) => format!("_rev{n}"),
-            DepotRev::Change(n) => format!("_change{n}"),
-            DepotRev::Shelf(n) => format!("_shelf{n}"),
-        });
-        temp_path.set_file_name(filename);
-    }
-
-    if let Some(parent) = temp_path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| format!("Failed to create directories for {}: {}", depot_str, e))?;
-    }
-
     let revision = rev.map(|r| r.to_string()).unwrap_or_default();
     let bytes = print_file(p4, depot_str, &revision).map_err(|e| {
         format!(
@@ -173,12 +157,18 @@ pub fn load_depot_file(
             e
         )
     })?;
-    std::fs::write(&temp_path, &bytes)
-        .map_err(|e| format!("Failed to write P4 content to temp file: {}", e))?;
-
-    let loaded = load_file(display_path.clone(), &temp_path)
-        .map_err(|e| format!("Cannot load file {}, Error: {e}", temp_path.display()));
-    let _ = std::fs::remove_file(&temp_path);
+    let name = depot_str.rsplit('/').next().unwrap_or_default();
+    let mut temp = tempfile::Builder::new()
+        .suffix(name)
+        .tempfile_in(temp_root)
+        .map_err(|e| format!("Failed to create a temp file for {display_path}: {e}"))?;
+    temp.write_all(&bytes)
+        .map_err(|e| format!("Failed to write P4 content to temp file: {e}"))?;
+    let loaded = load_file(display_path.clone(), temp.path())
+        .map_err(|e| format!("Cannot load file {}, Error: {e}", temp.path().display()));
+    if let Err(e) = temp.close() {
+        log::warn!("Removing the temp copy of {display_path}: {e}");
+    }
     loaded
 }
 

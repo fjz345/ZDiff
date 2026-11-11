@@ -10,8 +10,6 @@ use eframe::egui::{self, PointerButton};
 use zcommon_ui::keymap::{Action, Shortcut};
 use zdiff::universal_path::UniversalPath;
 
-use eframe::epaint::Pos2;
-
 use crate::{
     keybindings::FileAction,
     p4::{P4Command, set_p4_slot_profile},
@@ -57,12 +55,14 @@ impl ZApp {
                 esc_pressed = r.key_pressed(egui::Key::Escape);
 
                 // DoubleLeftClick
-                if r.pointer.button_double_clicked(PointerButton::Primary) {
-                    let mouse_pos = r.pointer.interact_pos().unwrap();
+                if r.pointer.button_double_clicked(PointerButton::Primary)
+                    && let Some(mouse_pos) = r.pointer.interact_pos()
+                {
                     log::info!("double click @({},{})", mouse_pos.x, mouse_pos.y);
                 }
-                if r.pointer.button_clicked(PointerButton::Middle) {
-                    let mouse_pos: Pos2 = r.pointer.interact_pos().unwrap();
+                if r.pointer.button_clicked(PointerButton::Middle)
+                    && let Some(mouse_pos) = r.pointer.interact_pos()
+                {
                     log::info!("middle click @({},{})", mouse_pos.x, mouse_pos.y);
                 }
 
