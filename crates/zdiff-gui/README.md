@@ -41,7 +41,9 @@ GUI for zdiff crate
     - In-memory results cache: each diff stage keeps its last 6 results and each side its last 6 file loads (256 MB in all), keyed by the file contents and the options that stage uses, so toggling an option back or returning to an earlier pair shows at once. Unchanged local files (same size and modification time) and fixed revisions (`#rev`, `@change`, full commit SHA) are not read again; head, branch and index sides always are. Refresh and Recompute Diff compute from scratch
 * Sides, named Left and Right in menus and shortcuts
     - Breadcrumb path bar per side under a breadcrumb root bar, and a folder browser over that side to pick another file
-    - An empty pane offers Open Left / Open Right and takes a dropped file on either half
+    - The path bars stay shown with no files loaded ("No file", "No root folder"), so a path can be typed before any diff
+    - An empty pane offers Open Left / Open Right and takes a dropped file on either half; files that fail to load show their errors there instead
+    - The toolbar wraps onto more rows in a narrow window instead of clipping; the diff status moves to its own row when it doesn't fit
     - Local paths, Perforce depot paths, changelists and shelves, git revisions, picked from a "Source control" dropdown per side; its "Back to ..." entry returns to the side's previous revision of the same file
     - Diff a depot file against its local file (Ctrl+L), a shelved file against its base revision (Ctrl+B)
 * Viewers, picked from the file kind (override per diff); mismatched types show each side in its own viewer

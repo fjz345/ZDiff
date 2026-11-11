@@ -85,7 +85,7 @@ use crate::{
         video_meta::{self, VideoMetaProcessor},
     },
 };
-use eframe::egui::{self, Layout, TextEdit, UiBuilder, Vec2, text_selection::LabelSelectionState};
+use eframe::egui::{self, TextEdit, UiBuilder, Vec2, text_selection::LabelSelectionState};
 use serde::{Deserialize, Serialize};
 use zcommon::{
     find::Matcher,
@@ -98,7 +98,7 @@ use zcommon_ui::{
     keymap::{Action, Keymap},
     pane::{
         ZAppPane, empty_state, error_state, loading_state, options_menu_button, toolbar,
-        toolbar_group,
+        toolbar_end, toolbar_group,
     },
     pathbar::{PathBarAction, paint_busy, path_bar},
     presets::presets_menu,

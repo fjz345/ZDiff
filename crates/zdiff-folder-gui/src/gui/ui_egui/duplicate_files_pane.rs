@@ -18,6 +18,7 @@ use zcommon_ui::pane::ZAppPane;
 use zcommon_ui::pane::empty_state;
 use zcommon_ui::pane::loading_state;
 use zcommon_ui::pane::toolbar;
+use zcommon_ui::pane::toolbar_group;
 use zcommon_ui::style_window::role_color;
 use zcommon_ui::toggle::toggle_button;
 use zdiff_folder::conflict::DuplicateGroup;
@@ -1123,26 +1124,18 @@ impl DuplicateFilesPane {
         ui.vertical(|ui| {
             self.ui_popups(ui, ctx);
 
-            ui.horizontal_wrapped(|ui| {
+            toolbar(ui, |ui| {
                 if ui.button("Open Folder").clicked() {
                     self.open_dir_window = true;
                 }
 
                 if let Some(fs_view) = &mut ctx.path_diff_view.file_system_1_view {
-                    let is_anything_collapsed = fs_view.is_anything_collapsed();
-                    let button_text = if is_anything_collapsed {
-                        "Collapse All"
-                    } else {
-                        "Expand All"
-                    };
-
+                    let (button_text, collapse) =
+                        FileSystemView::collapse_all_toggle(fs_view.is_anything_collapsed());
                     if ui.button(button_text).clicked() {
                         let nodes_considered_for_collapse =
                             &fs_view.file_system.get_root().children().unwrap().clone();
-                        fs_view.recursive_collapse_slice(
-                            nodes_considered_for_collapse,
-                            !is_anything_collapsed,
-                        );
+                        fs_view.recursive_collapse_slice(nodes_considered_for_collapse, collapse);
                     }
                 }
 
@@ -1150,15 +1143,17 @@ impl DuplicateFilesPane {
                     self.clear_hashes(ctx);
                 }
 
-                ui.label("Concurrent Hashes");
-                let mut slider_concurrent_hashes = ctx.hash_service.count_threads();
-                let slider_response = ui.add(egui::Slider::new(
-                    &mut slider_concurrent_hashes,
-                    1..=MAX_CONCURRENT_HASHES,
-                ));
-                if slider_response.changed() {
-                    ctx.hash_service.resize_workers(slider_concurrent_hashes);
-                }
+                toolbar_group(ui, |ui| {
+                    ui.label("Concurrent Hashes");
+                    let mut slider_concurrent_hashes = ctx.hash_service.count_threads();
+                    let slider_response = ui.add(egui::Slider::new(
+                        &mut slider_concurrent_hashes,
+                        1..=MAX_CONCURRENT_HASHES,
+                    ));
+                    if slider_response.changed() {
+                        ctx.hash_service.resize_workers(slider_concurrent_hashes);
+                    }
+                });
 
                 if ctx.path_diff_view.file_system_1_view.is_some()
                     && ui

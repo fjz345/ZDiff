@@ -231,6 +231,14 @@ impl FileSystemView {
         }
     }
 
+    pub fn collapse_all_toggle(is_anything_collapsed: bool) -> (&'static str, bool) {
+        if is_anything_collapsed {
+            ("Expand All", false)
+        } else {
+            ("Collapse All", true)
+        }
+    }
+
     pub fn recursive_collapse_slice(&mut self, node_ids: &[FsNodeId], collapse: bool) {
         for node_id in node_ids {
             self.recursive_collapse(*node_id, collapse);

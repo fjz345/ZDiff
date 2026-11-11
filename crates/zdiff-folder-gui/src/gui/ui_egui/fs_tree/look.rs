@@ -11,6 +11,7 @@ pub enum FolderRole {
     RowTint,
     DimmedText,
     GuideLine,
+    TableBackground,
     Tag(FileKind),
     BlueprintTag,
 }
@@ -27,6 +28,7 @@ impl Role for FolderRole {
             FolderRole::RowTint,
             FolderRole::DimmedText,
             FolderRole::GuideLine,
+            FolderRole::TableBackground,
             FolderRole::Tag(FileKind::Text),
             FolderRole::Tag(FileKind::Image),
             FolderRole::Tag(FileKind::Video),
@@ -54,6 +56,7 @@ impl Role for FolderRole {
             FolderRole::RowTint => "folder_row_tint",
             FolderRole::DimmedText => "folder_dimmed_text",
             FolderRole::GuideLine => "folder_guide_line",
+            FolderRole::TableBackground => "folder_table_background",
             FolderRole::Tag(kind) => match kind {
                 FileKind::Text => "folder_tag_text",
                 FileKind::Image => "folder_tag_image",
@@ -83,6 +86,7 @@ impl Role for FolderRole {
             FolderRole::RowTint => "Folder row tint",
             FolderRole::DimmedText => "Dimmed text",
             FolderRole::GuideLine => "Guide lines",
+            FolderRole::TableBackground => "Table background",
             FolderRole::Tag(kind) => match kind {
                 FileKind::Text => "Tag txt",
                 FileKind::Image => "Tag img",
@@ -111,6 +115,7 @@ impl Role for FolderRole {
             FolderRole::RowTint => Rgba8([120, 150, 255, 14]),
             FolderRole::DimmedText => Rgba8([105, 105, 105, 255]),
             FolderRole::GuideLine => Rgba8([95, 95, 95, 255]),
+            FolderRole::TableBackground => Rgba8([20, 20, 20, 255]),
             FolderRole::Tag(kind) => match kind {
                 FileKind::Text => Rgba8([170, 190, 215, 255]),
                 FileKind::Image => Rgba8([215, 130, 220, 255]),
@@ -139,6 +144,7 @@ impl Role for FolderRole {
             FolderRole::RowTint => Rgba8([60, 100, 230, 22]),
             FolderRole::DimmedText => Rgba8([160, 160, 160, 255]),
             FolderRole::GuideLine => Rgba8([185, 185, 185, 255]),
+            FolderRole::TableBackground => Rgba8([248, 248, 248, 255]),
             FolderRole::Tag(kind) => match kind {
                 FileKind::Text => Rgba8([70, 95, 130, 255]),
                 FileKind::Image => Rgba8([150, 50, 160, 255]),

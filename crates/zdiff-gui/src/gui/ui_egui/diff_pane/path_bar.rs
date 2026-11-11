@@ -46,6 +46,29 @@ pub(super) fn file_path_segments(path: &UniversalPath, label: Option<&str>) -> V
     }
 }
 
+pub(super) fn bar_segments(
+    path: &UniversalPath,
+    label: Option<&str>,
+    placeholder: &str,
+) -> Vec<PathSegment> {
+    if path.is_empty() && label.is_none() {
+        return vec![PathSegment {
+            name: placeholder.to_owned(),
+            path: String::new(),
+        }];
+    }
+    file_path_segments(path, label)
+}
+
+pub(super) fn load_error_text(errors: [Option<&str>; 2], shown: [usize; 2]) -> Option<String> {
+    let lines: Vec<String> = ["Left", "Right"]
+        .into_iter()
+        .zip(shown)
+        .filter_map(|(column, side)| errors[side].map(|error| format!("{column}: {error}")))
+        .collect();
+    (!lines.is_empty()).then(|| lines.join("\n"))
+}
+
 pub(super) fn file_path_dim([a, b]: [&UniversalPath; 2], labelled: bool) -> usize {
     if labelled {
         return 0;
@@ -328,6 +351,21 @@ mod tests {
                     [Some(UniversalPath::Depot(picked.into(), None)), None]
                 );
             }
+        }
+
+        #[test]
+        fn load_errors_are_named_by_the_column_their_file_shows_in() {
+            use super::super::load_error_text;
+
+            assert_eq!(load_error_text([None, None], [0, 1]), None);
+            assert_eq!(
+                load_error_text([Some("gone"), Some("denied")], [0, 1]).as_deref(),
+                Some("Left: gone\nRight: denied")
+            );
+            assert_eq!(
+                load_error_text([Some("gone"), None], [1, 0]).as_deref(),
+                Some("Right: gone")
+            );
         }
     }
 

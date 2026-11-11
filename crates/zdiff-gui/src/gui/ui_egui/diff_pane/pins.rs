@@ -67,7 +67,7 @@ pub(super) fn pins_ui(
             for (i, pin) in pins.iter().enumerate() {
                 ui.horizontal(|ui| {
                     ui.label(format!("{} : {}", pin.source + 1, pin.target + 1));
-                    if ui.small_button("x").on_hover_text("Remove pin").clicked() {
+                    if zcommon_ui::common::icon_button(ui, "✖", "Remove pin").clicked() {
                         let mut kept = pins.to_vec();
                         kept.remove(i);
                         *pins_request = Some(kept);

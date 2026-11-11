@@ -277,7 +277,7 @@ pub fn draw_ui_folder_tree(
             });
 
     let frame_output = egui::Frame::default()
-        .fill(egui::Color32::from_gray(20))
+        .fill(role_color(ui.ctx(), FolderRole::TableBackground))
         .inner_margin(0.0)
         .show(ui, |ui| {
             ui.set_min_height(available_height);
@@ -629,7 +629,7 @@ pub(super) fn find_chip(ui: &mut egui::Ui, query: &str) -> Option<FindChipEvent>
     let reopen = ui
         .button(format!("🔎 {shown}"))
         .on_hover_text(format!("Find: {query}\nClick to edit"));
-    let clear = ui.small_button("x").on_hover_text("Clear find");
+    let clear = zcommon_ui::common::icon_button(ui, "✖", "Clear find");
     if clear.clicked() {
         Some(FindChipEvent::Clear)
     } else if reopen.clicked() {

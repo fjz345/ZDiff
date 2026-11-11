@@ -1573,6 +1573,20 @@ fn anything_collapsed_follows_each_fold_of_a_folder() {
     assert!(!view.is_anything_collapsed());
 }
 
+#[test]
+fn the_collapse_all_button_does_what_its_label_says() {
+    let (left_dir, _right_dir) = two_folder_trees();
+    let mut view = load_view(left_dir.path());
+    let top_level = view.file_system.get_root().children().unwrap().clone();
+
+    for expected_label in ["Collapse All", "Expand All", "Collapse All"] {
+        let (label, collapse) = FileSystemView::collapse_all_toggle(view.is_anything_collapsed());
+        assert_eq!(label, expected_label);
+        view.recursive_collapse_slice(&top_level, collapse);
+        assert_eq!(view.is_anything_collapsed(), label == "Collapse All");
+    }
+}
+
 fn content_widths(
     widths: &mut ContentWidths,
     views: [&FileSystemView; 2],

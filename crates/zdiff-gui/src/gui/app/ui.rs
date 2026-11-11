@@ -11,7 +11,6 @@ use zdiff::universal_path::UniversalPath;
 use egui_tiles::Tile;
 
 use crate::{
-    file::FileProcessor,
     p4::P4Command,
     revert::{self, RevertRefusal, RevertWrite},
     ui_egui::{
@@ -280,20 +279,10 @@ impl ZApp {
                     launch_error: self.launch_error.as_deref(),
                     file_source_root: file_1.get_root(),
                     file_target_root: file_2.get_root(),
-                    file_source_root_valid: file_1.get_loading_path().is_some()
-                        || FileProcessor::is_root_valid(
-                            &file_1.get_root().unwrap_or_default(),
-                            &&file_1.get_full_path(),
-                        ),
-                    file_target_root_valid: file_2.get_loading_path().is_some()
-                        || FileProcessor::is_root_valid(
-                            &file_1.get_root().unwrap_or_default(),
-                            &file_1.get_full_path(),
-                        ),
-                    file_source_path_valid: file_1.get_loading_path().is_some()
-                        || file_1.get_loaded_file().is_some(),
-                    file_target_path_valid: file_2.get_loading_path().is_some()
-                        || file_2.get_loaded_file().is_some(),
+                    file_source_root_valid: file_1.root_valid(),
+                    file_target_root_valid: file_2.root_valid(),
+                    file_source_path_valid: file_1.path_valid(),
+                    file_target_path_valid: file_2.path_valid(),
                     file_source_load_error: file_1.load_error().map(str::to_owned),
                     file_source_loading: file_1.get_loading_path().is_some(),
                     file_target_load_error: file_2.load_error().map(str::to_owned),
@@ -622,5 +611,41 @@ mod tests {
         assert_eq!(pass("zdiff [+1/-1] - a, b"), std::time::Duration::MAX);
         assert_eq!(pass("zdiff [+2/-1] - a, b"), std::time::Duration::ZERO);
         assert_eq!(sent.as_deref(), Some("zdiff [+2/-1] - a, b"));
+    }
+
+    fn shape_texts(shape: &egui::Shape, texts: &mut Vec<String>) {
+        match shape {
+            egui::Shape::Text(text) => texts.push(text.galley.text().to_owned()),
+            egui::Shape::Vec(shapes) => shapes.iter().for_each(|s| shape_texts(s, texts)),
+            _ => {}
+        }
+    }
+
+    #[test]
+    fn an_empty_pane_shows_both_sides_path_bars() {
+        let mut app = super::super::ZApp::new();
+        let ctx = egui::Context::default();
+        let mut frame = eframe::Frame::_new_kittest();
+        let mut texts = Vec::new();
+        for _ in 0..3 {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1600.0, 1000.0),
+                )),
+                ..Default::default()
+            };
+            let output = ctx.run(input, |ctx| eframe::App::update(&mut app, ctx, &mut frame));
+            texts.clear();
+            output
+                .shapes
+                .iter()
+                .for_each(|clipped| shape_texts(&clipped.shape, &mut texts));
+        }
+        let count = |wanted: &str| texts.iter().filter(|text| *text == wanted).count();
+
+        assert_eq!(count("No root folder"), 2);
+        assert_eq!(count("No file"), 2);
+        assert_eq!(count("Welcome to ZDiff"), 1);
     }
 }

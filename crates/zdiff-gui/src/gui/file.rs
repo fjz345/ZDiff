@@ -519,6 +519,17 @@ impl FileProcessor {
         self.loading_path.as_ref()
     }
 
+    pub fn root_valid(&mut self) -> bool {
+        let root = self.root_path.clone().unwrap_or_default();
+        self.loading_path.is_some() || Self::is_root_valid(&root, &self.get_full_path())
+    }
+
+    pub fn path_valid(&mut self) -> bool {
+        self.get_full_path().is_empty()
+            || self.loading_path.is_some()
+            || self.get_loaded_file().is_some()
+    }
+
     pub fn load_error(&self) -> Option<&str> {
         self.load_error.as_deref()
     }
@@ -683,6 +694,23 @@ mod tests {
                 "root={root:?}, path={path:?}"
             );
         }
+    }
+
+    #[test]
+    fn a_root_that_does_not_hold_the_path_is_invalid() {
+        let mut file = FileProcessor::new();
+        file.set_root(UniversalPath::Local(PathBuf::from(r"E:\root")));
+
+        file.restore_path(UniversalPath::Local(PathBuf::from(r"C:\other\a.txt")), None);
+        assert!(!file.root_valid());
+
+        file.restore_path(UniversalPath::Local(PathBuf::from(r"E:\root\a.txt")), None);
+        assert!(file.root_valid());
+    }
+
+    #[test]
+    fn an_unset_path_is_not_invalid() {
+        assert!(FileProcessor::new().path_valid());
     }
 
     #[test]

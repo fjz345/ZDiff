@@ -28,7 +28,8 @@ A crash (panic) appends its message, source location and backtrace to `crash.log
     - A thin bar on a differing file shows the smaller side's share of the larger one
     - Hover shows the path, both sizes, the state and the likeness; click selects (the tree follows), double-click opens the diff
     - Click a folder to zoom in; the breadcrumb, Backspace or the mouse back button zoom out
-* Pane toolbar: Tree | Map, Expand All / Expand Diffs Only and the option toggles in one row, the filters below; the same toolbar look and text-labelled toggles as zdiff-gui
+* Pane toolbar: Tree | Map, Collapse All (Expand All once anything is folded) / Expand Diffs Only and the option toggles in one row, the filters below; the same toolbar look and text-labelled toggles as zdiff-gui. In a narrow window its groups wrap onto more rows instead of clipping
+* Tree background follows the light or dark style (Style window: Table background)
     - F: flat list by depth
     - D: diff only
     - P: show parent folders (with diff only)

@@ -253,7 +253,7 @@ impl FileDiffPane {
                     0..=find_count.saturating_sub(1),
                     |cursor| {
                         let find_k = if find_count == 0 { 0 } else { cursor + 1 };
-                        format!("{find_k} of {find_count}")
+                        format!("{find_k}/{find_count}")
                     },
                     &action_hint(FileAction::PrevFind),
                     &action_hint(FileAction::NextFind),
@@ -269,7 +269,7 @@ impl FileDiffPane {
             toolbar_group(ui, |ui| {
                 pins_ui(ui, pin_input, ctx.pins, ctx.pins_request, ctx.diff_ctx);
             });
-            ui.with_layout(Layout::right_to_left(egui::Align::Center), |ui| {
+            toolbar_end(ui, |ui| {
                 if side_viewers.is_none() {
                     likeness_ui(ui, ctx, text_viewer);
                 }
@@ -385,14 +385,19 @@ impl FileDiffPane {
         let ruler_id = egui::Id::new("file_diff_ruler");
 
         let mut side_rects = [egui::Rect::NOTHING; 2];
-        let mut table_rect = egui::Rect::NOTHING;
         let mut header_rects = [egui::Rect::NOTHING; 2];
         let mut browse: [Option<String>; 2] = [None, None];
         let content_rect = ui.vertical(|ui| {
             ui.set_min_width(available_width);
 
-            if table_height > 0.0 && (diff_rows_len > 0 || other_viewer) {
-                table_rect = ui.allocate_ui(egui::vec2(ui.available_width(), table_height), |ui| {
+            if table_height > 0.0 {
+                // Without a diff only the path bars show; the pane state fills the rest.
+                let height = if do_not_render_diff {
+                    header_height.min(table_height)
+                } else {
+                    table_height
+                };
+                ui.allocate_ui(egui::vec2(ui.available_width(), height), |ui| {
                     egui::Frame::default()
                         .fill(role_color(ui.ctx(), FileRole::TableBackground))
                         .show(ui, |ui| {
@@ -455,13 +460,13 @@ impl FileDiffPane {
                                                  spinner_active: bool|
                              -> Option<UniversalPath> {
                                 let root = root.cloned().unwrap_or_default();
-                                let segments = file_path_segments(&root, None);
+                                let segments = bar_segments(&root, None, "No root folder");
                                 let bar = ui.scope(|ui| {
                                     path_bar(
                                         ui,
                                         id_salt,
                                         &segments,
-                                        0,
+                                        usize::from(root.is_empty()),
                                         |i| i + 1 < segments.len(),
                                         (!is_valid).then_some("Invalid path"),
                                         true,
@@ -486,7 +491,8 @@ impl FileDiffPane {
                                                  load_error: Option<&str>,
                                                  spinner_active: bool|
                              -> (Option<UniversalPath>, Option<String>) {
-                                let segments = file_path_segments(path, label);
+                                let segments = bar_segments(path, label, "No file");
+                                let dim = if path.is_empty() { segments.len() } else { dim };
                                 let full_path = path.to_string();
                                 let reason = load_error.unwrap_or("Invalid path");
                                 let error = match (label, is_valid) {
@@ -1136,16 +1142,22 @@ impl FileDiffPane {
                                 });
                             }
                         });
-                })
-                .response
-                .rect;
+                });
             }
 
             if waiting_for_diff {
-                loading_state(ui, "Waiting for diff results...");
+                loading_state(ui, "Comparing files...");
             } else if do_not_render_diff {
-                if let Some(error) = ctx.launch_error {
-                    error_state(ui, error);
+                let load_errors = [
+                    ctx.file_source_load_error.as_deref(),
+                    ctx.file_target_load_error.as_deref(),
+                ];
+                let error = ctx
+                    .launch_error
+                    .map(str::to_owned)
+                    .or_else(|| load_error_text(load_errors, shown));
+                if let Some(error) = error {
+                    error_state(ui, &error);
                 } else {
                     let (_, clicked) = empty_state(
                         ui,
@@ -1178,16 +1190,15 @@ impl FileDiffPane {
                     };
                 self.browsers[i] = Some(FolderBrowser::open(&egui_ctx, folder, source));
             }
-            // The table and its path bars are skipped while no diff is shown.
             let Some(browser) = self.browsers[i]
                 .as_mut()
-                .filter(|_| table_rect.is_positive())
+                .filter(|_| header_rects[i].is_positive())
             else {
                 continue;
             };
             let rect = egui::Rect::from_x_y_ranges(
                 header_rects[i].x_range(),
-                header_rects[i].bottom()..=table_rect.bottom(),
+                header_rects[i].bottom()..=content_rect.bottom(),
             );
             // An area of its own, above the rows, so they and the table's scroll get no input.
             let action = egui::Area::new(ui.id().with(("folder_browser", i)))
@@ -1244,7 +1255,7 @@ impl FileDiffPane {
                 .data_mut(|data| data.insert_temp(wheel_rects_id(), side_rects));
         }
 
-        let (left_drop_rect, right_drop_rect) = if table_rect.is_positive() {
+        let (left_drop_rect, right_drop_rect) = if side_rects.iter().any(egui::Rect::is_positive) {
             (left_rect, right_rect)
         } else {
             content_rect.split_left_right_at_fraction(0.5)

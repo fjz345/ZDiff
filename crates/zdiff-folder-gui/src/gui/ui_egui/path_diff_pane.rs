@@ -4,7 +4,7 @@ use eframe::egui::{self, RichText};
 use serde::{Deserialize, Serialize};
 use zcommon::presets::{BuiltinPreset, UserPresets};
 use zcommon_ui::{
-    pane::{ZAppPane, options_menu_button, toolbar},
+    pane::{ZAppPane, options_menu_button, toolbar, toolbar_group},
     presets::presets_menu,
     toggle::{TOGGLE_BUTTON_SIZE, toggle_button},
 };
@@ -137,104 +137,107 @@ impl PathDiffPane {
         }
 
         toolbar(ui, |ui| {
-            ui.selectable_value(&mut self.view, PaneView::Tree, "Tree");
-            ui.selectable_value(&mut self.view, PaneView::Map, "Map")
-                .on_hover_text(
-                    "Treemap: a box per file, sized by its larger side, colored by state",
-                );
+            toolbar_group(ui, |ui| {
+                ui.selectable_value(&mut self.view, PaneView::Tree, "Tree");
+                ui.selectable_value(&mut self.view, PaneView::Map, "Map")
+                    .on_hover_text(
+                        "Treemap: a box per file, sized by its larger side, colored by state",
+                    );
+            });
             ui.separator();
 
-            let views = [
-                ctx.path_diff_view.file_system_1_view.as_mut(),
-                ctx.path_diff_view.file_system_2_view.as_mut(),
-            ];
-
-            let is_anything_collapsed = views.iter().flatten().any(|v| v.is_anything_collapsed());
-
-            let button_text = if is_anything_collapsed {
-                "Expand All"
-            } else {
-                "Collapse All"
-            };
-
-            // Folding doesn't show in flat mode or the map.
-            let foldable = self.view == PaneView::Tree && !ctx.diff_filter.is_flat(*ctx.tree_sort);
-            if ui
-                .add_enabled(foldable, egui::Button::new(button_text))
-                .clicked()
-            {
-                for v in views.into_iter().flatten() {
-                    if let Some(children) = v.file_system.get_root().children() {
-                        v.recursive_collapse_slice(&children.clone(), !is_anything_collapsed);
-                    }
-                }
-            }
-
-            if ui
-                .add_enabled(foldable, egui::Button::new("Expand Diffs Only"))
-                .clicked()
-            {
+            toolbar_group(ui, |ui| {
                 let views = [
                     ctx.path_diff_view.file_system_1_view.as_mut(),
                     ctx.path_diff_view.file_system_2_view.as_mut(),
                 ];
-                for v in views.into_iter().flatten() {
-                    if let Some(children) = v.file_system.get_root().children() {
-                        v.recursive_collapse_slice(&children.clone(), false);
+
+                let (button_text, collapse) = FileSystemView::collapse_all_toggle(
+                    views.iter().flatten().any(|v| v.is_anything_collapsed()),
+                );
+
+                // Folding doesn't show in flat mode or the map.
+                let foldable =
+                    self.view == PaneView::Tree && !ctx.diff_filter.is_flat(*ctx.tree_sort);
+                if ui
+                    .add_enabled(foldable, egui::Button::new(button_text))
+                    .clicked()
+                {
+                    for v in views.into_iter().flatten() {
+                        if let Some(children) = v.file_system.get_root().children() {
+                            v.recursive_collapse_slice(&children.clone(), collapse);
+                        }
                     }
                 }
-                if let Some(rows) = ctx.path_diff_view.visible_rows.as_ref() {
-                    for row in rows {
-                        if let DiffState::Same(id1, id2) = row.diff_state {
-                            if let Some(v1) = ctx.path_diff_view.file_system_1_view.as_mut() {
-                                v1.collapsed.insert(id1, true);
-                            }
-                            if let Some(v2) = ctx.path_diff_view.file_system_2_view.as_mut() {
-                                v2.collapsed.insert(id2, true);
+
+                if ui
+                    .add_enabled(foldable, egui::Button::new("Expand Diffs Only"))
+                    .clicked()
+                {
+                    let views = [
+                        ctx.path_diff_view.file_system_1_view.as_mut(),
+                        ctx.path_diff_view.file_system_2_view.as_mut(),
+                    ];
+                    for v in views.into_iter().flatten() {
+                        if let Some(children) = v.file_system.get_root().children() {
+                            v.recursive_collapse_slice(&children.clone(), false);
+                        }
+                    }
+                    if let Some(rows) = ctx.path_diff_view.visible_rows.as_ref() {
+                        for row in rows {
+                            if let DiffState::Same(id1, id2) = row.diff_state {
+                                if let Some(v1) = ctx.path_diff_view.file_system_1_view.as_mut() {
+                                    v1.collapsed.insert(id1, true);
+                                }
+                                if let Some(v2) = ctx.path_diff_view.file_system_2_view.as_mut() {
+                                    v2.collapsed.insert(id2, true);
+                                }
                             }
                         }
                     }
                 }
-            }
+            });
             ui.separator();
 
-            // Like the filter, the app reorders the rows on the next update.
-            toggle_button(
-                ui,
-                &mut ctx.tree_sort.flat,
-                RichText::new("F").strong(),
-                "Flat: list all entries by depth, then by the sorted column",
-            );
-            state_filter_button(ui, &mut ctx.diff_filter.states);
-            ui.add_enabled_ui(ctx.diff_filter.filters(), |ui| {
+            toolbar_group(ui, |ui| {
+                // Like the filter, the app reorders the rows on the next update.
                 toggle_button(
                     ui,
-                    &mut ctx.diff_filter.show_parents,
-                    RichText::new("P").strong(),
-                    "Show parent folders: off lists only the matching files (needs Diff or Equal)",
+                    &mut ctx.tree_sort.flat,
+                    RichText::new("F").strong(),
+                    "Flat: list all entries by depth, then by the sorted column",
+                );
+                state_filter_button(ui, &mut ctx.diff_filter.states);
+                ui.add_enabled_ui(ctx.diff_filter.filters(), |ui| {
+                    toggle_button(
+                        ui,
+                        &mut ctx.diff_filter.show_parents,
+                        RichText::new("P").strong(),
+                        "Show parent folders: off lists only the matching files (needs Diff or Equal)",
+                    );
+                });
+                toggle_button(
+                    ui,
+                    ctx.likeness_bar,
+                    RichText::new("L").strong(),
+                    "Likeness: how alike the two files of each pair are, measured in the background",
+                );
+                toggle_button(
+                    ui,
+                    &mut ctx.tolerance.enabled,
+                    RichText::new("T").strong(),
+                    "Tolerance: differing files that pass every enabled criterion count as Similar (≈)",
+                );
+                options_menu_button(ui, "Tolerance criteria", |ui| {
+                    draw_tolerance_settings(ui, ctx.tolerance)
+                });
+                toggle_button(
+                    ui,
+                    &mut ctx.h_scroll_link.0,
+                    RichText::new("Link").strong(),
+                    "Link horizontal scroll: scroll both folder sides sideways together",
                 );
             });
-            toggle_button(
-                ui,
-                ctx.likeness_bar,
-                RichText::new("L").strong(),
-                "Likeness: how alike the two files of each pair are, measured in the background",
-            );
-            toggle_button(
-                ui,
-                &mut ctx.tolerance.enabled,
-                RichText::new("T").strong(),
-                "Tolerance: differing files that pass every enabled criterion count as Similar (≈)",
-            );
-            options_menu_button(ui, "Tolerance criteria", |ui| {
-                draw_tolerance_settings(ui, ctx.tolerance)
-            });
-            toggle_button(
-                ui,
-                &mut ctx.h_scroll_link.0,
-                RichText::new("Link").strong(),
-                "Link horizontal scroll: scroll both folder sides sideways together",
-            );
         });
 
         toolbar(ui, |ui| {
@@ -492,20 +495,24 @@ fn draw_size_delta(ui: &mut egui::Ui, delta: &mut SizeDelta) {
 
 fn draw_filter_bar(ui: &mut egui::Ui, filter: &mut PathFilter, presets: &mut FilterPresets) {
     for field in [FilterField::Blacklist, FilterField::Whitelist] {
-        ui.label(field.label());
-        draw_pattern_field(ui, filter, presets, field);
+        toolbar_group(ui, |ui| {
+            ui.label(field.label());
+            draw_pattern_field(ui, filter, presets, field);
+        });
     }
-    let has_text = *filter != PathFilter::default();
-    if ui
-        .add_enabled(has_text, egui::Button::new("Clear"))
-        .clicked()
-    {
-        *filter = PathFilter::default();
-        ui.ctx().request_repaint();
-    }
-    if filter.is_active() {
-        ui.label(RichText::new("Filter active").color(ui.visuals().warn_fg_color));
-    }
+    toolbar_group(ui, |ui| {
+        let has_text = *filter != PathFilter::default();
+        if ui
+            .add_enabled(has_text, egui::Button::new("Clear"))
+            .clicked()
+        {
+            *filter = PathFilter::default();
+            ui.ctx().request_repaint();
+        }
+        if filter.is_active() {
+            ui.label(RichText::new("Filter active").color(ui.visuals().warn_fg_color));
+        }
+    });
 }
 
 fn draw_pattern_field(
