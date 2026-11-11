@@ -206,22 +206,6 @@ fn check_features() -> Result<(), String> {
     Err(format!("{} combination(s) failed", failures.len()))
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn feature_args_cover_defaults_none_and_each_feature_alone() {
-        let features = ["default".to_string(), "a".to_string(), "b".to_string()];
-        let combos = feature_args(&features);
-        assert_eq!(combos.len(), 4);
-        assert!(combos[0].is_empty());
-        assert_eq!(combos[1], ["--no-default-features"]);
-        assert_eq!(combos[2], ["--no-default-features", "--features", "a"]);
-        assert_eq!(combos[3], ["--no-default-features", "--features", "b"]);
-    }
-}
-
 // Git for Windows puts GNU tar first on PATH, and GNU tar can't read zip.
 fn bsdtar() -> PathBuf {
     match env::var_os("SystemRoot") {
@@ -258,4 +242,20 @@ fn sha256_file(path: &Path) -> Result<String, String> {
         write!(hex, "{byte:02x}").unwrap();
     }
     Ok(hex)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn feature_args_cover_defaults_none_and_each_feature_alone() {
+        let features = ["default".to_string(), "a".to_string(), "b".to_string()];
+        let combos = feature_args(&features);
+        assert_eq!(combos.len(), 4);
+        assert!(combos[0].is_empty());
+        assert_eq!(combos[1], ["--no-default-features"]);
+        assert_eq!(combos[2], ["--no-default-features", "--features", "a"]);
+        assert_eq!(combos[3], ["--no-default-features", "--features", "b"]);
+    }
 }
