@@ -8,7 +8,10 @@ use zcommon::job::Job;
 use zcommon_ui::{style_window::role_color, table::SplitColumn};
 use zdiff::hex::{HexDiff, HexSide, hex_diff};
 
-use super::hex_inspector::{Endian, InspectorKind, decode, inspector_ui};
+use super::{
+    Likeness,
+    hex_inspector::{Endian, InspectorKind, decode, inspector_ui},
+};
 use crate::{
     diff_ctx::ScrollSpan,
     file::LoadedFile,
@@ -162,6 +165,14 @@ pub fn hex_nav_count(diff: Option<&HexDiff>) -> usize {
 
 pub fn differing_bytes(diff: &HexDiff) -> usize {
     diff.ranges.iter().map(Range::len).sum()
+}
+
+pub fn equal_byte_ratio(differing: usize, lens: [usize; 2]) -> f64 {
+    let larger = lens[0].max(lens[1]);
+    if larger == 0 {
+        return 1.0;
+    }
+    (lens[0].min(lens[1]) - differing) as f64 / larger as f64
 }
 
 /// Rows and bytes of stop `cursor`, 1-based like the text conflict cursor (0 is no stop). `None`
@@ -508,6 +519,22 @@ impl HexViewCtx<'_> {
         let kind = self.inspector_hover.get()?;
         let len = decode(bytes, cursor, kind, self.endian.get())?.byte_len();
         Some(cursor..cursor + len)
+    }
+
+    pub fn likeness(&self) -> Option<Likeness> {
+        if self.computing {
+            return Some(Likeness::Pending);
+        }
+        self.diff?;
+        let lens = [self.file_1, self.file_2].map(|f| f.map_or(0, |f| f.bytes().len()));
+        let equal = lens[0].min(lens[1]) - self.differing_bytes;
+        Some(Likeness::Measured {
+            ratio: equal_byte_ratio(self.differing_bytes, lens),
+            detail: format!(
+                "{equal} of {} bytes equal at the same offset",
+                lens[0].max(lens[1])
+            ),
+        })
     }
 
     pub fn status_text(&self) -> String {
@@ -1341,6 +1368,14 @@ mod tests {
         );
         assert_eq!(differing_bytes(&d), 21);
         assert_eq!(differing_bytes(&diff(vec![], None)), 0);
+    }
+
+    #[test]
+    fn equal_bytes_are_counted_at_the_same_offsets_over_the_longer_side() {
+        assert_eq!(equal_byte_ratio(1, [4, 3]), 0.5);
+        assert_eq!(equal_byte_ratio(0, [8, 8]), 1.0);
+        assert_eq!(equal_byte_ratio(0, [5, 0]), 0.0);
+        assert_eq!(equal_byte_ratio(0, [0, 0]), 1.0);
     }
 
     #[test]

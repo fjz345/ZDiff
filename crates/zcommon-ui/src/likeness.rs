@@ -1,0 +1,51 @@
+use eframe::egui;
+
+const UNLIKE_COLOR: egui::Color32 = egui::Color32::from_rgb(0xB0, 0x3A, 0x2E);
+const HALF_LIKE_COLOR: egui::Color32 = egui::Color32::from_rgb(0xA8, 0x8C, 0x1E);
+const ALIKE_COLOR: egui::Color32 = egui::Color32::from_rgb(0x3A, 0x8C, 0x3A);
+
+/// Floored, so a pair that differs reads 100 % only when measured so.
+pub fn percent(ratio: f64) -> u32 {
+    // The epsilon keeps 0.29 * 100 = 28.999... at 29.
+    (ratio * 100.0 + 1e-9).floor().clamp(0.0, 100.0) as u32
+}
+
+pub fn likeness_bar(ui: &mut egui::Ui, ratio: f64, size: egui::Vec2) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::hover());
+    let painter = ui.painter();
+    painter.rect_filled(rect, 2.0, ui.visuals().extreme_bg_color);
+    let mut filled = rect;
+    filled.set_width(rect.width() * ratio.clamp(0.0, 1.0) as f32);
+    painter.rect_filled(filled, 2.0, likeness_color(ratio));
+    painter.text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        format!("{}%", percent(ratio)),
+        egui::TextStyle::Monospace.resolve(ui.style()),
+        ui.visuals().strong_text_color(),
+    );
+    response
+}
+
+fn likeness_color(ratio: f64) -> egui::Color32 {
+    let t = ratio.clamp(0.0, 1.0) as f32 * 2.0;
+    if t <= 1.0 {
+        UNLIKE_COLOR.lerp_to_gamma(HALF_LIKE_COLOR, t)
+    } else {
+        HALF_LIKE_COLOR.lerp_to_gamma(ALIKE_COLOR, t - 1.0)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::percent;
+
+    #[test]
+    fn percent_is_floored_but_exact_fractions_stay_whole() {
+        assert_eq!(percent(0.997), 99);
+        assert_eq!(percent(1.0), 100);
+        assert_eq!(percent(0.29), 29);
+        assert_eq!(percent(2.0 * 7.0 / 50.0), 28);
+        assert_eq!(percent(0.0), 0);
+    }
+}

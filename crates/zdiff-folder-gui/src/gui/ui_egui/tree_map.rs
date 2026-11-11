@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use eframe::egui::{self, Align2, Color32, FontId, Pos2, Rect, RichText, Stroke, StrokeKind, vec2};
-use zcommon_ui::style_window::role_color;
+use zcommon_ui::{likeness::percent, style_window::role_color};
 use zdiff_folder::{external_diff_tool::DiffToolConfig, fs::FsNodeId};
 
 use crate::ui_egui::{
@@ -13,7 +13,7 @@ use crate::ui_egui::{
     status_line::ToolMessage,
     tree_compare::TreeCompare,
     tree_cursor::{CursorRequest, TreeCursor},
-    tree_likeness::{FolderLikeness, percent},
+    tree_likeness::FolderLikeness,
 };
 
 pub const ROOT: usize = 0;

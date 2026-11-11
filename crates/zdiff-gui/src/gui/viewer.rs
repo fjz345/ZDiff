@@ -54,6 +54,12 @@ impl ViewerKind {
     }
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum Likeness {
+    Pending,
+    Measured { ratio: f64, detail: String },
+}
+
 /// Interim rule until the text-encoding-eol decoder lands: a NUL byte or invalid UTF-8 means
 /// Hex. An empty file is Text.
 pub fn sniff_viewer_kind(bytes: &[u8]) -> ViewerKind {

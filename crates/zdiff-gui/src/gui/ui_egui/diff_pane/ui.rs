@@ -279,9 +279,12 @@ impl FileDiffPane {
                 ui.spacing_mut().item_spacing.x = 4.0;
                 pins_ui(ui, pin_input, ctx.pins, ctx.pins_request, ctx.diff_ctx);
             });
-            // No diff ctx while a diff is in flight, so a partial time is never shown.
-            if let Some(diff_ctx) = ctx.diff_ctx {
-                ui.with_layout(Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.with_layout(Layout::right_to_left(egui::Align::Center), |ui| {
+                if side_viewers.is_none() {
+                    likeness_ui(ui, ctx, text_viewer);
+                }
+                // No diff ctx while a diff is in flight, so a partial time is never shown.
+                if let Some(diff_ctx) = ctx.diff_ctx {
                     let (label, tooltip) = diff_status_text(
                         diff_ctx.num_add_deletes,
                         diff_ctx.change_unit,
@@ -299,27 +302,21 @@ impl FileDiffPane {
                     // Not selectable, so a drag-copy over the rows can't pick it up.
                     ui.add(egui::Label::new(label).selectable(false))
                         .on_hover_text(tooltip);
-                });
-            } else if let Some(sides) = &side_viewers {
-                ui.with_layout(Layout::right_to_left(egui::Align::Center), |ui| {
+                } else if let Some(sides) = &side_viewers {
                     let text = side_viewers::status_text(sides.kinds);
                     let text = egui::RichText::new(text).color(ui.visuals().warn_fg_color);
                     ui.add(egui::Label::new(text).selectable(false));
-                });
-            } else if let Some(hex_view) = &ctx.hex_view {
-                ui.with_layout(Layout::right_to_left(egui::Align::Center), |ui| {
+                } else if let Some(hex_view) = &ctx.hex_view {
                     ui.add(egui::Label::new(hex_view.status_text()).selectable(false));
-                });
-            } else if let Some(image_view) = &ctx.image_view {
-                ui.with_layout(Layout::right_to_left(egui::Align::Center), |ui| {
+                } else if let Some(image_view) = &ctx.image_view {
                     let (text, size_mismatch) = image_view.status_text();
                     let mut text = egui::RichText::new(text);
                     if size_mismatch {
                         text = text.color(ui.visuals().warn_fg_color);
                     }
                     ui.add(egui::Label::new(text).selectable(false));
-                });
-            }
+                }
+            });
         });
 
         if let Some(reason) = ctx.viewer_fallback {

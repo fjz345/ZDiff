@@ -24,7 +24,7 @@ use zdiff::pixel_metric::{
     Alignment, MetricMap, PixelMetric, changed_pixels, metric_map, placement,
 };
 
-use super::{hex::is_same_side, path_extension};
+use super::{Likeness, hex::is_same_side, path_extension};
 use crate::{file::LoadedFile, ui_egui::file_role::FileRole};
 
 /// A decoded image. Animated formats keep their first frame.
@@ -894,6 +894,39 @@ impl ImageDiffProcessor {
 
     fn comparing(&self) -> bool {
         self.decoded(0).is_some() && self.decoded(1).is_some() && self.missing().any()
+    }
+
+    pub fn likeness(&self) -> Option<Likeness> {
+        if self
+            .sides
+            .iter()
+            .any(|side| matches!(side, SideState::Decoding))
+        {
+            return Some(Likeness::Pending);
+        }
+        self.decoded(0)?;
+        self.decoded(1)?;
+        let map = self.diff_map.as_ref().filter(|_| !self.stale().diff);
+        let Some(DiffMap { key, stats, .. }) = map else {
+            return Some(Likeness::Pending);
+        };
+        let unchanged = stats.total - stats.changed;
+        let mut detail = format!(
+            "{unchanged} of {} pixels within tolerance {} under {}, channel {}",
+            stats.total,
+            key.tolerance,
+            key.metric.label(),
+            key.channel.label()
+        );
+        if let Some(difference) = self.difference_text() {
+            detail += &format!("\n{difference}");
+        }
+        let ratio = if stats.total == 0 {
+            1.0
+        } else {
+            unchanged as f64 / stats.total as f64
+        };
+        Some(Likeness::Measured { ratio, detail })
     }
 
     fn compare_status(&self) -> String {
@@ -1808,6 +1841,30 @@ mod tests {
     fn changed(processor: &ImageDiffProcessor) -> Option<(u8, u64, u64)> {
         let map = processor.diff_map.as_ref()?;
         Some((map.key.tolerance, map.stats.changed, map.stats.total))
+    }
+
+    #[test]
+    fn the_likeness_is_the_share_of_pixels_within_the_tolerance_once_compared() {
+        let first = RgbaImage::from_raw(2, 1, vec![0, 0, 0, 255, 0, 0, 0, 255]).unwrap();
+        let second = RgbaImage::from_raw(2, 1, vec![0, 0, 0, 255, 10, 0, 0, 255]).unwrap();
+        let mut processor = ImageDiffProcessor::default();
+        assert_eq!(processor.likeness(), None);
+        processor.request(
+            Some(png_file("a.png", &first)),
+            Some(png_file("b.png", &second)),
+        );
+        assert_eq!(processor.likeness(), Some(Likeness::Pending));
+        let ratio = |processor: &ImageDiffProcessor| match processor.likeness() {
+            Some(Likeness::Measured { ratio, .. }) => ratio,
+            other => panic!("{other:?}"),
+        };
+        poll_until(&mut processor, |p| p.diff_map.is_some());
+        assert_eq!(ratio(&processor), 0.5);
+
+        processor.tolerance = 10;
+        assert_eq!(processor.likeness(), Some(Likeness::Pending));
+        poll_until(&mut processor, |p| !p.comparing());
+        assert_eq!(ratio(&processor), 1.0);
     }
 
     #[test]

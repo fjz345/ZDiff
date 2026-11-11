@@ -18,6 +18,7 @@ use zcommon::{
 };
 
 use super::{
+    Likeness,
     hex::is_same_side,
     image::{self, DecodedImage, ImageDiffProcessor, ImageSettings, ImageSide},
     video_cache::{
@@ -646,6 +647,10 @@ impl VideoFrameProcessor {
                 _ => None,
             })
             .collect()
+    }
+
+    pub fn likeness(&self) -> Option<Likeness> {
+        self.timeline.likeness()
     }
 
     pub fn seek(&mut self, time_secs: f64) {

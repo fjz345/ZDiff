@@ -257,6 +257,65 @@ mod tests {
     }
 
     #[test]
+    fn text_likeness_matches_the_diff_viewers_line_likeness() {
+        use zdiff::{
+            change_count::text_likeness,
+            myers::{DiffPhases, myers_diff_path},
+        };
+        let line_only = DiffPhases {
+            scope: false,
+            line: true,
+            token: false,
+            character: false,
+        };
+        let numbered = numbered_lines(30).concat();
+        let edited = numbered
+            .replace("line 3\n", "")
+            .replace("line 17\n", "line 17 changed\nnew\n");
+        let pairs = [
+            ("", ""),
+            ("a\n", ""),
+            ("a\nb\nc\n", "a\nx\nc\nd"),
+            (
+                "fn a() {\n    1;\n}\n",
+                "fn a() {\n    2;\n}\n\nfn b() {}\n",
+            ),
+            (numbered.as_str(), edited.as_str()),
+        ];
+        for (left, right) in pairs {
+            let (ts, tt): (Vec<RawToken>, Vec<RawToken>) =
+                (Lexer::new(left).parse(), Lexer::new(right).parse());
+            let cmp = |a: &RawToken, b: &RawToken| {
+                a.kind == b.kind && left[a.span.clone()] == right[b.span.clone()]
+            };
+            let mask = IgnoreMask::default();
+            let path = myers_diff_path(
+                MyersDiffAlgorithm::Linear,
+                &ts,
+                &tt,
+                left,
+                right,
+                cmp,
+                &mask,
+                line_only,
+                &[],
+                Arc::default(),
+            )
+            .unwrap();
+            let viewer = text_likeness(&path, &ts, &tt, &mask).lines;
+            let folder = text_likeness_of(left, right);
+            assert!(
+                (viewer - folder).abs() < 1e-12,
+                "{left:?} {right:?}: {viewer} vs {folder}"
+            );
+        }
+    }
+
+    fn text_likeness_of(left: &str, right: &str) -> f64 {
+        text_likeness(left, right, &Arc::new(AtomicBool::new(false))).unwrap()
+    }
+
+    #[test]
     fn text_identical_is_full() {
         let text = b"fn main() {\n    run();\n}\n";
         assert_eq!(measure("rs", text, text, 0), lines(1.0));

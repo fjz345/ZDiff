@@ -16,7 +16,7 @@ use zcommon::lru::{DEFAULT_MAX_ENTRIES, LruCache};
 use zdiff::universal_path::UniversalPath;
 use zdiff::{
     cached_file::CachedFile,
-    change_count::{ChangeUnit, count_changes},
+    change_count::{ChangeUnit, TextLikeness, count_changes, text_likeness},
     char_diff::{CharRanges, character_diff_traced},
     diff_builder::{
         DiffBuilderOptions, DiffRow, LineContent, RowBg, build_diff_rows,
@@ -345,6 +345,7 @@ pub struct MyersCtx {
 
     num_add_delete: MyersNumAddDelete,
     change_unit: Option<ChangeUnit>,
+    likeness: Option<TextLikeness>,
     path: Arc<MyersPath>,
     char_ranges: Arc<CharRanges>,
     ignored_pins: Option<PinError>,
@@ -399,6 +400,7 @@ pub struct MinimalDiffCtx {
     pub num_add_deletes: MyersNumAddDelete,
     /// The unit `num_add_deletes` counts in; `None` with every phase off.
     pub change_unit: Option<ChangeUnit>,
+    pub likeness: Option<TextLikeness>,
     /// Why the input's pins don't fit its files; the diff then ran without them.
     pub ignored_pins: Option<PinError>,
     /// Only when the input's `collect_trace` is set.
@@ -820,10 +822,13 @@ impl DiffCtx {
                             &char_ranges,
                         )
                     });
+                    let likeness = (change_unit.is_some() && one_sided.is_none())
+                        .then(|| text_likeness(&path, t1, t2, &ignore));
                     job.send(Some(MyersCtx {
                         input,
                         num_add_delete,
                         change_unit,
+                        likeness,
                         path: Arc::new(path),
                         char_ranges: Arc::new(char_ranges),
                         ignored_pins,
@@ -973,6 +978,7 @@ impl DiffCtx {
         let myers_ctx = self.request_myers()?;
         let num_add_deletes = myers_ctx.num_add_delete;
         let change_unit = myers_ctx.change_unit;
+        let likeness = myers_ctx.likeness;
         let ignored_pins = myers_ctx.ignored_pins.clone();
         let phase_trace = myers_ctx.phase_trace.clone();
         let (line_elapsed, token_elapsed) = (myers_ctx.line_elapsed, myers_ctx.token_elapsed);
@@ -1008,6 +1014,7 @@ impl DiffCtx {
             input: self.update_diff_rows_input.clone(),
             num_add_deletes,
             change_unit,
+            likeness,
             ignored_pins,
             phase_trace,
             stage_times,
@@ -1722,6 +1729,9 @@ fn update_diff_rows_minimal_diff_ctx(
         input: input.clone(),
         num_add_deletes: myers_count_add_deletes(&myers_path),
         change_unit: Some(ChangeUnit::Token),
+        likeness: one_sided_diff_is_left
+            .is_none()
+            .then(|| text_likeness(&myers_path, t1, t2, &ignore)),
         ignored_pins: None,
         phase_trace: None,
         stage_times,
@@ -2577,6 +2587,37 @@ mod tests {
                 assert_eq!(ctx.diff_rows.len(), 1);
                 assert_eq!(ctx.num_add_deletes, Default::default());
                 assert_eq!(ctx.change_unit, None);
+                assert_eq!(ctx.likeness, None);
+            }
+
+            #[test]
+            fn the_likeness_honors_the_ignore_options_and_needs_two_sides() {
+                let dir = tempfile::tempdir().unwrap();
+                let write = |name: &str, contents: &str| {
+                    let path = dir.path().join(name);
+                    std::fs::write(&path, contents).unwrap();
+                    load(&UniversalPath::from(path))
+                };
+                let (left, right) = (
+                    write("left.rs", "a b\nc\n"),
+                    write("right.rs", "a  b\nc\nd\n"),
+                );
+                let mut current = input(&left, &right);
+                let mut processor = DiffProcessor::default();
+                open(&mut processor, &current);
+                let plain = settle(&mut processor).expect("diff never completed");
+                let likeness = plain.likeness.expect("two sides with phases on");
+                assert_eq!(likeness.lines, 1.0 - 3.0 / 5.0);
+
+                current.options.ignore.whitespace = true;
+                open(&mut processor, &current);
+                let ignoring = settle(&mut processor).expect("ignore toggle never completed");
+                let likeness = ignoring.likeness.expect("two sides with phases on");
+                assert_eq!(likeness.lines, 1.0 - 1.0 / 5.0);
+
+                open(&mut processor, &input(&left, &None));
+                let one_sided = settle(&mut processor).expect("one-sided diff never completed");
+                assert_eq!(one_sided.likeness, None);
             }
 
             #[test]

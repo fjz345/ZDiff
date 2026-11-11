@@ -8,9 +8,12 @@ use zcommon::ffmpeg::FfmpegPaths;
 use zcommon::job::Job;
 use zcommon_ui::style_window::role_color;
 
-use super::audio::{
-    DecodeProgress, DecodedAudio, RepaintContext, TimeView, decode_file, draw_wave, format_time,
-    repaint_job,
+use super::{
+    Likeness,
+    audio::{
+        DecodeProgress, DecodedAudio, RepaintContext, TimeView, decode_file, draw_wave,
+        format_time, repaint_job,
+    },
 };
 use crate::{file::LoadedFile, ui_egui::file_role::FileRole};
 
@@ -20,6 +23,7 @@ pub struct SampleDifference {
     pub wave: DecodedAudio,
     pub peak: f32,
     pub rms: f64,
+    pub side_rms: [f64; 2],
     pub first_frame: Option<usize>,
 }
 
@@ -27,6 +31,15 @@ impl SampleDifference {
     pub fn first_secs(&self) -> Option<f64> {
         self.first_frame
             .map(|frame| frame as f64 / self.wave.sample_rate as f64)
+    }
+
+    pub fn likeness(&self) -> f64 {
+        let level = self.side_rms[0] + self.side_rms[1];
+        if level == 0.0 {
+            return 1.0;
+        }
+        // At most 1 by the triangle inequality, short of rounding.
+        (1.0 - self.rms / level).clamp(0.0, 1.0)
     }
 }
 
@@ -40,23 +53,31 @@ pub fn sample_difference(left: &DecodedAudio, right: &DecodedAudio) -> SampleDif
     let sample = |side: &DecodedAudio, i: usize| side.samples.get(i).copied().unwrap_or(0.0);
     let mut samples = Vec::with_capacity(len);
     let (mut peak, mut sum_sq, mut first_frame) = (0.0f32, 0.0f64, None);
+    let mut side_sum_sq = [0.0f64; 2];
     for i in 0..len {
-        let d = sample(left, i) - sample(right, i);
+        let (l, r) = (sample(left, i), sample(right, i));
+        let d = l - r;
         if d != 0.0 && first_frame.is_none() {
             first_frame = Some(i / left.channels);
         }
         peak = peak.max(d.abs());
         sum_sq += d as f64 * d as f64;
+        side_sum_sq[0] += l as f64 * l as f64;
+        side_sum_sq[1] += r as f64 * r as f64;
         samples.push(d);
     }
-    SampleDifference {
-        wave: DecodedAudio::new(left.sample_rate, left.channels, samples),
-        peak,
-        rms: if len == 0 {
+    let rms = |sum_sq: f64| {
+        if len == 0 {
             0.0
         } else {
             (sum_sq / len as f64).sqrt()
-        },
+        }
+    };
+    SampleDifference {
+        wave: DecodedAudio::new(left.sample_rate, left.channels, samples),
+        peak,
+        rms: rms(sum_sq),
+        side_rms: side_sum_sq.map(rms),
         first_frame,
     }
 }
@@ -211,6 +232,17 @@ impl SampleDiffProcessor {
         }
     }
 
+    pub fn likeness(&self) -> Option<Likeness> {
+        match &self.state {
+            DiffState::Running(_) => Some(Likeness::Pending),
+            DiffState::Done(difference) => Some(Likeness::Measured {
+                ratio: difference.likeness(),
+                detail: "1 - RMS(left - right) / (RMS(left) + RMS(right))".to_string(),
+            }),
+            DiffState::Empty | DiffState::Cancelled | DiffState::Failed(_) => None,
+        }
+    }
+
     pub fn status_text(&self) -> Option<String> {
         let mut text = match &self.state {
             DiffState::Empty => return None,
@@ -334,6 +366,22 @@ mod tests {
     }
 
     #[test]
+    fn likeness_is_one_minus_the_rms_difference_over_both_levels() {
+        let left = audio(8, 1, &[0.5, -0.5, 0.25, -0.25]);
+        let scaled = |factor: f32| {
+            let samples: Vec<f32> = left.samples.iter().map(|s| s * factor).collect();
+            audio(8, 1, &samples)
+        };
+        let likeness = |right: &DecodedAudio| sample_difference(&left, right).likeness();
+        assert_eq!(likeness(&scaled(1.0)), 1.0);
+        assert_eq!(likeness(&scaled(0.0)), 0.0);
+        assert_eq!(likeness(&scaled(-1.0)), 0.0);
+        assert!((likeness(&scaled(0.5)) - 2.0 / 3.0).abs() < 1e-9);
+        let silence = audio(8, 1, &[0.0; 4]);
+        assert_eq!(sample_difference(&silence, &silence).likeness(), 1.0);
+    }
+
+    #[test]
     fn the_shorter_sides_missing_tail_is_silence() {
         let left = audio(10, 1, &[0.1, 0.2, 0.3, 0.0]);
         let right = audio(10, 1, &[0.1, 0.2]);
@@ -390,7 +438,13 @@ mod tests {
         let mut processor = SampleDiffProcessor::default();
         processor.update(Some((&ffmpeg, &file, &left, &right)));
         assert!(processor.running());
+        assert_eq!(processor.likeness(), Some(Likeness::Pending));
         poll_until(&mut processor);
+        assert!(
+            matches!(processor.likeness(), Some(Likeness::Measured { ratio, .. }) if ratio < 1.0),
+            "{:?}",
+            processor.likeness()
+        );
         let text = processor.status_text().unwrap();
         assert!(text.contains("peak 1.000000 (0.0 dBFS)"), "{text}");
         assert!(text.contains("RMS 0.612372 (-4.3 dBFS)"), "{text}");

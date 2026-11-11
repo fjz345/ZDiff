@@ -4,6 +4,7 @@ mod copy;
 mod gutter;
 mod highlight;
 mod layout;
+mod likeness;
 mod line_menu;
 mod patch;
 mod path_bar;
@@ -21,6 +22,8 @@ use copy::*;
 use gutter::*;
 use highlight::*;
 use layout::*;
+pub use likeness::TextMetric;
+use likeness::likeness_ui;
 pub(crate) use line_menu::line_text;
 use line_menu::*;
 use patch::*;
@@ -147,6 +150,7 @@ pub struct FileDiffPaneCtx<'a> {
     pub toggle_all_held: bool,
     pub toggle_all_request: &'a mut bool,
     pub text_mode: &'a mut TextMode,
+    pub text_likeness: &'a mut TextMetric,
 
     pub code_language: [&'a str; 2],
 

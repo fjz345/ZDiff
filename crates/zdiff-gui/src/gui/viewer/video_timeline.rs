@@ -18,6 +18,7 @@ use zcommon_ui::style_window::role_color;
 use zdiff::pixel::RgbaBuffer;
 use zdiff::pixel_metric::{Alignment, PixelMetric, metric_map};
 
+use super::Likeness;
 use super::video_frames::{VideoTrack, end_time, format_time};
 use crate::ui_egui::file_role::FileRole;
 
@@ -231,6 +232,7 @@ pub struct VideoTimeline {
     fps: f64,
     expected: usize,
     values: Vec<f32>,
+    sum: f64,
     metric: PixelMetric,
     run_job: Job<TimelineMessage>,
 }
@@ -243,6 +245,7 @@ impl Default for VideoTimeline {
             fps: 1.0,
             expected: 0,
             values: Vec::new(),
+            sum: 0.0,
             metric: PixelMetric::default(),
             run_job: Job::new(|| {}).on_panic(|e| TimelineMessage::Done(Err(Some(e)))),
         }
@@ -269,7 +272,7 @@ impl VideoTimeline {
         );
         self.fps = common_fps(&job.tracks);
         self.expected = expected_samples(&job.tracks, self.fps);
-        self.values.clear();
+        self.clear_values();
         self.state = TimelineState::Running;
         let (fps, metric) = (self.fps, self.metric);
         self.run_job
@@ -292,7 +295,36 @@ impl VideoTimeline {
         self.stop();
         self.job = None;
         self.state = TimelineState::Done;
+        self.clear_values();
+    }
+
+    fn clear_values(&mut self) {
         self.values.clear();
+        self.sum = 0.0;
+    }
+
+    fn push(&mut self, value: f32) {
+        self.values.push(value);
+        self.sum += value as f64;
+    }
+
+    pub fn likeness(&self) -> Option<Likeness> {
+        let partial = match &self.state {
+            TimelineState::Running => return Some(Likeness::Pending),
+            TimelineState::Failed(_) => return None,
+            _ if self.values.is_empty() => return None,
+            TimelineState::Cancelled => " (cancelled, partial)",
+            TimelineState::Done => "",
+        };
+        let mean = self.sum / self.values.len() as f64;
+        Some(Likeness::Measured {
+            ratio: (1.0 - mean / 255.0).clamp(0.0, 1.0),
+            detail: format!(
+                "1 - mean {} difference / 255 over {} timeline frames{partial}",
+                self.metric.label(),
+                self.values.len()
+            ),
+        })
     }
 
     pub fn is_started(&self) -> bool {
@@ -319,7 +351,7 @@ impl VideoTimeline {
     pub fn poll(&mut self) {
         for message in self.run_job.poll() {
             match message {
-                TimelineMessage::Value(value) => self.values.push(value),
+                TimelineMessage::Value(value) => self.push(value),
                 TimelineMessage::Done(Ok(())) => self.state = TimelineState::Done,
                 TimelineMessage::Done(Err(None)) => self.state = TimelineState::Cancelled,
                 TimelineMessage::Done(Err(Some(reason))) => {
@@ -659,6 +691,30 @@ mod tests {
             matches!(timeline.state, TimelineState::Failed(_)),
             "{timeline:?}"
         );
+    }
+
+    #[test]
+    fn the_likeness_is_one_minus_the_mean_frame_difference_once_there_are_frames() {
+        let mut timeline = VideoTimeline::default();
+        assert_eq!(timeline.likeness(), None);
+        timeline.push(0.0);
+        timeline.push(51.0);
+        let ratio = |likeness: Option<Likeness>| match likeness {
+            Some(Likeness::Measured { ratio, .. }) => ratio,
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(ratio(timeline.likeness()), 0.9);
+        timeline.state = TimelineState::Cancelled;
+        assert_eq!(ratio(timeline.likeness()), 0.9);
+        timeline.state = TimelineState::Running;
+        assert_eq!(timeline.likeness(), Some(Likeness::Pending));
+        timeline.state = TimelineState::Failed("broken".to_string());
+        assert_eq!(timeline.likeness(), None);
+
+        start(&mut timeline);
+        assert_eq!(timeline.likeness(), Some(Likeness::Pending));
+        timeline.clear();
+        assert_eq!(timeline.likeness(), None);
     }
 
     #[test]

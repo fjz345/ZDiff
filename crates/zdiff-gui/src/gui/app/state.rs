@@ -14,7 +14,7 @@ use crate::{
     pdb_dump::PdbDumpOptions,
     revert::RevertHistory,
     toggle_all::ToggleAll,
-    ui_egui::{syntax::DetectedLanguage, text_mode::TextMode},
+    ui_egui::{diff_pane::TextMetric, syntax::DetectedLanguage, text_mode::TextMode},
     viewer::{
         FfmpegSetting, SharedKinds, ViewerKind, ViewerOverride, Viewers,
         audio::{AudioDiffProcessor, AudioSettings},
@@ -122,6 +122,8 @@ pub struct AppStateCtx {
     #[cfg_attr(feature = "serde", serde(default))]
     pub text_mode: TextMode,
     #[cfg_attr(feature = "serde", serde(default))]
+    pub text_likeness: TextMetric,
+    #[cfg_attr(feature = "serde", serde(default))]
     pub sides_swapped: bool,
 
     #[cfg_attr(feature = "serde", serde(skip))]
@@ -176,6 +178,7 @@ impl Default for AppStateCtx {
             h_scroll_modifier: WheelModifier::Shift,
             word_wrap: false,
             text_mode: Default::default(),
+            text_likeness: Default::default(),
             sides_swapped: false,
             goto_open: Default::default(),
             find_open: Default::default(),
@@ -659,6 +662,22 @@ mod tests {
         json.as_object_mut().unwrap().remove("text_mode").unwrap();
         let restored: AppStateCtx = serde_json::from_value(json).unwrap();
         assert_eq!(restored.text_mode, TextMode::SideBySide);
+    }
+
+    #[test]
+    fn the_text_likeness_metric_survives_a_restart_and_older_saves_load_lines() {
+        let ctx = AppStateCtx {
+            text_likeness: TextMetric::Tokens,
+            ..AppStateCtx::default()
+        };
+        let json = serde_json::to_string(&ctx).unwrap();
+        let restored: AppStateCtx = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.text_likeness, TextMetric::Tokens);
+
+        let mut json = serde_json::to_value(AppStateCtx::default()).unwrap();
+        json.as_object_mut().unwrap().remove("text_likeness").unwrap();
+        let restored: AppStateCtx = serde_json::from_value(json).unwrap();
+        assert_eq!(restored.text_likeness, TextMetric::Lines);
     }
 
     #[test]
