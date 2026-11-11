@@ -9,6 +9,7 @@ pub mod likeness;
 pub mod log_window;
 pub mod pathbar;
 pub mod presets;
+pub mod revision;
 pub mod shared_keymap;
 pub mod style_window;
 pub mod table;
