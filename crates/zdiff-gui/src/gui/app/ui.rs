@@ -584,11 +584,12 @@ impl ZApp {
                     } else {
                         format!("+{}/-{}{}", total_adds, total_deletes, unit)
                     };
-                    send_title(
-                        ctx,
-                        &mut self.window_title,
-                        format!("zdiff [{}] - {}, {}", counts, source, target),
-                    );
+                    let title = if source.is_empty() && target.is_empty() {
+                        "zdiff".to_owned()
+                    } else {
+                        format!("zdiff [{counts}] - {source}, {target}")
+                    };
+                    send_title(ctx, &mut self.window_title, title);
                     break;
                 }
             }
