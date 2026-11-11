@@ -633,23 +633,11 @@ pub fn open_diff_tool_windows(exe: &Path, tool: &DiffTool, pair: &DiffPair) -> i
     log::info!("Opening diff tool {:?}", cmd);
     cmd.spawn()
 }
-#[cfg(target_os = "macos")]
-pub fn open_diff_tool_macos(exe: &Path, tool: &DiffTool, pair: &DiffPair) -> io::Result<Child> {
-    todo!();
-    let mut cmd = Command::new(exe);
-
-    log::info!("Opening diff tool {:?}", cmd);
-    cmd.spawn()
-}
-
 pub fn open_diff_tool(exe: &Path, tool: &DiffTool, pair: &DiffPair) -> io::Result<Child> {
     #[cfg(target_os = "windows")]
     return open_diff_tool_windows(exe, tool, pair);
 
-    #[cfg(target_os = "macos")]
-    return open_diff_tool_macos(exe, tool, pair);
-
-    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    #[cfg(not(target_os = "windows"))]
     Err(io::Error::from(io::ErrorKind::Unsupported))
 }
 

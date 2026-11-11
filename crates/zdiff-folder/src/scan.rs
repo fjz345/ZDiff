@@ -218,11 +218,17 @@ pub fn scan(
         found,
     };
     // Its own pool: listing blocks on IO and would stall compute work on the global one.
-    let pool = rayon::ThreadPoolBuilder::new()
+    let pool = match rayon::ThreadPoolBuilder::new()
         .thread_name(|i| format!("scan-{i}"))
         .stack_size(8 << 20)
         .build()
-        .expect("scan thread pool");
+    {
+        Ok(pool) => pool,
+        Err(e) => {
+            let e = io::Error::other(format!("starting the scan threads: {e}"));
+            return Some(Err(e));
+        }
+    };
     let listed = pool.install(|| lister.list(listing, &[root.to_path_buf()]))?;
 
     let mut builder = ModelBuilder {
