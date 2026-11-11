@@ -9,6 +9,7 @@ use std::{
 };
 
 use zcommon::hash::{Blake3Hash, hash_contents};
+pub use zcommon::history::HistoryStep;
 use zdiff::{
     cached_file::CachedFile,
     diff_builder::{DiffRow, LineContent},
@@ -422,12 +423,6 @@ pub fn write_revert(
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum HistoryStep {
-    Undo,
-    Redo,
-}
-
 /// Undo and redo of the reverts made in one diff. Reverts into either file share one stack, in
 /// the order they were made, and it is cleared when either side's path changes. Not persisted.
 #[derive(Debug, Default)]
@@ -456,6 +451,13 @@ impl RevertHistory {
     pub fn record(&mut self, record: RevertRecord) {
         self.redo.clear();
         self.undo.push(record);
+    }
+
+    pub fn can_step(&self, step: HistoryStep) -> bool {
+        match step {
+            HistoryStep::Undo => !self.undo.is_empty(),
+            HistoryStep::Redo => !self.redo.is_empty(),
+        }
     }
 
     /// Writes the latest undo (or redo) through `write(path, contents, expected)`, where

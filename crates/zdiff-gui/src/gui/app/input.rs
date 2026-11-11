@@ -177,7 +177,12 @@ impl ZApp {
                                 );
                             }
                         },
-                        FileAction::UndoRevert => history_step = Some(HistoryStep::Undo),
+                        FileAction::Undo | FileAction::Redo
+                            if let Some(merge) = &mut self.merge =>
+                        {
+                            merge.undo_redo(action == FileAction::Redo);
+                        }
+                        FileAction::Undo => history_step = Some(HistoryStep::Undo),
                         FileAction::Redo => history_step = Some(HistoryStep::Redo),
                         FileAction::DiffLocalFile => diff_local_file = true,
                         FileAction::DiffShelfBase => diff_shelf_base = true,
@@ -299,7 +304,7 @@ impl ZApp {
             }
         }
         if let Some(step) = history_step {
-            Self::step_revert_history(app_state_ctx, step);
+            Self::step_history(app_state_ctx, step);
         }
         // After the input closure too: p4 can take a while.
         if diff_local_file {

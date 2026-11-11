@@ -1,4 +1,4 @@
-use eframe::egui::{self, Key, RichText};
+use eframe::egui::{self, Key, PointerButton, RichText};
 
 use super::common::{confirm_button, icon_button, reset_button};
 use super::keymap::{Action, Keymap, Shortcut};
@@ -39,7 +39,7 @@ impl<A: Action> KeymapEditor<A> {
 
     fn keymap_ui(&mut self, ui: &mut egui::Ui, keymap: &mut Keymap<A>) {
         if let Some((action, slot)) = self.capture
-            && let Some(captured) = take_key_press(ui)
+            && let Some(captured) = take_press(ui)
         {
             self.capture = None;
             if let Some(shortcut) = captured {
@@ -68,7 +68,7 @@ impl<A: Action> KeymapEditor<A> {
                 }
             });
         });
-        ui.weak("Click a shortcut to rebind it, Esc cancels");
+        ui.weak("Click a shortcut to rebind it to keys or a mouse button, Esc cancels");
         ui.add_space(4.0);
 
         let clashes = keymap.clashes();
@@ -165,23 +165,34 @@ fn clash_text(others: &[&str]) -> String {
 }
 
 /// `Some(None)` for Esc, which cancels.
-fn take_key_press(ui: &egui::Ui) -> Option<Option<Shortcut>> {
+fn take_press(ui: &egui::Ui) -> Option<Option<Shortcut>> {
     ui.input_mut(|input| {
-        let index = input.events.iter().position(|event| {
-            matches!(
-                event,
-                egui::Event::Key {
-                    pressed: true,
-                    repeat: false,
-                    ..
-                }
-            )
-        })?;
-        let egui::Event::Key { key, modifiers, .. } = input.events.remove(index) else {
-            unreachable!("position matched a key event");
-        };
-        Some((key != Key::Escape).then_some(Shortcut { key, modifiers }))
+        let index = input
+            .events
+            .iter()
+            .position(|event| capture(event).is_some())?;
+        capture(&input.events.remove(index))
     })
+}
+
+fn capture(event: &egui::Event) -> Option<Option<Shortcut>> {
+    match *event {
+        egui::Event::Key {
+            key,
+            pressed: true,
+            repeat: false,
+            modifiers,
+            ..
+        } => Some((key != Key::Escape).then_some(Shortcut::Key { key, modifiers })),
+        // The primary button clicks widgets and the secondary opens context menus.
+        egui::Event::PointerButton {
+            button: button @ (PointerButton::Middle | PointerButton::Extra1 | PointerButton::Extra2),
+            pressed: true,
+            modifiers,
+            ..
+        } => Some(Some(Shortcut::Pointer { button, modifiers })),
+        _ => None,
+    }
 }
 
 fn matches_filter(label: &str, shortcuts: &[Shortcut], filter: &str) -> bool {
@@ -210,7 +221,7 @@ mod tests {
 
     #[test]
     fn filter_matches_label_or_shortcut_text_ignoring_case() {
-        let shortcuts = [Shortcut {
+        let shortcuts = [Shortcut::Key {
             key: Key::F,
             modifiers: Modifiers::CTRL,
         }];
@@ -220,5 +231,48 @@ mod tests {
         assert!(matches_filter("Find", &shortcuts, "ctrl+f"));
         assert!(!matches_filter("Find", &shortcuts, "alt"));
         assert!(!matches_filter("Find", &[], "ctrl"));
+    }
+
+    #[test]
+    fn capture_takes_key_presses_and_the_middle_back_and_forward_buttons() {
+        let key = |key, pressed, repeat| egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed,
+            repeat,
+            modifiers: Modifiers::CTRL,
+        };
+        let pointer = |button, pressed| egui::Event::PointerButton {
+            pos: egui::Pos2::ZERO,
+            button,
+            pressed,
+            modifiers: Modifiers::SHIFT,
+        };
+        assert_eq!(
+            capture(&key(Key::Z, true, false)),
+            Some(Some(Shortcut::Key {
+                key: Key::Z,
+                modifiers: Modifiers::CTRL
+            }))
+        );
+        assert_eq!(capture(&key(Key::Escape, true, false)), Some(None));
+        assert_eq!(capture(&key(Key::Z, true, true)), None);
+        assert_eq!(capture(&key(Key::Z, false, false)), None);
+        for button in [
+            PointerButton::Middle,
+            PointerButton::Extra1,
+            PointerButton::Extra2,
+        ] {
+            assert_eq!(
+                capture(&pointer(button, true)),
+                Some(Some(Shortcut::Pointer {
+                    button,
+                    modifiers: Modifiers::SHIFT
+                }))
+            );
+            assert_eq!(capture(&pointer(button, false)), None);
+        }
+        assert_eq!(capture(&pointer(PointerButton::Primary, true)), None);
+        assert_eq!(capture(&pointer(PointerButton::Secondary, true)), None);
     }
 }

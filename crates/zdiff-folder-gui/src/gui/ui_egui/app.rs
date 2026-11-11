@@ -13,6 +13,7 @@ use std::{
 use zcommon::{
     find::{FindError, Matcher},
     hash::HashService,
+    history::{HistoryStep, SnapshotHistory},
     job::Job,
     kinds::KindTable,
     logger::{self, LogBuffer},
@@ -52,6 +53,7 @@ use crate::ui_egui::{
     tree_compare::{CompareUpdate, PairLikeness, TreeCompare, patch_row_states},
     tree_filter::{DiffFilter, DuplicatesFilter, arrange_two_folder_rows},
     tree_find::{FindChipEvent, FolderFind, TreeFindView, find_mask},
+    tree_map,
     tree_sort::TreeSort,
     tree_tolerance::Tolerance,
 };
@@ -144,6 +146,14 @@ pub struct AppStateCtx {
     tool_message: Option<ToolMessage>,
     #[serde(default, deserialize_with = "folder_keymap::deserialize_keymap")]
     keymap: Keymap<FolderAction>,
+    #[serde(skip)]
+    nav_history: SnapshotHistory<FolderNav>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct FolderNav {
+    roots: [Option<PathBuf>; 2],
+    sides_swapped: bool,
 }
 
 struct BuiltRowsKey {
@@ -173,6 +183,33 @@ fn built_rows_bytes(rows: &[VisibleRowTwoFolderDiff]) -> usize {
 }
 
 impl AppStateCtx {
+    fn observe_nav(&mut self) {
+        let now = FolderNav {
+            roots: [
+                self.file_system_1_root_path.clone(),
+                self.file_system_2_root_path.clone(),
+            ],
+            sides_swapped: self.sides_swapped,
+        };
+        self.nav_history.observe(&now);
+    }
+
+    fn step_nav(&mut self, step: HistoryStep) {
+        self.observe_nav();
+        let Some(FolderNav {
+            roots: [root_1, root_2],
+            sides_swapped,
+        }) = self.nav_history.step(step)
+        else {
+            log::info!("{step:?}: nothing to step");
+            return;
+        };
+        log::info!("{step:?}: {root_1:?} | {root_2:?}");
+        self.file_system_1_root_path = root_1;
+        self.file_system_2_root_path = root_2;
+        self.sides_swapped = sides_swapped;
+    }
+
     /// Rebuilds the two-folder rows when they were dropped or the filter or sort changed since
     /// they were built. Here rather than at the edit, so the rows are never missing mid-frame.
     fn build_two_folder_diff_rows_if_stale(&mut self) {
@@ -1091,14 +1128,36 @@ impl ZApp {
         // consuming the key, so a later check would hand that Enter to the tree cursor.
         let capturing = self.keybindings_window.is_capturing();
         let keyboard_taken = ctx.wants_keyboard_input() || capturing;
+        let map_claims_back = tree_map::take_mouse_back_claim(ctx);
         let mut actions = if capturing {
             Vec::new()
         } else {
-            ctx.input(|i| app_ctx.keymap.dispatch(&i.events, keyboard_taken))
+            ctx.input(|i| {
+                let claimed = |e: &egui::Event| {
+                    map_claims_back
+                        && matches!(
+                            e,
+                            egui::Event::PointerButton {
+                                button: PointerButton::Extra1,
+                                ..
+                            }
+                        )
+                };
+                let events: Vec<_> = i.events.iter().filter(|e| !claimed(e)).cloned().collect();
+                app_ctx.keymap.dispatch(&events, keyboard_taken)
+            })
         };
         // The menu draws after this frame's actions are taken, so its export runs next frame.
         if std::mem::take(&mut self.export_requested) {
             actions.push(FolderAction::Export);
+        }
+        app_ctx.observe_nav();
+        for action in &actions {
+            match action {
+                FolderAction::Undo => app_ctx.step_nav(HistoryStep::Undo),
+                FolderAction::Redo => app_ctx.step_nav(HistoryStep::Redo),
+                _ => {}
+            }
         }
         if actions.contains(&FolderAction::OpenFolder1) {
             self.open_dir_window_1 = true;
@@ -1804,11 +1863,11 @@ mod tests {
 
     #[test]
     fn a_keymap_saved_with_the_old_f5_refresh_default_moves_to_the_new_default() {
-        let f5 = Shortcut {
+        let f5 = Shortcut::Key {
             key: egui::Key::F5,
             modifiers: egui::Modifiers::NONE,
         };
-        let custom = Shortcut {
+        let custom = Shortcut::Key {
             key: egui::Key::F6,
             modifiers: egui::Modifiers::NONE,
         };
@@ -2861,6 +2920,36 @@ mod tests {
         state.build_two_folder_diff_rows_if_stale();
         state.update_scans(&egui::Context::default());
         assert!(state.two_folder_diff_visible_rows.is_some());
+    }
+
+    #[test]
+    fn undo_and_redo_step_through_root_changes_and_swaps() {
+        use zcommon::history::HistoryStep::{Redo, Undo};
+        let (a, b) = (PathBuf::from(r"C:\a"), PathBuf::from(r"C:\b"));
+        let branch = PathBuf::from(r"C:\a@git:main");
+        let mut state = AppStateCtx {
+            file_system_1_root_path: Some(a.clone()),
+            file_system_2_root_path: Some(b.clone()),
+            ..Default::default()
+        };
+        state.observe_nav();
+        state.file_system_1_root_path = Some(branch.clone());
+        state.observe_nav();
+        state.sides_swapped = true;
+
+        state.step_nav(Undo);
+        assert!(!state.sides_swapped);
+        assert_eq!(state.file_system_1_root_path.as_ref(), Some(&branch));
+        state.step_nav(Undo);
+        assert_eq!(state.file_system_1_root_path.as_ref(), Some(&a));
+        assert_eq!(state.file_system_2_root_path.as_ref(), Some(&b));
+        state.step_nav(Undo);
+        assert_eq!(state.file_system_1_root_path.as_ref(), Some(&a));
+
+        state.step_nav(Redo);
+        state.step_nav(Redo);
+        assert_eq!(state.file_system_1_root_path.as_ref(), Some(&branch));
+        assert!(state.sides_swapped);
     }
 
     #[test]

@@ -32,6 +32,8 @@ pub enum FolderAction {
     ToggleDiffMode,
     Export,
     ToggleMap,
+    Undo,
+    Redo,
 }
 
 impl Action for FolderAction {
@@ -54,6 +56,8 @@ impl Action for FolderAction {
             Self::ToggleDiffMode,
             Self::Export,
             Self::ToggleMap,
+            Self::Undo,
+            Self::Redo,
         ]
     }
 
@@ -76,6 +80,8 @@ impl Action for FolderAction {
             Self::ToggleDiffMode => "toggle_diff_mode",
             Self::Export => "export",
             Self::ToggleMap => "toggle_map",
+            Self::Undo => "undo",
+            Self::Redo => "redo",
         }
     }
 
@@ -98,6 +104,8 @@ impl Action for FolderAction {
             Self::ToggleDiffMode => "Switch Path / Duplicate Diff",
             Self::Export => "Export Folder Diff / Duplicates",
             Self::ToggleMap => "Switch Tree / Map View",
+            Self::Undo => "Undo",
+            Self::Redo => "Redo",
         }
     }
 
@@ -111,30 +119,32 @@ impl Action for FolderAction {
             Self::SwapSides => SharedAction::SwapSides.defaults(),
             Self::OpenKeybindings => SharedAction::OpenKeybindings.defaults(),
             Self::Find => SharedAction::Find.defaults(),
-            Self::KeepThis => &[Shortcut {
+            Self::KeepThis => &[Shortcut::Key {
                 key: Key::K,
                 modifiers: CTRL,
             }],
-            Self::NextGroup => &[Shortcut {
+            Self::NextGroup => &[Shortcut::Key {
                 key: Key::Num4,
                 modifiers: CTRL,
             }],
-            Self::PrevGroup => &[Shortcut {
+            Self::PrevGroup => &[Shortcut::Key {
                 key: Key::Num3,
                 modifiers: CTRL,
             }],
             Self::ClearPaths => SharedAction::ClearPaths.defaults(),
             Self::OpenStyle => SharedAction::OpenStyle.defaults(),
-            Self::OpenDiffTools => &[Shortcut {
+            Self::OpenDiffTools => &[Shortcut::Key {
                 key: Key::T,
                 modifiers: CTRL,
             }],
-            Self::ToggleDiffMode => &[Shortcut {
+            Self::ToggleDiffMode => &[Shortcut::Key {
                 key: Key::D,
                 modifiers: CTRL,
             }],
             Self::Export => SharedAction::Export.defaults(),
-            Self::ToggleMap => &[Shortcut {
+            Self::Undo => SharedAction::Undo.defaults(),
+            Self::Redo => SharedAction::Redo.defaults(),
+            Self::ToggleMap => &[Shortcut::Key {
                 key: Key::M,
                 modifiers: CTRL,
             }],
@@ -143,7 +153,7 @@ impl Action for FolderAction {
 
     fn typing_policy(self) -> TypingPolicy {
         match self {
-            Self::ClearPaths => TypingPolicy::Never,
+            Self::ClearPaths | Self::Undo | Self::Redo => TypingPolicy::Never,
             _ => TypingPolicy::CtrlOrAlt,
         }
     }
@@ -161,6 +171,8 @@ impl Action for FolderAction {
             Self::ClearPaths => Some(SharedAction::ClearPaths),
             Self::OpenStyle => Some(SharedAction::OpenStyle),
             Self::Export => Some(SharedAction::Export),
+            Self::Undo => Some(SharedAction::Undo),
+            Self::Redo => Some(SharedAction::Redo),
             Self::KeepThis
             | Self::NextGroup
             | Self::PrevGroup
@@ -176,7 +188,7 @@ pub fn deserialize_keymap<'de, D: serde::Deserializer<'de>>(
     deserializer: D,
 ) -> Result<Keymap<FolderAction>, D::Error> {
     let mut keymap = <Keymap<FolderAction> as serde::Deserialize>::deserialize(deserializer)?;
-    let old_default = [Shortcut {
+    let old_default = [Shortcut::Key {
         key: Key::F5,
         modifiers: Modifiers::NONE,
     }];

@@ -1,37 +1,86 @@
 use std::{collections::HashMap, hash::Hash};
 
-use eframe::egui::{self, Key, Modifiers};
+use eframe::egui::{self, Key, Modifiers, PointerButton};
 
 use super::shared_keymap::SharedAction;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[derive(serde::Serialize, serde::Deserialize)]
-pub struct Shortcut {
-    pub key: Key,
-    pub modifiers: Modifiers,
+// Untagged so a key shortcut keeps the `{key, modifiers}` shape older keymap files hold.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(untagged)]
+pub enum Shortcut {
+    Key {
+        key: Key,
+        modifiers: Modifiers,
+    },
+    Pointer {
+        button: PointerButton,
+        modifiers: Modifiers,
+    },
 }
 
 impl Shortcut {
+    pub fn modifiers(&self) -> Modifiers {
+        match *self {
+            Self::Key { modifiers, .. } | Self::Pointer { modifiers, .. } => modifiers,
+        }
+    }
+
     pub fn format(&self) -> String {
+        let modifiers = self.modifiers();
         let mut s = String::new();
-        if self.modifiers.ctrl {
+        if modifiers.ctrl {
             s.push_str("Ctrl+");
         }
-        if self.modifiers.shift {
+        if modifiers.shift {
             s.push_str("Shift+");
         }
-        if self.modifiers.alt {
+        if modifiers.alt {
             s.push_str("Alt+");
         }
-        if self.modifiers.mac_cmd {
+        if modifiers.mac_cmd {
             s.push_str("Cmd+");
         }
-        s.push_str(&format!("{:?}", self.key));
+        match self {
+            Self::Key { key, .. } => s.push_str(&format!("{key:?}")),
+            Self::Pointer { button, .. } => s.push_str(pointer_name(*button)),
+        }
         s
     }
 
     pub fn matches(&self, r: &egui::InputState) -> bool {
-        r.key_pressed(self.key) && r.modifiers == self.modifiers
+        let pressed = match *self {
+            Self::Key { key, .. } => r.key_pressed(key),
+            Self::Pointer { button, .. } => r.pointer.button_pressed(button),
+        };
+        pressed && r.modifiers == self.modifiers()
+    }
+
+    fn pressed_by(event: &egui::Event) -> Option<Self> {
+        match *event {
+            egui::Event::Key {
+                key,
+                pressed: true,
+                modifiers,
+                ..
+            } => Some(Self::Key { key, modifiers }),
+            egui::Event::PointerButton {
+                button,
+                pressed: true,
+                modifiers,
+                ..
+            } => Some(Self::Pointer { button, modifiers }),
+            _ => None,
+        }
+    }
+}
+
+fn pointer_name(button: PointerButton) -> &'static str {
+    match button {
+        PointerButton::Primary => "Mouse Left",
+        PointerButton::Secondary => "Mouse Right",
+        PointerButton::Middle => "Mouse Middle",
+        PointerButton::Extra1 => "Mouse Back",
+        PointerButton::Extra2 => "Mouse Forward",
     }
 }
 
@@ -84,19 +133,10 @@ impl<A: Action> Keymap<A> {
     pub fn dispatch(&self, events: &[egui::Event], text_focus: bool) -> Vec<A> {
         let mut triggered = Vec::new();
         for event in events {
-            let egui::Event::Key {
-                key,
-                pressed: true,
-                modifiers,
-                ..
-            } = event
-            else {
+            let Some(pressed) = Shortcut::pressed_by(event) else {
                 continue;
             };
-            let pressed = Shortcut {
-                key: *key,
-                modifiers: *modifiers,
-            };
+            let modifiers = pressed.modifiers();
             for &action in A::all() {
                 if !self.shortcuts(action).contains(&pressed) {
                     continue;
@@ -243,29 +283,29 @@ mod tests {
 
         fn defaults(self) -> &'static [Shortcut] {
             match self {
-                Self::Find => &[Shortcut {
+                Self::Find => &[Shortcut::Key {
                     key: Key::F,
                     modifiers: CTRL,
                 }],
                 Self::NextConflict => &[
-                    Shortcut {
+                    Shortcut::Key {
                         key: Key::Num2,
                         modifiers: CTRL,
                     },
-                    Shortcut {
+                    Shortcut::Key {
                         key: Key::ArrowDown,
                         modifiers: Modifiers::ALT,
                     },
                 ],
-                Self::PrevConflict => &[Shortcut {
+                Self::PrevConflict => &[Shortcut::Key {
                     key: Key::Num1,
                     modifiers: CTRL_SHIFT,
                 }],
-                Self::Refresh => &[Shortcut {
+                Self::Refresh => &[Shortcut::Key {
                     key: Key::F5,
                     modifiers: Modifiers::NONE,
                 }],
-                Self::Redo => &[Shortcut {
+                Self::Redo => &[Shortcut::Key {
                     key: Key::Y,
                     modifiers: CTRL,
                 }],
@@ -298,6 +338,80 @@ mod tests {
             repeat: false,
             modifiers,
         }
+    }
+
+    fn pointer(button: PointerButton, pressed: bool, modifiers: Modifiers) -> egui::Event {
+        egui::Event::PointerButton {
+            pos: egui::Pos2::ZERO,
+            button,
+            pressed,
+            modifiers,
+        }
+    }
+
+    fn with_back_on_refresh() -> Keymap<TestAction> {
+        let mut keymap = Keymap::<TestAction>::default();
+        keymap
+            .shortcuts_mut(TestAction::Refresh)
+            .push(Shortcut::Pointer {
+                button: PointerButton::Extra1,
+                modifiers: Modifiers::NONE,
+            });
+        keymap
+    }
+
+    #[test]
+    fn dispatch_fires_a_pointer_binding_on_its_press_only() {
+        let keymap = with_back_on_refresh();
+        let events = [
+            pointer(PointerButton::Extra1, true, Modifiers::NONE),
+            pointer(PointerButton::Extra1, false, Modifiers::NONE),
+            pointer(PointerButton::Extra2, true, Modifiers::NONE),
+            pointer(PointerButton::Primary, true, Modifiers::NONE),
+            pointer(PointerButton::Extra1, true, CTRL),
+        ];
+        assert_eq!(keymap.dispatch(&events, false), [TestAction::Refresh]);
+    }
+
+    #[test]
+    fn dispatch_applies_the_typing_policy_to_pointer_bindings() {
+        let mut keymap = with_back_on_refresh();
+        let back = [pointer(PointerButton::Extra1, true, Modifiers::NONE)];
+        assert!(keymap.dispatch(&back, true).is_empty());
+
+        keymap
+            .shortcuts_mut(TestAction::Redo)
+            .push(Shortcut::Pointer {
+                button: PointerButton::Extra2,
+                modifiers: CTRL,
+            });
+        let ctrl_forward = [pointer(PointerButton::Extra2, true, CTRL)];
+        assert!(keymap.dispatch(&ctrl_forward, true).is_empty());
+        assert_eq!(keymap.dispatch(&ctrl_forward, false), [TestAction::Redo]);
+    }
+
+    #[test]
+    fn a_key_shortcut_keeps_the_json_shape_of_older_keymaps() {
+        let ctrl_f = Shortcut::Key {
+            key: Key::F,
+            modifiers: CTRL,
+        };
+        let json = serde_json::to_value(ctrl_f).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({ "key": "F", "modifiers": serde_json::to_value(CTRL).unwrap() })
+        );
+        assert_eq!(serde_json::from_value::<Shortcut>(json).unwrap(), ctrl_f);
+    }
+
+    #[test]
+    fn a_pointer_shortcut_round_trips_through_json() {
+        let back = Shortcut::Pointer {
+            button: PointerButton::Extra1,
+            modifiers: Modifiers::SHIFT,
+        };
+        let json = serde_json::to_string(&back).unwrap();
+        assert_eq!(serde_json::from_str::<Shortcut>(&json).unwrap(), back);
     }
 
     #[test]
@@ -407,10 +521,12 @@ mod tests {
     #[test]
     fn keymap_serde_round_trip() {
         let mut keymap = Keymap::<TestAction>::default();
-        keymap.shortcuts_mut(TestAction::Refresh).push(Shortcut {
-            key: Key::R,
-            modifiers: CTRL,
-        });
+        keymap
+            .shortcuts_mut(TestAction::Refresh)
+            .push(Shortcut::Key {
+                key: Key::R,
+                modifiers: CTRL,
+            });
         let json = serde_json::to_string(&keymap).unwrap();
         assert_eq!(
             serde_json::from_str::<Keymap<TestAction>>(&json).unwrap(),
@@ -460,7 +576,7 @@ mod tests {
         );
         keymap.shortcuts_mut(TestAction::Find).insert(
             0,
-            Shortcut {
+            Shortcut::Key {
                 key: Key::F5,
                 modifiers: Modifiers::CTRL,
             },

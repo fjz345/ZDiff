@@ -484,6 +484,16 @@ struct LayoutKey {
     params: LayoutParams,
 }
 
+fn mouse_back_claim_id() -> egui::Id {
+    egui::Id::new("tree_map_mouse_back_claim")
+}
+
+// Last frame's claim: a zoomed-in map under the pointer zooms out on the back button instead.
+pub fn take_mouse_back_claim(ctx: &egui::Context) -> bool {
+    ctx.data_mut(|d| d.remove_temp::<bool>(mouse_back_claim_id()))
+        .unwrap_or(false)
+}
+
 #[derive(Default)]
 pub struct TreeMap {
     zoom: String,
@@ -622,6 +632,8 @@ impl TreeMap {
         let back = (!keyboard_taken && ui.input(|i| i.key_pressed(egui::Key::Backspace)))
             || (response.hovered()
                 && ui.input(|i| i.pointer.button_clicked(egui::PointerButton::Extra1)));
+        let claims_back = response.hovered() && root != ROOT;
+        ui.data_mut(|d| d.insert_temp(mouse_back_claim_id(), claims_back));
         if back && root != ROOT {
             zoom = Some(tree.nodes[root].parent);
         }
@@ -1346,6 +1358,38 @@ mod tests {
         map.frame(vec![backspace]);
         assert_eq!(map.map.zoom, "");
         assert_eq!(map.cursor, TreeCursor::at("a/sub/y.txt"));
+    }
+
+    #[test]
+    fn a_zoomed_in_map_under_the_pointer_claims_the_mouse_back_button() {
+        let mut map = MapHarness::new(&[("a/x.txt", 3000), ("a/y.txt", 1000), ("b.bin", 4000)]);
+        map.collapse("a");
+        map.frame(Vec::new());
+        let pos = map.point_on("b.bin");
+        map.frame(vec![egui::Event::PointerMoved(pos)]);
+        assert!(!take_mouse_back_claim(&map.ctx), "not zoomed in");
+
+        map.click("a");
+        assert_eq!(map.map.zoom, "a");
+        assert!(take_mouse_back_claim(&map.ctx));
+        assert!(!take_mouse_back_claim(&map.ctx), "taken once per frame");
+
+        map.frame(vec![egui::Event::PointerGone]);
+        map.frame(Vec::new());
+        assert!(!take_mouse_back_claim(&map.ctx), "pointer left the map");
+
+        let back = |pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Extra1,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        map.frame(vec![egui::Event::PointerMoved(pos)]);
+        map.frame(vec![back(true)]);
+        map.frame(vec![back(false)]);
+        assert_eq!(map.map.zoom, "");
+        map.frame(Vec::new());
+        assert!(!take_mouse_back_claim(&map.ctx), "zoomed out");
     }
 
     #[test]

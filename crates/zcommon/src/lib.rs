@@ -3,6 +3,7 @@ pub mod crash;
 pub mod ffmpeg;
 pub mod find;
 pub mod hash;
+pub mod history;
 pub mod job;
 pub mod kinds;
 pub mod logger;

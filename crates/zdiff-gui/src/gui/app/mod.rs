@@ -1,6 +1,7 @@
 mod input;
 mod launch;
 mod menu;
+mod nav;
 mod quickdiff;
 mod revert_write;
 mod state;
@@ -339,7 +340,7 @@ impl eframe::App for ZApp {
                 let path_1 = state.file_1.get_full_path();
                 let path_2 = state.file_2.get_full_path();
                 state.viewer_override.observe_pair(&path_1, &path_2);
-                state.revert_history.observe_pair(&path_1, &path_2);
+                state.observe_history();
                 fn side(f: &LoadedFile) -> LoadedSide<'_> {
                     LoadedSide {
                         path: f.path(),

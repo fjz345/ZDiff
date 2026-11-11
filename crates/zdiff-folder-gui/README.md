@@ -44,7 +44,8 @@ A crash (panic) appends its message, source location and backtrace to `crash.log
     - Size collisions hashed in the background, with progress and Cancel
     - Duplicate groups shown inline in the tree; Duplicates only, Flat, Show parent folders and Hash column toggles
     - Keep this, next/previous group, then Resolve recycles the non-keepers
-* Customizable keybindings (Ctrl+O), style window
+* Undo (Ctrl+Z, mouse back) and redo (Ctrl+Y, Ctrl+Shift+Z, mouse forward) of root changes on either side, revision picks included, and swap sides, up to 100 steps; filters, sort and folding are not undone. Over a zoomed-in map the back button zooms out instead
+* Customizable keybindings (Ctrl+O), shared with zdiff-gui for the common actions (undo and redo included); the middle, back and forward mouse buttons can be bound too, style window
 * Frame rate counter at the right end of the menu bar, marked idle once frames stop; clicking it (or Options > Frame Time Breakdown) shows the average and max time per frame stage over the last 120 frames
 
 ## Configuration

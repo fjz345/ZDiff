@@ -10,8 +10,9 @@ GUI for zdiff crate
     - Linear MT version
     - Trace version
 * Keybindings
-    - Customizable (Ctrl+O), every toolbar toggle has an action
+    - Customizable (Ctrl+O), every toolbar toggle has an action; the middle, back and forward mouse buttons can be bound too
     - P4 integrated commands and quick diffs (F1-F4)
+* Undo (Ctrl+Z, mouse back) and redo (Ctrl+Y, Ctrl+Shift+Z, mouse forward) of the latest action: a side's file or revision (path bar, Source control dropdown, browser, drop, quick diff, clear paths), swap sides and hunk reverts, in one history of up to 100 steps. Reverts made on the shown pair step first; going back to another pair drops their history (the files keep the reverted contents). Option toggles, viewer modes and scrolling are not undone. In the merge view the same keys undo and redo merge picks; a focused text field keeps its own Ctrl+Z
 * Text diff view
     - Side by side, Unified, or a single side at full width with its changed lines tinted
     - Patch: the diff as the unified patch Export Diff writes (3 context lines, current ignore options), with a Copy patch button; find, goto line and hunk revert work only in the row views

@@ -39,7 +39,7 @@ const CTRL_SHIFT: Modifiers = Modifiers {
 const CTRL_ALT: Modifiers = Modifiers { alt: true, ..CTRL };
 
 const fn shortcut(key: Key, modifiers: Modifiers) -> Shortcut {
-    Shortcut { key, modifiers }
+    Shortcut::Key { key, modifiers }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -58,7 +58,7 @@ pub enum FileAction {
     PrevFind,
     RevisionGraph,
     TimelapseView,
-    UndoRevert,
+    Undo,
     Redo,
     /// Target becomes the local file of the source depot file.
     DiffLocalFile,
@@ -104,7 +104,7 @@ impl Action for FileAction {
             Self::PrevFind,
             Self::RevisionGraph,
             Self::TimelapseView,
-            Self::UndoRevert,
+            Self::Undo,
             Self::Redo,
             Self::DiffLocalFile,
             Self::DiffShelfBase,
@@ -149,7 +149,7 @@ impl Action for FileAction {
             Self::PrevFind => "prev_find",
             Self::RevisionGraph => "revision_graph",
             Self::TimelapseView => "timelapse_view",
-            Self::UndoRevert => "undo_revert",
+            Self::Undo => "undo_revert",
             Self::Redo => "redo_revert",
             Self::DiffLocalFile => "diff_local_file",
             Self::DiffShelfBase => "diff_shelf_base",
@@ -194,8 +194,8 @@ impl Action for FileAction {
             Self::PrevFind => "Previous Find Result",
             Self::RevisionGraph => "P4V Revision Graph",
             Self::TimelapseView => "P4V Timelapse View",
-            Self::UndoRevert => "Undo Revert",
-            Self::Redo => "Redo Revert",
+            Self::Undo => "Undo",
+            Self::Redo => "Redo",
             Self::DiffLocalFile => "Diff Source Against Local File",
             Self::DiffShelfBase => "Diff Shelved File Against Its Base Revision",
             Self::SwapSides => "Swap Sides",
@@ -228,131 +228,119 @@ impl Action for FileAction {
             Self::OpenFileSource => SharedAction::Open1.defaults(),
             Self::OpenFileTarget => SharedAction::Open2.defaults(),
             Self::RefreshDiff => SharedAction::Refresh.defaults(),
-            Self::RefreshDiffRowsOnly => &[Shortcut {
+            Self::RefreshDiffRowsOnly => &[Shortcut::Key {
                 key: Key::R,
                 modifiers: CTRL_ALT,
             }],
             Self::OpenKeybindings => SharedAction::OpenKeybindings.defaults(),
-            Self::OpenUniversalPath => &[Shortcut {
+            Self::OpenUniversalPath => &[Shortcut::Key {
                 key: Key::U,
                 modifiers: CTRL,
             }],
             Self::Find => SharedAction::Find.defaults(),
-            Self::Goto => &[Shortcut {
+            Self::Goto => &[Shortcut::Key {
                 key: Key::G,
                 modifiers: CTRL,
             }],
             Self::NextConflict => SharedAction::NextDiff.defaults(),
             Self::PrevConflict => SharedAction::PrevDiff.defaults(),
-            Self::NextFind => &[Shortcut {
+            Self::NextFind => &[Shortcut::Key {
                 key: Key::Enter,
                 modifiers: Modifiers::NONE,
             }],
-            Self::PrevFind => &[Shortcut {
+            Self::PrevFind => &[Shortcut::Key {
                 key: Key::Enter,
                 modifiers: Modifiers::SHIFT,
             }],
-            Self::RevisionGraph => &[Shortcut {
+            Self::RevisionGraph => &[Shortcut::Key {
                 key: Key::R,
                 modifiers: CTRL_SHIFT,
             }],
-            Self::TimelapseView => &[Shortcut {
+            Self::TimelapseView => &[Shortcut::Key {
                 key: Key::T,
                 modifiers: CTRL_SHIFT,
             }],
-            Self::UndoRevert => &[Shortcut {
-                key: Key::Z,
-                modifiers: CTRL,
-            }],
-            Self::Redo => &[
-                Shortcut {
-                    key: Key::Y,
-                    modifiers: CTRL,
-                },
-                Shortcut {
-                    key: Key::Z,
-                    modifiers: CTRL_SHIFT,
-                },
-            ],
-            Self::DiffLocalFile => &[Shortcut {
+            Self::Undo => SharedAction::Undo.defaults(),
+            Self::Redo => SharedAction::Redo.defaults(),
+            Self::DiffLocalFile => &[Shortcut::Key {
                 key: Key::L,
                 modifiers: CTRL,
             }],
             Self::SwapSides => SharedAction::SwapSides.defaults(),
-            Self::IgnoreWhitespace => &[Shortcut {
+            Self::IgnoreWhitespace => &[Shortcut::Key {
                 key: Key::W,
                 modifiers: Modifiers::ALT,
             }],
-            Self::IgnoreComments => &[Shortcut {
+            Self::IgnoreComments => &[Shortcut::Key {
                 key: Key::C,
                 modifiers: Modifiers::ALT,
             }],
-            Self::IgnoreRegex => &[Shortcut {
+            Self::IgnoreRegex => &[Shortcut::Key {
                 key: Key::X,
                 modifiers: Modifiers::ALT,
             }],
-            Self::IgnoreLineEndings => &[Shortcut {
+            Self::IgnoreLineEndings => &[Shortcut::Key {
                 key: Key::E,
                 modifiers: Modifiers::ALT,
             }],
-            Self::IgnoreFileMarkers => &[Shortcut {
+            Self::IgnoreFileMarkers => &[Shortcut::Key {
                 key: Key::M,
                 modifiers: Modifiers::ALT,
             }],
-            Self::HighlightRows => &[Shortcut {
+            Self::HighlightRows => &[Shortcut::Key {
                 key: Key::H,
                 modifiers: Modifiers::ALT,
             }],
-            Self::GhostRows => &[Shortcut {
+            Self::GhostRows => &[Shortcut::Key {
                 key: Key::G,
                 modifiers: Modifiers::ALT,
             }],
-            Self::LinkHScroll => &[Shortcut {
+            Self::LinkHScroll => &[Shortcut::Key {
                 key: Key::L,
                 modifiers: Modifiers::ALT,
             }],
-            Self::WordWrap => &[Shortcut {
+            Self::WordWrap => &[Shortcut::Key {
                 key: Key::Z,
                 modifiers: Modifiers::ALT,
             }],
-            Self::DiffOnly => &[Shortcut {
+            Self::DiffOnly => &[Shortcut::Key {
                 key: Key::D,
                 modifiers: Modifiers::ALT,
             }],
-            Self::FewerContextRows => &[Shortcut {
+            Self::FewerContextRows => &[Shortcut::Key {
                 key: Key::OpenBracket,
                 modifiers: Modifiers::ALT,
             }],
-            Self::MoreContextRows => &[Shortcut {
+            Self::MoreContextRows => &[Shortcut::Key {
                 key: Key::CloseBracket,
                 modifiers: Modifiers::ALT,
             }],
-            Self::ToggleAllOptions => &[Shortcut {
+            Self::ToggleAllOptions => &[Shortcut::Key {
                 key: Key::A,
                 modifiers: Modifiers::ALT,
             }],
-            Self::DiffShelfBase => &[Shortcut {
+            Self::DiffShelfBase => &[Shortcut::Key {
                 key: Key::B,
                 modifiers: CTRL,
             }],
-            Self::SaveMerge => &[Shortcut {
+            Self::SaveMerge => &[Shortcut::Key {
                 key: Key::S,
                 modifiers: CTRL,
             }],
-            Self::NextFrame => &[Shortcut {
+            Self::NextFrame => &[Shortcut::Key {
                 key: Key::ArrowRight,
                 modifiers: Modifiers::NONE,
             }],
-            Self::PrevFrame => &[Shortcut {
+            Self::PrevFrame => &[Shortcut::Key {
                 key: Key::ArrowLeft,
                 modifiers: Modifiers::NONE,
             }],
-            Self::OpenMerge => &[Shortcut {
+            Self::OpenMerge => &[Shortcut::Key {
                 key: Key::M,
                 modifiers: CTRL,
             }],
             Self::ClearFilePaths => SharedAction::ClearPaths.defaults(),
-            Self::OpenFileViewers => &[Shortcut {
+            Self::OpenFileViewers => &[Shortcut::Key {
                 key: Key::V,
                 modifiers: CTRL_ALT,
             }],
@@ -364,7 +352,7 @@ impl Action for FileAction {
     // Keys pressed while typing must not rewrite a file on disk or wipe both paths.
     fn typing_policy(self) -> TypingPolicy {
         match self {
-            Self::UndoRevert | Self::Redo | Self::ClearFilePaths => TypingPolicy::Never,
+            Self::Undo | Self::Redo | Self::ClearFilePaths => TypingPolicy::Never,
             _ => TypingPolicy::CtrlOrAlt,
         }
     }
@@ -382,6 +370,8 @@ impl Action for FileAction {
             Self::ClearFilePaths => Some(SharedAction::ClearPaths),
             Self::OpenStyle => Some(SharedAction::OpenStyle),
             Self::ExportDiff => Some(SharedAction::Export),
+            Self::Undo => Some(SharedAction::Undo),
+            Self::Redo => Some(SharedAction::Redo),
             _ => None,
         }
     }
@@ -431,14 +421,38 @@ impl<'de> serde::Deserialize<'de> for Keybindings {
             if shelf_base.is_empty() {
                 *shelf_base = FileAction::DiffShelfBase.defaults().to_vec();
             }
+            // The defaults before the mouse back and forward buttons.
+            let old_defaults = [
+                (FileAction::Undo, &[shortcut(Key::Z, CTRL)][..]),
+                (
+                    FileAction::Redo,
+                    &[shortcut(Key::Y, CTRL), shortcut(Key::Z, CTRL_SHIFT)],
+                ),
+            ];
+            for (action, old_default) in old_defaults {
+                let shortcuts = saved.keymap.shortcuts_mut(action);
+                if shortcuts.as_slice() == old_default {
+                    *shortcuts = action.defaults().to_vec();
+                }
+            }
             Ok(Self {
                 keymap: saved.keymap,
                 user_quick_diffs: saved.user_quick_diffs,
             })
         } else {
+            let missing = |field| value.get(field).is_none();
+            let no_undo = missing("undo_revert");
+            let no_redo = missing("redo_revert") && missing("redo_revert_alt");
             let legacy: LegacyKeybindings =
                 serde_json::from_value(value).map_err(D::Error::custom)?;
-            Ok(legacy.migrate())
+            let mut keybindings = legacy.migrate();
+            // A save from before undo existed gets today's defaults, not the ones of then.
+            for (action, reset) in [(FileAction::Undo, no_undo), (FileAction::Redo, no_redo)] {
+                if reset {
+                    *keybindings.keymap.shortcuts_mut(action) = action.defaults().to_vec();
+                }
+            }
+            Ok(keybindings)
         }
     }
 }
@@ -568,7 +582,7 @@ impl LegacyKeybindings {
             (FileAction::PrevFind, Vec::from_iter(prev_find)),
             (FileAction::RevisionGraph, Vec::from_iter(revision_graph)),
             (FileAction::TimelapseView, Vec::from_iter(timelapse_view)),
-            (FileAction::UndoRevert, Vec::from_iter(undo_revert)),
+            (FileAction::Undo, Vec::from_iter(undo_revert)),
             (FileAction::Redo, redo),
             (FileAction::DiffLocalFile, Vec::from_iter(diff_local_file)),
         ] {
@@ -664,7 +678,7 @@ fn ui_quick_diff_rows(
                             ..
                         } = event
                         {
-                            next_shortcut = Some(Shortcut {
+                            next_shortcut = Some(Shortcut::Key {
                                 key: *key,
                                 modifiers: *modifiers,
                             });
@@ -811,7 +825,7 @@ mod tests {
         assert_eq!(keymap.dispatch(&events, true), []);
         assert_eq!(
             keymap.dispatch(&events, false),
-            [FileAction::UndoRevert, FileAction::Redo, FileAction::Redo]
+            [FileAction::Undo, FileAction::Redo, FileAction::Redo]
         );
     }
 
@@ -982,7 +996,7 @@ mod tests {
                 (FileAction::PrevFind, vec![f_key(11)]),
                 (FileAction::RevisionGraph, vec![f_key(12)]),
                 (FileAction::TimelapseView, vec![f_key(13)]),
-                (FileAction::UndoRevert, vec![f_key(14)]),
+                (FileAction::Undo, vec![f_key(14)]),
                 (FileAction::Redo, vec![f_key(15), f_key(16)]),
                 (FileAction::DiffLocalFile, vec![f_key(17)]),
             ];
@@ -1041,7 +1055,7 @@ mod tests {
 
         #[test]
         fn old_default_previous_conflict_becomes_ctrl_1() {
-            let old_default = Shortcut {
+            let old_default = Shortcut::Key {
                 key: Key::Num1,
                 modifiers: Modifiers {
                     ctrl: DEFAULT_CONTROL_ENABLE,
@@ -1095,6 +1109,22 @@ mod tests {
                 keymap.shortcuts(FileAction::DiffShelfBase),
                 FileAction::DiffShelfBase.defaults()
             );
+        }
+
+        #[test]
+        fn saved_undo_and_redo_on_their_old_defaults_get_the_mouse_buttons() {
+            let mut saved = Keybindings::default();
+            *saved.keymap.shortcuts_mut(FileAction::Undo) = vec![shortcut(Key::Z, CTRL)];
+            *saved.keymap.shortcuts_mut(FileAction::Redo) =
+                vec![shortcut(Key::Y, CTRL), shortcut(Key::Z, CTRL_SHIFT)];
+            let keymap = load(serde_json::to_value(&saved).unwrap());
+            for action in [FileAction::Undo, FileAction::Redo] {
+                assert_eq!(keymap.shortcuts(action), action.defaults(), "{action:?}");
+            }
+
+            *saved.keymap.shortcuts_mut(FileAction::Redo) = vec![shortcut(Key::Y, CTRL)];
+            let keymap = load(serde_json::to_value(&saved).unwrap());
+            assert_eq!(keymap.shortcuts(FileAction::Redo), [shortcut(Key::Y, CTRL)]);
         }
 
         #[test]

@@ -411,6 +411,15 @@ impl FileProcessor {
         }
     }
 
+    // Not set_path: that joins the root, so a full depot path under a depot root would double.
+    pub fn restore_path(&mut self, path: UniversalPath, label: Option<String>) {
+        if self.file_path != path {
+            self.file_path = path;
+            self.invalidate_cache_file();
+        }
+        self.label = label;
+    }
+
     pub fn set_root(&mut self, root: UniversalPath) {
         self.root_path = Some(root);
     }
@@ -958,6 +967,19 @@ mod tests {
         let mut file = labelled("a.txt", "A");
         file.get_tx().send(UniversalPath::new("b.txt")).unwrap();
         file.get_path();
+        assert_eq!(file.label(), None);
+    }
+
+    #[test]
+    fn restore_path_keeps_a_full_depot_path_under_a_depot_root_and_its_label() {
+        let mut file = FileProcessor::new();
+        file.set_root(UniversalPath::new("//depot/main"));
+        let full = UniversalPath::new("//depot/main/src/a.rs#3");
+        file.restore_path(full.clone(), Some("Shelf base".to_owned()));
+        assert_eq!(file.get_full_path(), full);
+        assert_eq!(file.label(), Some("Shelf base"));
+
+        file.restore_path(UniversalPath::new("//depot/main/b.rs"), None);
         assert_eq!(file.label(), None);
     }
 

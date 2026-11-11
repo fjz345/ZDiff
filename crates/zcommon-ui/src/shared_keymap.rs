@@ -3,7 +3,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use eframe::egui::{Key, Modifiers};
+use eframe::egui::{Key, Modifiers, PointerButton};
 
 use super::keymap::{Action, Keymap, Shortcut};
 use zcommon::style::settings_dir;
@@ -32,6 +32,8 @@ pub enum SharedAction {
     ClearPaths,
     OpenStyle,
     Export,
+    Undo,
+    Redo,
 }
 
 impl SharedAction {
@@ -47,6 +49,8 @@ impl SharedAction {
         Self::ClearPaths,
         Self::OpenStyle,
         Self::Export,
+        Self::Undo,
+        Self::Redo,
     ];
 
     pub fn name(self) -> &'static str {
@@ -62,67 +66,93 @@ impl SharedAction {
             Self::ClearPaths => "clear_paths",
             Self::OpenStyle => "open_style",
             Self::Export => "export",
+            Self::Undo => "undo",
+            Self::Redo => "redo",
         }
     }
 
     pub fn defaults(self) -> &'static [Shortcut] {
         match self {
-            Self::Open1 => &[Shortcut {
+            Self::Open1 => &[Shortcut::Key {
                 key: Key::F1,
                 modifiers: CTRL,
             }],
-            Self::Open2 => &[Shortcut {
+            Self::Open2 => &[Shortcut::Key {
                 key: Key::F2,
                 modifiers: CTRL,
             }],
             Self::NextDiff => &[
-                Shortcut {
+                Shortcut::Key {
                     key: Key::Num2,
                     modifiers: CTRL,
                 },
-                Shortcut {
+                Shortcut::Key {
                     key: Key::ArrowDown,
                     modifiers: Modifiers::ALT,
                 },
             ],
             Self::PrevDiff => &[
-                Shortcut {
+                Shortcut::Key {
                     key: Key::Num1,
                     modifiers: CTRL,
                 },
-                Shortcut {
+                Shortcut::Key {
                     key: Key::ArrowUp,
                     modifiers: Modifiers::ALT,
                 },
             ],
-            Self::Refresh => &[Shortcut {
+            Self::Refresh => &[Shortcut::Key {
                 key: Key::R,
                 modifiers: CTRL,
             }],
-            Self::Find => &[Shortcut {
+            Self::Find => &[Shortcut::Key {
                 key: Key::F,
                 modifiers: CTRL,
             }],
-            Self::OpenKeybindings => &[Shortcut {
+            Self::OpenKeybindings => &[Shortcut::Key {
                 key: Key::O,
                 modifiers: CTRL,
             }],
-            Self::SwapSides => &[Shortcut {
+            Self::SwapSides => &[Shortcut::Key {
                 key: Key::S,
                 modifiers: CTRL_SHIFT,
             }],
-            Self::ClearPaths => &[Shortcut {
+            Self::ClearPaths => &[Shortcut::Key {
                 key: Key::W,
                 modifiers: CTRL,
             }],
-            Self::OpenStyle => &[Shortcut {
+            Self::OpenStyle => &[Shortcut::Key {
                 key: Key::Comma,
                 modifiers: CTRL,
             }],
-            Self::Export => &[Shortcut {
+            Self::Export => &[Shortcut::Key {
                 key: Key::E,
                 modifiers: CTRL,
             }],
+            Self::Undo => &[
+                Shortcut::Key {
+                    key: Key::Z,
+                    modifiers: CTRL,
+                },
+                Shortcut::Pointer {
+                    button: PointerButton::Extra1,
+                    modifiers: Modifiers::NONE,
+                },
+            ],
+            Self::Redo => &[
+                Shortcut::Key {
+                    key: Key::Y,
+                    modifiers: CTRL,
+                },
+                Shortcut::Key {
+                    key: Key::Z,
+                    modifiers: CTRL_SHIFT,
+                },
+                Shortcut::Pointer {
+                    button: PointerButton::Extra2,
+                    modifiers: Modifiers::NONE,
+                },
+            ],
         }
     }
 }
@@ -269,7 +299,7 @@ mod tests {
         fn defaults(self) -> &'static [Shortcut] {
             match self.shared() {
                 Some(shared) => shared.defaults(),
-                None => &[Shortcut {
+                None => &[Shortcut::Key {
                     key: Key::L,
                     modifiers: Modifiers::ALT,
                 }],
@@ -287,7 +317,7 @@ mod tests {
     }
 
     fn alt(key: Key) -> Shortcut {
-        Shortcut {
+        Shortcut::Key {
             key,
             modifiers: Modifiers::ALT,
         }
@@ -314,13 +344,17 @@ mod tests {
 
     #[test]
     fn shared_defaults_are_pinned() {
-        let ctrl = |key| Shortcut {
+        let ctrl = |key| Shortcut::Key {
             key,
             modifiers: CTRL,
         };
-        let ctrl_shift = |key| Shortcut {
+        let ctrl_shift = |key| Shortcut::Key {
             key,
             modifiers: CTRL_SHIFT,
+        };
+        let mouse = |button| Shortcut::Pointer {
+            button,
+            modifiers: Modifiers::NONE,
         };
         let expected = [
             (SharedAction::Open1, vec![ctrl(Key::F1)]),
@@ -340,6 +374,18 @@ mod tests {
             (SharedAction::ClearPaths, vec![ctrl(Key::W)]),
             (SharedAction::OpenStyle, vec![ctrl(Key::Comma)]),
             (SharedAction::Export, vec![ctrl(Key::E)]),
+            (
+                SharedAction::Undo,
+                vec![ctrl(Key::Z), mouse(PointerButton::Extra1)],
+            ),
+            (
+                SharedAction::Redo,
+                vec![
+                    ctrl(Key::Y),
+                    ctrl_shift(Key::Z),
+                    mouse(PointerButton::Extra2),
+                ],
+            ),
         ];
         assert_eq!(expected.len(), SharedAction::ALL.len());
         for (action, shortcuts) in expected {

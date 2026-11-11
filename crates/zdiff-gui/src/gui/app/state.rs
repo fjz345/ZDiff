@@ -5,6 +5,7 @@ use zcommon::presets::UserPresets;
 use zcommon_ui::h_scroll::WheelModifier;
 use zdiff::{diff_builder::DiffBuilderOptions, myers::MyersDiffAlgorithm};
 
+use super::nav::NavHistory;
 use crate::{
     diff_ctx::DiffProcessor,
     file::FileProcessor,
@@ -84,6 +85,8 @@ pub struct AppStateCtx {
     /// Undo and redo of reverts; in memory only.
     #[cfg_attr(feature = "serde", serde(skip), serde(default))]
     pub revert_history: RevertHistory,
+    #[cfg_attr(feature = "serde", serde(skip), serde(default))]
+    pub nav_history: NavHistory,
     #[cfg_attr(feature = "serde", serde(skip), serde(default))]
     pub toggle_all: ToggleAll,
 
@@ -165,6 +168,7 @@ impl Default for AppStateCtx {
             ffmpeg: Default::default(),
             pdb_options: Default::default(),
             revert_history: Default::default(),
+            nav_history: Default::default(),
             toggle_all: Default::default(),
             scroll_left: Default::default(),
             scroll_right: Default::default(),
@@ -689,12 +693,12 @@ mod tests {
         let json = old_format_save(&["undo_revert", "redo_revert", "redo_revert_alt"]);
         let restored: AppStateCtx = serde_json::from_value(json).unwrap();
         let keymap = &restored.keybindings.keymap;
-        assert!(!FileAction::UndoRevert.defaults().is_empty());
+        assert!(!FileAction::Undo.defaults().is_empty());
         assert_eq!(
-            keymap.shortcuts(FileAction::UndoRevert),
-            FileAction::UndoRevert.defaults()
+            keymap.shortcuts(FileAction::Undo),
+            FileAction::Undo.defaults()
         );
-        assert_eq!(keymap.shortcuts(FileAction::Redo).len(), 2);
+        assert_eq!(keymap.shortcuts(FileAction::Redo).len(), 3);
         assert_eq!(
             keymap.shortcuts(FileAction::Redo),
             FileAction::Redo.defaults()
@@ -707,7 +711,7 @@ mod tests {
         let mut ctx = AppStateCtx::default();
         let find = ctx.keybindings.keymap.shortcuts(FileAction::Find)[0];
         let keymap = &mut ctx.keybindings.keymap;
-        keymap.shortcuts_mut(FileAction::UndoRevert).clear();
+        keymap.shortcuts_mut(FileAction::Undo).clear();
         keymap.shortcuts_mut(FileAction::Redo).insert(0, find);
         let json = serde_json::to_string(&ctx).unwrap();
         let restored: AppStateCtx = serde_json::from_str(&json).unwrap();
@@ -724,7 +728,7 @@ mod tests {
             keymap.shortcuts(FileAction::DiffLocalFile),
             FileAction::DiffLocalFile.defaults()
         );
-        assert_eq!(keymap.shortcuts(FileAction::UndoRevert), []);
+        assert_eq!(keymap.shortcuts(FileAction::Undo), []);
     }
 
     #[test]

@@ -71,12 +71,6 @@ impl ZApp {
     /// Undoes or redoes the latest revert in this diff. Both sides reload after a write, and
     /// after a refusal for a file that changed on disk.
     pub(super) fn step_revert_history(app_ctx: &mut AppStateCtx, step: HistoryStep) {
-        // A path picked or set by a Quick Diff since the last frame makes this another diff.
-        let (path_1, path_2) = (
-            app_ctx.file_1.get_full_path(),
-            app_ctx.file_2.get_full_path(),
-        );
-        app_ctx.revert_history.observe_pair(&path_1, &path_2);
         let (name, since) = match step {
             HistoryStep::Undo => ("Undo", "the revert"),
             HistoryStep::Redo => ("Redo", "the undo"),

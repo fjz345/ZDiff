@@ -1227,7 +1227,7 @@ impl MergeView {
         }
     }
 
-    fn undo_redo(&mut self, redo: bool) {
+    pub fn undo_redo(&mut self, redo: bool) {
         self.close_edit();
         if let Some(doc) = &mut self.doc {
             match redo {

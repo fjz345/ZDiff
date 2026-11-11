@@ -72,6 +72,7 @@ impl ZApp {
                 pdb_options,
                 legacy_extension_map: _,
                 revert_history,
+                nav_history,
                 toggle_all,
                 code_language_override,
                 syntax_filter,
@@ -428,6 +429,9 @@ impl ZApp {
                             Err(e) => Some(Err(e)),
                         };
                         if let Some(result) = result {
+                            if result.is_ok() {
+                                nav_history.clear_redo();
+                            }
                             Self::finish_revert_write(
                                 result,
                                 &path,
@@ -477,6 +481,9 @@ impl ZApp {
                         let path = pending.path().to_path_buf();
                         let p4 = P4Command::new(false).for_file(UniversalPath::Local(path.clone()));
                         let result = pending.confirm(&std::env::temp_dir(), &p4);
+                        if result.is_ok() {
+                            nav_history.clear_redo();
+                        }
                         Self::finish_revert_write(
                             result,
                             &path,
