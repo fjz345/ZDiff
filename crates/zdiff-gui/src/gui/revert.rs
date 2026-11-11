@@ -42,6 +42,7 @@ pub enum RevertRefusal {
     NotLocalTarget,
     TempTarget,
     PdbDump,
+    StringsView,
     NoSuchHunk,
 }
 
@@ -52,6 +53,7 @@ impl std::fmt::Display for RevertRefusal {
             RevertRefusal::NotLocalTarget => "the target is not a local file",
             RevertRefusal::TempTarget => "the target is a temporary file",
             RevertRefusal::PdbDump => "the target is shown as a PDB dump, not its bytes",
+            RevertRefusal::StringsView => "the target is shown as its strings, not its bytes",
             RevertRefusal::NoSuchHunk => "the hunk is not in the current diff",
         })
     }
@@ -159,6 +161,9 @@ pub fn check_revert(
     let (Some(left), Some(right)) = (&ctx.input.file_1, &ctx.input.file_2) else {
         return Err(RevertRefusal::MissingFile);
     };
+    if ctx.input.strings_view {
+        return Err(RevertRefusal::StringsView);
+    }
     let (target_file, is_dump) = match target {
         RevertTarget::Left => (left, ctx.input.pdb_dumps[0]),
         RevertTarget::Right => (right, ctx.input.pdb_dumps[1]),
@@ -858,6 +863,26 @@ mod tests {
             Err(RevertRefusal::PdbDump)
         );
         assert_eq!(check_revert(&ctx, Right, no_temp_root()), Ok(()));
+    }
+
+    #[test]
+    fn strings_view_targets_are_refused_on_both_sides() {
+        let pair = Pair::new("a\nb\n", "a\nB\n");
+        let left = cached(UniversalPath::from(pair.left.clone()), &pair.left);
+        let right = cached(UniversalPath::from(pair.right.clone()), &pair.right);
+        let mut ctx = diff_files(left, right, DiffBuilderOptions::default());
+        ctx.input.strings_view = true;
+
+        for target in [Left, Right] {
+            assert_eq!(
+                check_revert(&ctx, target, no_temp_root()),
+                Err(RevertRefusal::StringsView)
+            );
+            assert_eq!(
+                plan_hunk_revert(&ctx, RevertRequest { hunk: 0, target }, no_temp_root()),
+                Err(RevertRefusal::StringsView)
+            );
+        }
     }
 
     #[test]

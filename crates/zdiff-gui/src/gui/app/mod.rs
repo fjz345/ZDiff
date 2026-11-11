@@ -500,6 +500,7 @@ impl eframe::App for ZApp {
                     pins,
                     collect_trace: self.open_phase_trace_window || self.phase_overlay,
                     pdb_dumps,
+                    strings_view: strings_files.is_some(),
                 };
 
                 let diff_ctx_invalidated = if state.file_1.get_loading_path().is_some()

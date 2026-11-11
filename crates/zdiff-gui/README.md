@@ -40,7 +40,7 @@ GUI for zdiff crate
     - Local paths, Perforce depot paths, changelists and shelves, git revisions, picked from a "Source control" dropdown per side
     - Diff a depot file against its local file (Ctrl+L), a shelved file against its base revision (Ctrl+B)
 * Viewers, picked from the file kind (override per diff); mismatched types show each side in its own viewer
-    - Hex: Bytes or Strings mode, overview strip, next/previous difference, goto offset, value inspector (ints, floats, string, endian toggle)
+    - Hex: Bytes or Strings mode (no hunk revert in Strings), overview strip, next/previous difference, goto offset, value inspector (ints, floats, string, endian toggle)
     - Image: side by side, A/B, difference, heatmap, histogram, swipe and overlay; channel filter, tolerance, Nearest/Linear sampling, linked zoom and pan
     - Image metric (Exact, Neighborhood 3x3/5x5/7x7, SSIM) for the difference, heatmap and changed count, with the tolerance on its 0 to 255 scale; hover the count for the mean difference (mean SSIM). Alignment of differently sized images: top left, center or scale to fit, for drawing and comparing. Both are saved; the video difference timeline uses the same metric
     - Audio: waveform lanes, overlay, spectrograms with their dB difference, sample difference lanes, metadata table with loudness
