@@ -137,13 +137,12 @@ pub struct DiffToolPreset {
 /// Exhaustive, so a new kind needs a decision here.
 fn zdiff_gui_handles(kind: FileKind) -> bool {
     match kind {
-        FileKind::Text | FileKind::Image => true,
+        FileKind::Text | FileKind::Image | FileKind::DebugSymbols => true,
         FileKind::Video
         | FileKind::Audio
         | FileKind::Model
         | FileKind::Archive
         | FileKind::Executable
-        | FileKind::DebugSymbols
         | FileKind::Intermediate
         | FileKind::UnrealAsset
         | FileKind::UnrealMap
@@ -1315,11 +1314,14 @@ mod tests {
     fn zdiff_gui_preset_lists_the_kinds_zdiff_gui_has_a_viewer_for() {
         let zdiff = presets(None).remove(0);
         assert_eq!(zdiff.name, "zdiff-gui");
-        assert_eq!(zdiff.kinds, [FileKind::Text, FileKind::Image]);
+        assert_eq!(
+            zdiff.kinds,
+            [FileKind::Text, FileKind::Image, FileKind::DebugSymbols]
+        );
         let config = DiffToolConfig::default();
         assert_eq!(
             config.tool(&config.default_tool).unwrap().kinds,
-            [FileKind::Text, FileKind::Image]
+            [FileKind::Text, FileKind::Image, FileKind::DebugSymbols]
         );
     }
 
