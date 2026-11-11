@@ -244,7 +244,7 @@ pub fn wheel_rects_id() -> egui::Id {
 
 impl ZAppPane for FileDiffPane {
     fn title(&self) -> String {
-        self.title.clone().unwrap_or(format!("Pane"))
+        self.title.clone().unwrap_or("Pane".to_string())
     }
 }
 
@@ -301,11 +301,10 @@ mod test_support {
 
     use crate::ui_egui::copy_harness::measure_in_fresh_context;
 
-    pub(super) fn collapsed_row_between(row: &DiffRow) -> DiffRow {
+    pub(super) fn collapsed_row() -> DiffRow {
         DiffRow {
             left: LineContent::Collapsed,
             right: LineContent::Collapsed,
-            ..row.clone()
         }
     }
 

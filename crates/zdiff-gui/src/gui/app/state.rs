@@ -430,8 +430,10 @@ mod tests {
     fn horizontal_scroll_link_defaults_on_and_survives_a_restart() {
         assert!(AppStateCtx::default().h_scroll_linked);
 
-        let mut ctx = AppStateCtx::default();
-        ctx.h_scroll_linked = false;
+        let ctx = AppStateCtx {
+            h_scroll_linked: false,
+            ..Default::default()
+        };
         let json = serde_json::to_string(&ctx).unwrap();
         let restored: AppStateCtx = serde_json::from_str(&json).unwrap();
         assert!(!restored.h_scroll_linked);
@@ -444,8 +446,10 @@ mod tests {
             WheelModifier::Shift
         );
 
-        let mut ctx = AppStateCtx::default();
-        ctx.h_scroll_modifier = WheelModifier::Ctrl;
+        let ctx = AppStateCtx {
+            h_scroll_modifier: WheelModifier::Ctrl,
+            ..Default::default()
+        };
         let json = serde_json::to_string(&ctx).unwrap();
         let restored: AppStateCtx = serde_json::from_str(&json).unwrap();
         assert_eq!(restored.h_scroll_modifier, WheelModifier::Ctrl);
@@ -627,8 +631,10 @@ mod tests {
     fn word_wrap_defaults_off_and_survives_a_restart() {
         assert!(!AppStateCtx::default().word_wrap);
 
-        let mut ctx = AppStateCtx::default();
-        ctx.word_wrap = true;
+        let ctx = AppStateCtx {
+            word_wrap: true,
+            ..Default::default()
+        };
         let json = serde_json::to_string(&ctx).unwrap();
         let restored: AppStateCtx = serde_json::from_str(&json).unwrap();
         assert!(restored.word_wrap);
@@ -638,8 +644,10 @@ mod tests {
     fn text_mode_defaults_to_side_by_side_and_survives_a_restart() {
         assert_eq!(AppStateCtx::default().text_mode, TextMode::SideBySide);
 
-        let mut ctx = AppStateCtx::default();
-        ctx.text_mode = TextMode::Unified;
+        let ctx = AppStateCtx {
+            text_mode: TextMode::Unified,
+            ..Default::default()
+        };
         let json = serde_json::to_string(&ctx).unwrap();
         let restored: AppStateCtx = serde_json::from_str(&json).unwrap();
         assert_eq!(restored.text_mode, TextMode::Unified);
@@ -648,8 +656,10 @@ mod tests {
     #[test]
     fn the_chosen_single_file_side_survives_a_restart() {
         for mode in [TextMode::SingleLeft, TextMode::SingleRight] {
-            let mut ctx = AppStateCtx::default();
-            ctx.text_mode = mode;
+            let ctx = AppStateCtx {
+                text_mode: mode,
+                ..Default::default()
+            };
             let json = serde_json::to_string(&ctx).unwrap();
             let restored: AppStateCtx = serde_json::from_str(&json).unwrap();
             assert_eq!(restored.text_mode, mode);

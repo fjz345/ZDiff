@@ -109,7 +109,7 @@ pub fn extract_strings<'a>(
         };
         for (i, c) in valid.char_indices() {
             scanned += 1;
-            if scanned % CANCEL_CHECK_CHARS == 0 && cancel.load(Ordering::Acquire) {
+            if scanned.is_multiple_of(CANCEL_CHECK_CHARS) && cancel.load(Ordering::Acquire) {
                 return None;
             }
             if is_printable(c) {

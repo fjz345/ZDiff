@@ -133,7 +133,7 @@ impl OccurrenceState {
                 self.unclaimed_press = false;
             }
             let mut cursor = match &mut self.selection {
-                Some(selection) if in_row(selection) => selection.cursor.clone(),
+                Some(selection) if in_row(selection) => selection.cursor,
                 // Shift extends egui's selection from another row to this one.
                 Some(selection) if shift => {
                     selection.spans_rows = true;
@@ -384,7 +384,7 @@ mod tests {
         };
 
         assert_eq!(find(false), (vec![0..2, 3..5, 6..8], Some(6..8)));
-        assert_eq!(find(true), (vec![0..2], None));
+        assert_eq!(find(true), (vec![Range { start: 0, end: 2 }], None));
     }
 
     #[test]

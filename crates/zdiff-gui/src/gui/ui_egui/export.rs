@@ -110,8 +110,8 @@ pub fn unified_diff_text(full_rows: Vec<DiffRow>, files: [&CachedFile<RawToken>;
             write_hunk(&mut out, &hunk, files, last_line);
         }
         for line in &hunk {
-            for side in 0..2 {
-                last_line[side] = line.lines[side].unwrap_or(last_line[side]);
+            for (last, side_line) in last_line.iter_mut().zip(line.lines) {
+                *last = side_line.unwrap_or(*last);
             }
         }
     }

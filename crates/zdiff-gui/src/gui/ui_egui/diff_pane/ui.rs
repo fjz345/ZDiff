@@ -202,27 +202,24 @@ impl FileDiffPane {
                     ctx.diff_options.diff_only_with_extra_rows =
                         active.then_some(DEFAULT_CONTEXT_ROWS);
                 }
-                match &mut ctx.diff_options.diff_only_with_extra_rows {
-                    Some(diff_rows_num) => {
-                        match stepper(
-                            ui,
-                            *diff_rows_num,
-                            0..=MAX_CONTEXT_ROWS,
-                            |rows| rows.to_string(),
-                            &action_hint(FileAction::FewerContextRows),
-                            &action_hint(FileAction::MoreContextRows),
-                            &format!("Reset to {DEFAULT_CONTEXT_ROWS} context rows"),
-                        ) {
-                            Some(Step::Dec) => *diff_rows_num = diff_rows_num.saturating_sub(1),
-                            Some(Step::Inc) => {
-                                *diff_rows_num = (*diff_rows_num + 1).min(MAX_CONTEXT_ROWS)
-                            }
-                            Some(Step::Reset) => *diff_rows_num = DEFAULT_CONTEXT_ROWS,
-                            Some(Step::Set(rows)) => *diff_rows_num = rows,
-                            None => {}
+                if let Some(diff_rows_num) = &mut ctx.diff_options.diff_only_with_extra_rows {
+                    match stepper(
+                        ui,
+                        *diff_rows_num,
+                        0..=MAX_CONTEXT_ROWS,
+                        |rows| rows.to_string(),
+                        &action_hint(FileAction::FewerContextRows),
+                        &action_hint(FileAction::MoreContextRows),
+                        &format!("Reset to {DEFAULT_CONTEXT_ROWS} context rows"),
+                    ) {
+                        Some(Step::Dec) => *diff_rows_num = diff_rows_num.saturating_sub(1),
+                        Some(Step::Inc) => {
+                            *diff_rows_num = (*diff_rows_num + 1).min(MAX_CONTEXT_ROWS)
                         }
+                        Some(Step::Reset) => *diff_rows_num = DEFAULT_CONTEXT_ROWS,
+                        Some(Step::Set(rows)) => *diff_rows_num = rows,
+                        None => {}
                     }
-                    None => {}
                 }
             });
             ui.separator();
@@ -313,14 +310,14 @@ impl FileDiffPane {
             ui.colored_label(ui.visuals().warn_fg_color, format!("⚠ {reason}"));
         }
 
-        let diff_rows = ctx.diff_ctx.as_ref().and_then(|f| Some(&f.diff_rows));
+        let diff_rows = ctx.diff_ctx.as_ref().map(|f| &f.diff_rows);
         let source_path = ctx
             .diff_ctx
-            .map(|f| f.input.file_1.as_ref().and_then(|f| Some(&f.path)))
+            .map(|f| f.input.file_1.as_ref().map(|f| &f.path))
             .unwrap_or_default();
         let target_path = ctx
             .diff_ctx
-            .map(|f| f.input.file_2.as_ref().and_then(|f| Some(&f.path)))
+            .map(|f| f.input.file_2.as_ref().map(|f| &f.path))
             .unwrap_or_default();
 
         let press_pos = ui.input(|i| {
@@ -1283,8 +1280,8 @@ impl FileDiffPane {
         let [file_1_drop_rect, file_2_drop_rect] = drop_rects(side_rects, content_rect, shown);
         handle_drops(
             ui,
-            &mut ctx.load_file_1_request,
-            &mut ctx.load_file_2_request,
+            ctx.load_file_1_request,
+            ctx.load_file_2_request,
             file_1_drop_rect,
             file_2_drop_rect,
         );
@@ -1299,6 +1296,8 @@ mod tests {
     
 
     
+    use std::ops::Range;
+
     use zcommon_ui::table::{Split, SplitColumn, SplitTable};
     use zdiff::diff_builder::DiffBuilderOptions;
 
@@ -1419,13 +1418,25 @@ mod tests {
         harness.drag(Side::Left, (1, 20), (1, 25));
         assert_eq!(harness.occurrence_needle().as_deref(), Some("value"));
 
-        assert_eq!(harness.occurrence_ranges(Side::Left, 0), [4..9]);
-        assert_eq!(harness.occurrence_ranges(Side::Left, 1), [12..17]);
-        assert_eq!(harness.occurrence_ranges(Side::Left, 2), [4..9]);
+        assert_eq!(
+            harness.occurrence_ranges(Side::Left, 0),
+            [Range { start: 4, end: 9 }]
+        );
+        assert_eq!(
+            harness.occurrence_ranges(Side::Left, 1),
+            [Range { start: 12, end: 17 }]
+        );
+        assert_eq!(
+            harness.occurrence_ranges(Side::Left, 2),
+            [Range { start: 4, end: 9 }]
+        );
         assert!(harness.occurrence_ranges(Side::Left, 3).is_empty());
         // The other side's identical row has no selection, so both of its matches show.
         assert_eq!(harness.occurrence_ranges(Side::Right, 1), [12..17, 20..25]);
-        assert_eq!(harness.occurrence_ranges(Side::Right, 2), [4..9]);
+        assert_eq!(
+            harness.occurrence_ranges(Side::Right, 2),
+            [Range { start: 4, end: 9 }]
+        );
     }
 
     #[test]

@@ -47,7 +47,7 @@ impl ZApp {
         let mut export_diff = false;
         let mut open_style = false;
         {
-            let _input_ctx = ctx.input(|r| {
+            ctx.input(|r| {
                 if capturing {
                     return;
                 }
@@ -217,11 +217,11 @@ impl ZApp {
                 app_state_ctx.toggle_all.observe(current);
 
                 let handle_kb = |opt: &Option<Shortcut>, func: &mut dyn FnMut(Shortcut)| {
-                    if let Some(kb) = opt {
-                        if kb.matches(r) {
-                            log::info!("Shortcut triggered: {}", kb.format());
-                            func(*kb);
-                        }
+                    if let Some(kb) = opt
+                        && kb.matches(r)
+                    {
+                        log::info!("Shortcut triggered: {}", kb.format());
+                        func(*kb);
                     }
                 };
 

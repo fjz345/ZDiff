@@ -834,7 +834,10 @@ mod tests {
             [byte_span(50, 60, ChangeKind::Deleted)]
         );
         assert_eq!(
-            hex_change_spans(&diff(vec![10..50], tail(HexSide::Second))),
+            hex_change_spans(&diff(
+                vec![Range { start: 10, end: 50 }],
+                tail(HexSide::Second)
+            )),
             [
                 byte_span(10, 50, ChangeKind::Changed),
                 byte_span(50, 60, ChangeKind::Inserted)
@@ -849,7 +852,8 @@ mod tests {
 
     #[test]
     fn one_differing_byte_in_a_large_file_still_marks_a_bin() {
-        let d = diff(vec![5_000_000..5_000_001], None);
+        let one_byte = 5_000_000..5_000_001;
+        let d = diff(vec![one_byte], None);
         let bins = bin_changes(&hex_change_spans(&d), 10_000_000, 100);
         let marked: Vec<usize> = (0..bins.len()).filter(|i| bins[*i].is_some()).collect();
         assert_eq!(marked, [50]);
@@ -859,7 +863,7 @@ mod tests {
     #[test]
     fn tail_marks_the_bins_where_the_longer_side_continues() {
         let d = diff(
-            vec![0..1],
+            vec![Range { start: 0, end: 1 }],
             Some(HexTail {
                 longer: HexSide::Second,
                 range: 900..1000,
@@ -902,7 +906,7 @@ mod tests {
     #[test]
     fn the_size_mismatch_tail_is_the_last_stop() {
         let d = diff(
-            vec![5..6],
+            vec![Range { start: 5, end: 6 }],
             Some(HexTail {
                 longer: HexSide::Second,
                 range: 32..100,
@@ -925,7 +929,7 @@ mod tests {
     #[test]
     fn a_cursor_past_the_last_stop_or_no_diff_has_no_stop() {
         // The shared conflict cursor can be left above the hex count (set_max doesn't clamp).
-        let d = diff(vec![3..4], None);
+        let d = diff(vec![Range { start: 3, end: 4 }], None);
         assert_eq!(hex_nav_span(&d, 2), None);
         assert_eq!(hex_nav_span(&diff(vec![], None), 1), None);
         assert_eq!(hex_nav_count(Some(&diff(vec![], None))), 0);

@@ -21,11 +21,7 @@ pub struct QuickDiffPaths {
 }
 
 const DEFAULT_COMMAND_ENABLE: bool = true;
-const DEFAULT_CONTROL_ENABLE: bool = if cfg!(target_os = "macos") {
-    false
-} else {
-    true
-};
+const DEFAULT_CONTROL_ENABLE: bool = !cfg!(target_os = "macos");
 
 const CTRL: Modifiers = Modifiers {
     ctrl: DEFAULT_CONTROL_ENABLE,

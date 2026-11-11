@@ -252,15 +252,15 @@ impl ZApp {
             let mut behavior = TreeBehavior {
                 ctx_file_diff: FileDiffPaneCtx {
                     diff_ctx: diff_ctx.as_ref(),
-                    scroll_left: scroll_left,
-                    scroll_right: scroll_right,
+                    scroll_left,
+                    scroll_right,
                     h_scroll_linked,
                     word_wrap,
                     text_mode,
                     text_likeness,
-                    diff_options: diff_options,
+                    diff_options,
                     regex_ignore_presets,
-                    scroll_to_row_span: &scroll_to_rows,
+                    scroll_to_row_span: scroll_to_rows,
                     load_file_1_request: &mut None,
                     load_file_2_request: &mut None,
                     back_to_previous_request: &mut None,
@@ -559,13 +559,13 @@ impl ZApp {
                         .diff_processor
                         .get_minimal_diff_ctx()
                         .as_ref()
-                        .and_then(|f| Some(f.num_add_deletes))
+                        .map(|f| f.num_add_deletes)
                         .unwrap_or_default()
                         .0;
                     let total_deletes = app_ctx
                         .diff_processor
                         .get_minimal_diff_ctx()
-                        .and_then(|f| Some(f.num_add_deletes))
+                        .map(|f| f.num_add_deletes)
                         .unwrap_or_default()
                         .1;
                     let unit = app_ctx

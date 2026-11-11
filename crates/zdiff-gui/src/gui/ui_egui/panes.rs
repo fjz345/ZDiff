@@ -19,15 +19,13 @@ impl<'a> egui_tiles::Behavior<Pane> for TreeBehavior<'a> {
         _tile_id: egui_tiles::TileId,
         pane: &mut Pane,
     ) -> egui_tiles::UiResponse {
-        let response = match pane {
+        match pane {
             Pane::FileDiff(file_diff_pane) => {
-                let mut ctx = &mut self.ctx_file_diff;
-                let response = file_diff_pane.ui(ui, &mut ctx);
-                egui_tiles::UiResponse::from(response)
-            }
-        };
+                let ctx = &mut self.ctx_file_diff;
 
-        response
+                file_diff_pane.ui(ui, ctx)
+            }
+        }
     }
 }
 

@@ -113,7 +113,7 @@ impl ZApp {
             "Request init called with state: {}",
             self.state
                 .as_ref()
-                .and_then(|f| Some(f.variant_name()))
+                .map(|f| f.variant_name())
                 .unwrap_or_default()
         );
         self.state = self
@@ -121,40 +121,33 @@ impl ZApp {
             .take()
             .map(|ctx| AppState::Startup(ctx.into_ctx()));
 
-        if let Some(state) = &mut self.state {
-            match state {
-                AppState::Startup(ctx) | AppState::Idle(ctx) => {
-                    update_p4_profiles(ctx.p4_profiles.clone());
-                    ctx.kinds = SharedKinds::load(
-                        zcommon::kinds::kinds_file_path(),
-                        &mut ctx.legacy_extension_map,
-                    );
+        if let Some(AppState::Startup(ctx) | AppState::Idle(ctx)) = &mut self.state {
+            update_p4_profiles(ctx.p4_profiles.clone());
+            ctx.kinds = SharedKinds::load(
+                zcommon::kinds::kinds_file_path(),
+                &mut ctx.legacy_extension_map,
+            );
 
-                    let (_, args) = zcommon::console::take_log_flag(env::args().skip(1));
-                    if args.is_empty() {
-                        return;
-                    }
-                    match apply_launch(
-                        &mut ctx.file_1,
-                        &mut ctx.file_2,
-                        cli::parse_launch_args(args),
-                    ) {
-                        LaunchOutcome::Opened => {}
-                        LaunchOutcome::Merge(request, names) => {
-                            self.merge = Some(
-                                MergeView::new(*request, ctx.myers_diff_algorithm)
-                                    .with_names(names),
-                            );
-                        }
-                        LaunchOutcome::Help => self.open_help_window = true,
-                        LaunchOutcome::Error(message) => {
-                            // A tool trusting the exit code must not take a failed launch as a merge.
-                            self.exit_code.store(1, Ordering::Relaxed);
-                            self.launch_error = Some(message);
-                        }
-                    }
+            let (_, args) = zcommon::console::take_log_flag(env::args().skip(1));
+            if args.is_empty() {
+                return;
+            }
+            match apply_launch(
+                &mut ctx.file_1,
+                &mut ctx.file_2,
+                cli::parse_launch_args(args),
+            ) {
+                LaunchOutcome::Opened => {}
+                LaunchOutcome::Merge(request, names) => {
+                    self.merge =
+                        Some(MergeView::new(*request, ctx.myers_diff_algorithm).with_names(names));
                 }
-                _ => {}
+                LaunchOutcome::Help => self.open_help_window = true,
+                LaunchOutcome::Error(message) => {
+                    // A tool trusting the exit code must not take a failed launch as a merge.
+                    self.exit_code.store(1, Ordering::Relaxed);
+                    self.launch_error = Some(message);
+                }
             }
         }
     }
@@ -266,7 +259,7 @@ impl eframe::App for ZApp {
                     .diff_processor
                     .get_minimal_diff_ctx()
                     .as_ref()
-                    .and_then(|f| Some(f.precomputed_diffs.len()))
+                    .map(|f| f.precomputed_diffs.len())
                     .unwrap_or_default()
             };
             let hex_stops = if strings_view {
@@ -477,7 +470,7 @@ impl eframe::App for ZApp {
                     file_1: text_1,
                     file_2: text_2,
                     options: state.diff_options.clone(),
-                    myers_diff_algorithm: state.myers_diff_algorithm.clone(),
+                    myers_diff_algorithm: state.myers_diff_algorithm,
                     pins,
                     collect_trace: self.open_phase_trace_window || self.phase_overlay,
                     pdb_dumps,
@@ -493,12 +486,12 @@ impl eframe::App for ZApp {
                 } else if let Some(diff_ctx) = state.diff_processor.get_minimal_diff_ctx() {
                     let input_equal = update_input == diff_ctx.input;
 
-                    if !input_equal && !state.diff_processor.in_progress_input.is_some() {
+                    if !input_equal && state.diff_processor.in_progress_input.is_none() {
                         log::debug!("diff_ctx invalidated!");
                     }
                     !input_equal
                 } else {
-                    !state.diff_processor.in_progress_input.is_some()
+                    state.diff_processor.in_progress_input.is_none()
                 };
 
                 if diff_ctx_invalidated

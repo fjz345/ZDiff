@@ -33,7 +33,7 @@ pub(super) fn handle_drops(
     //         .debug_rect(rect2, egui::Color32::BLUE, "Right Drop Zone");
     // }
 
-    return did_drop;
+    did_drop
 }
 
 pub(super) fn drop_rects(

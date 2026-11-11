@@ -66,7 +66,7 @@ pub(super) fn reach_down_to(galley: Arc<egui::Galley>, height: f32) -> Arc<egui:
 #[cfg(test)]
 mod tests {
     use super::*;
-    use super::super::test_support::{char_width, collapsed_row_between};
+    use super::super::test_support::{char_width, collapsed_row};
     
 
     
@@ -186,7 +186,7 @@ mod tests {
     #[test]
     fn collapsed_row_contributes_nothing() {
         let mut harness = shared_harness();
-        let collapsed = collapsed_row_between(&harness.rows()[1]);
+        let collapsed = collapsed_row();
         harness.set_row(1, collapsed);
 
         assert_only_real_text(harness.drag_and_copy(Side::Left, (0, 0), (2, 14)));
@@ -241,7 +241,6 @@ mod tests {
         let void = DiffRow {
             left: LineContent::Void,
             right: LineContent::Void,
-            ..harness.rows()[1].clone()
         };
         harness.set_row(1, void);
 

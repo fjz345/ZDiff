@@ -1,5 +1,6 @@
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Default)]
 pub struct ClampedCursor {
     #[cfg_attr(feature = "serde", serde(skip))]
     cursor: usize,
@@ -7,15 +8,6 @@ pub struct ClampedCursor {
     prev_cursor: usize,
     #[cfg_attr(feature = "serde", serde(skip))]
     max: usize,
-}
-impl Default for ClampedCursor {
-    fn default() -> Self {
-        Self {
-            cursor: 0,
-            prev_cursor: 0,
-            max: 0,
-        }
-    }
 }
 impl ClampedCursor {
     pub fn new(cursor: usize, max: usize) -> Self {

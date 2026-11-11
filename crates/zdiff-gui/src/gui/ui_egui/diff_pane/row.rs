@@ -69,7 +69,7 @@ impl FileDiffPane {
         };
 
         let (rect, _) = ui.allocate_at_least(egui::vec2(width, cell_h), egui::Sense::hover());
-        let mut extended_rect = rect.clone();
+        let mut extended_rect = rect;
         extended_rect.extend_with_x(9999999.0);
         let mut code_hit = None;
 

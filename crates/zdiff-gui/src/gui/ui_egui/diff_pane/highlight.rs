@@ -169,6 +169,8 @@ pub(super) fn ghost_positions(galley: &egui::Galley, text: &str, ghosts: &[(usiz
 
 #[cfg(test)]
 mod tests {
+    use std::ops::Range;
+
     use super::*;
     
 
@@ -272,7 +274,7 @@ mod tests {
         // A range across a section boundary recolors both parts.
         let mut job = job_with_one_section("abc");
         job.append("def", 0.0, job.sections[0].format.clone());
-        recolor_ranges(&mut job, &[2..4], dim);
+        recolor_ranges(&mut job, &[Range { start: 2, end: 4 }], dim);
         assert_eq!(
             colors(&job),
             [
@@ -312,7 +314,7 @@ mod tests {
         let mut format = job.sections[0].format.clone();
         format.color = Color32::RED;
         job.append("def", 2.0, format);
-        highlight_ranges(&mut job, &[2..4], bg);
+        highlight_ranges(&mut job, &[Range { start: 2, end: 4 }], bg);
         assert_eq!(
             backgrounds(&job),
             [

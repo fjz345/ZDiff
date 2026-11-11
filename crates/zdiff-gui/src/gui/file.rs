@@ -327,10 +327,10 @@ impl FileProcessor {
     pub fn get_path(&mut self) -> UniversalPath {
         self.poll_path_channel();
 
-        if let Some(root) = &self.root_path {
-            if let Some(stripped_path) = Self::strip_root_prefix(root, &self.file_path) {
-                return stripped_path;
-            }
+        if let Some(root) = &self.root_path
+            && let Some(stripped_path) = Self::strip_root_prefix(root, &self.file_path)
+        {
+            return stripped_path;
         }
 
         self.file_path.clone()
@@ -374,7 +374,7 @@ impl FileProcessor {
         );
 
         if let Some(root) = &self.root_path {
-            if Self::is_root_valid(&root, &path) {
+            if Self::is_root_valid(root, &path) {
                 log::debug!("is_root_valid {:?}", true);
                 log::debug!("is_root_depot {:?}", root.is_depot());
                 let mut new_path = root.clone();
@@ -597,7 +597,7 @@ impl FileProcessor {
     }
 
     pub fn get_cached_file_hash(&mut self) -> Option<zcommon::hash::Blake3Hash> {
-        self.get_cached_file().as_ref().and_then(|f| Some(f.hash))
+        self.get_cached_file().as_ref().map(|f| f.hash)
     }
 }
 

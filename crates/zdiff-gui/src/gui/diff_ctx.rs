@@ -703,7 +703,7 @@ impl DiffCtx {
         if self
             .myers_ctx
             .as_ref()
-            .map_or(false, |ctx| ctx.input == expected_input)
+            .is_some_and(|ctx| ctx.input == expected_input)
         {
             return self.myers_ctx.as_deref();
         }
@@ -766,7 +766,7 @@ impl DiffCtx {
                         let line_elapsed = start.elapsed();
                         let start = Instant::now();
                         let path =
-                            token_diff(input.algo, t1, t2, &hunks, &cmp, &ignore, cancel.clone())?;
+                            token_diff(input.algo, t1, t2, &hunks, cmp, &ignore, cancel.clone())?;
                         Some((path, line_elapsed, start.elapsed()))
                     })
                 } else {
@@ -861,7 +861,7 @@ impl DiffCtx {
         if self
             .diff_ir_ctx
             .as_ref()
-            .map_or(false, |ctx| ctx.input == expected_input)
+            .is_some_and(|ctx| ctx.input == expected_input)
         {
             return self.diff_ir_ctx.as_deref();
         }
@@ -904,8 +904,8 @@ impl DiffCtx {
         let file_2 = self.update_diff_rows_input.file_2.clone();
         let ir_ctx = self.request_diff_ir()?;
         let expected_input = DiffRowsInput {
-            file_1: file_1,
-            file_2: file_2,
+            file_1,
+            file_2,
             diff_ir: ir_ctx.diff_ir.clone(),
             diff_options: self.update_diff_rows_input.options.clone(),
         };
@@ -915,7 +915,7 @@ impl DiffCtx {
         if self
             .diff_rows_ctx
             .as_ref()
-            .map_or(false, |ctx| ctx.input == expected_input)
+            .is_some_and(|ctx| ctx.input == expected_input)
         {
             return self.diff_rows_ctx.as_deref();
         }
@@ -1596,21 +1596,21 @@ pub(crate) fn precompute_file_rows(
     let mut file_2_to_diff = vec![usize::MAX; file_2_line_count];
 
     for (row_idx, row) in diff_rows.iter().enumerate() {
-        if let LineContent::Code { line_num, .. } = row.left {
-            if line_num > 0 {
-                let idx = line_num as usize - 1;
-                if idx < file_1_line_count && file_1_to_diff[idx] == usize::MAX {
-                    file_1_to_diff[idx] = row_idx;
-                }
+        if let LineContent::Code { line_num, .. } = row.left
+            && line_num > 0
+        {
+            let idx = line_num as usize - 1;
+            if idx < file_1_line_count && file_1_to_diff[idx] == usize::MAX {
+                file_1_to_diff[idx] = row_idx;
             }
         }
 
-        if let LineContent::Code { line_num, .. } = row.right {
-            if line_num > 0 {
-                let idx = line_num as usize - 1;
-                if idx < file_2_line_count && file_2_to_diff[idx] == usize::MAX {
-                    file_2_to_diff[idx] = row_idx;
-                }
+        if let LineContent::Code { line_num, .. } = row.right
+            && line_num > 0
+        {
+            let idx = line_num as usize - 1;
+            if idx < file_2_line_count && file_2_to_diff[idx] == usize::MAX {
+                file_2_to_diff[idx] = row_idx;
             }
         }
     }
@@ -1687,7 +1687,7 @@ fn update_diff_rows_minimal_diff_ctx(
     )?;
     let line_elapsed = start.elapsed();
     let start = Instant::now();
-    let myers_path = token_diff(algo, t1, t2, &hunks, &cmp, &ignore, cancel_flag.clone())?;
+    let myers_path = token_diff(algo, t1, t2, &hunks, cmp, &ignore, cancel_flag.clone())?;
     let token_elapsed = start.elapsed();
     track_alloc!(reg, "myers_diff");
     check_cancel!(cancel_flag, "myers_diff_path");
@@ -1797,7 +1797,7 @@ fn compare_tokens(
     c1: &CachedFile<RawToken>,
     c2: &CachedFile<RawToken>,
 ) -> bool {
-    if a.as_ref().kind != b.as_ref().kind {
+    if a.kind != b.kind {
         return false;
     }
     let a_len = a.span.end - a.span.start;
@@ -2336,7 +2336,8 @@ mod tests {
                 load(&write_source(&dir.path().join("a1.rs"), 300, 1)),
                 load(&write_source(&dir.path().join("a2.rs"), 300, 2)),
             );
-            let toggles: [(&str, fn(&mut DiffBuilderOptions)); 5] = [
+            type Toggle = (&'static str, fn(&mut DiffBuilderOptions));
+            let toggles: [Toggle; 5] = [
                 ("whitespace", |o| o.ignore.whitespace = !o.ignore.whitespace),
                 ("line endings", |o| {
                     o.ignore.line_endings = !o.ignore.line_endings
@@ -2644,7 +2645,13 @@ mod tests {
                 let mut processor = DiffProcessor::default();
                 open(&mut processor, &current);
                 let ctx = settle(&mut processor).expect("diff never completed");
-                assert_eq!(*ctx.changed_scopes, [vec![3..6], vec![3..6]]);
+                assert_eq!(
+                    *ctx.changed_scopes,
+                    [
+                        vec![Range { start: 3, end: 6 }],
+                        vec![Range { start: 3, end: 6 }]
+                    ]
+                );
             }
 
             #[test]

@@ -2536,8 +2536,10 @@ mod tests {
     fn red_pair_processor(mode: ImageMode) -> ImageDiffProcessor {
         let first = RgbaImage::from_raw(1, 1, vec![0, 0, 0, 255]).unwrap();
         let second = RgbaImage::from_raw(1, 1, vec![30, 0, 0, 255]).unwrap();
-        let mut processor = ImageDiffProcessor::default();
-        processor.shown_mode = mode;
+        let mut processor = ImageDiffProcessor {
+            shown_mode: mode,
+            ..Default::default()
+        };
         processor.request(
             Some(png_file("a.png", &first)),
             Some(png_file("b.png", &second)),
@@ -2625,8 +2627,10 @@ mod tests {
 
     #[test]
     fn a_new_frame_keeps_the_shown_results_until_its_own_arrive() {
-        let mut processor = ImageDiffProcessor::default();
-        processor.shown_mode = ImageMode::Histogram;
+        let mut processor = ImageDiffProcessor {
+            shown_mode: ImageMode::Histogram,
+            ..Default::default()
+        };
         let second = frame(1, 0);
         processor.set_images(
             [
@@ -2739,8 +2743,10 @@ mod tests {
     fn the_heatmap_follows_the_tolerance() {
         let first = RgbaImage::from_raw(1, 1, vec![0, 0, 0, 255]).unwrap();
         let second = RgbaImage::from_raw(1, 1, vec![30, 0, 0, 255]).unwrap();
-        let mut processor = ImageDiffProcessor::default();
-        processor.shown_mode = ImageMode::Heatmap;
+        let mut processor = ImageDiffProcessor {
+            shown_mode: ImageMode::Heatmap,
+            ..Default::default()
+        };
         processor.request(
             Some(png_file("a.png", &first)),
             Some(png_file("b.png", &second)),

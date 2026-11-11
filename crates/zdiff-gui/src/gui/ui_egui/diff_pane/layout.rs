@@ -252,7 +252,7 @@ pub(super) fn unscrolled_cell(ui: &egui::Ui) -> egui::Rect {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use super::super::test_support::{char_width, collapsed_row_between};
+    use super::super::test_support::{char_width, collapsed_row};
     
 
     
@@ -381,7 +381,7 @@ mod tests {
             [10.0, 10.0, 30.0, 10.0]
         );
 
-        let collapsed = collapsed_row_between(&harness.rows()[2]);
+        let collapsed = collapsed_row();
         harness.set_row(2, collapsed);
         assert_eq!(char_wrapped_heights(&harness, [10, 10])[2], 10.0);
     }
