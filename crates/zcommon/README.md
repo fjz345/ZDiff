@@ -11,6 +11,7 @@ Common library crate shared by both apps.
 * `kinds`: file kind table (text, image, video, audio, model, archive, executable, debug symbols (`pdb`), Unreal asset/map, binary)
 * `ffmpeg`: ffmpeg/ffprobe lookup, runner and probe
 * `find`: find matcher (whole word, regex)
+* `lru`: small LRU cache bounded by entry count and approximate bytes
 * `presets`: preset store for filters and regex ignore patterns
 * `style`: style model and the shared style file
 * `crash`: panic hook that appends the message, location and backtrace to `crash.log`

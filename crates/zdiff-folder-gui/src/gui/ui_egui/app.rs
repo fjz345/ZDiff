@@ -5,7 +5,7 @@ use std::{
     io,
     path::{Path, PathBuf},
     sync::{
-        Arc,
+        Arc, Weak,
         atomic::{AtomicUsize, Ordering},
     },
     time::{Duration, Instant},
@@ -16,6 +16,7 @@ use zcommon::{
     job::Job,
     kinds::KindTable,
     logger::{self, LogBuffer},
+    lru::LruCache,
     universal_path::UniversalPath,
     vcs::{git::GitCommand, p4::P4Command},
 };
@@ -116,6 +117,8 @@ pub struct AppStateCtx {
     #[serde(default)]
     pub tolerance: Tolerance,
     #[serde(skip)]
+    built_rows_cache: LruCache<BuiltRowsKey, Vec<VisibleRowTwoFolderDiff>>,
+    #[serde(skip)]
     folder_find: FolderFind,
     /// The last valid `folder_find`: an invalid regex keeps the filter it replaces.
     #[serde(skip)]
@@ -143,6 +146,32 @@ pub struct AppStateCtx {
     keymap: Keymap<FolderAction>,
 }
 
+struct BuiltRowsKey {
+    models: [Weak<FileSystemModel>; 2],
+    path_filter: PathFilter,
+    tolerance: Tolerance,
+}
+
+impl BuiltRowsKey {
+    fn same_models(&self, other: &Self) -> bool {
+        Weak::ptr_eq(&self.models[0], &other.models[0])
+            && Weak::ptr_eq(&self.models[1], &other.models[1])
+    }
+}
+
+impl PartialEq for BuiltRowsKey {
+    fn eq(&self, other: &Self) -> bool {
+        self.same_models(other)
+            && self.path_filter == other.path_filter
+            && self.tolerance == other.tolerance
+    }
+}
+
+fn built_rows_bytes(rows: &[VisibleRowTwoFolderDiff]) -> usize {
+    let paths: usize = rows.iter().map(|row| row.rel_path.len()).sum();
+    paths + size_of_val(rows)
+}
+
 impl AppStateCtx {
     /// Rebuilds the two-folder rows when they were dropped or the filter or sort changed since
     /// they were built. Here rather than at the edit, so the rows are never missing mid-frame.
@@ -162,7 +191,23 @@ impl AppStateCtx {
         }
         if self.two_folder_diff_visible_rows.is_none() {
             if self.file_system_model_1_view.is_some() || self.file_system_model_2_view.is_some() {
-                let rows = self.build_rows(true);
+                let model = |view: &Option<FileSystemView>| {
+                    view.as_ref()
+                        .map_or_else(Weak::new, |v| Arc::downgrade(&v.file_system))
+                };
+                let key = BuiltRowsKey {
+                    models: [
+                        model(&self.file_system_model_1_view),
+                        model(&self.file_system_model_2_view),
+                    ],
+                    path_filter: self.path_filter.clone(),
+                    tolerance: self.tolerance,
+                };
+                self.built_rows_cache
+                    .retain(|cached| cached.same_models(&key));
+                let cached = self.built_rows_cache.get(&key).cloned();
+                let built = cached.is_none();
+                let rows = cached.or_else(|| self.build_rows(true));
                 // Before the state filter and find: the compare covers the pairs they hide, so
                 // Equal still compares Pending pairs and find never restarts it.
                 if let Some(rows) = &rows {
@@ -174,6 +219,11 @@ impl AppStateCtx {
                         ],
                         Instant::now(),
                     );
+                    // Rows still waiting on a compare or blueprint check get patched in place.
+                    if built && !self.tree_compare.is_comparing() && !self.blueprints_pending() {
+                        let bytes = built_rows_bytes(rows);
+                        self.built_rows_cache.insert(key, rows.clone(), bytes);
+                    }
                 }
                 self.two_folder_diff_arranged_rows = rows
                     .map(|rows| arrange_two_folder_rows(rows, self.diff_filter, self.tree_sort));
@@ -296,7 +346,12 @@ impl AppStateCtx {
             self.file_system_model_1_view.as_ref(),
             self.file_system_model_2_view.as_ref(),
         ]);
-        match self.tree_compare.poll(now) {
+        let update = self.tree_compare.poll(now);
+        // A compare resumed after a cancel brings states the cached rows still show as Pending.
+        if !matches!(update, CompareUpdate::Idle) {
+            self.built_rows_cache.clear();
+        }
+        match update {
             CompareUpdate::Idle => {}
             CompareUpdate::Patch => {
                 let patch_start = Instant::now();
@@ -326,6 +381,7 @@ impl AppStateCtx {
         if due && !self.blueprint_results.is_empty() {
             self.blueprints_applied = Some(now);
             let results = std::mem::take(&mut self.blueprint_results);
+            self.built_rows_cache.clear();
             if self.two_folder_diff_visible_rows.is_some()
                 && let Some(rows) = self
                     .two_folder_diff_arranged_rows
@@ -344,6 +400,10 @@ impl AppStateCtx {
                 self.narrow_rows_to_find();
             }
         }
+        self.blueprints_pending()
+    }
+
+    fn blueprints_pending(&self) -> bool {
         self.blueprint_detector.pending() > 0 || !self.blueprint_results.is_empty()
     }
 
@@ -1537,6 +1597,93 @@ mod tests {
         state.update_compare(start + Duration::from_secs(1));
         state.build_two_folder_diff_rows_if_stale();
         assert_eq!(row_paths(&state), ["", "b.txt", "a.txt"]);
+    }
+
+    #[test]
+    fn a_path_filter_toggled_back_after_a_rescan_shows_the_rescanned_states() {
+        let (left, right) = (tempdir().unwrap(), tempdir().unwrap());
+        for root in [left.path(), right.path()] {
+            fs::write(root.join("a.txt"), "a").unwrap();
+            fs::write(root.join("b.md"), "b").unwrap();
+        }
+        let mut state = AppStateCtx {
+            file_system_model_1_view: load_view(left.path()),
+            file_system_model_2_view: load_view(right.path()),
+            ..Default::default()
+        };
+        finish_compare(&mut state);
+        let a_state = |state: &AppStateCtx| {
+            let rows = state.two_folder_diff_visible_rows.as_ref().unwrap();
+            let row = rows.iter().find(|row| row.rel_path == "a.txt").unwrap();
+            row.diff_state.clone()
+        };
+        assert!(matches!(a_state(&state), DiffState::Same(..)));
+
+        fs::write(right.path().join("a.txt"), "a changed").unwrap();
+        state.file_system_model_2_view = load_view(right.path());
+        state.path_filter = PathFilter {
+            blacklist: PatternList::new("*.md"),
+            ..Default::default()
+        };
+        finish_compare(&mut state);
+        state.path_filter = PathFilter::default();
+        finish_compare(&mut state);
+        assert!(matches!(a_state(&state), DiffState::Different(..)));
+    }
+
+    #[test]
+    fn a_path_filter_toggled_back_after_a_rescan_shows_the_rescanned_tree() {
+        let (left, right) = (tempdir().unwrap(), tempdir().unwrap());
+        for root in [left.path(), right.path()] {
+            fs::write(root.join("a.txt"), "a").unwrap();
+            fs::write(root.join("b.md"), "b").unwrap();
+        }
+        let mut state = AppStateCtx {
+            file_system_model_1_view: load_view(left.path()),
+            file_system_model_2_view: load_view(right.path()),
+            ..Default::default()
+        };
+        finish_compare(&mut state);
+
+        fs::remove_file(right.path().join("a.txt")).unwrap();
+        state.file_system_model_2_view = load_view(right.path());
+        state.path_filter = PathFilter {
+            blacklist: PatternList::new("*.md"),
+            ..Default::default()
+        };
+        finish_compare(&mut state);
+        state.path_filter = PathFilter::default();
+        finish_compare(&mut state);
+        let rows = state.two_folder_diff_visible_rows.as_ref().unwrap();
+        let a = rows.iter().find(|row| row.rel_path == "a.txt").unwrap();
+        assert!(matches!(a.diff_state, DiffState::OnlyInFirst(..)));
+    }
+
+    #[test]
+    fn rows_built_after_a_cancelled_compare_take_its_resumed_results() {
+        let (left, right) = (tempdir().unwrap(), tempdir().unwrap());
+        fs::write(left.path().join("a.txt"), "left").unwrap();
+        fs::write(right.path().join("a.txt"), "right").unwrap();
+        let mut state = AppStateCtx {
+            file_system_model_1_view: load_view(left.path()),
+            file_system_model_2_view: load_view(right.path()),
+            ..Default::default()
+        };
+        state.build_two_folder_diff_rows_if_stale();
+        state.tree_compare.cancel();
+        state.path_filter = PathFilter {
+            blacklist: PatternList::new("*.md"),
+            ..Default::default()
+        };
+        state.build_two_folder_diff_rows_if_stale();
+        state.path_filter = PathFilter::default();
+        state.build_two_folder_diff_rows_if_stale();
+
+        state.likeness_bar = true;
+        finish_compare(&mut state);
+        let rows = state.two_folder_diff_visible_rows.as_ref().unwrap();
+        let a = rows.iter().find(|row| row.rel_path == "a.txt").unwrap();
+        assert!(matches!(a.diff_state, DiffState::Different(..)));
     }
 
     #[test]

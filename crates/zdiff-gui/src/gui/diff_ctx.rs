@@ -12,6 +12,7 @@ use eframe::egui;
 use rayon::prelude::*;
 use zcommon::find::{FindError, FindQuery, Matcher};
 use zcommon::job::Job;
+use zcommon::lru::{DEFAULT_MAX_ENTRIES, LruCache};
 use zdiff::universal_path::UniversalPath;
 use zdiff::{
     cached_file::CachedFile,
@@ -437,27 +438,100 @@ macro_rules! track_alloc {
     ($reg:expr, $step:expr) => {};
 }
 
-macro_rules! poll_ctx_channel {
-    ($channel:expr, $inflight:expr, $ctx:expr, $transform:expr) => {
-        for result in $channel.poll() {
-            match result {
-                Some(res) => {
-                    if let Some(pending) = &$inflight {
-                        if *pending == res.input {
-                            $ctx = $transform(Some(res));
-                            $inflight = None;
-                        }
-                    }
-                }
-                None => {
-                    $inflight = None;
-                }
+// The stage caches keep the files of their inputs alive; the Myers stage counts them.
+const MYERS_CACHE_BYTES: usize = 96 << 20;
+const DIFF_IR_CACHE_BYTES: usize = 32 << 20;
+const DIFF_ROWS_CACHE_BYTES: usize = 64 << 20;
+
+trait StageCtx {
+    type Input: PartialEq + Clone;
+    fn input(&self) -> &Self::Input;
+    fn approx_bytes(&self) -> usize;
+}
+
+impl StageCtx for MyersCtx {
+    type Input = MyersCtxInput;
+    fn input(&self) -> &MyersCtxInput {
+        &self.input
+    }
+    fn approx_bytes(&self) -> usize {
+        let files = [&self.input.file_1, &self.input.file_2]
+            .into_iter()
+            .flatten()
+            .map(|f| f.approx_bytes());
+        files.sum::<usize>()
+            + self.path.len() * size_of::<(i32, i32)>()
+            + char_ranges_bytes(&self.char_ranges)
+    }
+}
+
+impl StageCtx for DiffIRCtx {
+    type Input = DiffIRInput;
+    fn input(&self) -> &DiffIRInput {
+        &self.input
+    }
+    fn approx_bytes(&self) -> usize {
+        self.diff_ir.entries.len() * size_of::<zdiff::diff_ir::DiffResult>()
+            + char_ranges_bytes(&self.diff_ir.char_ranges)
+    }
+}
+
+impl StageCtx for DiffRowsCtx {
+    type Input = DiffRowsInput;
+    fn input(&self) -> &DiffRowsInput {
+        &self.input
+    }
+    fn approx_bytes(&self) -> usize {
+        let hidden_rows: usize = self.collapsed_blocks.iter().map(|b| b.hidden.len()).sum();
+        // Equal tokens sit on both sides of their row.
+        let row_tokens = 2 * self.input.diff_ir.entries.len();
+        let (left_lines, right_lines) = &*self.precomputed_file_rows;
+        (self.rows.len() + hidden_rows) * size_of::<DiffRow>()
+            + row_tokens * size_of::<(zdiff::diff_ir::DiffResult, bool, bool)>()
+            + (left_lines.len() + right_lines.len()) * size_of::<usize>()
+            + self.precomputed_diffs.len() * size_of::<DiffSpan>()
+    }
+}
+
+fn char_ranges_bytes(ranges: &CharRanges) -> usize {
+    (ranges.source.len() + ranges.target.len()) * size_of::<Range<usize>>()
+}
+
+fn store_finished<C: StageCtx>(
+    results: Vec<Option<C>>,
+    inflight: &mut Option<C::Input>,
+    current: &mut Option<Arc<C>>,
+    cache: &mut LruCache<C::Input, Arc<C>>,
+) {
+    for result in results {
+        match result {
+            Some(res) if inflight.as_ref() == Some(res.input()) => {
+                let res = Arc::new(res);
+                cache.insert(res.input().clone(), res.clone(), res.approx_bytes());
+                *current = Some(res);
+                *inflight = None;
             }
+            Some(_) => {}
+            None => *inflight = None,
         }
+    }
+}
+
+fn serve_cached<C: StageCtx + Send + 'static>(
+    expected: &C::Input,
+    job: &mut Job<Option<C>>,
+    inflight: &mut Option<C::Input>,
+    current: &mut Option<Arc<C>>,
+    cache: &mut LruCache<C::Input, Arc<C>>,
+) -> bool {
+    let Some(hit) = cache.get(expected) else {
+        return false;
     };
-    ($channel:expr, $inflight:expr, $ctx:expr) => {
-        poll_ctx_channel!($channel, $inflight, $ctx, |x| x)
-    };
+    *current = Some(hit.clone());
+    // A job still running is for another input, and its result would replace the hit.
+    job.cancel();
+    *inflight = None;
+    true
 }
 
 #[derive(Debug)]
@@ -474,13 +548,16 @@ pub struct DiffCtx {
     diff_rows_job: Job<Option<DiffRowsCtx>>,
 
     myers_inflight_input: Option<MyersCtxInput>,
-    myers_ctx: Option<MyersCtx>,
+    myers_ctx: Option<Arc<MyersCtx>>,
+    myers_cache: LruCache<MyersCtxInput, Arc<MyersCtx>>,
 
     diff_ir_inflight_input: Option<DiffIRInput>,
-    diff_ir_ctx: Option<DiffIRCtx>,
+    diff_ir_ctx: Option<Arc<DiffIRCtx>>,
+    diff_ir_cache: LruCache<DiffIRInput, Arc<DiffIRCtx>>,
 
     diff_rows_inflight_input: Option<DiffRowsInput>,
     diff_rows_ctx: Option<Arc<DiffRowsCtx>>,
+    diff_rows_cache: LruCache<DiffRowsInput, Arc<DiffRowsCtx>>,
 
     repaint: RepaintContext,
 }
@@ -531,10 +608,13 @@ impl DiffCtx {
             diff_rows_job: repaint_job(&repaint),
             myers_inflight_input: None,
             myers_ctx: None,
+            myers_cache: LruCache::new(DEFAULT_MAX_ENTRIES, MYERS_CACHE_BYTES),
             diff_ir_inflight_input: None,
             diff_ir_ctx: None,
+            diff_ir_cache: LruCache::new(DEFAULT_MAX_ENTRIES, DIFF_IR_CACHE_BYTES),
             diff_rows_inflight_input: None,
             diff_rows_ctx: None,
+            diff_rows_cache: LruCache::new(DEFAULT_MAX_ENTRIES, DIFF_ROWS_CACHE_BYTES),
             repaint,
         }
     }
@@ -580,54 +660,49 @@ impl DiffCtx {
     }
 
     pub fn poll(&mut self) {
-        for myers_res in self.myers_job.poll() {
-            match myers_res {
-                Some(res) => {
-                    if Some(&res.input) == self.myers_inflight_input.as_ref() {
-                        self.myers_ctx = Some(res);
-                        self.myers_inflight_input = None;
-                    }
-                }
-                None => self.myers_inflight_input = None,
-            }
-        }
+        self.poll_myers();
+        self.poll_diff_ir();
+        self.poll_diff_rows();
+    }
 
-        for ir_res in self.diff_ir_job.poll() {
-            match ir_res {
-                Some(res) => {
-                    if Some(&res.input) == self.diff_ir_inflight_input.as_ref() {
-                        self.diff_ir_ctx = Some(res);
-                        self.diff_ir_inflight_input = None;
-                    }
-                }
-                None => self.diff_ir_inflight_input = None,
-            }
-        }
+    fn poll_myers(&mut self) {
+        store_finished(
+            self.myers_job.poll(),
+            &mut self.myers_inflight_input,
+            &mut self.myers_ctx,
+            &mut self.myers_cache,
+        );
+    }
 
-        for rows_res in self.diff_rows_job.poll() {
-            match rows_res {
-                Some(res) => {
-                    if Some(&res.input) == self.diff_rows_inflight_input.as_ref() {
-                        self.diff_rows_ctx = Some(Arc::new(res));
-                        self.diff_rows_inflight_input = None;
-                    }
-                }
-                None => self.diff_rows_inflight_input = None,
-            }
-        }
+    fn poll_diff_ir(&mut self) {
+        store_finished(
+            self.diff_ir_job.poll(),
+            &mut self.diff_ir_inflight_input,
+            &mut self.diff_ir_ctx,
+            &mut self.diff_ir_cache,
+        );
+    }
+
+    fn poll_diff_rows(&mut self) {
+        store_finished(
+            self.diff_rows_job.poll(),
+            &mut self.diff_rows_inflight_input,
+            &mut self.diff_rows_ctx,
+            &mut self.diff_rows_cache,
+        );
     }
 
     pub fn request_myers(&mut self) -> Option<&MyersCtx> {
         let expected_input: MyersCtxInput = (&self.update_diff_rows_input).into();
 
-        poll_ctx_channel!(self.myers_job, self.myers_inflight_input, self.myers_ctx);
+        self.poll_myers();
 
         if self
             .myers_ctx
             .as_ref()
             .map_or(false, |ctx| ctx.input == expected_input)
         {
-            return self.myers_ctx.as_ref();
+            return self.myers_ctx.as_deref();
         }
 
         if expected_input.file_1.is_none() && expected_input.file_2.is_none() {
@@ -635,6 +710,15 @@ impl DiffCtx {
         }
 
         if self.myers_inflight_input.as_ref() != Some(&expected_input) {
+            if serve_cached(
+                &expected_input,
+                &mut self.myers_job,
+                &mut self.myers_inflight_input,
+                &mut self.myers_ctx,
+                &mut self.myers_cache,
+            ) {
+                return self.myers_ctx.as_deref();
+            }
             self.myers_inflight_input = Some(expected_input.clone());
             let input = expected_input;
 
@@ -762,21 +846,26 @@ impl DiffCtx {
             char_ranges: myers_ctx.char_ranges.clone(),
         };
 
-        poll_ctx_channel!(
-            self.diff_ir_job,
-            self.diff_ir_inflight_input,
-            self.diff_ir_ctx
-        );
+        self.poll_diff_ir();
 
         if self
             .diff_ir_ctx
             .as_ref()
             .map_or(false, |ctx| ctx.input == expected_input)
         {
-            return self.diff_ir_ctx.as_ref();
+            return self.diff_ir_ctx.as_deref();
         }
 
         if self.diff_ir_inflight_input.as_ref() != Some(&expected_input) {
+            if serve_cached(
+                &expected_input,
+                &mut self.diff_ir_job,
+                &mut self.diff_ir_inflight_input,
+                &mut self.diff_ir_ctx,
+                &mut self.diff_ir_cache,
+            ) {
+                return self.diff_ir_ctx.as_deref();
+            }
             self.diff_ir_inflight_input = Some(expected_input.clone());
             let input = expected_input;
             let is_equal_left = !matches!(self.get_one_sided_mode(), OneSidedMode::OnlyRight);
@@ -811,12 +900,7 @@ impl DiffCtx {
             diff_options: self.update_diff_rows_input.options.clone(),
         };
 
-        poll_ctx_channel!(
-            self.diff_rows_job,
-            self.diff_rows_inflight_input,
-            self.diff_rows_ctx,
-            |res: Option<DiffRowsCtx>| res.map(Arc::new)
-        );
+        self.poll_diff_rows();
 
         if self
             .diff_rows_ctx
@@ -827,6 +911,15 @@ impl DiffCtx {
         }
 
         if self.diff_rows_inflight_input.as_ref() != Some(&expected_input) {
+            if serve_cached(
+                &expected_input,
+                &mut self.diff_rows_job,
+                &mut self.diff_rows_inflight_input,
+                &mut self.diff_rows_ctx,
+                &mut self.diff_rows_cache,
+            ) {
+                return self.diff_rows_ctx.as_deref();
+            }
             self.diff_rows_inflight_input = Some(expected_input.clone());
             let input = expected_input;
 
@@ -2215,6 +2308,83 @@ mod tests {
             );
             let ctx = settle(&mut processor).expect("ignore toggle never completed");
             assert!(ctx.input == current, "diff shows {:?}", ctx.input);
+        }
+
+        #[test]
+        fn toggling_an_option_back_is_served_from_the_stage_caches() {
+            let dir = tempfile::tempdir().unwrap();
+            let a = (
+                load(&write_source(&dir.path().join("a1.rs"), 300, 1)),
+                load(&write_source(&dir.path().join("a2.rs"), 300, 2)),
+            );
+            let toggles: [(&str, fn(&mut DiffBuilderOptions)); 5] = [
+                ("whitespace", |o| o.ignore.whitespace = !o.ignore.whitespace),
+                ("line endings", |o| {
+                    o.ignore.line_endings = !o.ignore.line_endings
+                }),
+                ("file markers", |o| {
+                    o.ignore.file_markers = !o.ignore.file_markers
+                }),
+                ("char diff", |o| o.phases.character = !o.phases.character),
+                ("ghost rows", |o| o.ghost_rows = !o.ghost_rows),
+            ];
+            let mut processor = DiffProcessor::default();
+            let mut current = input(&a.0, &a.1);
+            open(&mut processor, &current);
+            let first = settle(&mut processor).expect("first diff never completed");
+
+            for (name, toggle) in toggles {
+                toggle(&mut current.options);
+                open(&mut processor, &current);
+                settle(&mut processor).expect("toggle never completed");
+                toggle(&mut current.options);
+                open(&mut processor, &current);
+                assert!(!processor.is_in_progress(), "{name} back recomputed");
+                let back = processor.get_minimal_diff_ctx().expect("cached diff");
+                assert!(Arc::ptr_eq(&back.diff_rows, &first.diff_rows), "{name}");
+                assert_eq!(back.stage_times, first.stage_times, "{name}");
+            }
+        }
+
+        #[test]
+        fn returning_to_a_pair_is_served_from_the_stage_caches() {
+            let dir = tempfile::tempdir().unwrap();
+            let a = (
+                load(&write_source(&dir.path().join("a1.rs"), 300, 1)),
+                load(&write_source(&dir.path().join("a2.rs"), 300, 2)),
+            );
+            let b = (
+                load(&write_source(&dir.path().join("b1.rs"), 300, 3)),
+                load(&write_source(&dir.path().join("b2.rs"), 300, 4)),
+            );
+            let mut processor = DiffProcessor::default();
+            open(&mut processor, &input(&a.0, &a.1));
+            let first = settle(&mut processor).expect("diff of A never completed");
+            open(&mut processor, &input(&b.0, &b.1));
+            settle(&mut processor).expect("diff of B never completed");
+
+            open(&mut processor, &input(&a.0, &a.1));
+            assert!(!processor.is_in_progress());
+            let back = processor.get_minimal_diff_ctx().expect("cached A");
+            assert!(Arc::ptr_eq(&back.diff_rows, &first.diff_rows));
+        }
+
+        #[test]
+        fn a_ctx_reset_recomputes_instead_of_serving_the_caches() {
+            let dir = tempfile::tempdir().unwrap();
+            let a = (
+                load(&write_source(&dir.path().join("a1.rs"), 300, 1)),
+                load(&write_source(&dir.path().join("a2.rs"), 300, 2)),
+            );
+            let mut processor = DiffProcessor::default();
+            let current = input(&a.0, &a.1);
+            open(&mut processor, &current);
+            settle(&mut processor).expect("first diff never completed");
+
+            processor.reset_ctx();
+            open(&mut processor, &current);
+            assert!(processor.ctx.myers_inflight_input.is_some());
+            settle(&mut processor).expect("recompute never completed");
         }
 
         #[test]

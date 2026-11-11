@@ -35,6 +35,7 @@ GUI for zdiff crate
         + Inline ghost tokens
         + Diff only, with a context row count
         + Toggle all options (Alt+A)
+    - In-memory results cache: each diff stage keeps its last 6 results and each side its last 6 file loads (256 MB in all), keyed by the file contents and the options that stage uses, so toggling an option back or returning to an earlier pair shows at once. Unchanged local files (same size and modification time) and fixed revisions (`#rev`, `@change`, full commit SHA) are not read again; head, branch and index sides always are. Refresh and Recompute Diff compute from scratch
 * Sides
     - Breadcrumb path bar per side, and a folder browser over that side to pick another file
     - Local paths, Perforce depot paths, changelists and shelves, git revisions, picked from a "Source control" dropdown per side

@@ -6,6 +6,7 @@ pub mod hash;
 pub mod job;
 pub mod kinds;
 pub mod logger;
+pub mod lru;
 pub mod path;
 pub mod presets;
 pub mod style;

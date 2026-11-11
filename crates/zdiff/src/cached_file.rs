@@ -60,6 +60,12 @@ impl<T: RawTokenTrait> CachedFile<T> {
         &self.contents[span]
     }
 
+    pub fn approx_bytes(&self) -> usize {
+        self.contents.len()
+            + self.tokens.len() * size_of::<T>()
+            + self.metadata.line_starts.len() * size_of::<usize>()
+    }
+
     pub fn content_search(&self, query: &str) -> Vec<usize> {
         log::trace!("content_search: {}", query);
         if query.is_empty() {

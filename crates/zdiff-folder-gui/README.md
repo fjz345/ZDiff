@@ -16,6 +16,7 @@ A crash (panic) appends its message, source location and backtrace to `crash.log
 * Two-folder tree diff
     - Background scan and compare, rows show Pending until compared; counts and timings in the status line
     - Rebuilt rows (compare finished, sort, filters) keep the top row of the view in place, or its nearest shown folder
+    - Compared rows are cached in memory per path filter and tolerance (last 6), so sort, diff only, flat and switching a filter or tolerance back skip the rebuild (about 130 ms down to 20 ms for 52,000 rows); a rescan or new compare results drop them
     - Breadcrumb path bars, right-click menu on rows (set as root, set as Folder 1/2, open in Explorer, copy path)
     - Tree guide lines, folder tint, dimmed equal rows
     - File type tag column per side (`img`, `bin`, `BP` for Blueprint `.uasset`, ...)

@@ -1,9 +1,11 @@
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, mpsc};
+use std::sync::{Arc, Mutex, mpsc};
+use std::time::SystemTime;
 
 use eframe::egui;
 use zcommon::job::Job;
+use zcommon::lru::{DEFAULT_MAX_ENTRIES, LruCache};
 use zcommon::vcs::git::{self, GitCommand, GitRunner};
 use zdiff::cached_file::CachedFile;
 use zdiff::lexer::RawToken;
@@ -73,6 +75,14 @@ impl LoadedFile {
 
     pub fn is_dump(&self) -> bool {
         matches!(self, LoadedFile::Dump { .. })
+    }
+
+    fn approx_bytes(&self) -> usize {
+        match self {
+            LoadedFile::Text(file) => file.approx_bytes(),
+            LoadedFile::Binary(file) => file.bytes.len(),
+            LoadedFile::Dump { text, source } => text.approx_bytes() + source.bytes.len(),
+        }
     }
 
     /// Same load, not just equal content: every load makes new `Arc`s.
@@ -197,6 +207,50 @@ pub fn load_git_file(
         .map_err(|e| format!("Cannot load file {}, Error: {e}", temp.path().display()))
 }
 
+#[derive(Debug, Clone, PartialEq)]
+struct LoadKey {
+    path: UniversalPath,
+    local_stamp: Option<(u64, SystemTime)>,
+    pdb_options: PdbDumpOptions,
+}
+
+const LOAD_CACHE_BYTES: usize = 32 << 20;
+type LoadCache = Arc<Mutex<LruCache<LoadKey, LoadedFile>>>;
+
+fn default_load_cache() -> LoadCache {
+    Arc::new(Mutex::new(LruCache::new(
+        DEFAULT_MAX_ENTRIES,
+        LOAD_CACHE_BYTES,
+    )))
+}
+
+fn load_key(path: &UniversalPath, pdb_options: &PdbDumpOptions) -> Option<LoadKey> {
+    let local_stamp = match path {
+        UniversalPath::Local(p) => {
+            let meta = std::fs::metadata(p).ok()?;
+            Some((meta.len(), meta.modified().ok()?))
+        }
+        UniversalPath::Depot(_, Some(DepotRev::Rev(_) | DepotRev::Change(_))) => None,
+        UniversalPath::Git(_, GitRev::Rev(rev)) if is_full_commit_sha(rev) => None,
+        UniversalPath::Depot(..) | UniversalPath::Git(..) => return None,
+    };
+    Some(LoadKey {
+        path: path.clone(),
+        local_stamp,
+        pdb_options: pdb_options.clone(),
+    })
+}
+
+fn is_full_commit_sha(rev: &str) -> bool {
+    matches!(rev.len(), 40 | 64) && rev.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+fn lock_load_cache(cache: &LoadCache) -> std::sync::MutexGuard<'_, LruCache<LoadKey, LoadedFile>> {
+    cache
+        .lock()
+        .expect("the load cache lock is only held for a lookup or insert")
+}
+
 fn default_channel() -> (mpsc::Sender<UniversalPath>, mpsc::Receiver<UniversalPath>) {
     mpsc::channel()
 }
@@ -236,6 +290,8 @@ pub struct FileProcessor {
     load_error: Option<String>,
     #[cfg_attr(feature = "serde", serde(skip))]
     pdb_options: PdbDumpOptions,
+    #[cfg_attr(feature = "serde", serde(skip, default = "default_load_cache"))]
+    load_cache: LoadCache,
 }
 
 impl Default for FileProcessor {
@@ -252,6 +308,7 @@ impl Default for FileProcessor {
             label: None,
             load_error: None,
             pdb_options: PdbDumpOptions::default(),
+            load_cache: default_load_cache(),
         }
     }
 }
@@ -349,7 +406,7 @@ impl FileProcessor {
         }
 
         if old_path != self.file_path {
-            self.invalidate_cache_file();
+            self.forget_loaded_file();
             self.label = None;
         }
     }
@@ -429,6 +486,11 @@ impl FileProcessor {
 
     pub fn invalidate_cache_file(&mut self) {
         log::debug!("Invalidating cache file for path: {}", self.file_path);
+        lock_load_cache(&self.load_cache).retain(|key| key.path != self.file_path);
+        self.forget_loaded_file();
+    }
+
+    fn forget_loaded_file(&mut self) {
         self.loaded_file = None;
         self.cached_file_path = None;
         self.load_error = None;
@@ -440,7 +502,7 @@ impl FileProcessor {
         }
         self.pdb_options = options.clone();
         if is_pdb_path(&self.file_path) {
-            self.invalidate_cache_file();
+            self.forget_loaded_file();
         }
     }
 
@@ -478,11 +540,21 @@ impl FileProcessor {
 
             let path_clone = path.clone();
             let pdb_options = self.pdb_options.clone();
+            let cache = self.load_cache.clone();
 
             let load_job = self
                 .load_job
                 .get_or_insert_with(|| repaint_job(&self.repaint));
             load_job.start(move |ctx| {
+                let key = load_key(&path_clone, &pdb_options);
+                let hit = key
+                    .as_ref()
+                    .and_then(|key| lock_load_cache(&cache).get(key).cloned());
+                if let Some(hit) = hit {
+                    log::debug!("Loaded {path_clone} from the load cache");
+                    ctx.send(Ok(hit));
+                    return;
+                }
                 let loaded = match &path_clone {
                     UniversalPath::Local(p) => load_file(path_clone.clone(), p)
                         .map_err(|e| format!("Cannot load file {}, Error: {e}", p.display())),
@@ -500,6 +572,12 @@ impl FileProcessor {
                 let loaded = loaded
                     .map(|file| with_pdb_dump(file, &pdb_options))
                     .inspect_err(|e| log::error!("{e}"));
+                // A write during the read leaves contents the first stamp doesn't describe.
+                if let (Ok(file), Some(key)) = (&loaded, key)
+                    && load_key(&path_clone, &pdb_options).as_ref() == Some(&key)
+                {
+                    lock_load_cache(&cache).insert(key, file.clone(), file.approx_bytes());
+                }
 
                 ctx.send(loaded);
             });
@@ -1004,6 +1082,82 @@ mod tests {
 
         file.set_path(UniversalPath::new("other.rs"));
         assert_eq!(file.load_error(), None);
+    }
+
+    fn loaded(file: &mut FileProcessor) -> LoadedFile {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            let loaded = file.get_loaded_file();
+            if file.get_loading_path().is_none() {
+                return loaded.expect("the load failed");
+            }
+            assert!(std::time::Instant::now() < deadline, "load never finished");
+            std::thread::yield_now();
+        }
+    }
+
+    #[test]
+    fn returning_to_an_unchanged_file_reuses_its_load_and_a_changed_one_reloads() {
+        let dir = tempfile::tempdir().unwrap();
+        let (a, b) = (dir.path().join("a.rs"), dir.path().join("b.rs"));
+        std::fs::write(&a, "fn a() {}\n").unwrap();
+        std::fs::write(&b, "fn b() {}\n").unwrap();
+        let mut file = FileProcessor::new();
+        file.set_path(UniversalPath::from(a.clone()));
+        let first = loaded(&mut file);
+        file.set_path(UniversalPath::from(b.clone()));
+        loaded(&mut file);
+
+        file.set_path(UniversalPath::from(a.clone()));
+        assert!(loaded(&mut file).is_same_load(&first));
+
+        std::fs::write(&a, "fn a_changed() {}\n").unwrap();
+        file.set_path(UniversalPath::from(b));
+        loaded(&mut file);
+        file.set_path(UniversalPath::from(a));
+        let changed = loaded(&mut file);
+        assert!(!changed.is_same_load(&first));
+        assert_eq!(changed.bytes(), b"fn a_changed() {}\n");
+    }
+
+    #[test]
+    fn a_refresh_reloads_an_unchanged_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.rs");
+        std::fs::write(&path, "fn a() {}\n").unwrap();
+        let mut file = FileProcessor::new();
+        file.set_path(UniversalPath::from(path));
+        let first = loaded(&mut file);
+
+        file.invalidate_cache_file();
+        assert!(!loaded(&mut file).is_same_load(&first));
+    }
+
+    #[test]
+    fn only_sides_that_cannot_change_under_their_path_are_cached() {
+        let dir = tempfile::tempdir().unwrap();
+        let local = dir.path().join("a.rs");
+        std::fs::write(&local, "fn a() {}\n").unwrap();
+        let sha = "0123456789abcdef0123456789abcdef01234567".to_owned();
+        let depot = |rev| UniversalPath::Depot("//depot/a.rs".into(), rev);
+        let git = |rev| UniversalPath::Git(local.clone(), rev);
+        let cases = [
+            (UniversalPath::from(local.clone()), true),
+            (UniversalPath::from(dir.path().join("missing.rs")), false),
+            (depot(None), false),
+            (depot(Some(DepotRev::Rev(3))), true),
+            (depot(Some(DepotRev::Change(12))), true),
+            (depot(Some(DepotRev::Shelf(12))), false),
+            (git(GitRev::Index), false),
+            (git(GitRev::Rev("main".into())), false),
+            (git(GitRev::Rev("HEAD".into())), false),
+            (git(GitRev::Rev(sha[..12].into())), false),
+            (git(GitRev::Rev(sha)), true),
+        ];
+        for (path, cached) in cases {
+            let key = load_key(&path, &PdbDumpOptions::default());
+            assert_eq!(key.is_some(), cached, "{path:?}");
+        }
     }
 
     #[test]
