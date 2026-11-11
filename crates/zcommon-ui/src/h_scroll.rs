@@ -61,7 +61,7 @@ pub fn remap_wheel_events(
 /// Advance width of `text` laid out on one line, given each char's advance. egui gives tabs a
 /// fixed advance, and monospace fonts have no kerning, so the sum is the laid-out width.
 pub fn text_width(text: &str, glyph_width: &mut impl FnMut(char) -> f32) -> f32 {
-    text.chars().map(|c| glyph_width(c)).sum()
+    text.chars().map(glyph_width).sum()
 }
 
 /// How far a side scrolls: its widest row (`content_width`) ends at the viewport's right edge.
