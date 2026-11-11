@@ -46,7 +46,7 @@ use crate::ui_egui::{
     panes::{Pane, PathDiffView, TreeBehavior},
     path_diff_pane::{FilterPresets, PathDiffPane},
     revision_open,
-    roots::{LaunchArgs, Side, apply_launch_args, clear_root, set_root},
+    roots::{LaunchArgs, Side, apply_launch_args, clear_root, set_root, set_root_or_report},
     side_revision::split_side,
     status_line::{
         RowCounts, ScanSummary, ToolMessage, count_rows, counts_text, ui_status_summary,
@@ -60,7 +60,6 @@ use crate::ui_egui::{
     tree_sort::TreeSort,
     tree_tolerance::Tolerance,
 };
-use eframe::epaint::Pos2;
 use egui_tiles::Tile;
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -896,11 +895,13 @@ impl ZApp {
 
     pub fn apply_launch_args(&mut self, args: &LaunchArgs) {
         match self.state.as_mut().expect("state is set outside update()") {
-            AppState::Startup(ctx) | AppState::Idle(ctx) => apply_launch_args(
-                args,
-                &mut ctx.file_system_1_root_path,
-                &mut ctx.file_system_2_root_path,
-            ),
+            AppState::Startup(ctx) | AppState::Idle(ctx) => {
+                ctx.tool_message = apply_launch_args(
+                    args,
+                    &mut ctx.file_system_1_root_path,
+                    &mut ctx.file_system_2_root_path,
+                );
+            }
             AppState::Exit() => log::warn!("Command-line folders ignored: the app is exiting"),
         }
     }
@@ -1425,14 +1426,15 @@ impl ZApp {
                 }
 
                 // DoubleLeftClick
-                if r.pointer.button_double_clicked(PointerButton::Primary) {
-                    let mouse_pos = r.pointer.interact_pos().unwrap();
+                if r.pointer.button_double_clicked(PointerButton::Primary)
+                    && let Some(mouse_pos) = r.pointer.interact_pos()
+                {
                     log::info!("double click @({},{})", mouse_pos.x, mouse_pos.y);
                 }
 
-                if r.pointer.button_clicked(PointerButton::Middle) {
-                    let mouse_pos: Pos2 = r.pointer.interact_pos().unwrap();
-
+                if r.pointer.button_clicked(PointerButton::Middle)
+                    && let Some(mouse_pos) = r.pointer.interact_pos()
+                {
                     log::info!("middle click @({},{})", mouse_pos.x, mouse_pos.y);
                 }
             });
@@ -1534,13 +1536,23 @@ impl eframe::App for ZApp {
                 if self.open_dir_window_1 {
                     self.open_dir_window_1 = false;
                     if let Some(path) = rfd::FileDialog::new().pick_folder() {
-                        let _ = set_root(&mut state.file_system_1_root_path, Side::Folder1, &path);
+                        set_root_or_report(
+                            &mut state.file_system_1_root_path,
+                            Side::Folder1,
+                            &path,
+                            &mut state.tool_message,
+                        );
                     }
                 }
                 if self.open_dir_window_2 {
                     self.open_dir_window_2 = false;
                     if let Some(path) = rfd::FileDialog::new().pick_folder() {
-                        let _ = set_root(&mut state.file_system_2_root_path, Side::Folder2, &path);
+                        set_root_or_report(
+                            &mut state.file_system_2_root_path,
+                            Side::Folder2,
+                            &path,
+                            &mut state.tool_message,
+                        );
                     }
                 }
                 state.update_scans(ctx);

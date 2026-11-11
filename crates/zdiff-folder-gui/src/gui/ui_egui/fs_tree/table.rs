@@ -100,6 +100,7 @@ pub fn draw_ui_folder_tree(
             root_2,
             egui::Rect::EVERYTHING,
             egui::Rect::EVERYTHING,
+            tool_message,
         );
         return response;
     }
@@ -566,9 +567,9 @@ pub fn draw_ui_folder_tree(
     let column_rects =
         side_rects.map(|rect| egui::Rect::from_x_y_ranges(rect.x_range(), table_y.clone()));
     let [rect_1, rect_2] = shown.map(|column| column_rects[column]);
-    handle_drops(ui, root_1, root_2, rect_1, rect_2);
+    handle_drops(ui, root_1, root_2, rect_1, rect_2, tool_message);
     if let Some(action) = row_action {
-        apply_row_action(ui.ctx(), action, root_1, root_2);
+        apply_row_action(ui.ctx(), action, root_1, root_2, tool_message);
     }
     // The status line was drawn before this pane; show the new message next frame.
     if *tool_message != tool_message_before {
@@ -666,18 +667,24 @@ pub(super) fn handle_drops(
     root_2: &mut Option<PathBuf>,
     rect1: egui::Rect,
     rect2: egui::Rect,
+    tool_message: &mut Option<ToolMessage>,
 ) -> bool {
-    return match zcommon_ui::common::dropped_file(ui.ctx()) {
+    let dropped = match zcommon_ui::common::dropped_file(ui.ctx()) {
         Some((path, drop_pos)) if rect1.contains(drop_pos) => {
-            let _ = set_root(root_1, Side::Folder1, &path);
+            set_root_or_report(root_1, Side::Folder1, &path, tool_message);
             true
         }
         Some((path, drop_pos)) if rect2.contains(drop_pos) => {
-            let _ = set_root(root_2, Side::Folder2, &path);
+            set_root_or_report(root_2, Side::Folder2, &path, tool_message);
             true
         }
         _ => false,
     };
+    if dropped {
+        // The status line was drawn before this pane.
+        ui.ctx().request_repaint();
+    }
+    dropped
 }
 
 #[derive(Clone)]

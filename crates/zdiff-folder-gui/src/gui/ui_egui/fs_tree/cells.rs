@@ -18,7 +18,6 @@ pub(super) fn on_row_item_clicked(
             None
         }
         (Some(path1), Some(path2)) => {
-            assert_eq!(file_system_1_view.is_some(), file_system_2_view.is_some()); // Model/View diff
             let mut message = ToolMessage::default();
             let Some(diff_tool) =
                 config.choose_tool(&KindTable::default(), Path::new(&entry.rel_path))
@@ -47,9 +46,10 @@ pub(super) fn on_row_item_clicked(
                     return Some(message);
                 }
             };
+            let both_views = "rows with both sides are built from both views";
             let (left_model, right_model) = (
-                &file_system_1_view.unwrap().file_system,
-                &file_system_2_view.unwrap().file_system,
+                &file_system_1_view.expect(both_views).file_system,
+                &file_system_2_view.expect(both_views).file_system,
             );
             let side =
                 |model: &FileSystemModel, id: FsNodeId| (model.content().clone(), model.path(id));

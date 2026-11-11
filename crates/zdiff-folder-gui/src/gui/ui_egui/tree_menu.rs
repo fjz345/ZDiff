@@ -2,7 +2,8 @@ use std::path::{Path, PathBuf};
 
 use eframe::egui;
 
-use crate::ui_egui::roots::{Side, set_root, validate_root};
+use crate::ui_egui::roots::{Side, set_root_or_report, validate_root};
+use crate::ui_egui::status_line::ToolMessage;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Entry {
@@ -110,24 +111,30 @@ pub fn apply_row_action(
     action: RowAction,
     root_1: &mut Option<PathBuf>,
     root_2: &mut Option<PathBuf>,
+    tool_message: &mut Option<ToolMessage>,
 ) {
     match action {
         RowAction::SetRoots([path_1, path_2]) => {
             // Checked up front so a folder deleted since the scan can't leave one side re-rooted.
             for (side, path) in [(Side::Folder1, &path_1), (Side::Folder2, &path_2)] {
                 if let Err(e) = validate_root(path) {
-                    log::error!("Set as root: {side}: {e}");
+                    let error = format!("Set as root: {side}: {e}");
+                    log::error!("{error}");
+                    *tool_message = Some(ToolMessage {
+                        error: Some(error),
+                        ..ToolMessage::default()
+                    });
                     return;
                 }
             }
-            let _ = set_root(root_1, Side::Folder1, &path_1);
-            let _ = set_root(root_2, Side::Folder2, &path_2);
+            set_root_or_report(root_1, Side::Folder1, &path_1, tool_message);
+            set_root_or_report(root_2, Side::Folder2, &path_2, tool_message);
         }
         RowAction::SetRoot(Side::Folder1, path) => {
-            let _ = set_root(root_1, Side::Folder1, &path);
+            set_root_or_report(root_1, Side::Folder1, &path, tool_message);
         }
         RowAction::SetRoot(Side::Folder2, path) => {
-            let _ = set_root(root_2, Side::Folder2, &path);
+            set_root_or_report(root_2, Side::Folder2, &path, tool_message);
         }
         RowAction::OpenInExplorer(path) => open_in_explorer(&path),
         RowAction::CopyPath(path) => ctx.copy_text(path.to_string_lossy().into_owned()),

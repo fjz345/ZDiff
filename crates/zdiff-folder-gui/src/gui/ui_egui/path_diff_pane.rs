@@ -20,7 +20,7 @@ use crate::ui_egui::{
         TreeTable, TwoFolderTable, draw_ui_folder_tree,
     },
     panes::PathDiffView,
-    roots::{Side, set_root},
+    roots::{Side, set_root_or_report},
     status_line::ToolMessage,
     tree_compare::TreeCompare,
     tree_cursor::TreeCursor,
@@ -312,20 +312,22 @@ impl PathDiffPane {
         if self.open_dir_window_1 {
             self.open_dir_window_1 = false;
             if let Some(path) = rfd::FileDialog::new().pick_folder() {
-                let _ = set_root(
+                set_root_or_report(
                     ctx.path_diff_view.file_system_1_root_path,
                     Side::Folder1,
                     &path,
+                    ctx.tool_message,
                 );
             }
         }
         if self.open_dir_window_2 {
             self.open_dir_window_2 = false;
             if let Some(path) = rfd::FileDialog::new().pick_folder() {
-                let _ = set_root(
+                set_root_or_report(
                     ctx.path_diff_view.file_system_2_root_path,
                     Side::Folder2,
                     &path,
+                    ctx.tool_message,
                 );
             }
         }

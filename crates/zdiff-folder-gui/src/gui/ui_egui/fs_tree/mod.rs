@@ -35,7 +35,7 @@ use zcommon_ui::table::{Rows, Split, SplitColumn, SplitTable};
 
 use crate::ui_egui::folder_keymap::FolderAction;
 use crate::ui_egui::revision_open::{self, RevisionOpen, is_revision};
-use crate::ui_egui::roots::{InvalidRoot, Side, set_root};
+use crate::ui_egui::roots::{InvalidRoot, Side, set_root, set_root_or_report};
 use crate::ui_egui::side_revision::{revision_dropdown, split_side, with_revision};
 use crate::ui_egui::status_line::ToolMessage;
 use crate::ui_egui::tools_window::resolve_tool_exe;

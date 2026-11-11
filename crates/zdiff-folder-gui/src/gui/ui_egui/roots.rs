@@ -6,6 +6,8 @@ use std::{
 
 use zcommon::universal_path::UniversalPath;
 
+use crate::ui_egui::status_line::ToolMessage;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Side {
     Folder1,
@@ -105,19 +107,41 @@ pub fn apply_launch_args(
     args: &LaunchArgs,
     root_1: &mut Option<PathBuf>,
     root_2: &mut Option<PathBuf>,
-) {
+) -> Option<ToolMessage> {
     if !args.ignored.is_empty() {
         log::warn!("Ignoring extra command-line arguments: {:?}", args.ignored);
     }
     if args.folders.is_empty() {
-        return;
+        return None;
     }
     let sides = [(root_1, Side::Folder1), (root_2, Side::Folder2)];
+    let mut errors = Vec::new();
     for (i, (root, side)) in sides.into_iter().enumerate() {
         clear_root(root);
-        if let Some(folder) = args.folders.get(i) {
-            let _ = set_root(root, side, folder);
+        if let Some(folder) = args.folders.get(i)
+            && let Err(e) = set_root(root, side, folder)
+        {
+            errors.push(format!("{side}: {e}"));
         }
+    }
+    (!errors.is_empty()).then(|| error_message(errors.join("; ")))
+}
+
+pub fn set_root_or_report(
+    root: &mut Option<PathBuf>,
+    side: Side,
+    path: &Path,
+    message: &mut Option<ToolMessage>,
+) {
+    *message = set_root(root, side, path)
+        .err()
+        .map(|e| error_message(format!("{side}: {e}")));
+}
+
+fn error_message(error: String) -> ToolMessage {
+    ToolMessage {
+        error: Some(error),
+        ..ToolMessage::default()
     }
 }
 
@@ -290,6 +314,37 @@ mod tests {
         apply_launch_args(&args(&[&file, dir.path()]), &mut root_1, &mut root_2);
         assert_eq!(root_1, None);
         assert_eq!(root_2.as_deref(), Some(dir.path()));
+    }
+
+    #[test]
+    fn rejected_arguments_are_reported_in_the_status_line() {
+        let dir = tempfile::tempdir().unwrap();
+        let (file, missing) = (dir.path().join("a.txt"), dir.path().join("missing"));
+        std::fs::write(&file, "a").unwrap();
+        let (mut root_1, mut root_2) = (None, None);
+        let message = apply_launch_args(&args(&[&file, &missing]), &mut root_1, &mut root_2);
+        let expected = format!(
+            "Left: {}; Right: {}",
+            InvalidRoot::NotAFolder(file),
+            InvalidRoot::Missing(missing)
+        );
+        assert_eq!(message.and_then(|m| m.error), Some(expected));
+        let accepted = apply_launch_args(&args(&[dir.path()]), &mut root_1, &mut root_2);
+        assert_eq!(accepted, None);
+    }
+
+    #[test]
+    fn a_rejected_root_is_reported_until_a_root_is_accepted() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("missing");
+        let mut root = Some(dir.path().to_path_buf());
+        let mut message = None;
+        set_root_or_report(&mut root, Side::Folder2, &missing, &mut message);
+        let error = format!("Right: {}", InvalidRoot::Missing(missing));
+        assert_eq!(message.as_ref().and_then(|m| m.error.clone()), Some(error));
+        assert_eq!(root.as_deref(), Some(dir.path()));
+        set_root_or_report(&mut root, Side::Folder2, dir.path(), &mut message);
+        assert_eq!(message, None);
     }
 
     #[test]

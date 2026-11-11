@@ -51,7 +51,7 @@ use crate::ui_egui::fs_tree::tree_hidden;
 use crate::ui_egui::fs_tree::two_folder_cursor_rows;
 use crate::ui_egui::panes::PathDiffView;
 use crate::ui_egui::roots::Side;
-use crate::ui_egui::roots::set_root;
+use crate::ui_egui::roots::set_root_or_report;
 use crate::ui_egui::status_line::ToolMessage;
 use crate::ui_egui::tree_cursor::CursorRequest;
 use crate::ui_egui::tree_cursor::TreeCursor;
@@ -1334,10 +1334,11 @@ impl DuplicateFilesPane {
             if let Some(path) = rfd::FileDialog::new().pick_folder() {
                 // The app loads the view from the root path; a view set here directly
                 // would be replaced on the next frame.
-                let _ = set_root(
+                set_root_or_report(
                     ctx.path_diff_view.file_system_1_root_path,
                     Side::Folder1,
                     &path,
+                    ctx.tool_message,
                 );
             }
         }
