@@ -104,7 +104,10 @@ impl ZApp {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use super::*;
+    use crate::revert::RevertRecord;
     use HistoryStep::{Redo, Undo};
 
     fn paths(ctx: &mut AppStateCtx) -> [UniversalPath; 2] {
@@ -128,6 +131,26 @@ mod tests {
         assert_eq!(paths(&mut ctx)[0], branch);
         ZApp::step_history(&mut ctx, Redo);
         assert_eq!(paths(&mut ctx)[0], branch);
+    }
+
+    #[test]
+    fn a_revert_undo_refused_as_stale_no_longer_blocks_navigation_undo() {
+        let mut ctx = AppStateCtx::default();
+        let first = UniversalPath::from(r"C:\ws\a.rs");
+        ctx.file_1.set_path(first.clone());
+        ctx.observe_history();
+        ctx.file_1.set_path(UniversalPath::from(r"C:\ws\b.rs"));
+        ctx.observe_history();
+        ctx.revert_history.record(RevertRecord {
+            path: PathBuf::from("deleted since the revert").join("b.rs"),
+            before: b"before".to_vec(),
+            after: b"after".to_vec(),
+        });
+
+        ZApp::step_history(&mut ctx, Undo);
+        assert!(!ctx.revert_history.can_step(Undo));
+        ZApp::step_history(&mut ctx, Undo);
+        assert_eq!(paths(&mut ctx)[0], first);
     }
 
     #[test]

@@ -485,6 +485,11 @@ impl RevertHistory {
         }
         Some((path, result))
     }
+
+    pub fn forget_file(&mut self, path: &Path) {
+        self.undo.retain(|record| record.path != path);
+        self.redo.retain(|record| record.path != path);
+    }
 }
 
 /// The write for `RevertHistory::step`: a guarded write that requires the file to still hold
@@ -1553,6 +1558,23 @@ mod tests {
             assert_eq!(refused, Some((PathBuf::from("a"), Err("changed"))));
             assert_eq!(step(&mut history, Undo), None);
             assert_eq!(step(&mut history, Redo), write("a", "a1", "a0"));
+        }
+
+        #[test]
+        fn forgetting_a_file_keeps_the_other_files_reverts_in_order() {
+            let mut history = RevertHistory::default();
+            history.record(record("a", "a0", "a1"));
+            history.record(record("b", "b0", "b1"));
+            history.record(record("a", "a1", "a2"));
+            history.record(record("b", "b1", "b2"));
+            assert_eq!(step(&mut history, Undo), write("b", "b1", "b2"));
+
+            history.forget_file(Path::new("a"));
+            assert_eq!(step(&mut history, Undo), write("b", "b0", "b1"));
+            assert_eq!(step(&mut history, Undo), None);
+            assert_eq!(step(&mut history, Redo), write("b", "b1", "b0"));
+            assert_eq!(step(&mut history, Redo), write("b", "b2", "b1"));
+            assert_eq!(step(&mut history, Redo), None);
         }
 
         #[test]

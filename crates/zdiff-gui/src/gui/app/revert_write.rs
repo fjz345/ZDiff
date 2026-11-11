@@ -89,9 +89,11 @@ impl ZApp {
             }
             Some((path, Err(WriteRefusal::Stale))) => {
                 log::error!(
-                    "{name} refused: {} changed on disk since {since}. Reloading it.",
+                    "{name} refused: {} changed on disk since {since}. Reloading it; its \
+                     reverts can no longer be undone or redone.",
                     path.display()
                 );
+                app_ctx.revert_history.forget_file(&path);
                 true
             }
             Some((path, Err(e))) => {
