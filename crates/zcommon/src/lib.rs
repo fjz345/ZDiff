@@ -1,3 +1,4 @@
+pub mod change_map;
 pub mod console;
 pub mod crash;
 pub mod ffmpeg;

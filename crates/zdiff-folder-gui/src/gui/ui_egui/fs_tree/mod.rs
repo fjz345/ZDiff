@@ -43,7 +43,9 @@ use crate::ui_egui::tree_cursor::{CursorRequest, CursorRow, TreeCursor};
 use crate::ui_egui::tree_filter::DiffFilter;
 use crate::ui_egui::tree_find::{FindChipEvent, TreeFindView, drawn_ranges};
 use crate::ui_egui::tree_guides::{Guide, TreeGuides, tree_guides};
-use crate::ui_egui::tree_likeness::{FolderLikeness, LikenessSum, likeness_cell, ui_likeness_cell};
+use crate::ui_egui::tree_likeness::{
+    FolderLikeness, LikenessSum, PreviewPair, likeness_cell, ui_likeness_cell,
+};
 use crate::ui_egui::tree_menu::{Entry, RowAction, apply_row_action, row_menu, show_row_menu};
 use crate::ui_egui::tree_sort::{SortKey, TreeSort, sort_two_folder_rows};
 use crate::ui_egui::tree_tolerance::{SideMeta, Tolerance, similar_tooltip};

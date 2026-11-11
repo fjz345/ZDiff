@@ -18,7 +18,7 @@ use eframe::egui::{
 };
 use rayon::prelude::*;
 use zcommon::job::Job;
-use zcommon_ui::style_window::role_color;
+use zcommon_ui::{change_map::heat_ramp, style_window::role_color};
 use zdiff::pixel::{PixelDiff, PixelStats, RgbaBuffer};
 use zdiff::pixel_metric::{
     Alignment, MetricMap, PixelMetric, changed_pixels, metric_map, placement,
@@ -262,29 +262,6 @@ pub fn apply_channel(rgba: &[u8], channel: ImageChannel) -> Cow<'_, [u8]> {
             out.copy_from_slice(&[value, value, value, 255]);
         });
     Cow::Owned(grays)
-}
-
-const HEAT_STOPS: [[u8; 3]; 5] = [
-    [0, 0, 255],
-    [0, 255, 255],
-    [0, 255, 0],
-    [255, 255, 0],
-    [255, 0, 0],
-];
-
-/// Blue at a difference of 1 through cyan, green and yellow to red at 255.
-pub fn heat_ramp(magnitude: u8) -> Color32 {
-    let t = magnitude.saturating_sub(1) as f32 / 254.0 * (HEAT_STOPS.len() - 1) as f32;
-    let segment = (t as usize).min(HEAT_STOPS.len() - 2);
-    let f = t - segment as f32;
-    let [r, g, b] = std::array::from_fn(|c| {
-        let (from, to) = (
-            HEAT_STOPS[segment][c] as f32,
-            HEAT_STOPS[segment + 1][c] as f32,
-        );
-        (from + (to - from) * f).round() as u8
-    });
-    Color32::from_rgb(r, g, b)
 }
 
 /// Transparent for a difference the tolerance accepts, like the changed mask; the ramp is the same
@@ -934,6 +911,10 @@ impl ImageDiffProcessor {
             .as_ref()
             .map(|map| stats_text(&map.stats))
             .unwrap_or_default()
+    }
+
+    pub fn difference_map(&self) -> Option<&Arc<MetricMap>> {
+        self.metric_map.as_ref().map(|(_, map)| map)
     }
 
     fn difference_text(&self) -> Option<String> {

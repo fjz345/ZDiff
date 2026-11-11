@@ -11,11 +11,11 @@ use std::{
 };
 
 use memmap2::Mmap;
-use zcommon::{job::Job, kinds::KindTable};
+use zcommon::{change_map::ChangeMap, job::Job, kinds::KindTable};
 use zdiff_folder::{
     comparison::{FileMeta, PairCompare, PairCompareCache, PairSide, PairState, compare_pair_with},
     fs::{FileSystemModel, FsNode},
-    likeness::{Likeness, likeness},
+    likeness::{Likeness, change_map, likeness},
     scan::ContentHash,
     vcs_source::ContentSource,
 };
@@ -43,6 +43,27 @@ impl PairLikeness {
             PairLikeness::Failed(_) => None,
         }
     }
+}
+
+fn map_pair(paths: &[PathBuf; 2], rel_path: &str) -> io::Result<([Mmap; 2], String)> {
+    // SAFETY: a file changed while mapped only skews this one measure.
+    let map = |path: &Path| unsafe { Mmap::map(&File::open(path)?) };
+    let extension = Path::new(rel_path)
+        .extension()
+        .map_or(String::new(), |e| e.to_string_lossy().into_owned());
+    Ok(([map(&paths[0])?, map(&paths[1])?], extension))
+}
+
+pub fn pair_change_map(
+    paths: &[PathBuf; 2],
+    rel_path: &str,
+    cancel: &Arc<AtomicBool>,
+) -> Option<io::Result<ChangeMap>> {
+    let ([left, right], extension) = match map_pair(paths, rel_path) {
+        Ok(mapped) => mapped,
+        Err(e) => return Some(Err(e)),
+    };
+    change_map(&KindTable::default(), &extension, &left, &right, cancel).map(Ok)
 }
 
 #[derive(Debug, Clone)]
@@ -92,15 +113,10 @@ impl PendingPair {
         kinds: &KindTable,
         cancel: &Arc<AtomicBool>,
     ) -> Option<io::Result<Likeness>> {
-        // SAFETY: a file changed while mapped only skews this one measure.
-        let map = |path: &Path| unsafe { Mmap::map(&File::open(path)?) };
-        let (left, right) = match (map(&self.paths[0]), map(&self.paths[1])) {
-            (Ok(left), Ok(right)) => (left, right),
-            (Err(e), _) | (_, Err(e)) => return Some(Err(e)),
+        let ([left, right], extension) = match map_pair(&self.paths, &self.rel_path) {
+            Ok(mapped) => mapped,
+            Err(e) => return Some(Err(e)),
         };
-        let extension = Path::new(&self.rel_path)
-            .extension()
-            .map_or(String::new(), |e| e.to_string_lossy().into_owned());
         likeness(kinds, &extension, &left, &right, PIXEL_TOLERANCE, cancel).map(Ok)
     }
 

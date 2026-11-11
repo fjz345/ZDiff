@@ -6,12 +6,16 @@ use std::{
     },
 };
 
-use zcommon::kinds::{FileKind, KindTable, normalize_extension};
+use zcommon::{
+    change_map::{ChangeMap, STRIP_BINS, THUMBNAIL_MAX_SIDE, byte_bins, downscale_max, flag_bins},
+    kinds::{FileKind, KindTable, normalize_extension},
+};
 use zdiff::{
     ignore::IgnoreMask,
     lexer::{Lexer, RawToken, TokenKind},
     myers::{MyersDiffAlgorithm, Side, line_diff},
     pixel::{RgbaBuffer, pixel_diff},
+    pixel_metric::{Alignment, PixelMetric, metric_map},
 };
 
 // Worst case (completely different, 40-byte lines) in release: ~1.1 s at this size, 19.5 s at 1 MiB.
@@ -78,13 +82,72 @@ pub fn likeness(
     }
 }
 
+pub fn change_map(
+    kinds: &KindTable,
+    extension: &str,
+    left: &[u8],
+    right: &[u8],
+    cancel: &Arc<AtomicBool>,
+) -> Option<ChangeMap> {
+    if cancel.load(Ordering::Relaxed) {
+        return None;
+    }
+    let bytes = || Some(ChangeMap::Strip(byte_bins(left, right, STRIP_BINS)));
+    match kinds.kind(extension) {
+        FileKind::Text if left.len().max(right.len()) <= TEXT_LINES_MAX_BYTES => {
+            let (Ok(left_text), Ok(right_text)) =
+                (std::str::from_utf8(left), std::str::from_utf8(right))
+            else {
+                return bytes();
+            };
+            let changed = changed_lines(left_text, right_text, cancel)?;
+            Some(ChangeMap::Sides(
+                changed.map(|flags| flag_bins(&flags, STRIP_BINS)),
+            ))
+        }
+        FileKind::Image => {
+            let (Ok(left_image), Ok(right_image)) = (
+                decode_image(left, extension),
+                decode_image(right, extension),
+            ) else {
+                return bytes();
+            };
+            let map = metric_map(
+                buffer(&left_image),
+                buffer(&right_image),
+                PixelMetric::Exact,
+                Alignment::TopLeft,
+                cancel,
+            )?;
+            Some(downscale_max(
+                map.width,
+                map.height,
+                &map.magnitude,
+                THUMBNAIL_MAX_SIDE,
+            ))
+        }
+        _ => bytes(),
+    }
+}
+
 fn text_likeness(left: &str, right: &str, cancel: &Arc<AtomicBool>) -> Option<f64> {
-    let left_tokens: Vec<RawToken> = Lexer::new(left).parse();
-    let right_tokens: Vec<RawToken> = Lexer::new(right).parse();
-    let (left_lines, right_lines) = (count_lines(&left_tokens), count_lines(&right_tokens));
-    let total = left_lines + right_lines;
+    let [left_changed, right_changed] = changed_lines(left, right, cancel)?;
+    let total = left_changed.len() + right_changed.len();
     if total == 0 {
         return Some(1.0);
+    }
+    let unchanged = |flags: &[bool]| flags.iter().filter(|&&changed| !changed).count();
+    let matching = unchanged(&left_changed);
+    debug_assert_eq!(matching, unchanged(&right_changed));
+    Some(2.0 * matching as f64 / total as f64)
+}
+
+fn changed_lines(left: &str, right: &str, cancel: &Arc<AtomicBool>) -> Option<[Vec<bool>; 2]> {
+    let left_tokens: Vec<RawToken> = Lexer::new(left).parse();
+    let right_tokens: Vec<RawToken> = Lexer::new(right).parse();
+    let mut changed = [&left_tokens, &right_tokens].map(|tokens| vec![false; count_lines(tokens)]);
+    if changed.iter().all(Vec::is_empty) {
+        return Some(changed);
     }
     let key = |side: Side, t: &RawToken| {
         let text = match side {
@@ -101,17 +164,26 @@ fn text_likeness(left: &str, right: &str, cancel: &Arc<AtomicBool>) -> Option<f6
         &IgnoreMask::default(),
         cancel.clone(),
     )?;
-    let left_changed: usize = hunks
-        .iter()
-        .map(|hunk| count_lines(&left_tokens[hunk.source.clone()]))
-        .sum();
-    let right_changed: usize = hunks
-        .iter()
-        .map(|hunk| count_lines(&right_tokens[hunk.target.clone()]))
-        .sum();
-    let matching = left_lines - left_changed;
-    debug_assert_eq!(matching, right_lines - right_changed);
-    Some(2.0 * matching as f64 / total as f64)
+    let lines_before = [&left_tokens, &right_tokens].map(|tokens| {
+        let mut before = Vec::with_capacity(tokens.len() + 1);
+        before.push(0);
+        let mut lines = 0;
+        for token in tokens.iter() {
+            lines += (token.kind == TokenKind::Newline) as usize;
+            before.push(lines);
+        }
+        before
+    });
+    for hunk in &hunks {
+        for (side, tokens, range) in [
+            (0, &left_tokens, &hunk.source),
+            (1, &right_tokens, &hunk.target),
+        ] {
+            let first = lines_before[side][range.start];
+            changed[side][first..first + count_lines(&tokens[range.clone()])].fill(true);
+        }
+    }
+    Some(changed)
 }
 
 // Hunks start and end on line starts, so this also counts the lines of a hunk.
@@ -474,5 +546,124 @@ mod tests {
     #[test]
     fn other_kinds_use_bytes() {
         assert_eq!(measure("zip", &[1, 2], &[1, 3], 0), bytes(0.5));
+    }
+
+    fn map_of(extension: &str, left: &[u8], right: &[u8]) -> ChangeMap {
+        change_map(
+            &KindTable::default(),
+            extension,
+            left,
+            right,
+            &Arc::new(AtomicBool::new(false)),
+        )
+        .expect("not cancelled")
+    }
+
+    fn line_bins(lines: usize, changed: std::ops::Range<usize>) -> Vec<u8> {
+        (0..lines)
+            .map(|line| if changed.contains(&line) { 255 } else { 0 })
+            .collect()
+    }
+
+    #[test]
+    fn text_map_flags_the_changed_lines_on_both_sides() {
+        let left = numbered_lines(100);
+        let mut right = left.clone();
+        for line in &mut right[40..50] {
+            *line = format!("changed {line}");
+        }
+        let map = map_of("txt", left.concat().as_bytes(), right.concat().as_bytes());
+        assert_eq!(
+            map,
+            ChangeMap::Sides([line_bins(100, 40..50), line_bins(100, 40..50)])
+        );
+    }
+
+    #[test]
+    fn text_map_flags_inserted_lines_on_their_side_only() {
+        let left = numbered_lines(10);
+        let mut right = left.clone();
+        right.insert(3, "new\n".to_string());
+        right.push("tail without newline".to_string());
+        let map = map_of("txt", left.concat().as_bytes(), right.concat().as_bytes());
+        let mut right_bins = line_bins(12, 3..4);
+        right_bins[11] = 255;
+        assert_eq!(map, ChangeMap::Sides([line_bins(10, 0..0), right_bins]));
+    }
+
+    #[test]
+    fn text_map_agrees_with_the_ratio() {
+        let cases = [
+            ("a\nb\nc\n", "a\nx\nc\nd\n"),
+            ("one\ntwo", "one\r\ntwo\r\n"),
+            ("", "only right\n"),
+            ("same\n", "same\n"),
+        ];
+        for (left, right) in cases {
+            let ChangeMap::Sides([left_bins, right_bins]) =
+                map_of("txt", left.as_bytes(), right.as_bytes())
+            else {
+                panic!("text measures lines");
+            };
+            let unchanged = |bins: &[u8]| bins.iter().filter(|&&bin| bin == 0).count();
+            let total = left_bins.len() + right_bins.len();
+            let ratio = 2.0 * unchanged(&left_bins) as f64 / total as f64;
+            assert_eq!(unchanged(&left_bins), unchanged(&right_bins), "{left:?}");
+            assert_eq!(
+                measure("txt", left.as_bytes(), right.as_bytes(), 0),
+                lines(ratio)
+            );
+        }
+    }
+
+    #[test]
+    fn pixel_map_marks_only_the_changed_pixel() {
+        let ChangeMap::Pixels {
+            width,
+            height,
+            magnitude,
+        } = map_of("png", &png(4, 3, &[]), &png(4, 3, &[(2, 1, 50)]))
+        else {
+            panic!("images measure pixels");
+        };
+        assert_eq!((width, height), (4, 3));
+        let mut expected = vec![0; 12];
+        expected[4 + 2] = 50;
+        assert_eq!(magnitude, expected);
+    }
+
+    #[test]
+    fn pixel_map_of_sized_pairs_is_the_union_canvas() {
+        let ChangeMap::Pixels {
+            width,
+            height,
+            magnitude,
+        } = map_of("png", &png(2, 2, &[]), &png(3, 2, &[]))
+        else {
+            panic!("images measure pixels");
+        };
+        assert_eq!((width, height), (3, 2));
+        assert_eq!(magnitude, [0, 0, 255, 0, 0, 255]);
+    }
+
+    #[test]
+    fn undecodable_image_and_other_kinds_map_bytes() {
+        assert_eq!(
+            map_of("png", b"not a png", b"not a pnG"),
+            ChangeMap::Strip(vec![0, 0, 0, 0, 0, 0, 0, 0, 255])
+        );
+        assert_eq!(
+            map_of("zip", &[1, 2], &[1, 3]),
+            ChangeMap::Strip(vec![0, 255])
+        );
+    }
+
+    #[test]
+    fn cancelled_map_is_none() {
+        let cancel = Arc::new(AtomicBool::new(true));
+        assert_eq!(
+            change_map(&KindTable::default(), "txt", b"a\n", b"b\n", &cancel),
+            None
+        );
     }
 }

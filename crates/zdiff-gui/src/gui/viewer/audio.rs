@@ -22,7 +22,7 @@ use zcommon_ui::style_window::role_color;
 
 use super::{
     Likeness,
-    audio_diff::SampleDiffProcessor,
+    audio_diff::{SampleDiffProcessor, SampleDifference},
     audio_spectrum::{self, SpectrumProcessor, SpectrumSettings},
     hex::is_same_side,
     path_extension,
@@ -651,6 +651,10 @@ impl AudioDiffProcessor {
             return Some(Likeness::Pending);
         }
         self.difference.likeness()
+    }
+
+    pub fn sample_difference(&self) -> Option<&Arc<SampleDifference>> {
+        self.difference.done()
     }
 
     fn decoded(&self, index: usize) -> Option<&Arc<DecodedAudio>> {

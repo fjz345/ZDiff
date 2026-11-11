@@ -630,7 +630,12 @@ pub(super) fn render_center_cell(
                 );
                 child.style_mut().interaction.selectable_labels = false;
                 child.multiply_opacity(opacity);
-                ui_likeness_cell(&mut child, likeness_cell(entry, nodes, compare), row_height);
+                ui_likeness_cell(
+                    &mut child,
+                    likeness_cell(entry, nodes, compare),
+                    row_height,
+                    PreviewPair::new(views, entry),
+                );
             }
         }
     }

@@ -41,7 +41,7 @@ pub fn bin_changes(spans: &[ChangeSpan], len: usize, bins: usize) -> Vec<Option<
     out
 }
 
-fn side_changed(content: &LineContent) -> bool {
+pub fn side_changed(content: &LineContent) -> bool {
     match content {
         LineContent::Code { tokens, .. } => tokens.iter().any(|(res, _, ghost)| {
             !ghost && !res.hide_in_diff && !matches!(res.operation, DiffOp::Equal(_))

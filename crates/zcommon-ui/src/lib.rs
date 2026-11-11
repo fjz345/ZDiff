@@ -1,3 +1,4 @@
+pub mod change_map;
 pub mod common;
 pub mod find_popup;
 pub mod frame_stats;

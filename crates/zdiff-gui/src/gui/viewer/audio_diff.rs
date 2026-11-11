@@ -232,6 +232,13 @@ impl SampleDiffProcessor {
         }
     }
 
+    pub fn done(&self) -> Option<&Arc<SampleDifference>> {
+        match &self.state {
+            DiffState::Done(difference) => Some(difference),
+            _ => None,
+        }
+    }
+
     pub fn likeness(&self) -> Option<Likeness> {
         match &self.state {
             DiffState::Running(_) => Some(Likeness::Pending),

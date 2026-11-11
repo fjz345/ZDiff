@@ -1,15 +1,21 @@
 use eframe::egui;
-use zcommon_ui::likeness::{likeness_bar, percent};
+use zcommon_ui::{
+    change_map::change_preview_ui,
+    likeness::{likeness_bar, percent},
+};
 use zdiff_folder::{
     comparison::PairState,
-    fs::FsNode,
+    fs::{FileSystemModel, FsNode, FsNodeId},
     likeness::{Likeness, LikenessReason, Measure},
+    vcs_source::ContentSource,
 };
 
 use crate::ui_egui::{
-    fs_tree::{DiffState, VisibleRowTwoFolderDiff},
-    tree_compare::{PairLikeness, TreeCompare},
+    fs_tree::{DiffState, FileSystemView, VisibleRowTwoFolderDiff},
+    tree_compare::{PairLikeness, TreeCompare, pair_change_map},
 };
+
+const PREVIEW_PAIRS: usize = 8;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum FolderLikeness {
@@ -126,7 +132,65 @@ pub fn likeness_cell<'a>(
     }
 }
 
-pub fn ui_likeness_cell(ui: &mut egui::Ui, cell: LikenessCell, row_height: f32) {
+#[derive(Clone, Copy)]
+pub struct PreviewPair<'a> {
+    rel_path: &'a str,
+    models: [&'a FileSystemModel; 2],
+    ids: [FsNodeId; 2],
+}
+
+impl<'a> PreviewPair<'a> {
+    pub fn new(
+        views: [Option<&'a FileSystemView>; 2],
+        entry: &'a VisibleRowTwoFolderDiff,
+    ) -> Option<Self> {
+        let [Some(left), Some(right)] = views else {
+            return None;
+        };
+        let models = [&*left.file_system, &*right.file_system];
+        // Like the likeness, the preview maps the files from disk.
+        if models
+            .iter()
+            .any(|model| *model.content() != ContentSource::Disk)
+        {
+            return None;
+        }
+        Some(Self {
+            rel_path: &entry.rel_path,
+            models,
+            ids: [entry.diff_state.first()?, entry.diff_state.second()?],
+        })
+    }
+}
+
+fn preview_ui(ui: &mut egui::Ui, pair: PreviewPair) {
+    let [Some(left), Some(right)] = [0, 1].map(|i| pair.models[i].get_node(pair.ids[i])) else {
+        return;
+    };
+    let key = (
+        pair.rel_path.to_owned(),
+        [left, right].map(|node| (node.size, node.modified)),
+    );
+    let paths = [0, 1].map(|i| pair.models[i].path(pair.ids[i]));
+    let rel_path = pair.rel_path.to_owned();
+    ui.separator();
+    change_preview_ui(
+        ui,
+        egui::Id::new("tree_likeness_previews"),
+        PREVIEW_PAIRS,
+        key,
+        move |cancel| {
+            pair_change_map(&paths, &rel_path, cancel).map(|map| map.map_err(|e| e.to_string()))
+        },
+    );
+}
+
+pub fn ui_likeness_cell(
+    ui: &mut egui::Ui,
+    cell: LikenessCell,
+    row_height: f32,
+    preview: Option<PreviewPair>,
+) {
     match cell {
         LikenessCell::Empty => {}
         LikenessCell::Waiting => {
@@ -137,7 +201,12 @@ pub fn ui_likeness_cell(ui: &mut egui::Ui, cell: LikenessCell, row_height: f32) 
             bar(ui, 1.0, row_height).on_hover_text("Same: 100 %");
         }
         LikenessCell::Known(PairLikeness::Measured(likeness)) => {
-            bar(ui, likeness.ratio, row_height).on_hover_text(tooltip(likeness));
+            bar(ui, likeness.ratio, row_height).on_hover_ui(|ui| {
+                ui.label(tooltip(likeness));
+                if let Some(pair) = preview {
+                    preview_ui(ui, pair);
+                }
+            });
         }
         LikenessCell::Folder(ratio) => {
             bar(ui, ratio, row_height).on_hover_text(format!(
