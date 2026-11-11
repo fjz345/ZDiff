@@ -1,4 +1,7 @@
 use eframe::egui;
+use zcommon::style::GradientPreset;
+
+use crate::style_window::{diff_gradient, gradient_color};
 
 const UNLIKE_COLOR: egui::Color32 = egui::Color32::from_rgb(0xB0, 0x3A, 0x2E);
 const HALF_LIKE_COLOR: egui::Color32 = egui::Color32::from_rgb(0xA8, 0x8C, 0x1E);
@@ -16,7 +19,7 @@ pub fn likeness_bar(ui: &mut egui::Ui, ratio: f64, size: egui::Vec2) -> egui::Re
     painter.rect_filled(rect, 2.0, ui.visuals().extreme_bg_color);
     let mut filled = rect;
     filled.set_width(rect.width() * ratio.clamp(0.0, 1.0) as f32);
-    painter.rect_filled(filled, 2.0, likeness_color(ratio));
+    painter.rect_filled(filled, 2.0, likeness_color(ratio, diff_gradient(ui.ctx())));
     painter.text(
         rect.center(),
         egui::Align2::CENTER_CENTER,
@@ -27,7 +30,10 @@ pub fn likeness_bar(ui: &mut egui::Ui, ratio: f64, size: egui::Vec2) -> egui::Re
     response
 }
 
-fn likeness_color(ratio: f64) -> egui::Color32 {
+fn likeness_color(ratio: f64, gradient: Option<GradientPreset>) -> egui::Color32 {
+    if let Some(gradient) = gradient {
+        return gradient_color(gradient, 1.0 - ratio.clamp(0.0, 1.0) as f32);
+    }
     let t = ratio.clamp(0.0, 1.0) as f32 * 2.0;
     if t <= 1.0 {
         UNLIKE_COLOR.lerp_to_gamma(HALF_LIKE_COLOR, t)

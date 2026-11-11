@@ -395,6 +395,91 @@ impl Palette {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum GradientPreset {
+    Heat,
+    Viridis,
+    Inferno,
+    Grayscale,
+    Solid,
+}
+
+impl GradientPreset {
+    pub const ALL: [Self; 5] = [
+        Self::Heat,
+        Self::Viridis,
+        Self::Inferno,
+        Self::Grayscale,
+        Self::Solid,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Heat => "Heat",
+            Self::Viridis => "Viridis",
+            Self::Inferno => "Inferno",
+            Self::Grayscale => "Grayscale",
+            Self::Solid => "Solid",
+        }
+    }
+
+    // Viridis and Inferno: matplotlib's maps at nine even steps.
+    fn stops(self) -> &'static [[u8; 3]] {
+        match self {
+            Self::Heat => &[
+                [0, 0, 255],
+                [0, 255, 255],
+                [0, 255, 0],
+                [255, 255, 0],
+                [255, 0, 0],
+            ],
+            Self::Viridis => &[
+                [68, 1, 84],
+                [72, 40, 120],
+                [62, 73, 137],
+                [49, 104, 142],
+                [38, 130, 142],
+                [31, 158, 137],
+                [53, 183, 121],
+                [110, 206, 88],
+                [253, 231, 37],
+            ],
+            Self::Inferno => &[
+                [0, 0, 4],
+                [27, 12, 65],
+                [74, 12, 107],
+                [120, 28, 109],
+                [165, 44, 96],
+                [207, 68, 70],
+                [237, 105, 37],
+                [251, 155, 6],
+                [252, 255, 164],
+            ],
+            Self::Grayscale => &[[0, 0, 0], [255, 255, 255]],
+            Self::Solid => &[[255, 0, 255]],
+        }
+    }
+
+    pub fn sample(self, t: f32) -> Rgba8 {
+        let stops = self.stops();
+        let last = stops.len() - 1;
+        let x = t.clamp(0.0, 1.0) * last as f32;
+        let segment = (x as usize).min(last.saturating_sub(1));
+        let (from, to) = (stops[segment], stops[(segment + 1).min(last)]);
+        let f = x - segment as f32;
+        let [r, g, b] = std::array::from_fn(|c| {
+            let (from, to) = (from[c] as f32, to[c] as f32);
+            (from + (to - from) * f).round() as u8
+        });
+        rgb(r, g, b)
+    }
+
+    pub fn magnitude_color(self, magnitude: u8) -> Rgba8 {
+        self.sample(magnitude.saturating_sub(1) as f32 / 254.0)
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq)]
 #[cfg_attr(
     feature = "serde",
@@ -406,6 +491,7 @@ pub struct Style {
     pub palette: Palette,
     pub void_look: RowLook,
     pub collapsed_look: RowLook,
+    pub diff_gradient: Option<GradientPreset>,
 }
 
 pub type Segment = [[f32; 2]; 2];
@@ -673,6 +759,43 @@ mod tests {
         assert_eq!(names.len(), count);
     }
 
+    #[test]
+    fn a_gradient_hits_its_ends_and_blends_between_stops() {
+        let gray = GradientPreset::Grayscale;
+        assert_eq!(gray.sample(0.0), rgb(0, 0, 0));
+        assert_eq!(gray.sample(0.5), rgb(128, 128, 128));
+        assert_eq!(gray.sample(1.0), rgb(255, 255, 255));
+        for preset in GradientPreset::ALL {
+            assert_eq!(preset.sample(-1.0), preset.sample(0.0), "{preset:?}");
+            assert_eq!(preset.sample(2.0), preset.sample(1.0), "{preset:?}");
+        }
+    }
+
+    #[test]
+    fn the_heat_gradient_is_the_heatmap_ramp() {
+        let heat = GradientPreset::Heat;
+        assert_eq!(heat.magnitude_color(1), rgb(0, 0, 255));
+        assert_eq!(heat.magnitude_color(64), rgb(0, 253, 255));
+        assert_eq!(heat.magnitude_color(128), rgb(0, 255, 0));
+        assert_eq!(heat.magnitude_color(200), rgb(255, 221, 0));
+        assert_eq!(heat.magnitude_color(255), rgb(255, 0, 0));
+        assert_eq!(heat.magnitude_color(0), heat.magnitude_color(1));
+    }
+
+    #[test]
+    fn the_solid_gradient_is_one_color() {
+        for t in [0.0, 0.5, 1.0] {
+            assert_eq!(GradientPreset::Solid.sample(t), rgb(255, 0, 255));
+        }
+    }
+
+    #[test]
+    fn gradient_labels_are_unique() {
+        let mut labels = GradientPreset::ALL.map(GradientPreset::label);
+        labels.sort_unstable();
+        assert!(labels.windows(2).all(|pair| pair[0] != pair[1]));
+    }
+
     fn content_segments(min: [f32; 2], max: [f32; 2], origin: [f32; 2]) -> Vec<Segment> {
         stripe_segments(min, max, origin, 8.0)
             .map(|[a, b]| {
@@ -746,6 +869,7 @@ mod tests {
                 mode: Mode::System,
                 void_look: RowLook::Stripes,
                 collapsed_look: RowLook::Empty,
+                diff_gradient: Some(GradientPreset::Viridis),
                 ..Style::default()
             };
             style.palette.set(TestRole::A, Tone::Dark, RED);
@@ -791,6 +915,7 @@ mod tests {
             let style = Style::load(&path).unwrap();
             assert_eq!(style.mode, Mode::Light);
             assert_eq!(style.void_look, RowLook::default());
+            assert_eq!(style.diff_gradient, None);
             assert_eq!(style.palette.get(TestRole::A, Tone::Dark), RED);
             assert_eq!(
                 style.palette.get(TestRole::A, Tone::Light),

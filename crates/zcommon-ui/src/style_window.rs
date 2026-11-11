@@ -5,8 +5,8 @@ use eframe::egui::{self, Color32, Id, Theme, ThemePreference};
 
 use super::common::{confirm_button, reset_button, show_settings_window};
 use zcommon::style::{
-    Mode, Palette, Rgba8, Role, RowLook, SYNTAX_PRESETS, SharedRole, Style, SyntaxCategory,
-    SyntaxColors, Tone, style_file_path,
+    GradientPreset, Mode, Palette, Rgba8, Role, RowLook, SYNTAX_PRESETS, SharedRole, Style,
+    SyntaxCategory, SyntaxColors, Tone, style_file_path,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -42,6 +42,10 @@ fn row_looks_id() -> Id {
     Id::new("zcommon_style_row_looks")
 }
 
+fn diff_gradient_id() -> Id {
+    Id::new("zcommon_style_diff_gradient")
+}
+
 pub fn tone(ctx: &egui::Context) -> Tone {
     match ctx.theme() {
         Theme::Dark => Tone::Dark,
@@ -71,6 +75,58 @@ pub fn collapsed_look(ctx: &egui::Context) -> RowLook {
     row_looks(ctx).1
 }
 
+pub fn diff_gradient(ctx: &egui::Context) -> Option<GradientPreset> {
+    ctx.data(|d| d.get_temp(diff_gradient_id())).flatten()
+}
+
+fn set_diff_gradient(ctx: &egui::Context, gradient: Option<GradientPreset>) {
+    ctx.data_mut(|d| d.insert_temp(diff_gradient_id(), gradient));
+}
+
+pub fn gradient_color(preset: GradientPreset, t: f32) -> Color32 {
+    let Rgba8([r, g, b, a]) = preset.sample(t);
+    Color32::from_rgba_unmultiplied(r, g, b, a)
+}
+
+pub fn magnitude_colors(preset: GradientPreset) -> [Color32; 256] {
+    std::array::from_fn(|magnitude| {
+        let Rgba8([r, g, b, a]) = preset.magnitude_color(magnitude as u8);
+        Color32::from_rgba_unmultiplied(r, g, b, a)
+    })
+}
+
+pub fn diff_gradient_picker(ui: &mut egui::Ui, id_salt: &str) {
+    let mut gradient = diff_gradient(ui.ctx());
+    if diff_gradient_combo(ui, id_salt, &mut gradient) {
+        set_diff_gradient(ui.ctx(), gradient);
+    }
+}
+
+fn diff_gradient_combo(
+    ui: &mut egui::Ui,
+    id_salt: &str,
+    gradient: &mut Option<GradientPreset>,
+) -> bool {
+    let label =
+        |gradient: Option<GradientPreset>| gradient.map_or("Default", GradientPreset::label);
+    let mut changed = false;
+    egui::ComboBox::from_id_salt(id_salt)
+        .selected_text(format!("Colors: {}", label(*gradient)))
+        .show_ui(ui, |ui| {
+            for option in std::iter::once(None).chain(GradientPreset::ALL.map(Some)) {
+                changed |= ui
+                    .selectable_value(gradient, option, label(option))
+                    .changed();
+            }
+        })
+        .response
+        .on_hover_text(
+            "Colors of the difference bars, heatmaps, change maps and likeness bars. \
+             Default keeps each view's own colors",
+        );
+    changed
+}
+
 pub fn syntax_colors(ctx: &egui::Context) -> SyntaxColors {
     let tone = tone(ctx);
     let palette = ctx.data(|d| d.get_temp::<Arc<Palette>>(palette_id()));
@@ -94,6 +150,7 @@ fn publish(ctx: &egui::Context, style: &Style) {
         d.insert_temp(palette_id(), Arc::new(style.palette.clone()));
         d.insert_temp(row_looks_id(), (style.void_look, style.collapsed_look));
     });
+    set_diff_gradient(ctx, style.diff_gradient);
 }
 
 #[derive(Default)]
@@ -146,10 +203,16 @@ impl StyleWindow {
 
     // Call every frame, open or not: a change is written once the pointer is released.
     pub fn show<R: Role>(&mut self, ctx: &egui::Context, app_group: &str) {
+        let picked = diff_gradient(ctx);
+        if picked != self.style.diff_gradient {
+            self.style.diff_gradient = picked;
+            self.dirty = true;
+        }
         if self.open {
             let mut changed = false;
             show_settings_window(ctx, &mut self.open, "Style", [440.0, 640.0], |ui| {
                 changed = style_ui::<R>(ui, &mut self.style, app_group, self.syntax);
+                changed |= diff_gradient_ui(ui, &mut self.style.diff_gradient);
                 if self.row_looks {
                     changed |= row_looks_ui(ui, &mut self.style);
                 }
@@ -194,6 +257,7 @@ fn style_ui<R: Role>(ui: &mut egui::Ui, style: &mut Style, app_group: &str, synt
                 if syntax {
                     style.palette.reset_all::<SyntaxCategory>();
                 }
+                style.diff_gradient = None;
                 changed = true;
             }
         });
@@ -294,6 +358,38 @@ fn role_grid<R: Role>(ui: &mut egui::Ui, title: &str, palette: &mut Palette, ton
     changed
 }
 
+fn diff_gradient_ui(ui: &mut egui::Ui, gradient: &mut Option<GradientPreset>) -> bool {
+    let mut changed = false;
+    egui::CollapsingHeader::new(egui::RichText::new("Difference colors").strong())
+        .id_salt("style_group_diff_gradient")
+        .default_open(true)
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                changed = diff_gradient_combo(ui, "style_diff_gradient", gradient);
+                match *gradient {
+                    Some(preset) => gradient_swatch(ui, preset),
+                    None => {
+                        ui.weak("Each view's own colors");
+                    }
+                }
+            });
+        });
+    changed
+}
+
+fn gradient_swatch(ui: &mut egui::Ui, preset: GradientPreset) {
+    const STEPS: usize = 64;
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(128.0, 12.0), egui::Sense::hover());
+    let width = rect.width() / STEPS as f32;
+    for step in 0..STEPS {
+        let left = rect.left() + step as f32 * width;
+        let part = egui::Rect::from_x_y_ranges(left..=left + width, rect.y_range());
+        let t = step as f32 / (STEPS - 1) as f32;
+        ui.painter()
+            .rect_filled(part, 0.0, gradient_color(preset, t));
+    }
+}
+
 fn row_looks_ui(ui: &mut egui::Ui, style: &mut Style) -> bool {
     let mut changed = false;
     egui::CollapsingHeader::new(egui::RichText::new("Rows").strong())
@@ -344,5 +440,25 @@ mod tests {
         publish(&ctx, &style);
         assert_eq!(void_look(&ctx), RowLook::Stripes);
         assert_eq!(collapsed_look(&ctx), RowLook::Empty);
+    }
+
+    #[test]
+    fn a_gradient_picked_outside_the_window_is_kept_and_saved() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("style.json");
+        let ctx = egui::Context::default();
+        let mut window = StyleWindow {
+            path: Some(path.clone()),
+            ..StyleWindow::default()
+        };
+        assert_eq!(diff_gradient(&ctx), None);
+
+        set_diff_gradient(&ctx, Some(GradientPreset::Inferno));
+        window.show::<NoRole>(&ctx, "Test");
+        assert_eq!(window.style.diff_gradient, Some(GradientPreset::Inferno));
+        assert_eq!(
+            Style::load(&path).unwrap().diff_gradient,
+            Some(GradientPreset::Inferno)
+        );
     }
 }

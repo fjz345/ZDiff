@@ -13,7 +13,7 @@ use std::{
 use eframe::egui::{self, Sense, Stroke, pos2, vec2};
 use zcommon::ffmpeg::{FfmpegError, FfmpegPaths, run_ffmpeg, scaled_frames_args};
 use zcommon::job::{Job, JobCtx};
-use zcommon_ui::style_window::role_color;
+use zcommon_ui::style_window::{diff_gradient, diff_gradient_picker, gradient_color, role_color};
 
 use zdiff::pixel::RgbaBuffer;
 use zdiff::pixel_metric::{Alignment, PixelMetric, metric_map};
@@ -416,6 +416,7 @@ pub fn show(
         ui.ctx().request_repaint_after(Duration::from_millis(50));
     }
     let diff_color = role_color(ui.ctx(), FileRole::ImageDiff);
+    let gradient = diff_gradient(ui.ctx());
     ui.horizontal(|ui| {
         ui.label(timeline.status_text());
         if timeline.running() && ui.button("Cancel").clicked() {
@@ -424,6 +425,7 @@ pub fn show(
         if timeline.state == TimelineState::Cancelled && ui.button("Compute again").clicked() {
             timeline.compute_again();
         }
+        diff_gradient_picker(ui, "video_timeline_gradient");
     });
 
     let (rect, response) = ui.allocate_exact_size(
@@ -448,10 +450,12 @@ pub fn show(
             continue;
         };
         let x = rect.left() + column as f32 + 0.5;
-        let top = rect.bottom() - (peak / scale * (rect.height() - 2.0)).max(1.0);
+        let height = peak / scale;
+        let top = rect.bottom() - (height * (rect.height() - 2.0)).max(1.0);
+        let color = gradient.map_or(diff_color, |gradient| gradient_color(gradient, height));
         painter.line_segment(
             [pos2(x, rect.bottom()), pos2(x, top)],
-            Stroke::new(1.0_f32, diff_color),
+            Stroke::new(1.0_f32, color),
         );
     }
     let cursor = rect.left() + (time_secs / end).clamp(0.0, 1.0) as f32 * rect.width();

@@ -17,8 +17,8 @@ use eframe::egui::{
     TextureOptions, Vec2, pos2, vec2,
 };
 use rayon::prelude::*;
-use zcommon::job::Job;
-use zcommon_ui::{change_map::heat_ramp, style_window::role_color};
+use zcommon::{job::Job, style::GradientPreset};
+use zcommon_ui::style_window::{diff_gradient, magnitude_colors, role_color};
 use zdiff::pixel::{PixelDiff, PixelStats, RgbaBuffer};
 use zdiff::pixel_metric::{
     Alignment, MetricMap, PixelMetric, changed_pixels, metric_map, placement,
@@ -266,19 +266,20 @@ pub fn apply_channel(rgba: &[u8], channel: ImageChannel) -> Cow<'_, [u8]> {
 
 /// Transparent for a difference the tolerance accepts, like the changed mask; the ramp is the same
 /// at any tolerance.
-fn heat_color(magnitude: u8, tolerance: u8) -> Color32 {
+fn heat_color(magnitude: u8, tolerance: u8, colors: &[Color32; 256]) -> Color32 {
     if magnitude <= tolerance {
         Color32::TRANSPARENT
     } else {
-        heat_ramp(magnitude)
+        colors[magnitude as usize]
     }
 }
 
-fn heat_image(heat: &MetricMap, tolerance: u8) -> ColorImage {
+fn heat_image(heat: &MetricMap, tolerance: u8, gradient: GradientPreset) -> ColorImage {
+    let colors = magnitude_colors(gradient);
     let pixels = heat
         .magnitude
         .par_iter()
-        .map(|&magnitude| heat_color(magnitude, tolerance))
+        .map(|&magnitude| heat_color(magnitude, tolerance, &colors))
         .collect();
     ColorImage::new([heat.width as usize, heat.height as usize], pixels)
 }
@@ -514,6 +515,7 @@ impl std::fmt::Debug for DiffMap {
 
 struct HeatLayer {
     key: CompareKey,
+    gradient: GradientPreset,
     image: ColorImage,
     texture: Option<TextureHandle>,
 }
@@ -524,7 +526,7 @@ struct CompareResult {
     key: CompareKey,
     map: Option<Arc<MetricMap>>,
     diff: Option<(PixelStats, ColorImage)>,
-    heat: Option<ColorImage>,
+    heat: Option<(GradientPreset, ColorImage)>,
     histograms: Option<[Histogram; 2]>,
 }
 
@@ -549,6 +551,7 @@ pub struct ImageDiffProcessor {
     shown_mode: ImageMode,
     shown_metric: PixelMetric,
     shown_alignment: Alignment,
+    heat_gradient: GradientPreset,
     blink: Blink,
     /// The swipe divider, as a fraction of the view's width: it stays put while panning.
     swipe: f32,
@@ -603,6 +606,7 @@ impl Default for ImageDiffProcessor {
             shown_mode: ImageMode::default(),
             shown_metric: PixelMetric::default(),
             shown_alignment: Alignment::default(),
+            heat_gradient: GradientPreset::Heat,
             blink: Blink::default(),
             swipe: DEFAULT_SWIPE,
             opacity: DEFAULT_OPACITY,
@@ -719,9 +723,10 @@ impl ImageDiffProcessor {
                     texture: None,
                 });
             }
-            if let Some(image) = result.heat {
+            if let Some((gradient, image)) = result.heat {
                 self.heat = Some(HeatLayer {
                     key: result.key,
+                    gradient,
                     image,
                     texture: None,
                 });
@@ -730,6 +735,7 @@ impl ImageDiffProcessor {
                 self.histograms = Some((result.key, Arc::new(histograms)));
             }
         }
+        self.recolor_heat();
 
         let decoded = |side: &SideState| match side {
             SideState::Decoded { image, .. } => Some(image.clone()),
@@ -749,7 +755,7 @@ impl ImageDiffProcessor {
             .as_ref()
             .filter(|(cached, _)| cached.same_map(&key))
             .map(|(_, map)| map.clone());
-        let (tolerance, channel) = (key.tolerance, key.channel);
+        let (tolerance, channel, gradient) = (key.tolerance, key.channel, self.heat_gradient);
         self.compare_job.start(move |job| {
             let cancel_flag: &AtomicBool = job.cancel_flag();
             let (first, second) = (first.buffer(), second.buffer());
@@ -784,7 +790,7 @@ impl ImageDiffProcessor {
             let heat = map
                 .as_deref()
                 .filter(|_| missing.heat)
-                .map(|map| heat_image(map, tolerance));
+                .map(|map| (gradient, heat_image(map, tolerance, gradient)));
             let histograms = missing
                 .histograms
                 .then(|| [histogram(first.rgba), histogram(second.rgba)]);
@@ -796,6 +802,32 @@ impl ImageDiffProcessor {
                 histograms,
             });
         });
+    }
+
+    fn set_heat_gradient(&mut self, gradient: GradientPreset) {
+        self.heat_gradient = gradient;
+        self.recolor_heat();
+    }
+
+    // From the kept metric map: a gradient change never compares again.
+    fn recolor_heat(&mut self) {
+        let Some(heat) = self
+            .heat
+            .as_mut()
+            .filter(|heat| heat.gradient != self.heat_gradient)
+        else {
+            return;
+        };
+        let Some((_, map)) = self
+            .metric_map
+            .as_ref()
+            .filter(|(key, _)| key.same_map(&heat.key))
+        else {
+            return;
+        };
+        heat.image = heat_image(map, heat.key.tolerance, self.heat_gradient);
+        heat.gradient = self.heat_gradient;
+        heat.texture = None;
     }
 
     /// `max_texture_side` is the renderer's limit; a larger image can't be uploaded and fails
@@ -1156,6 +1188,7 @@ pub fn show(
     processor.shown_mode = settings.mode;
     processor.shown_metric = settings.metric;
     processor.shown_alignment = settings.alignment;
+    processor.set_heat_gradient(diff_gradient(ui.ctx()).unwrap_or(GradientPreset::Heat));
     processor.set_texture_sampling(settings.sampling);
     if processor.texture_channel != settings.channel {
         processor.texture_channel = settings.channel;
@@ -1440,7 +1473,7 @@ pub fn show(
     if settings.mode == ImageMode::Heatmap
         && let Some(heat) = &processor.heat
     {
-        paint_heat_legend(&ui.painter_at(area), area, heat.key, font);
+        paint_heat_legend(&ui.painter_at(area), area, heat, font);
     }
 
     if let Some([left, _]) = swipe {
@@ -1463,8 +1496,10 @@ pub fn show(
 }
 
 // Fixed white on black, so the legend reads over any image.
-fn paint_heat_legend(painter: &egui::Painter, area: Rect, key: CompareKey, font: egui::FontId) {
+fn paint_heat_legend(painter: &egui::Painter, area: Rect, heat: &HeatLayer, font: egui::FontId) {
     const SEGMENTS: usize = 128;
+    let key = heat.key;
+    let colors = magnitude_colors(heat.gradient);
     const SEGMENT_WIDTH: f32 = 2.0;
     const BAR_HEIGHT: f32 = 14.0;
     const PAD: f32 = 6.0;
@@ -1501,7 +1536,7 @@ fn paint_heat_legend(painter: &egui::Painter, area: Rect, key: CompareKey, font:
         painter.rect_filled(
             Rect::from_min_size(pos2(x, bar.top()), vec2(SEGMENT_WIDTH, BAR_HEIGHT)),
             0.0,
-            heat_ramp(magnitude as u8),
+            colors[magnitude],
         );
     }
     painter.rect_stroke(
@@ -2280,12 +2315,13 @@ mod tests {
 
     #[test]
     fn values_up_to_the_tolerance_are_zero_on_the_heatmap() {
-        assert_eq!(heat_color(0, 0), Color32::TRANSPARENT);
-        assert_eq!(heat_color(1, 0), heat_ramp(1));
-        assert_eq!(heat_color(10, 10), Color32::TRANSPARENT);
-        assert_eq!(heat_color(11, 10), heat_ramp(11));
-        assert_eq!(heat_color(255, 254), heat_ramp(255));
-        assert_eq!(heat_color(255, 255), Color32::TRANSPARENT);
+        let colors = magnitude_colors(GradientPreset::Heat);
+        assert_eq!(heat_color(0, 0, &colors), Color32::TRANSPARENT);
+        assert_eq!(heat_color(1, 0, &colors), heat_ramp(1));
+        assert_eq!(heat_color(10, 10, &colors), Color32::TRANSPARENT);
+        assert_eq!(heat_color(11, 10, &colors), heat_ramp(11));
+        assert_eq!(heat_color(255, 254, &colors), heat_ramp(255));
+        assert_eq!(heat_color(255, 255, &colors), Color32::TRANSPARENT);
     }
 
     fn heat_magnitudes(
@@ -2371,7 +2407,7 @@ mod tests {
             overlap: zdiff::pixel::PixelBounds { x: 0..3, y: 0..1 },
             difference: 205.0 / 765.0,
         };
-        let image = heat_image(&heat, 5);
+        let image = heat_image(&heat, 5, GradientPreset::Heat);
         assert_eq!(image.size, [3, 1]);
         assert_eq!(
             image.pixels,
@@ -2461,6 +2497,40 @@ mod tests {
 
     fn heat_pixels(processor: &ImageDiffProcessor) -> Vec<Color32> {
         processor.heat.as_ref().unwrap().image.pixels.clone()
+    }
+
+    fn heat_ramp(magnitude: u8) -> Color32 {
+        magnitude_colors(GradientPreset::Heat)[magnitude as usize]
+    }
+
+    #[test]
+    fn a_gradient_change_recolors_the_heatmap_without_comparing_again() {
+        let mut processor = red_pair_processor(ImageMode::Heatmap);
+        assert_eq!(heat_pixels(&processor), vec![heat_ramp(30)]);
+
+        processor.set_heat_gradient(GradientPreset::Grayscale);
+        assert!(!processor.comparing());
+        let gray = magnitude_colors(GradientPreset::Grayscale)[30];
+        assert_eq!(heat_pixels(&processor), vec![gray]);
+    }
+
+    #[test]
+    fn a_heatmap_colored_before_a_gradient_change_arrives_recolored() {
+        let first = RgbaImage::from_raw(1, 1, vec![0, 0, 0, 255]).unwrap();
+        let second = RgbaImage::from_raw(1, 1, vec![30, 0, 0, 255]).unwrap();
+        let mut processor = ImageDiffProcessor {
+            shown_mode: ImageMode::Heatmap,
+            ..ImageDiffProcessor::default()
+        };
+        processor.request(
+            Some(png_file("a.png", &first)),
+            Some(png_file("b.png", &second)),
+        );
+        poll_until(&mut processor, |p| p.requested.is_some());
+        processor.set_heat_gradient(GradientPreset::Inferno);
+        poll_until(&mut processor, |p| !p.comparing());
+        let inferno = magnitude_colors(GradientPreset::Inferno)[30];
+        assert_eq!(heat_pixels(&processor), vec![inferno]);
     }
 
     fn red_pair_processor(mode: ImageMode) -> ImageDiffProcessor {
