@@ -277,6 +277,7 @@ pub struct VideoFrameProcessor {
     preview_jobs: [Job<PreviewMessage>; 2],
     shown_previews: [Option<(usize, Arc<DecodedImage>)>; 2],
     scrub: Scrub,
+    put_off_by_scrub: bool,
     image: ImageDiffProcessor,
     timeline: VideoTimeline,
 }
@@ -301,6 +302,7 @@ impl Default for VideoFrameProcessor {
             preview_jobs: [Job::new(|| {}), Job::new(|| {})],
             shown_previews: [None, None],
             scrub: Scrub::default(),
+            put_off_by_scrub: false,
             image: ImageDiffProcessor::default(),
             timeline: VideoTimeline::default(),
         }
@@ -475,6 +477,7 @@ impl VideoFrameProcessor {
     }
 
     fn fetch_wanted(&mut self) {
+        self.put_off_by_scrub = false;
         let Some(ffmpeg) = self.ffmpeg.clone() else {
             return;
         };
@@ -509,6 +512,7 @@ impl VideoFrameProcessor {
         let previewed =
             |index: usize| needed[index].is_none() || self.preview_sample(index).is_some();
         if scrubbing && (0..2).all(previewed) {
+            self.put_off_by_scrub = true;
             return;
         }
         for (index, wanted) in needed.into_iter().enumerate() {
@@ -520,6 +524,7 @@ impl VideoFrameProcessor {
             self.start_run(index, &ffmpeg, wanted..end);
         }
         if scrubbing || self.fetching.iter().any(Option::is_some) {
+            self.put_off_by_scrub = scrubbing;
             return;
         }
         for index in 0..2 {
@@ -676,6 +681,11 @@ impl VideoFrameProcessor {
             || self.runs.iter().any(Option::is_some)
     }
 
+    // The flag, not `scrub.active(now)` alone: the scrub may pause between poll() and show().
+    fn wants_repaint(&self, now: Instant) -> bool {
+        self.busy() || self.put_off_by_scrub || self.scrub.active(now)
+    }
+
     fn readout(&self, index: usize) -> String {
         match (&self.probes[index], self.track(index)) {
             (Probe::Running, _) => "Probing...".to_string(),
@@ -701,9 +711,9 @@ pub fn show(
     left_width: f32,
     shown_sides: [usize; 2],
 ) {
-    let scrubbing = processor.scrub.active(Instant::now());
+    let wants_repaint = processor.wants_repaint(Instant::now());
     processor.scrub.hold(ui.input(|i| i.pointer.any_down()));
-    if processor.busy() || scrubbing {
+    if wants_repaint {
         // Jobs finish on workers and a paused drag fetches later; keep frames coming until then.
         ui.ctx().request_repaint();
     }
@@ -1179,6 +1189,22 @@ mod tests {
         processor.fetch_wanted();
         assert_eq!(processor.fetching, [Some(7), Some(7)]);
         assert!(matches!(processor.image_side(0), ImageSide::Image(i) if i.format == "Preview"));
+    }
+
+    #[test]
+    fn a_fetch_put_off_by_a_scrub_keeps_repainting_after_the_scrub_pauses() {
+        let mut processor = probed_pair(Some(missing_ffmpeg()));
+        with_previews(&mut processor);
+        processor.scrub.hold(true);
+        processor.seek(track(25.0, 25).frame_time(7));
+        let (now, hour) = (Instant::now(), std::time::Duration::from_secs(3600));
+        processor.scrub.change(now + hour);
+        processor.fetch_wanted();
+        assert_eq!(processor.fetching, [None, None]);
+
+        let paused = now + 2 * hour;
+        assert!(!processor.scrub.active(paused));
+        assert!(processor.wants_repaint(paused));
     }
 
     #[test]
