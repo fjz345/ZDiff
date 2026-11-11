@@ -60,11 +60,11 @@ pub(super) fn bar_segments(
     file_path_segments(path, label)
 }
 
-pub(super) fn load_error_text(errors: [Option<&str>; 2], shown: [usize; 2]) -> Option<String> {
+pub(super) fn load_error_text(errors: [Option<&str>; 2]) -> Option<String> {
     let lines: Vec<String> = ["Left", "Right"]
         .into_iter()
-        .zip(shown)
-        .filter_map(|(column, side)| errors[side].map(|error| format!("{column}: {error}")))
+        .zip(errors)
+        .filter_map(|(side, error)| error.map(|error| format!("{side}: {error}")))
         .collect();
     (!lines.is_empty()).then(|| lines.join("\n"))
 }
@@ -354,17 +354,17 @@ mod tests {
         }
 
         #[test]
-        fn load_errors_are_named_by_the_column_their_file_shows_in() {
+        fn load_errors_are_named_by_their_file_like_the_open_buttons() {
             use super::super::load_error_text;
 
-            assert_eq!(load_error_text([None, None], [0, 1]), None);
+            assert_eq!(load_error_text([None, None]), None);
             assert_eq!(
-                load_error_text([Some("gone"), Some("denied")], [0, 1]).as_deref(),
+                load_error_text([Some("gone"), Some("denied")]).as_deref(),
                 Some("Left: gone\nRight: denied")
             );
             assert_eq!(
-                load_error_text([Some("gone"), None], [1, 0]).as_deref(),
-                Some("Right: gone")
+                load_error_text([None, Some("denied")]).as_deref(),
+                Some("Right: denied")
             );
         }
     }
