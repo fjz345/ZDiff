@@ -1,5 +1,5 @@
 use super::*;
-use std::{borrow::Cow, cell::Cell};
+use std::{borrow::Cow, cell::Cell, collections::btree_map::Entry};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct FileSystemView {
@@ -266,7 +266,12 @@ impl FileSystemView {
                     continue;
                 }
                 let rel = std::mem::take(&mut rels[id]);
-                entries_map.insert(rel, (Some((id, node, depth)), None));
+                match entries_map.entry(rel) {
+                    Entry::Vacant(slot) => {
+                        slot.insert((Some((id, node, depth)), None));
+                    }
+                    Entry::Occupied(slot) => warn_lossy_collision(1, slot.key()),
+                }
             }
         }
         if let Some(view) = file_system_2 {
@@ -277,10 +282,15 @@ impl FileSystemView {
                     continue;
                 }
                 let rel = std::mem::take(&mut rels[id]);
-                entries_map
-                    .entry(rel)
-                    .and_modify(|e| e.1 = Some((id, node, depth)))
-                    .or_insert((None, Some((id, node, depth))));
+                match entries_map.entry(rel) {
+                    Entry::Vacant(slot) => {
+                        slot.insert((None, Some((id, node, depth))));
+                    }
+                    Entry::Occupied(slot) if slot.get().1.is_some() => {
+                        warn_lossy_collision(2, slot.key())
+                    }
+                    Entry::Occupied(mut slot) => slot.get_mut().1 = Some((id, node, depth)),
+                }
             }
         }
 
@@ -918,6 +928,13 @@ pub fn aggregate_folder_state(
 
 type SideEntry<'a> = Option<(FsNodeId, &'a FsNode, FsNodeDepth)>;
 type EntriesMap<'a> = BTreeMap<String, (SideEntry<'a>, SideEntry<'a>)>;
+
+fn warn_lossy_collision(folder: usize, rel_path: &str) {
+    log::warn!(
+        "Folder {folder}: two names that aren't valid Unicode both read as {rel_path:?}; only \
+         the first is compared"
+    );
+}
 
 pub(super) fn descendant_states<'a>(
     entries_map: &'a EntriesMap<'_>,
