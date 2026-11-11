@@ -50,7 +50,7 @@ pub struct RawToken {
 
 impl AsRef<RawToken> for RawToken {
     fn as_ref(&self) -> &RawToken {
-        &self
+        self
     }
 }
 
@@ -223,10 +223,8 @@ fn literal_len(rest: &str) -> Option<usize> {
                 match c {
                     _ if is_line_break(c) => return Some(i),
                     '"' => return Some(i + 1),
-                    '\\' => {
-                        if chars.clone().next().is_some_and(|(_, n)| !is_line_break(n)) {
-                            chars.next();
-                        }
+                    '\\' if chars.clone().next().is_some_and(|(_, n)| !is_line_break(n)) => {
+                        chars.next();
                     }
                     _ => {}
                 }
@@ -318,9 +316,10 @@ impl Lexer<'_> {
             }
             c if c.is_whitespace() => {
                 self.consume();
-                while self.peek().map_or(false, |next| {
-                    next.is_whitespace() && next != '\n' && next != '\r'
-                }) {
+                while self
+                    .peek()
+                    .is_some_and(|next| next.is_whitespace() && next != '\n' && next != '\r')
+                {
                     self.consume();
                 }
                 Some(TokenKind::Whitespace)
@@ -383,7 +382,7 @@ impl Lexer<'_> {
             {
                 let start = self.cursor;
                 self.consume();
-                while self.peek().map_or(false, |next| {
+                while self.peek().is_some_and(|next| {
                     next.is_alphanumeric()
                         || next == '_'
                         || (next > '\x7f' && !next.is_control() && !next.is_whitespace())
@@ -398,9 +397,9 @@ impl Lexer<'_> {
                     TokenKind::Identifier
                 }
             }
-            _ if c.is_digit(10) => {
+            _ if c.is_ascii_digit() => {
                 self.consume();
-                while self.peek().map_or(false, |next| next.is_digit(10)) {
+                while self.peek().is_some_and(|next| next.is_ascii_digit()) {
                     self.consume();
                 }
                 TokenKind::Number

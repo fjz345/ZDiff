@@ -11,13 +11,13 @@ use std::{
 use zdiff::{
     cached_file::FileMetadata,
     char_diff::character_diff,
-    diff_builder::{DiffBuilderOptions, build_diff_rows},
+    diff_builder::{DiffBuilderOptions, RowSides, build_diff_rows},
     diff_ir::DiffIR,
     ignore::IgnoreMask,
     lexer::{Lexer, RawToken, TokenKind},
     myers::{
-        DiffPhases, MyersDiffAlgorithm, MyersPath, Side, line_diff, myers_count_add_deletes,
-        myers_diff_path, token_diff,
+        DiffInput, DiffPhases, MyersDiffAlgorithm, MyersPath, Side, line_diff,
+        myers_count_add_deletes, myers_diff_path, token_diff,
     },
     read_file_contents,
 };
@@ -220,7 +220,7 @@ fn run_once(source: &str, target: &str) -> Run {
         &tokens_source,
         &tokens_target,
         &hunks,
-        &cmp,
+        cmp,
         &IgnoreMask::default(),
         cancel.clone(),
     )
@@ -234,10 +234,12 @@ fn run_once(source: &str, target: &str) -> Run {
     let start = Instant::now();
     let diff_rows = build_diff_rows(
         diff_ir,
-        Some(&tokens_source),
-        Some(&tokens_target),
-        source,
-        target,
+        RowSides {
+            tokens_source: Some(&tokens_source),
+            tokens_target: Some(&tokens_target),
+            text_source: source,
+            text_target: target,
+        },
         &DiffBuilderOptions::default(),
         num_lines,
     );
@@ -264,12 +266,14 @@ fn driver_path(
     };
     myers_diff_path(
         MyersDiffAlgorithm::Linear,
-        black_box(tokens_source),
-        black_box(tokens_target),
-        source,
-        target,
+        DiffInput {
+            source: black_box(tokens_source),
+            target: black_box(tokens_target),
+            source_text: source,
+            target_text: target,
+            ignore: &IgnoreMask::default(),
+        },
         cmp,
-        &IgnoreMask::default(),
         phases,
         &[],
         Arc::default(),
@@ -353,11 +357,13 @@ fn run_phases(
     let char_ranges = character_diff(
         MyersDiffAlgorithm::Linear,
         black_box(&path),
-        tokens_source,
-        tokens_target,
-        source,
-        target,
-        &IgnoreMask::default(),
+        DiffInput {
+            source: tokens_source,
+            target: tokens_target,
+            source_text: source,
+            target_text: target,
+            ignore: &IgnoreMask::default(),
+        },
         Arc::default(),
     )
     .expect("never cancelled");

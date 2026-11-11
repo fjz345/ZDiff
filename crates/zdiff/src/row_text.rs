@@ -109,11 +109,11 @@ mod tests {
     use super::*;
     use crate::{
         cached_file::FileMetadata,
-        diff_builder::{DiffBuilderOptions, LineContent, build_diff_rows},
+        diff_builder::{DiffBuilderOptions, LineContent, RowSides, build_diff_rows},
         diff_ir::DiffIR,
         ignore::IgnoreMask,
         lexer::{Lexer, RawToken},
-        myers::{DiffPhases, MyersDiffAlgorithm, myers_diff_path},
+        myers::{DiffInput, DiffPhases, MyersDiffAlgorithm, myers_diff_path},
         universal_path::UniversalPath,
     };
 
@@ -169,7 +169,7 @@ mod tests {
         let changed = [0..1, 3..4, 7..8];
         let row = build_row_text(&tokens, &changed, Some(&file), Some(&file));
         assert_eq!(row.text, "ab cd");
-        assert_eq!(row.changed_chars, [4..5]);
+        assert_eq!(row.changed_chars, [Range { start: 4, end: 5 }]);
     }
 
     #[test]
@@ -190,7 +190,7 @@ mod tests {
         ];
         let row = build_row_text(&tokens, &[], Some(&file), Some(&file));
         assert_eq!(row.text, "ab cd ef");
-        assert_eq!(row.changed_tokens, [3..5]);
+        assert_eq!(row.changed_tokens, [Range { start: 3, end: 5 }]);
     }
 
     #[test]
@@ -361,12 +361,14 @@ mod tests {
         };
         let path = myers_diff_path(
             MyersDiffAlgorithm::Linear,
-            &file_source.tokens,
-            &file_target.tokens,
-            source,
-            target,
+            DiffInput {
+                source: &file_source.tokens,
+                target: &file_target.tokens,
+                source_text: source,
+                target_text: target,
+                ignore: &IgnoreMask::default(),
+            },
             cmp,
-            &IgnoreMask::default(),
             DiffPhases::default(),
             &[],
             Arc::new(AtomicBool::new(false)),
@@ -375,10 +377,12 @@ mod tests {
         let diff_ir = DiffIR::new(&path, true, Arc::new(AtomicBool::new(false))).unwrap();
         let rows = build_diff_rows(
             diff_ir,
-            Some(&file_source.tokens),
-            Some(&file_target.tokens),
-            source,
-            target,
+            RowSides {
+                tokens_source: Some(&file_source.tokens),
+                tokens_target: Some(&file_target.tokens),
+                text_source: source,
+                text_target: target,
+            },
             &DiffBuilderOptions::default(),
             4,
         );

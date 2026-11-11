@@ -131,16 +131,21 @@ pub fn validate_pins(
     Ok(())
 }
 
+/// The two token streams being diffed, the texts their spans index and their ignore mask.
+pub struct DiffInput<'a, T> {
+    pub source: &'a [T],
+    pub target: &'a [T],
+    pub source_text: &'a str,
+    pub target_text: &'a str,
+    pub ignore: &'a IgnoreMask,
+}
+
 /// Token-level edit path of `source` -> `target` through the enabled phases. A unit-step path
 /// from (0, 0) to (source.len(), target.len()). None when cancelled.
 pub fn myers_diff_path<T, F>(
     algorithm: MyersDiffAlgorithm,
-    source: &[T],
-    target: &[T],
-    source_text: &str,
-    target_text: &str,
+    input: DiffInput<T>,
     cmp: F,
-    ignore: &IgnoreMask,
     phases: DiffPhases,
     pins: &[Pin],
     cancel_flag: Arc<AtomicBool>,
@@ -149,29 +154,13 @@ where
     T: RawTokenTrait,
     F: Fn(&T, &T) -> bool + Sync,
 {
-    myers_diff_path_traced(
-        algorithm,
-        source,
-        target,
-        source_text,
-        target_text,
-        cmp,
-        ignore,
-        phases,
-        pins,
-        cancel_flag,
-        None,
-    )
+    myers_diff_path_traced(algorithm, input, cmp, phases, pins, cancel_flag, None)
 }
 
 pub fn myers_diff_path_traced<T, F>(
     algorithm: MyersDiffAlgorithm,
-    source: &[T],
-    target: &[T],
-    source_text: &str,
-    target_text: &str,
+    input: DiffInput<T>,
     cmp: F,
-    ignore: &IgnoreMask,
     phases: DiffPhases,
     pins: &[Pin],
     cancel_flag: Arc<AtomicBool>,
@@ -182,29 +171,14 @@ where
     F: Fn(&T, &T) -> bool + Sync,
 {
     let Some(trace) = trace else {
-        return pins_path(
-            algorithm,
-            source,
-            target,
-            source_text,
-            target_text,
-            cmp,
-            ignore,
-            phases,
-            pins,
-            cancel_flag,
-            None,
-        );
+        return pins_path(algorithm, input, cmp, phases, pins, cancel_flag, None);
     };
+    let (source, target) = (input.source, input.target);
     let cell = RefCell::new(std::mem::take(trace));
     let path = pins_path(
         algorithm,
-        source,
-        target,
-        source_text,
-        target_text,
+        input,
         cmp,
-        ignore,
         phases,
         pins,
         cancel_flag,
@@ -217,12 +191,8 @@ where
 
 fn pins_path<T, F>(
     algorithm: MyersDiffAlgorithm,
-    source: &[T],
-    target: &[T],
-    source_text: &str,
-    target_text: &str,
+    input: DiffInput<T>,
     cmp: F,
-    ignore: &IgnoreMask,
     phases: DiffPhases,
     pins: &[Pin],
     cancel_flag: Arc<AtomicBool>,
@@ -232,6 +202,13 @@ where
     T: RawTokenTrait,
     F: Fn(&T, &T) -> bool + Sync,
 {
+    let DiffInput {
+        source,
+        target,
+        source_text,
+        target_text,
+        ignore,
+    } = input;
     assert!(
         phases.is_valid(),
         "invalid diff phases {phases:?}: Character needs Token"
@@ -241,19 +218,7 @@ where
         return Some(line_pairs_path(source, target, &cmp));
     }
     if pins.is_empty() {
-        return phases_path(
-            algorithm,
-            source,
-            target,
-            source_text,
-            target_text,
-            &cmp,
-            ignore,
-            phases,
-            false,
-            cancel_flag,
-            trace,
-        );
+        return phases_path(algorithm, input, &cmp, phases, false, cancel_flag, trace);
     }
     let (source_lines, target_lines) = (split_lines(source), split_lines(target));
     if let Err(err) = validate_pins(pins, source_lines.len(), target_lines.len()) {
@@ -278,14 +243,17 @@ where
             |i| from.0 + i,
             |j| from.1 + j,
             || {
-                phases_path(
-                    algorithm,
-                    &source[s.clone()],
-                    &target[t.clone()],
+                let input = DiffInput {
+                    source: &source[s.clone()],
+                    target: &target[t.clone()],
                     source_text,
                     target_text,
+                    ignore: &slice_mask(ignore, s, t),
+                };
+                phases_path(
+                    algorithm,
+                    input,
                     &cmp,
-                    &slice_mask(ignore, s, t),
                     phases,
                     i % 2 == 1,
                     cancel_flag.clone(),
@@ -325,12 +293,8 @@ pub(crate) fn slice_mask(
 /// The enabled phases over one stretch. `pinned`: the stretch is one pinned line pair.
 pub(crate) fn phases_path<T, F>(
     algorithm: MyersDiffAlgorithm,
-    source: &[T],
-    target: &[T],
-    source_text: &str,
-    target_text: &str,
+    input: DiffInput<T>,
     cmp: &F,
-    ignore: &IgnoreMask,
     phases: DiffPhases,
     pinned: bool,
     cancel_flag: Arc<AtomicBool>,
@@ -341,19 +305,15 @@ where
     F: Fn(&T, &T) -> bool + Sync,
 {
     if phases.scope && !pinned {
-        return scope_path(
-            algorithm,
-            source,
-            target,
-            source_text,
-            target_text,
-            cmp,
-            ignore,
-            phases,
-            cancel_flag,
-            trace,
-        );
+        return scope_path(algorithm, input, cmp, phases, cancel_flag, trace);
     }
+    let DiffInput {
+        source,
+        target,
+        source_text,
+        target_text,
+        ignore,
+    } = input;
     if !phases.line && !phases.token {
         return Some(
             key_aligned_path(source, target, cmp, ignore)
@@ -561,7 +521,7 @@ pub fn intern_lines<'k, T, K>(
 where
     K: Fn(Side, &T) -> (TokenKind, &'k [u8]),
 {
-    intern_lines_with(
+    intern_lines_with::<_, _, BuildHasherDefault<FxHasher>>(
         source,
         target,
         source_lines,
@@ -569,7 +529,6 @@ where
         ignore,
         key,
         cancel_flag,
-        &BuildHasherDefault::<FxHasher>::default(),
     )
 }
 
@@ -581,12 +540,12 @@ fn intern_lines_with<'k, T, K, S>(
     ignore: &IgnoreMask,
     key: K,
     cancel_flag: &AtomicBool,
-    hasher: &S,
 ) -> Option<(Vec<u32>, Vec<u32>)>
 where
     K: Fn(Side, &T) -> (TokenKind, &'k [u8]),
-    S: BuildHasher,
+    S: BuildHasher + Default,
 {
+    let hasher = S::default();
     let ignored = |mask: &[bool], i: usize| mask.get(i).copied().unwrap_or(false);
     let line_key = |side: Side, line: &Range<usize>| {
         let (tokens, mask) = match side {
@@ -607,7 +566,7 @@ where
         let mut ids = Vec::with_capacity(lines.len());
         for line in lines {
             seen += 1;
-            if seen % INTERN_CANCEL_STRIDE == 0 && cancel_flag.load(Ordering::Relaxed) {
+            if seen.is_multiple_of(INTERN_CANCEL_STRIDE) && cancel_flag.load(Ordering::Relaxed) {
                 return None;
             }
             let mut h = hasher.build_hasher();
@@ -1113,6 +1072,10 @@ impl MyersTrace {
         self.num_rows
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.num_rows == 0
+    }
+
     pub fn shortest_edit(&self) -> usize {
         if self.num_rows == 0 {
             0
@@ -1211,15 +1174,10 @@ pub fn myers_backtrack(
         let prev_d_idx = d_idx - 1;
 
         // Logic check: Did we come from the diagonal above (Down) or the diagonal to the left (Right)?
-        let came_from_above = if k == -d_idx
+        let came_from_above = k == -d_idx
             || (k != d_idx
                 && prev_v_slice[(k + 1 + prev_d_idx) as usize]
-                    > prev_v_slice[(k - 1 + prev_d_idx) as usize])
-        {
-            true
-        } else {
-            false
-        };
+                    > prev_v_slice[(k - 1 + prev_d_idx) as usize]);
 
         let k_prev = if came_from_above { k + 1 } else { k - 1 };
         let prev_v_idx = (k_prev + prev_d_idx) as usize;
@@ -1390,10 +1348,8 @@ where
 
             bufs.set_f(k, current_x);
 
-            if (delta & 1) != 0 && c >= -(d - 1) && c <= d - 1 {
-                if current_y >= bufs.get_b(c) {
-                    return Some(((prev_x, prev_y), (current_x, current_y)));
-                }
+            if (delta & 1) != 0 && c >= -(d - 1) && c < d && current_y >= bufs.get_b(c) {
+                return Some(((prev_x, prev_y), (current_x, current_y)));
             }
         }
 
@@ -1430,10 +1386,8 @@ where
 
             bufs.set_b(c, current_y);
 
-            if (delta & 1) == 0 && k >= -d && k <= d {
-                if current_x <= bufs.get_f(k) {
-                    return Some(((current_x, current_y), (prev_x, prev_y)));
-                }
+            if (delta & 1) == 0 && k >= -d && k <= d && current_x <= bufs.get_f(k) {
+                return Some(((current_x, current_y), (prev_x, prev_y)));
             }
         }
     }
@@ -1442,10 +1396,7 @@ where
 }
 
 fn find_path<T, F>(
-    left: i32,
-    top: i32,
-    right: i32,
-    bottom: i32,
+    box_reg: BoxRegion,
     source: &[T],
     target: &[T],
     cmp: &mut F,
@@ -1455,12 +1406,6 @@ fn find_path<T, F>(
 ) where
     F: FnMut(&T, &T) -> bool,
 {
-    let box_reg = BoxRegion {
-        left,
-        top,
-        right,
-        bottom,
-    };
     if box_reg.size() == 0 {
         return;
     }
@@ -1469,10 +1414,11 @@ fn find_path<T, F>(
         find_midpoint(box_reg, source, target, cmp, bufs, cancel_flag.clone())
     {
         find_path(
-            box_reg.left,
-            box_reg.top,
-            snake_start.0,
-            snake_start.1,
+            BoxRegion {
+                right: snake_start.0,
+                bottom: snake_start.1,
+                ..box_reg
+            },
             source,
             target,
             cmp,
@@ -1489,10 +1435,11 @@ fn find_path<T, F>(
         }
 
         find_path(
-            snake_end.0,
-            snake_end.1,
-            box_reg.right,
-            box_reg.bottom,
+            BoxRegion {
+                left: snake_end.0,
+                top: snake_end.1,
+                ..box_reg
+            },
             source,
             target,
             cmp,
@@ -1524,10 +1471,12 @@ where
 
     points.push((0, 0));
     find_path(
-        0,
-        0,
-        source_len,
-        target_len,
+        BoxRegion {
+            left: 0,
+            top: 0,
+            right: source_len,
+            bottom: target_len,
+        },
         source,
         target,
         &mut cmp,
@@ -1572,10 +1521,7 @@ where
 }
 
 fn find_path_mt<T, F>(
-    left: i32,
-    top: i32,
-    right: i32,
-    bottom: i32,
+    box_reg: BoxRegion,
     source: &[T],
     target: &[T],
     cmp: &F,
@@ -1585,12 +1531,6 @@ fn find_path_mt<T, F>(
     T: Sync,
     F: Fn(&T, &T) -> bool + Sync,
 {
-    let box_reg = BoxRegion {
-        left,
-        top,
-        right,
-        bottom,
-    };
     let size = box_reg.size();
     if size == 0 {
         return;
@@ -1611,10 +1551,11 @@ fn find_path_mt<T, F>(
             rayon::join(
                 || {
                     find_path_mt(
-                        box_reg.left,
-                        box_reg.top,
-                        snake_start.0,
-                        snake_start.1,
+                        BoxRegion {
+                            right: snake_start.0,
+                            bottom: snake_start.1,
+                            ..box_reg
+                        },
                         source,
                         target,
                         cmp,
@@ -1624,10 +1565,11 @@ fn find_path_mt<T, F>(
                 },
                 || {
                     find_path_mt(
-                        snake_end.0,
-                        snake_end.1,
-                        box_reg.right,
-                        box_reg.bottom,
+                        BoxRegion {
+                            left: snake_end.0,
+                            top: snake_end.1,
+                            ..box_reg
+                        },
                         source,
                         target,
                         cmp,
@@ -1648,10 +1590,11 @@ fn find_path_mt<T, F>(
         } else {
             // Fall back to sequential execution on the current thread for small segments
             find_path_mt(
-                box_reg.left,
-                box_reg.top,
-                snake_start.0,
-                snake_start.1,
+                BoxRegion {
+                    right: snake_start.0,
+                    bottom: snake_start.1,
+                    ..box_reg
+                },
                 source,
                 target,
                 cmp,
@@ -1665,10 +1608,11 @@ fn find_path_mt<T, F>(
                 path.push(snake_end);
             }
             find_path_mt(
-                snake_end.0,
-                snake_end.1,
-                box_reg.right,
-                box_reg.bottom,
+                BoxRegion {
+                    left: snake_end.0,
+                    top: snake_end.1,
+                    ..box_reg
+                },
                 source,
                 target,
                 cmp,
@@ -1733,10 +1677,8 @@ where
             }
             bufs.set_f(k, current_x);
 
-            if (delta & 1) != 0 && c >= -(d - 1) && c <= d - 1 {
-                if current_y >= bufs.get_b(c) {
-                    return Some(((prev_x, prev_y), (current_x, current_y)));
-                }
+            if (delta & 1) != 0 && c >= -(d - 1) && c < d && current_y >= bufs.get_b(c) {
+                return Some(((prev_x, prev_y), (current_x, current_y)));
             }
         }
 
@@ -1770,10 +1712,8 @@ where
             }
             bufs.set_b(c, current_y);
 
-            if (delta & 1) == 0 && k >= -d && k <= d {
-                if current_x <= bufs.get_f(k) {
-                    return Some(((current_x, current_y), (prev_x, prev_y)));
-                }
+            if (delta & 1) == 0 && k >= -d && k <= d && current_x <= bufs.get_f(k) {
+                return Some(((current_x, current_y), (prev_x, prev_y)));
             }
         }
     }
@@ -1802,10 +1742,12 @@ where
     points.push((0, 0));
 
     find_path_mt(
-        0,
-        0,
-        source_len,
-        target_len,
+        BoxRegion {
+            left: 0,
+            top: 0,
+            right: source_len,
+            bottom: target_len,
+        },
         source,
         target,
         &cmp,
@@ -1880,17 +1822,16 @@ mod tests {
             fn write(&mut self, _: &[u8]) {}
         }
 
-        fn ids_with<S: BuildHasher>(
+        fn ids_with<S: BuildHasher + Default>(
             source: &str,
             target: &str,
             ignore: &IgnoreOptions,
-            hasher: &S,
             cancel: &AtomicBool,
         ) -> Option<(Vec<u32>, Vec<u32>)> {
             let (ts, tt): (Vec<RawToken>, Vec<RawToken>) =
                 (Lexer::new(source).parse(), Lexer::new(target).parse());
             let mask = ignore.mask(&ts, source, &tt, target);
-            intern_lines_with(
+            intern_lines_with::<_, _, S>(
                 &ts,
                 &tt,
                 &split_lines(&ts),
@@ -1898,13 +1839,17 @@ mod tests {
                 &mask,
                 text_key(source, target),
                 cancel,
-                hasher,
             )
         }
 
         fn ids(source: &str, target: &str, ignore: &IgnoreOptions) -> (Vec<u32>, Vec<u32>) {
-            let hasher = BuildHasherDefault::<DefaultHasher>::default();
-            ids_with(source, target, ignore, &hasher, &AtomicBool::new(false)).unwrap()
+            ids_with::<BuildHasherDefault<DefaultHasher>>(
+                source,
+                target,
+                ignore,
+                &AtomicBool::new(false),
+            )
+            .unwrap()
         }
 
         #[test]
@@ -1932,12 +1877,10 @@ mod tests {
 
         #[test]
         fn colliding_hashes_keep_unequal_lines_apart() {
-            let hasher = BuildHasherDefault::<ConstHasher>::default();
-            let (s, t) = ids_with(
+            let (s, t) = ids_with::<BuildHasherDefault<ConstHasher>>(
                 "a\nb\nc\n",
                 "c\nb\nd\n",
                 &IgnoreOptions::default(),
-                &hasher,
                 &AtomicBool::new(false),
             )
             .unwrap();
@@ -1952,9 +1895,16 @@ mod tests {
         #[test]
         fn cancelling_returns_none() {
             let text = "x\n".repeat(INTERN_CANCEL_STRIDE * 2);
-            let hasher = BuildHasherDefault::<DefaultHasher>::default();
             let cancel = AtomicBool::new(true);
-            assert!(ids_with(&text, &text, &IgnoreOptions::default(), &hasher, &cancel).is_none());
+            assert!(
+                ids_with::<BuildHasherDefault<DefaultHasher>>(
+                    &text,
+                    &text,
+                    &IgnoreOptions::default(),
+                    &cancel
+                )
+                .is_none()
+            );
         }
     }
 
@@ -2392,12 +2342,14 @@ mod tests {
             };
             let path = myers_diff_path(
                 algorithm,
-                &ts,
-                &tt,
-                source,
-                target,
+                DiffInput {
+                    source: &ts,
+                    target: &tt,
+                    source_text: source,
+                    target_text: target,
+                    ignore: &ignore.mask(&ts, source, &tt, target),
+                },
                 cmp,
-                &ignore.mask(&ts, source, &tt, target),
                 phases,
                 &[],
                 Arc::new(AtomicBool::new(cancel)),
@@ -2724,12 +2676,14 @@ mod tests {
                 };
                 myers_diff_path(
                     algorithm,
-                    &ts,
-                    &tt,
-                    source,
-                    target,
+                    DiffInput {
+                        source: &ts,
+                        target: &tt,
+                        source_text: source,
+                        target_text: target,
+                        ignore: &IgnoreMask::default(),
+                    },
                     cmp,
-                    &IgnoreMask::default(),
                     phases,
                     pins,
                     Arc::new(AtomicBool::new(false)),
@@ -2746,9 +2700,9 @@ mod tests {
                 let cmp = |a: &RawToken, b: &RawToken| {
                     a.kind == b.kind && source[a.span.clone()] == target[b.span.clone()]
                 };
-                let path = raw_diff_path(algorithm, &ts, &tt, &cmp, Arc::default()).unwrap();
+                let path = raw_diff_path(algorithm, &ts, &tt, cmp, Arc::default()).unwrap();
                 let is_line_end = |t: &RawToken| t.kind == TokenKind::Newline;
-                align_runs_to_line_ends(&path, &ts, &tt, &cmp, is_line_end)
+                align_runs_to_line_ends(&path, &ts, &tt, cmp, is_line_end)
             }
 
             #[test]
@@ -3510,7 +3464,7 @@ mod tests {
 
             use super::*;
             use crate::{
-                diff_builder::{DiffBuilderOptions, LineContent, RowBg, build_diff_rows},
+                diff_builder::{DiffBuilderOptions, LineContent, RowBg, RowSides, build_diff_rows},
                 diff_ir::DiffIR,
                 ignore::IgnoreOptions,
                 lexer::{Lexer, RawToken},
@@ -3563,12 +3517,14 @@ mod tests {
                 };
                 myers_diff_path(
                     algorithm,
-                    &t1,
-                    &t2,
-                    s1,
-                    s2,
+                    DiffInput {
+                        source: &t1,
+                        target: &t2,
+                        source_text: s1,
+                        target_text: s2,
+                        ignore: &ignore.mask(&t1, s1, &t2, s2),
+                    },
                     cmp,
-                    &ignore.mask(&t1, s1, &t2, s2),
                     phases,
                     pins,
                     Arc::new(AtomicBool::new(false)),
@@ -3780,8 +3736,17 @@ mod tests {
                         let plain =
                             token_diff(algorithm, &t1, &t2, &hunks, cmp, &mask, cancel).unwrap();
                         let ir = DiffIR::new(&plain, false, Arc::default()).unwrap();
-                        let plain_rows =
-                            build_diff_rows(ir, Some(&t1), Some(&t2), s1, s2, &options(), 8);
+                        let plain_rows = build_diff_rows(
+                            ir,
+                            RowSides {
+                                tokens_source: Some(&t1),
+                                tokens_target: Some(&t2),
+                                text_source: s1,
+                                text_target: s2,
+                            },
+                            &options(),
+                            8,
+                        );
 
                         let h = rows(algorithm, s1, s2, DiffPhases::default(), &[]);
                         assert_eq!(
@@ -3839,12 +3804,14 @@ mod tests {
                             };
                             let path = myers_diff_path(
                                 algorithm,
-                                &t1,
-                                &t2,
-                                &s1,
-                                &s2,
+                                DiffInput {
+                                    source: &t1,
+                                    target: &t2,
+                                    source_text: &s1,
+                                    target_text: &s2,
+                                    ignore: &IgnoreMask::default(),
+                                },
                                 cmp,
-                                &IgnoreMask::default(),
                                 phases,
                                 &pins,
                                 Arc::clone(&cancel),

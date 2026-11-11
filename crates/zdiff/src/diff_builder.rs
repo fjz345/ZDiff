@@ -6,7 +6,7 @@ use std::{
 use rayon::prelude::*;
 
 use crate::{
-    char_diff::{CharRanges, ranges_in_span},
+    char_diff::ranges_in_span,
     diff_ir::{DiffIR, DiffOp, DiffResult, diff_ir_hide_ignored},
     ignore::{IgnoreMask, IgnoreOptions},
     lexer::{RawTokenTrait, TokenKind},
@@ -371,21 +371,22 @@ impl<'a, 'b, T: RawTokenTrait> DiffBuilder<'a, 'b, T> {
 }
 
 /// `text_*` is the text a side's token spans index into; ignore patterns are matched on it.
-pub fn build_diff_rows<'a, T: RawTokenTrait>(
+pub struct RowSides<'a, T> {
+    pub tokens_source: Option<&'a [T]>,
+    pub tokens_target: Option<&'a [T]>,
+    pub text_source: &'a str,
+    pub text_target: &'a str,
+}
+
+pub fn build_diff_rows<T: RawTokenTrait>(
     diff_ir: DiffIR,
-    tokens_source: Option<&'a [T]>,
-    tokens_target: Option<&'a [T]>,
-    text_source: &str,
-    text_target: &str,
+    sides: RowSides<T>,
     options: &DiffBuilderOptions,
     estimated_num_rows: usize,
 ) -> Vec<DiffRow> {
     build_diff_rows_cancellable(
         diff_ir,
-        tokens_source,
-        tokens_target,
-        text_source,
-        text_target,
+        sides,
         options,
         estimated_num_rows,
         &AtomicBool::new(false),
@@ -393,16 +394,19 @@ pub fn build_diff_rows<'a, T: RawTokenTrait>(
     .expect("never cancelled")
 }
 
-pub fn build_diff_rows_cancellable<'a, T: RawTokenTrait>(
+pub fn build_diff_rows_cancellable<T: RawTokenTrait>(
     mut diff_ir: DiffIR,
-    tokens_source: Option<&'a [T]>,
-    tokens_target: Option<&'a [T]>,
-    text_source: &str,
-    text_target: &str,
+    sides: RowSides<T>,
     options: &DiffBuilderOptions,
     estimated_num_rows: usize,
     cancel_flag: &AtomicBool,
 ) -> Option<Vec<DiffRow>> {
+    let RowSides {
+        tokens_source,
+        tokens_target,
+        text_source,
+        text_target,
+    } = sides;
     let ignore = options.ignore.mask(
         tokens_source.unwrap_or_default(),
         text_source,
@@ -432,11 +436,9 @@ pub fn build_diff_rows_cancellable<'a, T: RawTokenTrait>(
     const MIN_CHUNK_ENTRIES: usize = 16 * 1024;
     let num_chunks = (diff_ir.entries.len() / MIN_CHUNK_ENTRIES).clamp(1, MAX_CHUNKS);
     build_diff_rows_chunked(
-        &diff_ir.entries,
-        tokens_source,
-        tokens_target,
+        &diff_ir,
+        &sides,
         &ignore,
-        &diff_ir.char_ranges,
         options,
         estimated_num_rows,
         num_chunks,
@@ -444,19 +446,19 @@ pub fn build_diff_rows_cancellable<'a, T: RawTokenTrait>(
     )
 }
 
-/// Rows of `entries` (ignored entries already hidden), built in at most `num_chunks` chunks.
+/// Rows of `diff_ir` (ignored entries already hidden), built in at most `num_chunks` chunks.
 /// The rows don't depend on the chunk count.
 fn build_diff_rows_chunked<T: RawTokenTrait>(
-    entries: &[DiffResult],
-    tokens_source: Option<&[T]>,
-    tokens_target: Option<&[T]>,
+    diff_ir: &DiffIR,
+    sides: &RowSides<T>,
     ignore: &IgnoreMask,
-    char_ranges: &CharRanges,
     options: &DiffBuilderOptions,
     estimated_num_rows: usize,
     num_chunks: usize,
     cancel_flag: &AtomicBool,
 ) -> Option<Vec<DiffRow>> {
+    let (entries, char_ranges) = (&diff_ir.entries, &diff_ir.char_ranges);
+    let (tokens_source, tokens_target) = (sides.tokens_source, sides.tokens_target);
     let ranges = chunk_ranges(entries, tokens_source, num_chunks);
     let build_chunk = |range: &Range<usize>| {
         let capacity = estimated_num_rows * range.len() / entries.len().max(1) + 1;
@@ -505,10 +507,10 @@ fn build_diff_rows_chunked<T: RawTokenTrait>(
 
 /// A chunk's line numbers start at 1. Rows without a line (-1) keep it.
 fn offset_line_num(content: &mut LineContent, offset: i32) {
-    if let LineContent::Code { line_num, .. } = content {
-        if *line_num > 0 {
-            *line_num += offset;
-        }
+    if let LineContent::Code { line_num, .. } = content
+        && *line_num > 0
+    {
+        *line_num += offset;
     }
 }
 
@@ -521,7 +523,10 @@ fn chunk_ranges<T: RawTokenTrait>(
     num_chunks: usize,
 ) -> Vec<Range<usize>> {
     let Some(tokens_source) = tokens_source else {
-        return vec![0..entries.len()];
+        return vec![Range {
+            start: 0,
+            end: entries.len(),
+        }];
     };
     let is_seam = |entry: &DiffResult| {
         matches!(entry.operation, DiffOp::Equal(_)) && {
@@ -591,7 +596,7 @@ mod tests {
         use crate::{
             ignore::IgnorePatterns,
             lexer::{Lexer, RawToken},
-            myers::{DiffPhases, MyersDiffAlgorithm, myers_diff_path},
+            myers::{DiffInput, DiffPhases, MyersDiffAlgorithm, myers_diff_path},
         };
 
         // Hunks that add and remove lines, a deleted last line without a newline, and equal
@@ -611,12 +616,14 @@ mod tests {
             let mask = options.ignore.mask(t1, S1, t2, S2);
             let path = myers_diff_path(
                 MyersDiffAlgorithm::Linear,
-                t1,
-                t2,
-                S1,
-                S2,
+                DiffInput {
+                    source: t1,
+                    target: t2,
+                    source_text: S1,
+                    target_text: S2,
+                    ignore: &mask,
+                },
                 cmp,
-                &mask,
                 DiffPhases::default(),
                 &[],
                 cancel.clone(),
@@ -658,7 +665,10 @@ mod tests {
             // Without source tokens there is no seam to find.
             assert_eq!(
                 chunk_ranges::<RawToken>(&ir.entries, None, 4),
-                [0..ir.entries.len()]
+                [Range {
+                    start: 0,
+                    end: ir.entries.len()
+                }]
             );
         }
 
@@ -686,10 +696,12 @@ mod tests {
                 // Small enough for build_diff_rows to build it as one chunk.
                 let rows = build_diff_rows(
                     ir.clone(),
-                    Some(&t1[..]),
-                    Some(&t2[..]),
-                    S1,
-                    S2,
+                    RowSides {
+                        tokens_source: Some(&t1[..]),
+                        tokens_target: Some(&t2[..]),
+                        text_source: S1,
+                        text_target: S2,
+                    },
                     &options,
                     1,
                 );
@@ -698,11 +710,14 @@ mod tests {
                 let ir = diff_ir_hide_ignored(ir, &ignore);
                 let build = |num_chunks| {
                     let rows = build_diff_rows_chunked(
-                        &ir.entries,
-                        Some(&t1[..]),
-                        Some(&t2[..]),
+                        &ir,
+                        &RowSides {
+                            tokens_source: Some(&t1[..]),
+                            tokens_target: Some(&t2[..]),
+                            text_source: S1,
+                            text_target: S2,
+                        },
                         &ignore,
-                        &ir.char_ranges,
                         &options,
                         1,
                         num_chunks,
@@ -730,10 +745,12 @@ mod tests {
             let build = |cancelled: bool| {
                 build_diff_rows_cancellable(
                     ir.clone(),
-                    Some(&t1[..]),
-                    Some(&t2[..]),
-                    S1,
-                    S2,
+                    RowSides {
+                        tokens_source: Some(&t1[..]),
+                        tokens_target: Some(&t2[..]),
+                        text_source: S1,
+                        text_target: S2,
+                    },
                     &options,
                     1,
                     &AtomicBool::new(cancelled),
@@ -741,10 +758,12 @@ mod tests {
             };
             let rows = build_diff_rows(
                 ir.clone(),
-                Some(&t1[..]),
-                Some(&t2[..]),
-                S1,
-                S2,
+                RowSides {
+                    tokens_source: Some(&t1[..]),
+                    tokens_target: Some(&t2[..]),
+                    text_source: S1,
+                    text_target: S2,
+                },
                 &options,
                 1,
             );
@@ -754,11 +773,14 @@ mod tests {
             let ignore = options.ignore.mask(&t1, S1, &t2, S2);
             for num_chunks in [1, 4] {
                 let chunked = build_diff_rows_chunked(
-                    &ir.entries,
-                    Some(&t1[..]),
-                    Some(&t2[..]),
+                    &ir,
+                    &RowSides {
+                        tokens_source: Some(&t1[..]),
+                        tokens_target: Some(&t2[..]),
+                        text_source: S1,
+                        text_target: S2,
+                    },
                     &ignore,
-                    &ir.char_ranges,
                     &options,
                     1,
                     num_chunks,
@@ -776,7 +798,7 @@ mod tests {
         use crate::{
             ignore::IgnorePatterns,
             lexer::{Lexer, RawToken},
-            myers::{DiffPhases, MyersDiffAlgorithm, myers_diff_path},
+            myers::{DiffInput, DiffPhases, MyersDiffAlgorithm, myers_diff_path},
             test_harness::DiffTestHarness,
         };
 
@@ -814,12 +836,14 @@ mod tests {
             };
             let path = myers_diff_path(
                 algorithm,
-                &t1,
-                &t2,
-                s1,
-                s2,
+                DiffInput {
+                    source: &t1,
+                    target: &t2,
+                    source_text: s1,
+                    target_text: s2,
+                    ignore: &options.ignore.mask(&t1, s1, &t2, s2),
+                },
                 cmp,
-                &options.ignore.mask(&t1, s1, &t2, s2),
                 DiffPhases::default(),
                 &[],
                 Arc::new(AtomicBool::new(false)),
@@ -1111,7 +1135,7 @@ mod tests {
             let in_timestamp = |text: &str, token: &RawToken| {
                 let line_start = text[..token.span.start].rfind('\n').map_or(0, |i| i + 1);
                 text[line_start..].starts_with('[')
-                    && token.span.start >= line_start + 1
+                    && token.span.start > line_start
                     && token.span.end <= line_start + 9
             };
             for algorithm in ALGORITHMS {
@@ -1205,7 +1229,7 @@ mod integration_tests {
         let f2 = CachedFile::<RawToken>::new(p2.clone().into(), p2).unwrap();
 
         let cmp = |t1: &RawToken, t2: &RawToken| {
-            f1.contents[t1.as_ref().span.clone()] == f2.contents[t2.as_ref().span.clone()]
+            f1.contents[t1.span.clone()] == f2.contents[t2.span.clone()]
         };
 
         const MYERS_LINEAR: bool = true;
@@ -1241,10 +1265,12 @@ mod integration_tests {
 
         let rows = build_diff_rows(
             DiffIR::new(&path, false, Arc::new(AtomicBool::new(false))).unwrap(),
-            Some(&f1.tokens),
-            Some(&f2.tokens),
-            &f1.contents,
-            &f2.contents,
+            RowSides {
+                tokens_source: Some(&f1.tokens),
+                tokens_target: Some(&f2.tokens),
+                text_source: &f1.contents,
+                text_target: &f2.contents,
+            },
             &DiffBuilderOptions {
                 ignore: IgnoreOptions::default(),
                 ghost_rows: false,

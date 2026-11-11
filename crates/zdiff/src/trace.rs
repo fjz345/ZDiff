@@ -197,7 +197,8 @@ mod tests {
         ignore::IgnoreOptions,
         lexer::{Lexer, RawToken},
         myers::{
-            DiffPhases, MyersDiffAlgorithm, MyersPath, Pin, myers_diff_path, myers_diff_path_traced,
+            DiffInput, DiffPhases, MyersDiffAlgorithm, MyersPath, Pin, myers_diff_path,
+            myers_diff_path_traced,
         },
     };
 
@@ -237,12 +238,14 @@ mod tests {
             Some(trace) => {
                 let path = myers_diff_path_traced(
                     algorithm,
-                    &ts,
-                    &tt,
-                    source,
-                    target,
+                    DiffInput {
+                        source: &ts,
+                        target: &tt,
+                        source_text: source,
+                        target_text: target,
+                        ignore: &ignore,
+                    },
                     cmp,
-                    &ignore,
                     phases,
                     pins,
                     cancel.clone(),
@@ -253,11 +256,13 @@ mod tests {
                     character_diff_traced(
                         algorithm,
                         &path,
-                        &ts,
-                        &tt,
-                        source,
-                        target,
-                        &ignore,
+                        DiffInput {
+                            source: &ts,
+                            target: &tt,
+                            source_text: source,
+                            target_text: target,
+                            ignore: &ignore,
+                        },
                         cancel,
                         Some(trace),
                     )
@@ -266,7 +271,18 @@ mod tests {
                 path
             }
             None => myers_diff_path(
-                algorithm, &ts, &tt, source, target, cmp, &ignore, phases, pins, cancel,
+                algorithm,
+                DiffInput {
+                    source: &ts,
+                    target: &tt,
+                    source_text: source,
+                    target_text: target,
+                    ignore: &ignore,
+                },
+                cmp,
+                phases,
+                pins,
+                cancel,
             )
             .expect("not cancelled"),
         }
@@ -330,8 +346,14 @@ mod tests {
             let foo_pair = CharPair {
                 source_token: token_at(SOURCE, "foo123"),
                 target_token: token_at(TARGET, "foo124"),
-                source: vec![foo.0..foo.0 + 1],
-                target: vec![foo.1..foo.1 + 1],
+                source: vec![Range {
+                    start: foo.0,
+                    end: foo.0 + 1,
+                }],
+                target: vec![Range {
+                    start: foo.1,
+                    end: foo.1 + 1,
+                }],
             };
             assert!(
                 trace.char_pairs.contains(&foo_pair),

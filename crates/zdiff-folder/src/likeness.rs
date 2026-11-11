@@ -332,7 +332,7 @@ mod tests {
     fn text_likeness_matches_the_diff_viewers_line_likeness() {
         use zdiff::{
             change_count::text_likeness,
-            myers::{DiffPhases, myers_diff_path},
+            myers::{DiffInput, DiffPhases, myers_diff_path},
         };
         let line_only = DiffPhases {
             scope: false,
@@ -363,12 +363,14 @@ mod tests {
             let mask = IgnoreMask::default();
             let path = myers_diff_path(
                 MyersDiffAlgorithm::Linear,
-                &ts,
-                &tt,
-                left,
-                right,
+                DiffInput {
+                    source: &ts,
+                    target: &tt,
+                    source_text: left,
+                    target_text: right,
+                    ignore: &mask,
+                },
                 cmp,
-                &mask,
                 line_only,
                 &[],
                 Arc::default(),

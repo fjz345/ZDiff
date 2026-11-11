@@ -15,10 +15,10 @@ use eframe::egui::{
 use zcommon_ui::table::{Split, SplitColumn, SplitTable, show_scrolled};
 use zdiff::{
     cached_file::{CachedFile, FileMetadata},
-    diff_builder::{DiffBuilderOptions, DiffRow, LineContent, build_diff_rows},
+    diff_builder::{DiffBuilderOptions, DiffRow, LineContent, RowSides, build_diff_rows},
     diff_ir::DiffIR,
     lexer::{Lexer, RawToken},
-    myers::{DiffPhases, MyersDiffAlgorithm, myers_diff_path},
+    myers::{DiffInput, DiffPhases, MyersDiffAlgorithm, myers_diff_path},
     row_text::{RowText, build_row_text},
     universal_path::UniversalPath,
 };
@@ -123,14 +123,19 @@ impl CopyHarness {
         };
         let path = myers_diff_path(
             MyersDiffAlgorithm::Linear,
-            &file_source.tokens,
-            &file_target.tokens,
-            source,
-            target,
+            DiffInput {
+                source: &file_source.tokens,
+                target: &file_target.tokens,
+                source_text: source,
+                target_text: target,
+                ignore: &options.ignore.mask(
+                    &file_source.tokens,
+                    source,
+                    &file_target.tokens,
+                    target,
+                ),
+            },
             cmp,
-            &options
-                .ignore
-                .mask(&file_source.tokens, source, &file_target.tokens, target),
             DiffPhases::default(),
             &[],
             Arc::new(AtomicBool::new(false)),
@@ -140,10 +145,12 @@ impl CopyHarness {
             .expect("diff ir was not cancelled");
         let rows = build_diff_rows(
             diff_ir,
-            Some(&file_source.tokens),
-            Some(&file_target.tokens),
-            source,
-            target,
+            RowSides {
+                tokens_source: Some(&file_source.tokens),
+                tokens_target: Some(&file_target.tokens),
+                text_source: source,
+                text_target: target,
+            },
             options,
             file_source
                 .metadata

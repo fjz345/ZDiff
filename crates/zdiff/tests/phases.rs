@@ -5,11 +5,11 @@ use std::sync::{
 
 use zdiff::{
     char_diff::character_diff,
-    diff_builder::{DiffBuilderOptions, DiffRow, LineContent, build_diff_rows},
+    diff_builder::{DiffBuilderOptions, DiffRow, LineContent, RowSides, build_diff_rows},
     diff_ir::{DiffIR, DiffOp},
     ignore::{IgnoreMask, IgnoreOptions},
     lexer::{Lexer, RawToken},
-    myers::{DiffPhases, MyersDiffAlgorithm, MyersPath, myers_diff_path},
+    myers::{DiffInput, DiffPhases, MyersDiffAlgorithm, MyersPath, myers_diff_path},
 };
 
 const ALGORITHMS: [MyersDiffAlgorithm; 3] = [
@@ -47,12 +47,14 @@ fn path(
         |a: &RawToken, b: &RawToken| a.kind == b.kind && s1[a.span.clone()] == s2[b.span.clone()];
     myers_diff_path(
         algorithm,
-        t1,
-        t2,
-        s1,
-        s2,
+        DiffInput {
+            source: t1,
+            target: t2,
+            source_text: s1,
+            target_text: s2,
+            ignore: mask,
+        },
         cmp,
-        mask,
         phases,
         &[],
         Arc::default(),
@@ -72,15 +74,36 @@ fn rows(
     let path = path(algorithm, s1, s2, &t1, &t2, &mask, phases);
     let mut ir = DiffIR::new(&path, true, Arc::default()).expect("not cancelled");
     if phases.character {
-        ir.char_ranges = character_diff(algorithm, &path, &t1, &t2, s1, s2, &mask, Arc::default())
-            .expect("not cancelled");
+        ir.char_ranges = character_diff(
+            algorithm,
+            &path,
+            DiffInput {
+                source: &t1,
+                target: &t2,
+                source_text: s1,
+                target_text: s2,
+                ignore: &mask,
+            },
+            Arc::default(),
+        )
+        .expect("not cancelled");
     }
     let options = DiffBuilderOptions {
         ignore: ignore.clone(),
         phases,
         ..Default::default()
     };
-    build_diff_rows(ir, Some(&t1), Some(&t2), s1, s2, &options, 16)
+    build_diff_rows(
+        ir,
+        RowSides {
+            tokens_source: Some(&t1),
+            tokens_target: Some(&t2),
+            text_source: s1,
+            text_target: s2,
+        },
+        &options,
+        16,
+    )
 }
 
 fn visible_ops(content: &LineContent) -> usize {
@@ -191,12 +214,14 @@ fn scope_line_and_token_phases_return_none_promptly_when_cancelled() {
                 };
                 let path = myers_diff_path(
                     algorithm,
-                    &t1,
-                    &t2,
-                    &s1,
-                    &s2,
+                    DiffInput {
+                        source: &t1,
+                        target: &t2,
+                        source_text: &s1,
+                        target_text: &s2,
+                        ignore: &IgnoreMask::default(),
+                    },
                     cmp,
-                    &IgnoreMask::default(),
                     phases,
                     &[],
                     Arc::clone(&cancel),
@@ -284,11 +309,13 @@ fn character_phase_returns_none_promptly_when_cancelled() {
             let ranges = character_diff(
                 algorithm,
                 &path,
-                &probed(&t1),
-                &probed(&t2),
-                &s1,
-                &s2,
-                &mask,
+                DiffInput {
+                    source: &probed(&t1),
+                    target: &probed(&t2),
+                    source_text: &s1,
+                    target_text: &s2,
+                    ignore: &mask,
+                },
                 Arc::clone(&probe.cancel),
             );
             (ranges.is_some(), probe.calls.load(Ordering::Relaxed))

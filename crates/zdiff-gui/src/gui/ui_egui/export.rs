@@ -3,7 +3,7 @@ use std::sync::{Arc, atomic::AtomicBool};
 
 use zdiff::{
     cached_file::CachedFile,
-    diff_builder::{DiffBuilderOptions, DiffRow, LineContent, build_diff_rows},
+    diff_builder::{DiffBuilderOptions, DiffRow, LineContent, RowSides, build_diff_rows},
     lexer::RawToken,
 };
 
@@ -50,10 +50,12 @@ pub fn patch_text(diff_ctx: &MinimalDiffCtx) -> Option<String> {
     };
     let rows = build_diff_rows(
         (*diff_ctx.diff_ir).clone(),
-        Some(&source.tokens),
-        Some(&target.tokens),
-        &source.contents,
-        &target.contents,
+        RowSides {
+            tokens_source: Some(&source.tokens),
+            tokens_target: Some(&target.tokens),
+            text_source: &source.contents,
+            text_target: &target.contents,
+        },
         &options,
         source.metadata.num_lines().max(target.metadata.num_lines()),
     );

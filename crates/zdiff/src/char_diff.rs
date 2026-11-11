@@ -8,9 +8,8 @@ use std::{
 };
 
 use crate::{
-    ignore::IgnoreMask,
     lexer::{RawTokenTrait, TokenKind},
-    myers::{MyersDiffAlgorithm, Step, path_steps, raw_diff_path},
+    myers::{DiffInput, MyersDiffAlgorithm, Step, path_steps, raw_diff_path},
     trace::{CharPair, PhaseTrace},
 };
 
@@ -36,37 +35,26 @@ pub fn ranges_in_span<'a>(ranges: &'a [Range<usize>], span: &Range<usize>) -> &'
 pub fn character_diff<T: RawTokenTrait>(
     algorithm: MyersDiffAlgorithm,
     path: &[(i32, i32)],
-    source: &[T],
-    target: &[T],
-    source_text: &str,
-    target_text: &str,
-    ignore: &IgnoreMask,
+    input: DiffInput<T>,
     cancel_flag: Arc<AtomicBool>,
 ) -> Option<CharRanges> {
-    character_diff_traced(
-        algorithm,
-        path,
-        source,
-        target,
-        source_text,
-        target_text,
-        ignore,
-        cancel_flag,
-        None,
-    )
+    character_diff_traced(algorithm, path, input, cancel_flag, None)
 }
 
 pub fn character_diff_traced<T: RawTokenTrait>(
     algorithm: MyersDiffAlgorithm,
     path: &[(i32, i32)],
-    source: &[T],
-    target: &[T],
-    source_text: &str,
-    target_text: &str,
-    ignore: &IgnoreMask,
+    input: DiffInput<T>,
     cancel_flag: Arc<AtomicBool>,
     mut trace: Option<&mut PhaseTrace>,
 ) -> Option<CharRanges> {
+    let DiffInput {
+        source,
+        target,
+        source_text,
+        target_text,
+        ignore,
+    } = input;
     let start = trace.is_some().then(Instant::now);
     if cancel_flag.load(Ordering::Relaxed) {
         return None;
@@ -149,6 +137,8 @@ pub fn character_diff_traced<T: RawTokenTrait>(
     Some(ranges)
 }
 
+type SideRanges = (Vec<Range<usize>>, Vec<Range<usize>>);
+
 /// Byte ranges of the deleted chars of `source` and the inserted chars of `target`, adjacent ones
 /// merged.
 fn changed_chars(
@@ -156,7 +146,7 @@ fn changed_chars(
     source: &str,
     target: &str,
     cancel_flag: Arc<AtomicBool>,
-) -> Option<(Vec<Range<usize>>, Vec<Range<usize>>)> {
+) -> Option<SideRanges> {
     let source_chars: Vec<(usize, char)> = source.char_indices().collect();
     let target_chars: Vec<(usize, char)> = target.char_indices().collect();
     let cmp = |a: &(usize, char), b: &(usize, char)| a.1 == b.1;
@@ -199,9 +189,9 @@ fn changed_chars(
 mod tests {
     use super::*;
     use crate::{
-        diff_builder::{DiffBuilderOptions, LineContent, build_diff_rows},
+        diff_builder::{DiffBuilderOptions, LineContent, RowSides, build_diff_rows},
         diff_ir::DiffIR,
-        ignore::IgnoreOptions,
+        ignore::{IgnoreMask, IgnoreOptions},
         lexer::{Lexer, RawToken},
         myers::{DiffPhases, myers_diff_path},
     };
@@ -231,12 +221,14 @@ mod tests {
         };
         myers_diff_path(
             MyersDiffAlgorithm::Linear,
-            t1,
-            t2,
-            s1,
-            s2,
+            DiffInput {
+                source: t1,
+                target: t2,
+                source_text: s1,
+                target_text: s2,
+                ignore: mask,
+            },
             cmp,
-            mask,
             phases,
             &[],
             Arc::new(AtomicBool::new(false)),
@@ -250,7 +242,18 @@ mod tests {
         let path = path(s1, s2, &t1, &t2, &mask);
         let cancel_flag = Arc::new(AtomicBool::new(cancel));
         let algorithm = MyersDiffAlgorithm::Linear;
-        character_diff(algorithm, &path, &t1, &t2, s1, s2, &mask, cancel_flag)
+        character_diff(
+            algorithm,
+            &path,
+            DiffInput {
+                source: &t1,
+                target: &t2,
+                source_text: s1,
+                target_text: s2,
+                ignore: &mask,
+            },
+            cancel_flag,
+        )
     }
 
     fn changed_chars(content: &LineContent) -> Vec<Range<usize>> {
@@ -269,10 +272,20 @@ mod tests {
             ir.char_ranges = char_ranges;
         }
         let options = DiffBuilderOptions::default();
-        build_diff_rows(ir, Some(&t1[..]), Some(&t2[..]), S1, S2, &options, 2)
-            .iter()
-            .map(|row| (changed_chars(&row.left), changed_chars(&row.right)))
-            .collect()
+        build_diff_rows(
+            ir,
+            RowSides {
+                tokens_source: Some(&t1[..]),
+                tokens_target: Some(&t2[..]),
+                text_source: S1,
+                text_target: S2,
+            },
+            &options,
+            2,
+        )
+        .iter()
+        .map(|row| (changed_chars(&row.left), changed_chars(&row.right)))
+        .collect()
     }
 
     #[test]
@@ -281,13 +294,19 @@ mod tests {
         assert_eq!(
             ranges,
             CharRanges {
-                source: vec![11..12],
-                target: vec![11..12],
+                source: vec![Range { start: 11, end: 12 }],
+                target: vec![Range { start: 11, end: 12 }],
             }
         );
         assert_eq!(
             row_changes(Some(ranges)),
-            [(vec![], vec![]), (vec![11..12], vec![11..12])]
+            [
+                (vec![], vec![]),
+                (
+                    vec![Range { start: 11, end: 12 }],
+                    vec![Range { start: 11, end: 12 }]
+                )
+            ]
         );
     }
 
@@ -303,8 +322,8 @@ mod tests {
         assert_eq!(
             ranges.unwrap(),
             CharRanges {
-                source: vec![7..8],
-                target: vec![7..9],
+                source: vec![Range { start: 7, end: 8 }],
+                target: vec![Range { start: 7, end: 9 }],
             }
         );
     }
@@ -315,8 +334,8 @@ mod tests {
         assert_eq!(
             ranges.unwrap(),
             CharRanges {
-                source: vec![4..6],
-                target: vec![4..6],
+                source: vec![Range { start: 4, end: 6 }],
+                target: vec![Range { start: 4, end: 6 }],
             }
         );
     }
@@ -337,7 +356,7 @@ mod tests {
     fn ignored_tokens_are_not_diffed() {
         let (s1, s2) = ("a // x1\n", "a // x2\n");
         let shown = diff(s1, s2, &IgnoreOptions::default(), false).unwrap();
-        assert_eq!(shown.source, [6..7]);
+        assert_eq!(shown.source, [Range { start: 6, end: 7 }]);
         let ignore = IgnoreOptions {
             comments: true,
             ..Default::default()

@@ -13,7 +13,7 @@ use zdiff::{
     ignore::IgnoreMask,
     lexer::{Lexer, RawToken, TokenKind},
     merge::{self, ChunkKind, Merge, MergeChunk, MergeLabels, MergeTexts, Pick, Resolution},
-    myers::{DiffPhases, MyersDiffAlgorithm, myers_diff_path},
+    myers::{DiffInput, DiffPhases, MyersDiffAlgorithm, myers_diff_path},
     universal_path::UniversalPath,
 };
 
@@ -281,12 +281,14 @@ fn changed_tokens(
             let cancel = Arc::new(AtomicBool::new(false));
             let path = myers_diff_path(
                 algorithm,
-                &source.tokens[s_tokens.clone()],
-                &target.tokens[t_tokens.clone()],
-                &source.contents,
-                &target.contents,
+                DiffInput {
+                    source: &source.tokens[s_tokens.clone()],
+                    target: &target.tokens[t_tokens.clone()],
+                    source_text: &source.contents,
+                    target_text: &target.contents,
+                    ignore: &IgnoreMask::default(),
+                },
                 cmp,
-                &IgnoreMask::default(),
                 DiffPhases::default(),
                 &[],
                 cancel.clone(),

@@ -3,7 +3,7 @@ use std::sync::{Arc, atomic::AtomicBool};
 
 #[cfg(test)]
 use crate::{
-    diff_builder::{DiffBuilderOptions, DiffRow, LineContent, build_diff_rows},
+    diff_builder::{DiffBuilderOptions, DiffRow, LineContent, RowSides, build_diff_rows},
     diff_ir::{DiffIR, DiffOp},
     lexer::{Lexer, RawToken},
 };
@@ -33,10 +33,12 @@ impl<'a> DiffTestHarness<'a> {
             .expect("Failed to create DiffIR");
         let rows = build_diff_rows(
             diff_ir.clone(),
-            Some(&t1),
-            Some(&t2),
-            s1,
-            s2,
+            RowSides {
+                tokens_source: Some(&t1),
+                tokens_target: Some(&t2),
+                text_source: s1,
+                text_target: s2,
+            },
             &options,
             estimated_num_rows,
         );
@@ -71,25 +73,22 @@ impl<'a> DiffTestHarness<'a> {
             )
         });
 
-        assert_row_content(
-            idx, row, l_num, r_num, l_text, r_text, &self.t1, &self.t2, self.s1, self.s2,
-        );
+        assert_row_content(self, idx, row, l_num, r_num, l_text, r_text);
     }
 }
 
 #[cfg(test)]
 pub fn assert_row_content(
+    harness: &DiffTestHarness,
     idx: usize,
     row: &DiffRow,
     l_line: i32,
     r_line: i32,
     l_text: &str,
     r_text: &str,
-    l_tokens: &[RawToken],
-    r_tokens: &[RawToken],
-    s1: &str,
-    s2: &str,
 ) {
+    let (l_tokens, r_tokens) = (&harness.t1[..], &harness.t2[..]);
+    let (s1, s2) = (harness.s1, harness.s2);
     let extract_details = |content: &LineContent| match content {
         LineContent::Code {
             tokens, line_num, ..
@@ -114,14 +113,14 @@ pub fn assert_row_content(
                 };
 
                 let token_raw = &src_tokens[idx as usize];
-                let val = &src_text[token_raw.as_ref().span.clone()];
+                let val = &src_text[token_raw.span.clone()];
 
                 text.push_str(val);
                 debug_tokens.push(format!(
                     "[{:?}: {:?}{}]",
                     res.operation,
                     val.replace('\n', "\\n"),
-                    if token_raw.as_ref().kind.is_whitespace() {
+                    if token_raw.kind.is_whitespace() {
                         " (WS)"
                     } else {
                         ""

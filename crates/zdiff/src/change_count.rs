@@ -176,7 +176,7 @@ mod tests {
         char_diff::character_diff,
         ignore::IgnoreOptions,
         lexer::{Lexer, RawToken},
-        myers::{MyersDiffAlgorithm, myers_diff_path},
+        myers::{DiffInput, MyersDiffAlgorithm, myers_diff_path},
     };
 
     const SCOPE: DiffPhases = DiffPhases {
@@ -214,12 +214,14 @@ mod tests {
         let mask = IgnoreMask::default();
         let path = myers_diff_path(
             algorithm,
-            &ts,
-            &tt,
-            source,
-            target,
+            DiffInput {
+                source: &ts,
+                target: &tt,
+                source_text: source,
+                target_text: target,
+                ignore: &mask,
+            },
             cmp,
-            &mask,
             phases,
             &[],
             Arc::default(),
@@ -229,11 +231,13 @@ mod tests {
             character_diff(
                 algorithm,
                 &path,
-                &ts,
-                &tt,
-                source,
-                target,
-                &mask,
+                DiffInput {
+                    source: &ts,
+                    target: &tt,
+                    source_text: source,
+                    target_text: target,
+                    ignore: &mask,
+                },
                 Arc::default(),
             )
             .unwrap()
@@ -331,12 +335,14 @@ mod tests {
         let mask = ignore.mask(&ts, source, &tt, target);
         let path = myers_diff_path(
             MyersDiffAlgorithm::Linear,
-            &ts,
-            &tt,
-            source,
-            target,
+            DiffInput {
+                source: &ts,
+                target: &tt,
+                source_text: source,
+                target_text: target,
+                ignore: &mask,
+            },
             cmp,
-            &mask,
             phases,
             &[],
             Arc::default(),

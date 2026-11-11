@@ -19,15 +19,16 @@ use zdiff::{
     change_count::{ChangeUnit, TextLikeness, count_changes, text_likeness},
     char_diff::{CharRanges, character_diff_traced},
     diff_builder::{
-        DiffBuilderOptions, DiffRow, LineContent, RowBg, build_diff_rows,
+        DiffBuilderOptions, DiffRow, LineContent, RowBg, RowSides, build_diff_rows,
         build_diff_rows_cancellable,
     },
     diff_ir::{DiffIR, DiffOp},
     ignore::IgnoreOptions,
     lexer::{RawToken, TokenKind},
     myers::{
-        DiffPhases, MyersDiffAlgorithm, MyersNumAddDelete, MyersPath, Pin, PinError, Side,
-        line_diff, myers_count_add_deletes, myers_diff_path_traced, token_diff, validate_pins,
+        DiffInput, DiffPhases, MyersDiffAlgorithm, MyersNumAddDelete, MyersPath, Pin, PinError,
+        Side, line_diff, myers_count_add_deletes, myers_diff_path_traced, token_diff,
+        validate_pins,
     },
     row_text::build_row_text,
     scope::{changed_scopes, scope_lines},
@@ -771,12 +772,14 @@ impl DiffCtx {
                 } else {
                     myers_diff_path_traced(
                         input.algo,
-                        t1,
-                        t2,
-                        &c1.contents,
-                        &c2.contents,
+                        DiffInput {
+                            source: t1,
+                            target: t2,
+                            source_text: &c1.contents,
+                            target_text: &c2.contents,
+                            ignore: &ignore,
+                        },
                         cmp,
-                        &ignore,
                         phases,
                         pins,
                         cancel.clone(),
@@ -797,11 +800,13 @@ impl DiffCtx {
                         char_ranges = character_diff_traced(
                             input.algo,
                             &path,
-                            t1,
-                            t2,
-                            &c1.contents,
-                            &c2.contents,
-                            &ignore,
+                            DiffInput {
+                                source: t1,
+                                target: t2,
+                                source_text: &c1.contents,
+                                target_text: &c2.contents,
+                                ignore: &ignore,
+                            },
                             cancel.clone(),
                             trace.as_mut(),
                         )?;
@@ -935,10 +940,12 @@ impl DiffCtx {
                 let (c1, c2, _) = resolve_files(&input.file_1, &input.file_2);
                 let Some(diff_rows) = build_diff_rows_cancellable(
                     (*input.diff_ir).clone(),
-                    Some(&c1.tokens),
-                    Some(&c2.tokens),
-                    &c1.contents,
-                    &c2.contents,
+                    RowSides {
+                        tokens_source: Some(&c1.tokens),
+                        tokens_target: Some(&c2.tokens),
+                        text_source: &c1.contents,
+                        text_target: &c2.contents,
+                    },
                     &input.diff_options,
                     c1.metadata.num_lines().max(c2.metadata.num_lines()),
                     &cancel,
@@ -1696,10 +1703,12 @@ fn update_diff_rows_minimal_diff_ctx(
     let start = Instant::now();
     let diff_rows = build_diff_rows(
         diff_ir.clone(),
-        Some(&c1.tokens),
-        Some(&c2.tokens),
-        &c1.contents,
-        &c2.contents,
+        RowSides {
+            tokens_source: Some(&c1.tokens),
+            tokens_target: Some(&c2.tokens),
+            text_source: &c1.contents,
+            text_target: &c2.contents,
+        },
         &input.options,
         c1.metadata.num_lines().max(c2.metadata.num_lines()),
     );

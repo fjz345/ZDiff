@@ -11,12 +11,11 @@ use std::{
 };
 
 use crate::{
-    ignore::IgnoreMask,
     lexer::{RawTokenTrait, TokenKind},
     myers::{
-        DiffPhases, FxHasher, LineHunk, MyersDiffAlgorithm, MyersPath, Side, Step, hunks_to_path,
-        intern_lines, line_pairs_path, path_steps, phases_path, raw_diff_path, slice_mask,
-        split_lines,
+        DiffInput, DiffPhases, FxHasher, LineHunk, MyersDiffAlgorithm, MyersPath, Side, Step,
+        hunks_to_path, intern_lines, line_pairs_path, path_steps, phases_path, raw_diff_path,
+        slice_mask, split_lines,
     },
     trace::{PhaseTrace, add_time, run_local, span},
 };
@@ -26,12 +25,8 @@ use crate::{
 /// inside the hunks of unequal units; with Scope the finest, a hunk's lines are changed whole.
 pub(crate) fn scope_path<T, F>(
     algorithm: MyersDiffAlgorithm,
-    source: &[T],
-    target: &[T],
-    source_text: &str,
-    target_text: &str,
+    input: DiffInput<T>,
     cmp: &F,
-    ignore: &IgnoreMask,
     phases: DiffPhases,
     cancel_flag: Arc<AtomicBool>,
     trace: Option<&RefCell<PhaseTrace>>,
@@ -40,6 +35,13 @@ where
     T: RawTokenTrait,
     F: Fn(&T, &T) -> bool + Sync,
 {
+    let DiffInput {
+        source,
+        target,
+        source_text,
+        target_text,
+        ignore,
+    } = input;
     if cancel_flag.load(Ordering::Relaxed) {
         return None;
     }
@@ -112,14 +114,17 @@ where
             |x| s.start + x,
             |y| t.start + y,
             || {
-                phases_path(
-                    algorithm,
-                    &source[s.clone()],
-                    &target[t.clone()],
+                let input = DiffInput {
+                    source: &source[s.clone()],
+                    target: &target[t.clone()],
                     source_text,
                     target_text,
+                    ignore: &slice_mask(ignore, s.clone(), t.clone()),
+                };
+                phases_path(
+                    algorithm,
+                    input,
                     cmp,
-                    &slice_mask(ignore, s.clone(), t.clone()),
                     next,
                     false,
                     cancel_flag.clone(),
@@ -340,12 +345,14 @@ mod tests {
         };
         myers_diff_path(
             algorithm,
-            &ts,
-            &tt,
-            source,
-            target,
+            DiffInput {
+                source: &ts,
+                target: &tt,
+                source_text: source,
+                target_text: target,
+                ignore: &ignore.mask(&ts, source, &tt, target),
+            },
             cmp,
-            &ignore.mask(&ts, source, &tt, target),
             phases,
             pins,
             Arc::new(AtomicBool::new(cancel)),
@@ -407,12 +414,14 @@ mod tests {
         let mut trace = PhaseTrace::default();
         let path = myers_diff_path_traced(
             algorithm,
-            &ts,
-            &tt,
-            source,
-            target,
+            DiffInput {
+                source: &ts,
+                target: &tt,
+                source_text: source,
+                target_text: target,
+                ignore: &ignore.mask(&ts, source, &tt, target),
+            },
             cmp,
-            &ignore.mask(&ts, source, &tt, target),
             phases,
             &[],
             Arc::default(),
@@ -792,7 +801,7 @@ mod tests {
         let lines = |text: &str| scope_lines(&Lexer::new(text).parse(), text);
         let text = "use x;\nfn a() {\n    b();\n}\n\nfn c() { d(); }\nlast";
         assert_eq!(lines(text), [1..4, 5..6]);
-        assert_eq!(lines("x\nfn a() {\n}"), [1..3]);
+        assert_eq!(lines("x\nfn a() {\n}"), [Range { start: 1, end: 3 }]);
         assert!(lines("fn a() {\n").is_empty());
     }
 
