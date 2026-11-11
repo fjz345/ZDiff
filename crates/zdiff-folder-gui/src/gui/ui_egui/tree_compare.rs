@@ -1202,14 +1202,23 @@ mod tests {
         write_files(right_dir.path(), &[("x.txt", "bbbb")]);
         let time = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
         for root in [left_dir.path(), right_dir.path()] {
-            File::options()
-                .write(true)
-                .open(root.join("x.txt"))
-                .unwrap()
-                .set_modified(time)
-                .unwrap();
+            set_modified(&root.join("x.txt"), time);
+        }
+        // Back-to-back writes on both sides can share an NTFS timestamp tick.
+        let other_time = SystemTime::UNIX_EPOCH + Duration::from_secs(2_000_000);
+        for rel_path in ["a.txt", "sub/c.txt"] {
+            set_modified(&right_dir.path().join(rel_path), other_time);
         }
         (left_dir, right_dir)
+    }
+
+    fn set_modified(path: &Path, time: SystemTime) {
+        File::options()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_modified(time)
+            .unwrap();
     }
 
     const TIME_ONLY: Tolerance = Tolerance {
