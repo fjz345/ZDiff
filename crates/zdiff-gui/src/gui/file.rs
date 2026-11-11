@@ -415,7 +415,7 @@ impl FileProcessor {
     pub fn restore_path(&mut self, path: UniversalPath, label: Option<String>) {
         if self.file_path != path {
             self.file_path = path;
-            self.invalidate_cache_file();
+            self.forget_loaded_file();
         }
         self.label = label;
     }
@@ -1153,6 +1153,22 @@ mod tests {
 
         file.invalidate_cache_file();
         assert!(!loaded(&mut file).is_same_load(&first));
+    }
+
+    #[test]
+    fn an_undo_back_to_an_unchanged_file_reuses_its_load() {
+        let dir = tempfile::tempdir().unwrap();
+        let (a, b) = (dir.path().join("a.rs"), dir.path().join("b.rs"));
+        std::fs::write(&a, "fn a() {}\n").unwrap();
+        std::fs::write(&b, "fn b() {}\n").unwrap();
+        let mut file = FileProcessor::new();
+        file.set_path(UniversalPath::from(a.clone()));
+        let first = loaded(&mut file);
+        file.set_path(UniversalPath::from(b));
+        loaded(&mut file);
+
+        file.restore_path(UniversalPath::from(a), None);
+        assert!(loaded(&mut file).is_same_load(&first));
     }
 
     #[test]
