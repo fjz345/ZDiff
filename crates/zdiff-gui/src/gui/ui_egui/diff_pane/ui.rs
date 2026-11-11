@@ -1158,6 +1158,8 @@ impl FileDiffPane {
                     .or_else(|| load_error_text(load_errors, shown));
                 if let Some(error) = error {
                     error_state(ui, &error);
+                } else if ctx.file_source_loading || ctx.file_target_loading {
+                    loading_state(ui, "Loading files...");
                 } else {
                     let (_, clicked) = empty_state(
                         ui,

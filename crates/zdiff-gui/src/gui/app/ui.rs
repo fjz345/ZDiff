@@ -648,4 +648,50 @@ mod tests {
         assert_eq!(count("No file"), 2);
         assert_eq!(count("Welcome to ZDiff"), 1);
     }
+
+    #[test]
+    fn a_pane_loading_its_files_shows_no_welcome_screen() {
+        let dir = tempfile::tempdir().unwrap();
+        let text: String = (0..400_000).map(|i| format!("line {i}\n")).collect();
+        let mut app = super::super::ZApp::new();
+        let state = app.state.as_mut().unwrap().ctx_mut();
+        for (file, name) in [(&mut state.file_1, "a.txt"), (&mut state.file_2, "b.txt")] {
+            let path = dir.path().join(name);
+            std::fs::write(&path, &text).unwrap();
+            file.set_path(UniversalPath::from(path));
+        }
+        let ctx = egui::Context::default();
+        let mut frame = eframe::Frame::_new_kittest();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        let mut loading_frames = 0;
+        loop {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1600.0, 1000.0),
+                )),
+                ..Default::default()
+            };
+            let output = ctx.run(input, |ctx| eframe::App::update(&mut app, ctx, &mut frame));
+            let state = app.state.as_mut().unwrap().ctx_mut();
+            let loading = state.file_1.get_loading_path().is_some()
+                || state.file_2.get_loading_path().is_some();
+            if loading {
+                let mut texts = Vec::new();
+                output
+                    .shapes
+                    .iter()
+                    .for_each(|clipped| shape_texts(&clipped.shape, &mut texts));
+                assert!(!texts.iter().any(|text| text == "Welcome to ZDiff"));
+                assert!(texts.iter().any(|text| text == "Loading files..."));
+                loading_frames += 1;
+            } else if loading_frames > 0 {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the files never loaded"
+            );
+        }
+    }
 }
