@@ -1267,17 +1267,13 @@ impl FileDiffPane {
                 .data_mut(|data| data.insert_temp(wheel_rects_id(), side_rects));
         }
 
-        let (left_drop_rect, right_drop_rect) = if side_rects.iter().any(egui::Rect::is_positive) {
-            (left_rect, right_rect)
-        } else {
-            content_rect.split_left_right_at_fraction(0.5)
-        };
+        let [file_1_drop_rect, file_2_drop_rect] = drop_rects(side_rects, content_rect, shown);
         handle_drops(
             ui,
             &mut ctx.load_file_1_request,
             &mut ctx.load_file_2_request,
-            left_drop_rect,
-            right_drop_rect,
+            file_1_drop_rect,
+            file_2_drop_rect,
         );
 
         egui_tiles::UiResponse::None

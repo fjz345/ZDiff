@@ -36,6 +36,18 @@ pub(super) fn handle_drops(
     return did_drop;
 }
 
+pub(super) fn drop_rects(
+    side_rects: [egui::Rect; 2],
+    pane: egui::Rect,
+    shown: [usize; 2],
+) -> [egui::Rect; 2] {
+    if side_rects.iter().any(egui::Rect::is_positive) {
+        return side_rects;
+    }
+    let (left, right) = pane.split_left_right_at_fraction(0.5);
+    shown.map(|column| [left, right][column])
+}
+
 pub(super) fn file_path_segments(path: &UniversalPath, label: Option<&str>) -> Vec<PathSegment> {
     match label {
         Some(label) => vec![PathSegment {
@@ -351,6 +363,29 @@ mod tests {
                     [Some(UniversalPath::Depot(picked.into(), None)), None]
                 );
             }
+        }
+
+        #[test]
+        fn a_pane_without_rows_takes_a_drop_for_the_file_its_half_shows() {
+            use super::super::drop_rects;
+            use crate::ui_egui::active_side::shown_sides;
+            use eframe::egui::{Rect, pos2};
+
+            let pane = Rect::from_min_max(pos2(0.0, 0.0), pos2(100.0, 50.0));
+            let (left_half, right_half) = (pos2(25.0, 25.0), pos2(75.0, 25.0));
+            let no_rows = [Rect::NOTHING; 2];
+
+            let [file_1, file_2] = drop_rects(no_rows, pane, shown_sides(false));
+            assert!(file_1.contains(left_half) && file_2.contains(right_half));
+            let [file_1, file_2] = drop_rects(no_rows, pane, shown_sides(true));
+            assert!(file_2.contains(left_half) && file_1.contains(right_half));
+            assert!(!file_1.contains(left_half) && !file_2.contains(right_half));
+
+            let rows = [
+                Rect::from_min_max(pos2(60.0, 0.0), pos2(100.0, 50.0)),
+                Rect::NOTHING,
+            ];
+            assert_eq!(drop_rects(rows, pane, shown_sides(true)), rows);
         }
 
         #[test]
