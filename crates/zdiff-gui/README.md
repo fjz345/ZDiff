@@ -86,7 +86,7 @@ No console window opens. Add `-log` anywhere in the arguments to write the log t
 
 A crash (panic) appends its message, source location and backtrace to `crash.log` next to the saved state (`%APPDATA%\ZDiff\data\crash.log` on Windows) before the process exits.
 
-A merge launch opens the merge view with the left file as theirs and the right file as yours. The process exits 0 only when the output was saved with no unresolved conflicts and not changed since; otherwise 1, including when the launch arguments are invalid.
+A merge launch opens the merge view with the left file as theirs and the right file as yours. The process exits 0 only when the output was saved with no unresolved conflicts and not changed since; otherwise 1, including when the launch arguments are invalid. zdiff-gui is a GUI program, so cmd.exe and batch files don't wait for it or set `%ERRORLEVEL%`: a wrapper that reads the exit code starts it with `start "" /wait C:\Tools\zdiff-gui.exe ...`. p4, P4V, git and Tortoise wait for it.
 
 ### p4
 ```
