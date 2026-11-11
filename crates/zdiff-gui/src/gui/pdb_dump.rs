@@ -3,6 +3,7 @@
 use std::{
     cell::RefCell,
     collections::{HashMap, HashSet},
+    hash::{DefaultHasher, Hash, Hasher},
     io::Cursor,
 };
 
@@ -620,6 +621,7 @@ fn render_capped(model: &PdbModel, options: &PdbDumpOptions, max_lines: usize) -
         text: String::new(),
         written: 0,
         dropped: 0,
+        dropped_hash: DefaultHasher::new(),
         max_lines,
     };
     out.push("== Header ==");
@@ -646,9 +648,11 @@ fn render_capped(model: &PdbModel, options: &PdbDumpOptions, max_lines: usize) -
         out.section("Types", sorted(&model.types));
     }
     if out.dropped > 0 {
+        // The hash makes two dumps that differ only in the dropped lines still differ.
         let marker = format!(
-            "== Truncated: {} more lines not shown (limit {max_lines}) ==",
-            out.dropped
+            "== Truncated: {} more lines not shown (limit {max_lines}, hash {:016x}) ==",
+            out.dropped,
+            out.dropped_hash.finish()
         );
         out.text.push_str(&marker);
         out.text.push('\n');
@@ -666,6 +670,7 @@ struct Lines {
     text: String,
     written: usize,
     dropped: usize,
+    dropped_hash: DefaultHasher,
     max_lines: usize,
 }
 
@@ -673,6 +678,7 @@ impl Lines {
     fn push(&mut self, line: &str) {
         if self.written == self.max_lines {
             self.dropped += 1;
+            line.hash(&mut self.dropped_hash);
             return;
         }
         self.written += 1;
@@ -882,11 +888,30 @@ mod tests {
 
         let lines: Vec<_> = text.lines().collect();
         assert_eq!(lines[..5], uncapped.lines().take(5).collect::<Vec<_>>()[..]);
-        assert_eq!(
-            lines[5..],
-            [format!("== Truncated: {} more lines not shown (limit 5) ==", total - 5)]
+        assert_eq!(lines.len(), 6, "{text}");
+        let marker = format!(
+            "== Truncated: {} more lines not shown (limit 5, hash ",
+            total - 5
         );
+        assert!(lines[5].starts_with(&marker), "{text}");
         assert_eq!(render_capped(&full(), &options, total), uncapped);
+    }
+
+    #[test]
+    fn dumps_that_differ_only_past_the_line_limit_still_differ() {
+        let options = PdbDumpOptions::default();
+        let mut changed = full();
+        changed.types[0] = "struct Zed size 8 { i32 a@0; i32 c@4 }".into();
+        let total = render(&full(), &options).lines().count();
+        let cap = total - 2;
+        assert_eq!(
+            render_capped(&full(), &options, cap).lines().count(),
+            render_capped(&changed, &options, cap).lines().count()
+        );
+        assert_ne!(
+            render_capped(&full(), &options, cap),
+            render_capped(&changed, &options, cap)
+        );
     }
 
     #[test]
