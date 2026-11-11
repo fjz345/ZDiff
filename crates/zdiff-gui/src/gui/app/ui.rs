@@ -609,6 +609,7 @@ fn send_title(ctx: &egui::Context, sent: &mut Option<String>, title: String) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ui_egui::text_mode::TextMode;
 
     #[test]
     fn an_unchanged_window_title_lets_the_app_idle() {
@@ -638,12 +639,28 @@ mod tests {
 
     #[test]
     fn a_single_loaded_file_shows_on_its_own_side_only() {
+        let texts = single_file_texts(TextMode::SideBySide);
+        let count = |wanted: &str| texts.iter().filter(|text| *text == wanted).count();
+        assert_eq!(count("only_side_line"), 1);
+        assert_eq!(count("No file"), 1);
+    }
+
+    #[test]
+    fn a_single_loaded_file_is_numbered_on_its_own_side_only_in_the_unified_view() {
+        let texts = single_file_texts(TextMode::Unified);
+        let count = |wanted: &str| texts.iter().filter(|text| *text == wanted).count();
+        assert_eq!(count("only_side_line"), 1);
+        assert_eq!(count("1"), 1);
+    }
+
+    fn single_file_texts(text_mode: TextMode) -> Vec<String> {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("only.txt");
         std::fs::write(&path, "only_side_line\n").unwrap();
         let mut app = super::super::ZApp::new();
         let state = app.state.as_mut().unwrap().ctx_mut();
         state.file_1.set_path(UniversalPath::from(path));
+        state.text_mode = text_mode;
         let ctx = egui::Context::default();
         let mut frame = eframe::Frame::_new_kittest();
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
@@ -663,10 +680,7 @@ mod tests {
                     .shapes
                     .iter()
                     .for_each(|clipped| shape_texts(&clipped.shape, &mut texts));
-                let count = |wanted: &str| texts.iter().filter(|text| *text == wanted).count();
-                assert_eq!(count("only_side_line"), 1);
-                assert_eq!(count("No file"), 1);
-                break;
+                return texts;
             }
             let state = app.state.as_mut().unwrap().ctx_mut();
             diffed = state.diff_processor.get_minimal_diff_ctx().is_some();

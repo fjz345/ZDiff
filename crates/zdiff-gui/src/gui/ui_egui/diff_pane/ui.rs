@@ -16,6 +16,11 @@ impl FileDiffPane {
             .as_ref()
             .is_some_and(|settings| settings.mode == HexMode::Strings);
         let files = ctx.diff_ctx.map(|diff_ctx| &diff_ctx.input);
+        // A one-sided diff is the file against itself, so its rows carry it on both sides.
+        let has_file = [
+            files.is_some_and(|input| input.file_1.is_some()),
+            files.is_some_and(|input| input.file_2.is_some()),
+        ];
         let number_width = line_number_width_for(
             ui,
             [
@@ -768,8 +773,8 @@ impl FileDiffPane {
                                                             Gutter::Single { number_width }
                                                         } else {
                                                             Gutter::Unified {
-                                                                left: u.left_line,
-                                                                right: u.right_line,
+                                                                left: u.left_line.filter(|_| has_file[0]),
+                                                                right: u.right_line.filter(|_| has_file[1]),
                                                                 sign: match u.kind {
                                                                     UnifiedKind::Delete => Some(('-', symbol_colors[0])),
                                                                     UnifiedKind::Insert => Some(('+', symbol_colors[1])),
@@ -850,11 +855,7 @@ impl FileDiffPane {
                                                     } else {
                                                         (ActiveSide::Right, &diff_row.right)
                                                     };
-                                                    // A one-sided diff is the file against itself.
-                                                    let side_has_file = ctx.diff_ctx.is_some_and(|d| {
-                                                        [&d.input.file_1, &d.input.file_2][side as usize].is_some()
-                                                    });
-                                                    if !side_has_file {
+                                                    if !has_file[side as usize] {
                                                         return;
                                                     }
                                                     let width = ui.max_rect().width();
