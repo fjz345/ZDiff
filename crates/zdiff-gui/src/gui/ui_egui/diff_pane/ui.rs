@@ -1295,10 +1295,6 @@ impl FileDiffPane {
 
 #[cfg(test)]
 mod tests {
-    
-    
-
-    
     use std::ops::Range;
 
     use zcommon_ui::table::{Split, SplitColumn, SplitTable};

@@ -120,12 +120,10 @@ impl egui_tiles::Behavior<Pane> for TreeBehavior<'_, '_> {
             Pane::Log(pane) => pane.ui(ui, &self.log_buffer),
             Pane::DuplicateFiles(pane) => {
                 let mut ctx = self.create_duplicate_files_ctx();
-
                 pane.ui(ui, &mut ctx)
             }
             Pane::PathDiff(path_diff_pane) => {
                 let mut ctx = self.create_path_diff_ctx();
-
                 path_diff_pane.ui(ui, &mut ctx)
             }
         }

@@ -172,10 +172,6 @@ mod tests {
     use std::ops::Range;
 
     use super::*;
-    
-
-    
-    
     use zdiff::diff_builder::{LineContent, RowBg};
 
     use crate::ui_egui::copy_harness::measure_in_fresh_context;
