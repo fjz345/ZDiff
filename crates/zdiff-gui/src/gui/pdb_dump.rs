@@ -1,6 +1,10 @@
 //! A PDB as text for the text diff: one record per line, sorted, under `== Section ==` headers.
 
-use std::{collections::HashSet, io::Cursor};
+use std::{
+    cell::RefCell,
+    collections::{HashMap, HashSet},
+    io::Cursor,
+};
 
 use pdb::{
     ClassKind, FallibleIterator, HeaderVersion, IdData, IdFinder, IdIndex, PdbInternalSectionOffset,
@@ -41,6 +45,7 @@ const DBI_FLAG_STRIPPED: u16 = 0x2;
 const PROC_KINDS: [u16; 5] = [0x100a, 0x100b, 0x110f, 0x1110, 0x1155];
 const ID_PROC_KINDS: [u16; 3] = [0x1146, 0x1147, 0x1156];
 const MAX_TYPE_DEPTH: u32 = 16;
+const MAX_TYPE_NAME_NODES: u32 = 1024;
 const MAX_FIELD_LISTS: usize = 4096;
 
 pub fn is_msf(bytes: &[u8]) -> bool {
@@ -114,6 +119,7 @@ pub fn extract(bytes: &[u8]) -> Result<PdbModel, pdb::Error> {
             Some(stream) => panicking_records(stream.as_slice()),
             None => HashSet::new(),
         },
+        names: RefCell::default(),
     };
     let mut iter = type_info.iter();
     while let Some(item) = iter.next()? {
@@ -195,6 +201,7 @@ pub fn extract(bytes: &[u8]) -> Result<PdbModel, pdb::Error> {
 struct Types<'t> {
     finder: TypeFinder<'t>,
     panicking: HashSet<TypeIndex>,
+    names: RefCell<HashMap<TypeIndex, String>>,
 }
 
 impl<'t> Types<'t> {
@@ -514,14 +521,22 @@ fn fields(types: &Types, index: TypeIndex) -> Vec<String> {
 }
 
 fn type_name(types: &Types, index: TypeIndex) -> String {
-    type_name_at(types, index, 0)
+    if let Some(name) = types.names.borrow().get(&index) {
+        return name.clone();
+    }
+    let mut nodes_left = MAX_TYPE_NAME_NODES;
+    let name = type_name_at(types, index, 0, &mut nodes_left);
+    types.names.borrow_mut().insert(index, name.clone());
+    name
 }
 
-fn type_name_at(types: &Types, index: TypeIndex, depth: u32) -> String {
-    if depth > MAX_TYPE_DEPTH {
+// Argument lists fan out at every level, so the depth cap alone still allows args^depth nodes.
+fn type_name_at(types: &Types, index: TypeIndex, depth: u32, nodes_left: &mut u32) -> String {
+    if depth > MAX_TYPE_DEPTH || *nodes_left == 0 {
         return "...".to_owned();
     }
-    let inner = |index| type_name_at(types, index, depth + 1);
+    *nodes_left -= 1;
+    let mut inner = |index| type_name_at(types, index, depth + 1, nodes_left);
     let Some(data) = types.parse(index) else {
         return "?".to_owned();
     };
@@ -556,12 +571,14 @@ fn type_name_at(types: &Types, index: TypeIndex, depth: u32) -> String {
             procedure.return_type,
             procedure.argument_list,
             depth,
+            nodes_left,
         ),
         TypeData::MemberFunction(function) => signature(
             types,
             Some(function.return_type),
             function.argument_list,
             depth,
+            nodes_left,
         ),
         _ => "?".to_owned(),
     }
@@ -572,8 +589,9 @@ fn signature(
     return_type: Option<TypeIndex>,
     arguments: TypeIndex,
     depth: u32,
+    nodes_left: &mut u32,
 ) -> String {
-    let inner = |index| type_name_at(types, index, depth + 1);
+    let mut inner = |index| type_name_at(types, index, depth + 1, nodes_left);
     let arguments = match types.parse(arguments) {
         Some(TypeData::ArgumentList(list)) => {
             let names: Vec<String> = list.arguments.iter().map(|&index| inner(index)).collect();
@@ -1002,5 +1020,31 @@ mod tests {
         assert!(model.types.iter().any(|line| line == good), "{:?}", model.types);
         let bad = "struct Bad size 4 { ? }";
         assert!(model.types.iter().any(|line| line == bad), "{:?}", model.types);
+    }
+
+    #[cfg(all(windows, target_env = "msvc"))]
+    #[test]
+    fn a_type_name_fanning_out_at_every_level_is_cut_short() {
+        let procedure = |arguments: u32| {
+            record(0x1008, &[&0x03u32.to_le_bytes(), &[0, 0, 4, 0], &arguments.to_le_bytes()])
+        };
+        let mut records = vec![record(0x1201, &[&[0; 4]]), procedure(0x1000)];
+        for level in 1..20u32 {
+            let callee = 0x1000 + 2 * level - 1;
+            records.push(record(0x1201, &[&4u32.to_le_bytes(), &callee.to_le_bytes().repeat(4)]));
+            records.push(procedure(callee + 1));
+        }
+        let top = 0x1000 + records.len() as u32 - 1;
+        let member = record(0x150D, &[&[3, 0], &top.to_le_bytes(), &[0, 0], b"f\0"]);
+        records.push(record(0x1203, &[&member]));
+        let list = 0x1000 + records.len() as u32 - 1;
+        records.push(record(0x1505, &[&[1, 0, 0, 0], &list.to_le_bytes(), &[0; 8], &[8, 0], b"Fan\0"]));
+
+        let model = extract(&own_pdb_with_types(&records)).unwrap();
+
+        let fan = model.types.iter().find(|line| line.starts_with("struct Fan ")).unwrap();
+        assert!(fan.starts_with("struct Fan size 8 { fn(fn(fn(fn("), "{fan}");
+        assert!(fan.contains("..."), "{fan}");
+        assert!(fan.len() < 64 * 1024, "{} bytes", fan.len());
     }
 }
