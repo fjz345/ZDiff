@@ -255,13 +255,7 @@ impl FileSystemView {
         mut pair_state: impl FnMut(&str, [&FsNode; 2]) -> (Option<PairState>, Option<f64>),
         mut blueprint: impl FnMut(&dyn Fn() -> PathBuf, FileMeta) -> Option<bool>,
     ) -> io::Result<Vec<VisibleRowTwoFolderDiff>> {
-        let mut entries_map: BTreeMap<
-            String,
-            (
-                Option<(FsNodeId, &FsNode, FsNodeDepth)>,
-                Option<(FsNodeId, &FsNode, FsNodeDepth)>,
-            ),
-        > = BTreeMap::new();
+        let mut entries_map: EntriesMap = BTreeMap::new();
 
         // Filtered entries never enter the map, so folder states only see visible entries.
         if let Some(view) = file_system_1 {
@@ -325,11 +319,11 @@ impl FileSystemView {
         }
 
         let num_files_and_folders_1 = file_system_1
-            .and_then(|f| Some(f.file_system.total_files_and_folders()))
-            .unwrap_or(0) as usize;
+            .map(|f| f.file_system.total_files_and_folders())
+            .unwrap_or(0);
         let num_files_and_folders_2 = file_system_2
-            .and_then(|f| Some(f.file_system.total_files_and_folders()))
-            .unwrap_or(0) as usize;
+            .map(|f| f.file_system.total_files_and_folders())
+            .unwrap_or(0);
         let initial_capacity = num_files_and_folders_1.max(num_files_and_folders_2);
         let mut out_rows = Vec::with_capacity(initial_capacity);
 
@@ -922,14 +916,11 @@ pub fn aggregate_folder_state(
     state
 }
 
+type SideEntry<'a> = Option<(FsNodeId, &'a FsNode, FsNodeDepth)>;
+type EntriesMap<'a> = BTreeMap<String, (SideEntry<'a>, SideEntry<'a>)>;
+
 pub(super) fn descendant_states<'a>(
-    entries_map: &'a BTreeMap<
-        String,
-        (
-            Option<(FsNodeId, &FsNode, FsNodeDepth)>,
-            Option<(FsNodeId, &FsNode, FsNodeDepth)>,
-        ),
-    >,
+    entries_map: &'a EntriesMap<'_>,
     file_states: &HashMap<&str, DiffState>,
 ) -> HashMap<&'a str, DiffState> {
     let mut below: HashMap<&str, DiffState> = HashMap::new();
@@ -958,13 +949,7 @@ pub(super) fn descendant_states<'a>(
 }
 
 pub(super) fn descendant_likeness<'a>(
-    entries_map: &'a BTreeMap<
-        String,
-        (
-            Option<(FsNodeId, &FsNode, FsNodeDepth)>,
-            Option<(FsNodeId, &FsNode, FsNodeDepth)>,
-        ),
-    >,
+    entries_map: &'a EntriesMap<'_>,
     pairs: &HashMap<&str, LikenessSum>,
 ) -> HashMap<&'a str, LikenessSum> {
     let file_size = |side: Option<(FsNodeId, &FsNode, FsNodeDepth)>| {

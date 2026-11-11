@@ -87,7 +87,7 @@ pub enum PaneView {
 
 impl ZAppPane for PathDiffPane {
     fn title(&self) -> String {
-        self.title.clone().unwrap_or(format!("Pane"))
+        self.title.clone().unwrap_or("Pane".to_string())
     }
 }
 
@@ -274,15 +274,15 @@ impl PathDiffPane {
         draw_ui_folder_tree(
             ui,
             FolderTreeCtx {
-                file_system_1_view: &mut ctx.path_diff_view.file_system_1_view,
-                file_system_2_view: &mut ctx.path_diff_view.file_system_2_view,
+                file_system_1_view: ctx.path_diff_view.file_system_1_view,
+                file_system_2_view: ctx.path_diff_view.file_system_2_view,
                 visible_rows: ctx.path_diff_view.visible_rows.as_deref(),
                 rows_id: ctx.path_diff_view.rows_id,
                 root_1: ctx.path_diff_view.file_system_1_root_path,
                 root_2: ctx.path_diff_view.file_system_2_root_path,
                 open_dir_window_1: &mut self.open_dir_window_1,
                 open_dir_window_2: &mut self.open_dir_window_2,
-                diff_tool_config: &ctx.diff_tool_config,
+                diff_tool_config: ctx.diff_tool_config,
                 tool_message: ctx.tool_message,
                 cursor: &mut self.cursor,
                 rows_cache: &mut self.rows_cache,

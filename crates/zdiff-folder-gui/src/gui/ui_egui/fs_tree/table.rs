@@ -131,11 +131,11 @@ pub fn draw_ui_folder_tree(
                 flat,
             );
             let (moved, request) = match key {
-                egui::Key::ArrowDown => (cursor.down(&cursor_rows), None),
-                egui::Key::ArrowUp => (cursor.up(&cursor_rows), None),
-                egui::Key::ArrowLeft => cursor.left(&cursor_rows),
-                egui::Key::ArrowRight => (cursor.clone(), cursor.right(&cursor_rows)),
-                egui::Key::Enter => (cursor.clone(), cursor.enter(&cursor_rows)),
+                egui::Key::ArrowDown => (cursor.down(cursor_rows), None),
+                egui::Key::ArrowUp => (cursor.up(cursor_rows), None),
+                egui::Key::ArrowLeft => cursor.left(cursor_rows),
+                egui::Key::ArrowRight => (cursor.clone(), cursor.right(cursor_rows)),
+                egui::Key::Enter => (cursor.clone(), cursor.enter(cursor_rows)),
                 _ => unreachable!("cursor_keys returned {key:?}"),
             };
             scroll_to_cursor |= moved != *cursor;
@@ -162,8 +162,8 @@ pub fn draw_ui_folder_tree(
             flat,
         );
         let target = match action {
-            FolderAction::NextDiff => cursor.next_diff(&cursor_rows),
-            FolderAction::PrevDiff => cursor.prev_diff(&cursor_rows),
+            FolderAction::NextDiff => cursor.next_diff(cursor_rows),
+            FolderAction::PrevDiff => cursor.prev_diff(cursor_rows),
             FolderAction::OpenFolder1
             | FolderAction::OpenFolder2
             | FolderAction::Refresh

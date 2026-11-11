@@ -117,19 +117,16 @@ impl egui_tiles::Behavior<Pane> for TreeBehavior<'_, '_> {
         pane: &mut Pane,
     ) -> egui_tiles::UiResponse {
         match pane {
-            Pane::Log(pane) => {
-                let response = pane.ui(ui, &mut self.log_buffer);
-                egui_tiles::UiResponse::from(response)
-            }
+            Pane::Log(pane) => pane.ui(ui, &self.log_buffer),
             Pane::DuplicateFiles(pane) => {
                 let mut ctx = self.create_duplicate_files_ctx();
-                let response = pane.ui(ui, &mut ctx);
-                egui_tiles::UiResponse::from(response)
+
+                pane.ui(ui, &mut ctx)
             }
             Pane::PathDiff(path_diff_pane) => {
                 let mut ctx = self.create_path_diff_ctx();
-                let response = path_diff_pane.ui(ui, &mut ctx);
-                egui_tiles::UiResponse::from(response)
+
+                path_diff_pane.ui(ui, &mut ctx)
             }
         }
     }
@@ -138,14 +135,14 @@ impl egui_tiles::Behavior<Pane> for TreeBehavior<'_, '_> {
 #[derive(Serialize, Deserialize)]
 pub enum Pane {
     Log(LogPane),
-    DuplicateFiles(DuplicateFilesPane),
-    PathDiff(PathDiffPane),
+    DuplicateFiles(Box<DuplicateFilesPane>),
+    PathDiff(Box<PathDiffPane>),
 }
 
 impl Pane {
     pub fn title(&self) -> String {
         match self {
-            Pane::Log(pane) => pane.title().into(),
+            Pane::Log(pane) => pane.title(),
             Pane::DuplicateFiles(p) => p.title(),
             Pane::PathDiff(p) => p.title(),
         }
@@ -160,7 +157,7 @@ pub struct LogPane {
 }
 impl ZAppPane for LogPane {
     fn title(&self) -> String {
-        self.title.clone().unwrap_or(format!("Pane"))
+        self.title.clone().unwrap_or("Pane".to_string())
     }
 }
 
@@ -168,6 +165,6 @@ impl LogPane {
     fn ui(&mut self, ui: &mut egui::Ui, log_buffer: &LogBuffer) -> egui_tiles::UiResponse {
         zcommon_ui::log_window::log_window(ui, log_buffer.clone(), &mut self.scroll_to_bottom);
 
-        return egui_tiles::UiResponse::None;
+        egui_tiles::UiResponse::None
     }
 }

@@ -169,68 +169,68 @@ pub(super) fn render_diff_side(
     };
     let mut add_contents = |ui: &mut egui::Ui| {
         if let Some(rel_path) = flat_rel_path {
-            if let (Some(v), Some(id)) = (view, node_id) {
-                if v.file_system.get_node(id).is_some() {
-                    let prefix = if is_dir { "📁 " } else { "" };
-                    let label_resp = ui
-                        .label(name_label(ui, prefix, rel_path))
-                        .interact(egui::Sense::click());
-                    if label_resp.clicked() {
-                        on_select();
-                    }
-                    if label_resp.double_clicked() && !is_dir {
-                        on_open();
-                    }
-                    return Some(label_resp);
+            if let (Some(v), Some(id)) = (view, node_id)
+                && v.file_system.get_node(id).is_some()
+            {
+                let prefix = if is_dir { "📁 " } else { "" };
+                let label_resp = ui
+                    .label(name_label(ui, prefix, rel_path))
+                    .interact(egui::Sense::click());
+                if label_resp.clicked() {
+                    on_select();
                 }
+                if label_resp.double_clicked() && !is_dir {
+                    on_open();
+                }
+                return Some(label_resp);
             }
             return None;
         }
 
         ui.add_space((depth as f32) * TREE_INDENT);
 
-        if let (Some(v), Some(id)) = (view, node_id) {
-            if let Some(node) = v.file_system.get_node(id) {
-                if is_dir {
-                    // Openness: 0.0 is closed, 1.0 is open
-                    let openness = if is_collapsed { 0.0 } else { 1.0 };
-                    let (_rect, response) = ui.allocate_exact_size(
-                        egui::vec2(EXPANDER_WIDTH, row_height),
-                        egui::Sense::click(),
-                    );
-                    egui::collapsing_header::paint_default_icon(ui, openness, &response);
+        if let (Some(v), Some(id)) = (view, node_id)
+            && let Some(node) = v.file_system.get_node(id)
+        {
+            if is_dir {
+                // Openness: 0.0 is closed, 1.0 is open
+                let openness = if is_collapsed { 0.0 } else { 1.0 };
+                let (_rect, response) = ui.allocate_exact_size(
+                    egui::vec2(EXPANDER_WIDTH, row_height),
+                    egui::Sense::click(),
+                );
+                egui::collapsing_header::paint_default_icon(ui, openness, &response);
 
-                    if response.clicked() {
-                        on_toggle();
-                    }
-
-                    let label_resp = ui
-                        .label(name_label(ui, "📁 ", &node.display_name()))
-                        .interact(egui::Sense::click());
-
-                    if label_resp.clicked() {
-                        on_select();
-                    }
-                    if label_resp.double_clicked() {
-                        on_toggle();
-                    }
-                    return Some(label_resp);
-                } else {
-                    let mut label_resp = ui
-                        .label(name_label(ui, "", &node.display_name()))
-                        .interact(egui::Sense::click());
-                    if let Some(rel_path) = list_rel_path {
-                        label_resp = label_resp.on_hover_text(rel_path);
-                    }
-
-                    if label_resp.clicked() {
-                        on_select();
-                    }
-                    if label_resp.double_clicked() {
-                        on_open();
-                    }
-                    return Some(label_resp);
+                if response.clicked() {
+                    on_toggle();
                 }
+
+                let label_resp = ui
+                    .label(name_label(ui, "📁 ", &node.display_name()))
+                    .interact(egui::Sense::click());
+
+                if label_resp.clicked() {
+                    on_select();
+                }
+                if label_resp.double_clicked() {
+                    on_toggle();
+                }
+                return Some(label_resp);
+            } else {
+                let mut label_resp = ui
+                    .label(name_label(ui, "", &node.display_name()))
+                    .interact(egui::Sense::click());
+                if let Some(rel_path) = list_rel_path {
+                    label_resp = label_resp.on_hover_text(rel_path);
+                }
+
+                if label_resp.clicked() {
+                    on_select();
+                }
+                if label_resp.double_clicked() {
+                    on_open();
+                }
+                return Some(label_resp);
             }
         }
         None

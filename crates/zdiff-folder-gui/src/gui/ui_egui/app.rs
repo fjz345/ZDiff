@@ -911,7 +911,7 @@ impl ZApp {
             zoom: default_zoom(),
             state: Some(AppState::default()),
             tree: Self::create_tree(),
-            log_buffer: log_buffer,
+            log_buffer,
             open_dir_window_1: false,
             open_dir_window_2: false,
             diff_mode_path_diff: true,
@@ -948,12 +948,12 @@ impl ZApp {
         //     scroll_to_bottom: true,
         // }));
 
-        let tile_path_diff = tiles.insert_pane(Pane::PathDiff(PathDiffPane::new(Some(
+        let tile_path_diff = tiles.insert_pane(Pane::PathDiff(Box::new(PathDiffPane::new(Some(
             "Path Diff".to_string(),
-        ))));
+        )))));
 
-        let tile_duplicate_file = tiles.insert_pane(Pane::DuplicateFiles(DuplicateFilesPane::new(
-            Some("Duplicate Files".to_string()),
+        let tile_duplicate_file = tiles.insert_pane(Pane::DuplicateFiles(Box::new(
+            DuplicateFilesPane::new(Some("Duplicate Files".to_string())),
         )));
 
         // let master_tile = tiles.insert_horizontal_tile(vec![tile_duplicate_file]);
@@ -1335,7 +1335,7 @@ impl ZApp {
                         let built_rows_len = app_ctx
                             .two_folder_diff_visible_rows
                             .as_ref()
-                            .and_then(|f| Some(f.len()))
+                            .map(|f| f.len())
                             .unwrap_or(0);
                         let source_path =
                             app_ctx.file_system_1_root_path.clone().unwrap_or_default();
@@ -1419,7 +1419,7 @@ impl ZApp {
     fn process_ctx_inputs(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         let mut user_quit: bool = false;
         {
-            let _input_ctx = ctx.input(|r| {
+            ctx.input(|r| {
                 // Esc, unless a widget consumed it (the path bar's cancel)
                 if r.key_pressed(egui::Key::Escape) {
                     user_quit = true;
@@ -1452,10 +1452,10 @@ impl ZApp {
                 if self.tree.is_visible(*tileid) {
                     return true;
                 }
-            } else if let Tile::Pane(Pane::DuplicateFiles(_file_explorer)) = tile {
-                if self.tree.is_visible(*tileid) {
-                    return false;
-                }
+            } else if let Tile::Pane(Pane::DuplicateFiles(_file_explorer)) = tile
+                && self.tree.is_visible(*tileid)
+            {
+                return false;
             }
         }
         panic!("PathDiff or DuplicateFiles should always be active");
@@ -1851,8 +1851,10 @@ mod tests {
 
     #[test]
     fn the_filter_survives_a_restart() {
-        let mut state = AppStateCtx::default();
-        state.path_filter = blacklist("*.obj, target/");
+        let state = AppStateCtx {
+            path_filter: blacklist("*.obj, target/"),
+            ..Default::default()
+        };
 
         let json = serde_json::to_string(&state).unwrap();
         let restored: AppStateCtx = serde_json::from_str(&json).unwrap();
@@ -1936,9 +1938,11 @@ mod tests {
             fs::write(root.join("a.txt"), "a").unwrap();
             fs::write(root.join("b.obj"), "b").unwrap();
         }
-        let mut state = AppStateCtx::default();
-        state.file_system_model_1_view = load_view(left.path());
-        state.file_system_model_2_view = load_view(right.path());
+        let mut state = AppStateCtx {
+            file_system_model_1_view: load_view(left.path()),
+            file_system_model_2_view: load_view(right.path()),
+            ..Default::default()
+        };
 
         state.build_two_folder_diff_rows_if_stale();
         assert_eq!(row_paths(&state), ["", "a.txt", "b.obj"]);
@@ -2082,10 +2086,12 @@ mod tests {
 
     #[test]
     fn the_sort_survives_a_restart() {
-        let mut state = AppStateCtx::default();
-        state.tree_sort = TreeSort::default()
-            .clicked(SortKey::State)
-            .clicked(SortKey::State);
+        let mut state = AppStateCtx {
+            tree_sort: TreeSort::default()
+                .clicked(SortKey::State)
+                .clicked(SortKey::State),
+            ..Default::default()
+        };
         state.tree_sort.flat = true;
 
         let json = serde_json::to_string(&state).unwrap();
@@ -2121,10 +2127,12 @@ mod tests {
     #[test]
     fn the_state_filter_and_show_parents_survive_a_restart() {
         for states in [StateFilter::Diff, StateFilter::Equal] {
-            let mut state = AppStateCtx::default();
-            state.diff_filter = DiffFilter {
-                states,
-                show_parents: false,
+            let state = AppStateCtx {
+                diff_filter: DiffFilter {
+                    states,
+                    show_parents: false,
+                },
+                ..Default::default()
             };
 
             let json = serde_json::to_string(&state).unwrap();
@@ -2457,9 +2465,11 @@ mod tests {
         }
         fs::write(left.path().join("z/b.txt"), "left b").unwrap();
         fs::write(right.path().join("z/b.txt"), "right b").unwrap();
-        let mut state = AppStateCtx::default();
-        state.file_system_model_1_view = load_view(left.path());
-        state.file_system_model_2_view = load_view(right.path());
+        let mut state = AppStateCtx {
+            file_system_model_1_view: load_view(left.path()),
+            file_system_model_2_view: load_view(right.path()),
+            ..Default::default()
+        };
 
         finish_compare(&mut state);
         assert_eq!(row_paths(&state), ["", "z", "z/b.txt", "a.txt"]);
@@ -2512,9 +2522,11 @@ mod tests {
         }
         fs::write(left.path().join("b.txt"), "left b").unwrap();
         fs::write(right.path().join("b.txt"), "right b").unwrap();
-        let mut state = AppStateCtx::default();
-        state.file_system_model_1_view = load_view(left.path());
-        state.file_system_model_2_view = load_view(right.path());
+        let mut state = AppStateCtx {
+            file_system_model_1_view: load_view(left.path()),
+            file_system_model_2_view: load_view(right.path()),
+            ..Default::default()
+        };
 
         finish_compare(&mut state);
         assert_eq!(row_paths(&state), ["", "z", "z/c.txt", "a.txt", "b.txt"]);
