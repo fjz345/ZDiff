@@ -180,23 +180,44 @@ impl IdleWake {
 }
 
 pub fn fps_label(ui: &mut egui::Ui, stats: &FrameStats, show_breakdown: &mut bool) {
-    let text = match (stats.fps, stats.last_fps) {
-        (Some(fps), _) => format!("{fps:.0} fps"),
-        (None, Some(last)) => format!("{last:.0} fps (idle)"),
-        (None, None) => "idle".to_owned(),
-    };
     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-        let label = egui::Label::new(egui::RichText::new(text).monospace().weak())
+        let mut clicked = false;
+        if let Some(fps) = stats.fps.or(stats.last_fps) {
+            let label = egui::Label::new(
+                egui::RichText::new(format!("{fps:.0} fps"))
+                    .monospace()
+                    .weak(),
+            )
             .sense(egui::Sense::click())
             .truncate();
-        if ui
-            .add(label)
-            .on_hover_text("Frame time breakdown")
-            .clicked()
-        {
+            clicked |= ui
+                .add(label)
+                .on_hover_text("Frame time breakdown")
+                .clicked();
+        }
+        if stats.fps.is_none() {
+            clicked |= idle_tag(ui).on_hover_text("Frame time breakdown").clicked();
+        }
+        if clicked {
             *show_breakdown = !*show_breakdown;
         }
     });
+}
+
+fn idle_tag(ui: &mut egui::Ui) -> egui::Response {
+    let color = ui.visuals().weak_text_color();
+    egui::Frame::new()
+        .stroke(egui::Stroke::new(1.0, color))
+        .corner_radius(3.0)
+        .inner_margin(egui::Margin::symmetric(4, 0))
+        .show(ui, |ui| {
+            ui.add(
+                egui::Label::new(egui::RichText::new("idle").monospace().color(color))
+                    .selectable(false),
+            )
+        })
+        .response
+        .interact(egui::Sense::click())
 }
 
 pub fn breakdown_window(ctx: &egui::Context, stats: &FrameStats, open: &mut bool) {

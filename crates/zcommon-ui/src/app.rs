@@ -2,6 +2,7 @@ use std::ffi::OsString;
 
 use eframe::egui;
 use serde::{Deserialize, de::DeserializeOwned};
+use winit::event_loop::{DeviceEvents, EventLoop};
 use zcommon::{
     console::{LOG_FLAG, open_console, take_log_flag},
     logger::{LogBuffer, init_logging},
@@ -42,7 +43,10 @@ where
             ),
         ..Default::default()
     };
-    eframe::run_native(
+    let event_loop = EventLoop::<eframe::UserEvent>::with_user_event().build()?;
+    // eframe repaints the focused window on every raw mouse delta, even with the cursor outside it.
+    event_loop.listen_device_events(DeviceEvents::Never);
+    let mut app = eframe::create_native(
         app_id,
         native_options,
         Box::new(move |cc: &eframe::CreationContext<'_>| {
@@ -51,7 +55,10 @@ where
             init(&mut app, cc);
             Ok(Box::new(app))
         }),
-    )
+        &event_loop,
+    );
+    event_loop.run_app(&mut app)?;
+    Ok(())
 }
 
 pub fn default_zoom() -> f32 {
