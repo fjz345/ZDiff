@@ -167,11 +167,11 @@ fn preview_ui(ui: &mut egui::Ui, pair: PreviewPair) {
     let [Some(left), Some(right)] = [0, 1].map(|i| pair.models[i].get_node(pair.ids[i])) else {
         return;
     };
+    let paths = [0, 1].map(|i| pair.models[i].path(pair.ids[i]));
     let key = (
-        pair.rel_path.to_owned(),
+        paths.clone(),
         [left, right].map(|node| (node.size, node.modified)),
     );
-    let paths = [0, 1].map(|i| pair.models[i].path(pair.ids[i]));
     let rel_path = pair.rel_path.to_owned();
     ui.separator();
     change_preview_ui(
