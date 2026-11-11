@@ -4,10 +4,7 @@ use zcommon_ui::common::{show_custom_popup, show_settings_window};
 use zcommon_ui::frame_stats;
 use zcommon_ui::h_scroll::WheelModifier;
 use zcommon_ui::keymap::menu_item;
-use zdiff::{
-    myers::{DiffPhases, MyersDiffAlgorithm},
-    universal_path::UniversalPath,
-};
+use zdiff::myers::{DiffPhases, MyersDiffAlgorithm};
 
 use crate::{
     cli::{self},
@@ -259,8 +256,8 @@ impl ZApp {
                                 ui.close();
                                 file_1.set_root("".into());
                                 file_2.set_root("".into());
-                                file_1.set_path(UniversalPath::from(p1));
-                                file_2.set_path(UniversalPath::from(p2));
+                                file_1.set_path(p1.into());
+                                file_2.set_path(p2.into());
 
                                 diff_processor.reset_ctx();
                             }
