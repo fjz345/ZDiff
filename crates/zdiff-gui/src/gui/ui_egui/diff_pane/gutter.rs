@@ -14,7 +14,7 @@ const LINE_NUMBER_PADDING: f32 = 4.0;
 pub(super) fn line_number_font(style: &egui::Style) -> egui::FontId {
     egui::FontId {
         size: LINE_NUMBER_SIZE,
-        ..egui::FontSelection::Default.resolve(style)
+        ..egui::TextStyle::Monospace.resolve(style)
     }
 }
 
@@ -110,6 +110,19 @@ mod tests {
             let digits = max_line.to_string().len() as f32;
             assert!(digits * digit_width < width, "{max_line}: {width}");
         }
+    }
+
+    #[test]
+    fn line_numbers_are_measured_in_the_font_the_rows_paint_them_in() {
+        let rows_style = egui::Style {
+            override_text_style: Some(egui::TextStyle::Monospace),
+            ..Default::default()
+        };
+
+        assert_eq!(
+            line_number_font(&egui::Style::default()),
+            line_number_font(&rows_style)
+        );
     }
 
     #[test]
