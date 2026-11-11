@@ -796,7 +796,6 @@ impl FileDiffPane {
                                                                 pins_request: &mut *ctx.pins_request,
                                                                 revert_request: &mut *ctx.revert_request,
                                                                 temp_root: &temp_root,
-                                                                shown_sides: shown,
                                                             })
                                                         });
                                                     }
@@ -913,7 +912,6 @@ impl FileDiffPane {
                                                                 pins_request: &mut *ctx.pins_request,
                                                                 revert_request: &mut *ctx.revert_request,
                                                                 temp_root: &temp_root,
-                                                                shown_sides: shown,
                                                             })
                                                         });
                                                     }
@@ -940,9 +938,13 @@ impl FileDiffPane {
                                                         revert::hunk_starting_at(&d.precomputed_diffs, row_index)
                                                             .map(|hunk| (d, hunk))
                                                     });
-                                                    let mut revert_button = |ui: &mut egui::Ui, slot: egui::Rect, target: RevertTarget, label: &str, hover: &str| {
+                                                    let mut revert_button = |ui: &mut egui::Ui, slot: egui::Rect, target: RevertTarget, label: &str| {
                                                         let Some((diff_ctx, hunk)) = hunk else {
                                                             return;
+                                                        };
+                                                        let hover = match target {
+                                                            RevertTarget::Left => "Replace this hunk in the left file with the right side",
+                                                            RevertTarget::Right => "Replace this hunk in the right file with the left side",
                                                         };
                                                         if revert::check_revert(diff_ctx, target, &temp_root).is_ok()
                                                             && ui.put(slot, egui::Button::new(label)).on_hover_text(hover).clicked()
@@ -962,7 +964,7 @@ impl FileDiffPane {
                                                     }
                                                     let [left_target, right_target] =
                                                         shown.map(|side| [RevertTarget::Left, RevertTarget::Right][side]);
-                                                    revert_button(ui, left_slot, left_target, "<", "Replace this hunk in the left file with the right side");
+                                                    revert_button(ui, left_slot, left_target, "<");
                                                     if let Some((symbol, color)) =
                                                         row_symbol(diff_row, symbol_colors).filter(|_| marks.any())
                                                     {
@@ -972,7 +974,7 @@ impl FileDiffPane {
                                                                 .selectable(false),
                                                         );
                                                     }
-                                                    revert_button(ui, right_slot, right_target, ">", "Replace this hunk in the right file with the left side");
+                                                    revert_button(ui, right_slot, right_target, ">");
                                                 }
                                                 }
                                             }
