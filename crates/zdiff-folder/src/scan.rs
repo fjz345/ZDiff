@@ -669,7 +669,7 @@ mod tests {
         );
         assert!(matches!(
             node_at(model, Path::new("root/sub/c.txt")).kind,
-            FsNodeKind::File { .. }
+            FsNodeKind::File
         ));
         assert_eq!(
             found.load(Ordering::Relaxed),
@@ -739,7 +739,7 @@ mod tests {
         );
         assert_eq!(node_at(model, &x).parent, model.find_path(&deep));
         let y = node_at(model, &x.join("y.rs"));
-        assert!(matches!(y.kind, FsNodeKind::File { .. }));
+        assert!(matches!(y.kind, FsNodeKind::File));
         assert_eq!(y.parent, model.find_path(&x));
         assert_eq!(y.size, 3);
         assert_eq!(

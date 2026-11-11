@@ -13,11 +13,13 @@ pub struct DiffToolDefaultArgs {
     pub default_args: Vec<String>,
 }
 
-impl DiffToolDefaultArgs {
-    pub fn to_string(&self) -> String {
-        self.default_args.join("\n")
+impl fmt::Display for DiffToolDefaultArgs {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.default_args.join("\n"))
     }
+}
 
+impl DiffToolDefaultArgs {
     pub fn from_string(input: &str) -> Self {
         let default_args = input
             .lines()
