@@ -15,9 +15,13 @@ pub struct FileMetadata {
 
 impl FileMetadata {
     pub fn new(contents: &str) -> Self {
-        let line_starts = std::iter::once(0)
-            .chain(contents.match_indices('\n').map(|(i, _)| i))
-            .collect();
+        let bytes = contents.as_bytes();
+        let crlf_head = |i: usize| bytes[i] == b'\r' && bytes.get(i + 1) == Some(&b'\n');
+        let line_breaks = contents
+            .match_indices(['\r', '\n'])
+            .map(|(i, _)| i)
+            .filter(|&i| !crlf_head(i));
+        let line_starts = std::iter::once(0).chain(line_breaks).collect();
         Self { line_starts }
     }
 
@@ -107,7 +111,7 @@ impl<T: RawTokenTrait> CachedFile<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lexer::RawToken;
+    use crate::lexer::{RawToken, TokenKind};
 
     #[test]
     fn test_cached_file_reconstruct_token_modification() {
@@ -139,6 +143,29 @@ mod tests {
             reconstructed_modified,
             "#define hello_there\n\t// Comment\n"
         );
+    }
+
+    #[test]
+    fn line_starts_break_lines_where_the_lexer_does() {
+        for contents in [
+            "",
+            "a",
+            "a\n",
+            "a\r\nb",
+            "a\rb\r",
+            "\r\r\n\n\r",
+            "a\n\rb\r\n",
+        ] {
+            let lexed_breaks = Lexer::new(contents)
+                .filter(|t: &RawToken| t.kind == TokenKind::Newline)
+                .map(|t| t.span.end - 1);
+            let expected: Vec<usize> = std::iter::once(0).chain(lexed_breaks).collect();
+            assert_eq!(
+                FileMetadata::new(contents).line_starts,
+                expected,
+                "{contents:?}"
+            );
+        }
     }
 
     #[test]

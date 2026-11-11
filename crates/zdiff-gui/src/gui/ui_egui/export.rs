@@ -143,7 +143,7 @@ fn write_hunk(
         let text = line_text(&file.contents, &file.metadata.line_starts, number - 1)
             .expect("row line numbers are inside their file");
         writeln!(out, "{prefix}{text}").unwrap();
-        if number == file.metadata.num_lines() && !file.contents.ends_with('\n') {
+        if number == file.metadata.num_lines() && !file.contents.ends_with(['\n', '\r']) {
             out.push_str("\\ No newline at end of file\n");
         }
     }
@@ -254,6 +254,18 @@ mod tests {
     fn a_last_line_without_a_newline_is_marked() {
         assert_eq!(
             export("a\nb", "a\nc"),
+            "--- a.txt\n+++ b.txt\n@@ -1,2 +1,2 @@\n a\n-b\n\\ No newline at end of file\n+c\n\\ No newline at end of file\n"
+        );
+    }
+
+    #[test]
+    fn lone_carriage_returns_break_lines() {
+        assert_eq!(
+            export("a\rb\rc\r", "a\rB\rc\r"),
+            "--- a.txt\n+++ b.txt\n@@ -1,3 +1,3 @@\n a\n-b\n+B\n c\n"
+        );
+        assert_eq!(
+            export("a\rb", "a\rc"),
             "--- a.txt\n+++ b.txt\n@@ -1,2 +1,2 @@\n a\n-b\n\\ No newline at end of file\n+c\n\\ No newline at end of file\n"
         );
     }

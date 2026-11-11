@@ -178,7 +178,7 @@ impl FindCtx {
         cancel: &AtomicBool,
     ) -> Vec<FindHit> {
         let contents = &file.contents;
-        // `line_starts` holds the index of each line's '\n', not of the byte after it.
+        // `line_starts` holds the index of each line break's last byte, not of the byte after it.
         let starts = &file.metadata.line_starts;
         (0..starts.len())
             .into_par_iter()

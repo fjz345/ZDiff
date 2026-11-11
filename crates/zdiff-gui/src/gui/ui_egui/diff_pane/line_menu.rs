@@ -76,7 +76,7 @@ pub(super) fn without_line_pins(pins: &[Pin], side: ActiveSide, line: usize) -> 
         .collect()
 }
 
-// `line_starts` holds 0, then the offset of each '\n' (not the byte after it).
+// `line_starts` holds 0, then the offset of each line break's last byte (not the byte after it).
 pub(crate) fn line_text<'a>(
     contents: &'a str,
     line_starts: &[usize],
