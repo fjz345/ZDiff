@@ -612,7 +612,7 @@ impl P4Command {
 
         Self {
             exe_path,
-            is_gui: is_gui,
+            is_gui,
             file: None,
         }
     }

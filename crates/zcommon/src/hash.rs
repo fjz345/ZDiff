@@ -245,8 +245,7 @@ impl HashService {
     // TODO: fix to get reference instead of clone
     pub fn get_hash(&self, path: impl AsRef<Path>) -> Option<Blake3Hash> {
         let binding = self.hashes.read().unwrap();
-        let hash = binding.get(path.as_ref().into()).and_then(|f| f.clone());
-        hash
+        binding.get(path.as_ref()).and_then(|f| *f)
     }
 
     pub fn clear(&self) {
