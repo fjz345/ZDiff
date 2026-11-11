@@ -65,14 +65,22 @@ pub(super) fn on_row_item_clicked(
                 });
                 return Some(message);
             }
-            let [left, right] = sides.map(|(_, path)| path.to_string_lossy().into_owned());
+            let [Some(left), Some(right)] = sides.each_ref().map(|(_, path)| path.to_str()) else {
+                let error = format!(
+                    "diffing failed: {} is not valid Unicode, so it can't be passed to {}",
+                    entry.rel_path, diff_tool.name
+                );
+                log::error!("{error}");
+                message.error = Some(error);
+                return Some(message);
+            };
             let (left_name, right_name) = folder_labels(&entry.rel_path);
             let result = open_diff_tool(
                 &exe,
                 diff_tool,
                 &DiffPair {
-                    left: &left,
-                    right: &right,
+                    left,
+                    right,
                     left_name: &left_name,
                     right_name: &right_name,
                 },
