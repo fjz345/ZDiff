@@ -78,35 +78,14 @@ pub fn draw_ui_folder_tree(
         previous_roots,
         scanning,
     } = ctx;
-    if file_system_1_view.is_none() && file_system_2_view.is_none() {
-        let response = if scanning {
-            loading_state(ui, "Scanning folders...")
-        } else {
-            let (response, clicked) = empty_state(
-                ui,
-                "Welcome to ZDiffFolder",
-                "Drag and drop folders here or use the buttons below to start comparing.",
-                &["Open Left", "Open Right"],
-            );
-            match clicked {
-                Some(0) => *open_dir_window_1 = true,
-                Some(_) => *open_dir_window_2 = true,
-                None => {}
-            }
-            response
-        };
-        handle_drops(
-            ui,
-            root_1,
-            root_2,
-            egui::Rect::EVERYTHING,
-            egui::Rect::EVERYTHING,
-            tool_message,
-        );
-        return response;
-    }
-
-    let visible_rows = visible_rows.expect("the app builds the rows of a shown view");
+    let no_view = file_system_1_view.is_none() && file_system_2_view.is_none();
+    // The app keeps the id of rows it dropped; the cache must not pair that id with no rows.
+    let (visible_rows, rows_id) = if no_view {
+        (&[][..], RowsId::default())
+    } else {
+        let rows = visible_rows.expect("the app builds the rows of a shown view");
+        (rows, rows_id)
+    };
     let flat = diff_filter.is_flat(*sort);
     let tool_message_before = tool_message.clone();
 
@@ -525,6 +504,23 @@ pub fn draw_ui_folder_tree(
                 },
             );
             side_rects = output.side_rects;
+            if no_view {
+                let body = side_rects[0].union(side_rects[1]);
+                let mut overlay = ui.new_child(egui::UiBuilder::new().max_rect(body));
+                if scanning {
+                    loading_state(&mut overlay, "Scanning folders...");
+                } else {
+                    let (_, clicked) = empty_state(
+                        &mut overlay,
+                        "Welcome to ZDiffFolder",
+                        "Drag and drop a folder onto the left or right pane, or use the buttons below to start comparing.",
+                        &["Open Left", "Open Right"],
+                    );
+                    if let Some(column) = clicked {
+                        *open_dir_windows[shown[column]] = true;
+                    }
+                }
+            }
             two_folder.table.set_anchor(
                 generation,
                 output.scroll_offset,

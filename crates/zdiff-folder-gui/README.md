@@ -39,7 +39,7 @@ A crash (panic) appends its message, source location and backtrace to `crash.log
     - L: likeness bar, how alike each pair is (lines, pixels or bytes); hovering a file's bar shows where it differs, computed on the first hover: text a strip of changed lines per side, binary a strip of unequal bytes, images a thumbnail of the per-pixel difference
     - T: tolerance, differing files that pass the size, modification time or likeness criteria count as Similar
 * Options > Link Horizontal Scrolling (on by default): both folder sides scroll sideways together; off scrolls them independently
-* Sides named Left and Right (menus, shortcuts, status line); an empty pane offers Open Left / Open Right and takes dropped folders, and shows a spinner while the first scan runs; a root that can't be opened (a dropped file, a missing folder, a bad command-line folder) is named in the status line
+* Sides named Left and Right (menus, shortcuts, status line); with no folder open the pane still shows both empty sides with their headers and path bars, and the welcome text with Open Left / Open Right over them (or a spinner while the first scan runs); a folder dropped on a side, header included, becomes that side's root; a root that can't be opened (a dropped file, a missing folder, a bad command-line folder) is named in the status line
 * Roots at a git revision or a Perforce depot folder, changelist or shelf, picked from a "Source control" dropdown next to each path bar; its "Back to ..." entry returns to the side's previous revision of the same folder
 * External diff tools
     - Tools window with presets (zdiff-gui, TortoiseMerge, WinMerge, Beyond Compare, p4merge, VS Code, ...), argument templates, rules and a Test button
