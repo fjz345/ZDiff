@@ -4,6 +4,7 @@ pub mod copy_harness;
 pub mod diff_pane;
 pub mod export;
 pub mod file_role;
+pub mod jump;
 pub mod merge_pane;
 pub mod occurrence;
 pub mod overview;

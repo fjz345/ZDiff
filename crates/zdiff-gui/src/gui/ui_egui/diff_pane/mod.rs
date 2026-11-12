@@ -62,6 +62,7 @@ use crate::{
     ui_egui::{
         active_side::{ActiveSide, ActiveSideState, outline_stroke, shown_sides},
         file_role::FileRole,
+        jump::{jump_target, span_rows},
         occurrence::{OccurrenceState, RowFind, find_ranges},
         overview::{
             self, BinCache, ChangeKind, ChangeSpan, RULER_WIDTH, RulerColors, row_at,
@@ -71,7 +72,7 @@ use crate::{
         side_viewers::{self, SideViewers},
         syntax,
         text_mode::TextMode,
-        unified::{UnifiedKind, UnifiedRow, single_file_rows, unified_rows, unified_scroll_index},
+        unified::{UnifiedKind, UnifiedRow, single_file_rows, unified_rows, unified_scroll_rows},
     },
     viewer::{
         ViewerKind,
@@ -158,6 +159,7 @@ pub struct FileDiffPaneCtx<'a> {
     pub code_language: [&'a str; 2],
 
     pub scroll_to_row_span: &'a Option<ScrollSpan>,
+    pub center_jumps: bool,
     pub active_highlights: &'a [usize],
     pub highlight_side: Option<ActiveSide>,
     pub conflict_cursor: &'a mut ClampedCursor,

@@ -434,22 +434,6 @@ impl FileDiffPane {
                                 table = table.single_column();
                             }
 
-                            let ruler_row = ui.data_mut(|d| d.remove_temp::<usize>(ruler_id.with("scroll_to")));
-                            if let Some(row) = ruler_row {
-                                table = table.scroll_to_row(row, Some(egui::Align::Center));
-                            } else if let Some(span) = ctx.scroll_to_row_span {
-                                log::trace!("scroll_to_row_span: {:?}", span);
-                                let start = match &unified {
-                                    Some(view) => {
-                                        unified_scroll_index(&view.meta, span).unwrap_or(span.start)
-                                    }
-                                    None => span.start,
-                                };
-                                table = table.scroll_to_row(start, Some(egui::Align::Min));
-                            } else if let Some(row) = hex_key_row {
-                                table = table.scroll_to_row(row, None);
-                            }
-
                             let root_path_bar = |ui: &mut egui::Ui,
                                                  id_salt: &str,
                                                  root: Option<&UniversalPath>,
@@ -689,6 +673,33 @@ impl FileDiffPane {
                                 };
                                 text_rows(heights, row_height, count)
                             };
+
+                            let ruler_row = ui.data_mut(|d| d.remove_temp::<usize>(ruler_id.with("scroll_to")));
+                            if let Some(row) = ruler_row {
+                                table = table.scroll_to_row(row, Some(egui::Align::Center));
+                            } else if let Some(span) = ctx.scroll_to_row_span {
+                                log::trace!("scroll_to_row_span: {:?}", span);
+                                let target_rows = match &unified {
+                                    Some(view) => unified_scroll_rows(&view.meta, span)
+                                        .unwrap_or_else(|| span_rows(span)),
+                                    None => span_rows(span),
+                                };
+                                let height_of = |row: usize| match rows {
+                                    Rows::Uniform { height, .. } => height,
+                                    Rows::Heights(heights) => {
+                                        heights.get(row).copied().unwrap_or(row_height)
+                                    }
+                                };
+                                let (row, align) = jump_target(
+                                    target_rows,
+                                    height_of,
+                                    area.height() - *header_height,
+                                    ctx.center_jumps,
+                                );
+                                table = table.scroll_to_row(row, Some(align));
+                            } else if let Some(row) = hex_key_row {
+                                table = table.scroll_to_row(row, None);
+                            }
 
                                     // Once per frame, not per row: a temp side gets no revert buttons.
                                     let temp_root = std::env::temp_dir();
@@ -1295,17 +1306,19 @@ mod tests {
     use zdiff::diff_builder::DiffBuilderOptions;
 
     use crate::ui_egui::copy_harness::{CopyHarness, Side};
-    /// Top of the table body and the rect of row `target` after jumping to it, as the pane jumps
-    /// to a conflict, find result or line.
-    fn jump_to_row(
+    use crate::ui_egui::jump::jump_target;
+    /// The table body and the visible part of rows `target` after jumping to them, as the pane
+    /// jumps to a conflict, find result or line.
+    fn jump_to_rows(
         wrapped_heights: Option<&[f32]>,
         num_rows: usize,
-        target: usize,
-    ) -> (f32, eframe::egui::Rect) {
+        target: Range<usize>,
+        center: bool,
+    ) -> (eframe::egui::Rect, eframe::egui::Rect) {
         use eframe::egui;
         let ctx = egui::Context::default();
-        let mut body_top = f32::NAN;
-        let mut target_rect = egui::Rect::NOTHING;
+        let mut body = egui::Rect::NOTHING;
+        let mut landed = egui::Rect::NOTHING;
         // The first frame lays out and asks for the scroll; the next ones apply it.
         for frame in 0..3 {
             let raw = egui::RawInput {
@@ -1316,48 +1329,116 @@ mod tests {
                 time: Some(frame as f64),
                 ..Default::default()
             };
+            landed = egui::Rect::NOTHING;
             let _ = ctx.run(raw, |ctx| {
                 egui::CentralPanel::default().show(ctx, |ui| {
                     ui.spacing_mut().item_spacing.y = 0.0;
-                    body_top = ui.cursor().top();
-                    SplitTable::new("jump", &mut Split::default())
-                        .scroll_to_row(target, Some(egui::Align::Min))
+                    let (row, align) = jump_target(
+                        target.clone(),
+                        |row| wrapped_heights.map_or(15.0, |heights| heights[row]),
+                        ui.available_height(),
+                        center,
+                    );
+                    body = SplitTable::new("jump", &mut Split::default())
+                        .scroll_to_row(row, Some(align))
                         .show(
                             ui,
                             0.0,
                             |_, _| {},
                             super::text_rows(wrapped_heights, 15.0, num_rows),
                             |index, column, ui| {
-                                if index == target && column == SplitColumn::Left {
-                                    target_rect = ui.max_rect();
+                                if target.contains(&index) && column == SplitColumn::Left {
+                                    landed = landed.union(ui.max_rect());
                                 }
                             },
-                        );
+                        )
+                        .body_rect;
                 });
             });
         }
-        (body_top, target_rect)
+        (body, landed)
+    }
+
+    fn every_third_row_wrapped_on_three_lines() -> Vec<f32> {
+        (0..200)
+            .map(|i| if i % 3 == 0 { 45.0 } else { 15.0 })
+            .collect()
     }
 
     #[test]
     fn jumping_to_a_row_lands_on_it_with_wrap_on() {
-        // Every third row wraps onto three lines.
-        let heights: Vec<f32> = (0..200)
-            .map(|i| if i % 3 == 0 { 45.0 } else { 15.0 })
-            .collect();
-
+        let heights = every_third_row_wrapped_on_three_lines();
         for target in [1, 30, 100, 151] {
-            let (top, rect) = jump_to_row(Some(&heights), heights.len(), target);
+            let (body, rect) =
+                jump_to_rows(Some(&heights), heights.len(), target..target + 1, false);
             assert!(
-                (rect.top() - top).abs() < 1.0,
-                "row {target}: {rect:?} vs top {top}"
+                (rect.top() - body.top()).abs() < 1.0,
+                "row {target}: {rect:?} vs {body:?}"
             );
             assert_eq!(rect.height(), heights[target], "row {target}");
         }
-        // Wrap off: one line per row.
-        let (top, rect) = jump_to_row(None, 200, 100);
-        assert!((rect.top() - top).abs() < 1.0, "{rect:?} vs top {top}");
+        let (body, rect) = jump_to_rows(None, 200, 100..101, false);
+        assert!(
+            (rect.top() - body.top()).abs() < 1.0,
+            "{rect:?} vs {body:?}"
+        );
         assert_eq!(rect.height(), 15.0);
+    }
+
+    #[test]
+    fn a_centered_jump_puts_the_row_mid_view() {
+        let heights = every_third_row_wrapped_on_three_lines();
+        for wrapped in [Some(heights.as_slice()), None] {
+            for target in [30, 100, 151] {
+                let (body, rect) = jump_to_rows(wrapped, 200, target..target + 1, true);
+                assert!(
+                    rect.y_range().contains(body.center().y),
+                    "row {target}, wrapped {}: {rect:?} vs {body:?}",
+                    wrapped.is_some()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_centered_jump_near_either_end_does_not_scroll_past_it() {
+        let (body, rect) = jump_to_rows(None, 200, 2..3, true);
+        assert!(
+            (rect.top() - (body.top() + 30.0)).abs() < 1.0,
+            "{rect:?} vs {body:?}"
+        );
+        let (body, rect) = jump_to_rows(None, 200, 199..200, true);
+        assert!(
+            (rect.bottom() - body.bottom()).abs() < 1.0,
+            "{rect:?} vs {body:?}"
+        );
+    }
+
+    #[test]
+    fn a_centered_jump_to_a_block_centers_the_block() {
+        let heights = every_third_row_wrapped_on_three_lines();
+        for wrapped in [Some(heights.as_slice()), None] {
+            let (body, rect) = jump_to_rows(wrapped, 200, 100..106, true);
+            assert!(
+                (rect.center().y - body.center().y).abs() <= 45.0,
+                "wrapped {}: {rect:?} vs {body:?}",
+                wrapped.is_some()
+            );
+            assert!(body.contains_rect(rect), "{rect:?} vs {body:?}");
+        }
+    }
+
+    #[test]
+    fn a_centered_jump_to_a_block_taller_than_the_view_shows_its_start() {
+        let heights = every_third_row_wrapped_on_three_lines();
+        for (wrapped, block) in [(Some(heights.as_slice()), 100..121), (None, 100..140)] {
+            let (body, rect) = jump_to_rows(wrapped, 200, block, true);
+            assert!(
+                (rect.top() - body.top()).abs() < 1.0,
+                "wrapped {}: {rect:?} vs {body:?}",
+                wrapped.is_some()
+            );
+        }
     }
 
     // Identical on both sides except the last line, so the shared rows carry no ghosts.

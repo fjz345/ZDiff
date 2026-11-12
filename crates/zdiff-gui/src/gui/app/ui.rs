@@ -43,6 +43,7 @@ impl ZApp {
                 scroll_right,
                 h_scroll_linked,
                 h_scroll_modifier,
+                center_jumps,
                 word_wrap,
                 text_mode,
                 text_likeness,
@@ -130,6 +131,7 @@ impl ZApp {
                     detected_languages: detected,
                     h_scroll_modifier,
                     h_scroll_linked,
+                    center_jumps,
                     text_diff_shown,
                 },
             );
@@ -262,6 +264,7 @@ impl ZApp {
                     diff_options,
                     regex_ignore_presets,
                     scroll_to_row_span: scroll_to_rows,
+                    center_jumps: *center_jumps,
                     load_file_1_request: &mut None,
                     load_file_2_request: &mut None,
                     back_to_previous_request: &mut None,
@@ -343,6 +346,7 @@ impl ZApp {
                     text_scroll,
                     hex: side_shows(ViewerKind::Hex).then(|| hex_processor.view_ctx()),
                     hex_scroll,
+                    center_jumps: *center_jumps,
                     image: file_diff.image_view.take(),
                     image_settings: file_diff.image_settings.take(),
                     audio: file_diff.audio_view.take(),
@@ -366,7 +370,7 @@ impl ZApp {
                 Layout::left_to_right(egui::Align::Min),
                 |ui| match &mut self.merge {
                     Some(merge) => {
-                        let closed = merge.ui(ui, code_language_override.as_deref());
+                        let closed = merge.ui(ui, code_language_override.as_deref(), *center_jumps);
                         close_merge = close_merge.or(closed);
                     }
                     None => self.tree.ui(&mut behavior, ui),

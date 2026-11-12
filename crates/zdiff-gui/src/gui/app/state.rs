@@ -117,6 +117,8 @@ pub struct AppStateCtx {
     pub h_scroll_linked: bool,
     #[cfg_attr(feature = "serde", serde(default))]
     pub h_scroll_modifier: WheelModifier,
+    #[cfg_attr(feature = "serde", serde(default = "default_center_jumps"))]
+    pub center_jumps: bool,
     #[cfg_attr(feature = "serde", serde(default))]
     pub word_wrap: bool,
     #[cfg_attr(feature = "serde", serde(default))]
@@ -141,6 +143,10 @@ pub struct AppStateCtx {
 }
 
 fn default_h_scroll_linked() -> bool {
+    true
+}
+
+fn default_center_jumps() -> bool {
     true
 }
 
@@ -176,6 +182,7 @@ impl Default for AppStateCtx {
             scroll_right: Default::default(),
             h_scroll_linked: default_h_scroll_linked(),
             h_scroll_modifier: WheelModifier::Shift,
+            center_jumps: default_center_jumps(),
             word_wrap: false,
             text_mode: Default::default(),
             text_likeness: Default::default(),
@@ -506,6 +513,30 @@ mod tests {
             .unwrap();
         let restored: AppStateCtx = serde_json::from_value(json).unwrap();
         assert!(restored.h_scroll_linked);
+    }
+
+    #[test]
+    fn centered_jumps_default_on_and_survive_a_restart() {
+        assert!(AppStateCtx::default().center_jumps);
+
+        let ctx = AppStateCtx {
+            center_jumps: false,
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&ctx).unwrap();
+        let restored: AppStateCtx = serde_json::from_str(&json).unwrap();
+        assert!(!restored.center_jumps);
+    }
+
+    #[test]
+    fn a_save_without_centered_jumps_loads_centered() {
+        let mut json = serde_json::to_value(AppStateCtx::default()).unwrap();
+        json.as_object_mut()
+            .unwrap()
+            .remove("center_jumps")
+            .unwrap();
+        let restored: AppStateCtx = serde_json::from_value(json).unwrap();
+        assert!(restored.center_jumps);
     }
 
     #[test]

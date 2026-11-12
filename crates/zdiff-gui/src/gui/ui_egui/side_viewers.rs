@@ -4,6 +4,7 @@ use zdiff::diff_builder::{LineContent, RowBg};
 
 use crate::{
     diff_ctx::{MinimalDiffCtx, ScrollSpan},
+    ui_egui::jump::{jump_offset, span_rows},
     viewer::{
         ViewerKind,
         audio::{self, AudioDiffProcessor, AudioSettings},
@@ -21,6 +22,7 @@ pub struct SideViewers<'a> {
     pub text_scroll: Option<ScrollSpan>,
     pub hex: Option<HexViewCtx<'a>>,
     pub hex_scroll: Option<ScrollSpan>,
+    pub center_jumps: bool,
     pub image: Option<&'a mut ImageDiffProcessor>,
     pub image_settings: Option<&'a mut ImageSettings>,
     pub audio: Option<(&'a mut AudioDiffProcessor, &'a mut AudioSettings)>,
@@ -78,6 +80,7 @@ pub fn show(
                         row_height,
                         rows,
                         sides.text_scroll,
+                        sides.center_jumps,
                         &mut text_row,
                     );
                 }
@@ -85,9 +88,14 @@ pub fn show(
             ViewerKind::Hex => {
                 if let Some(view) = &sides.hex {
                     let rows = hex::row_count(view);
-                    scrolled_rows(&mut half, row_height, rows, sides.hex_scroll, |ui, row| {
-                        hex::cell(ui, view, row, SplitColumn::Left)
-                    });
+                    scrolled_rows(
+                        &mut half,
+                        row_height,
+                        rows,
+                        sides.hex_scroll,
+                        sides.center_jumps,
+                        |ui, row| hex::cell(ui, view, row, SplitColumn::Left),
+                    );
                 }
             }
             ViewerKind::Image => {
@@ -121,11 +129,18 @@ fn scrolled_rows(
     row_height: f32,
     rows: usize,
     scroll_to: Option<ScrollSpan>,
+    center: bool,
     mut row: impl FnMut(&mut egui::Ui, usize),
 ) {
     let mut area = egui::ScrollArea::both().auto_shrink(false);
     if let Some(span) = scroll_to {
-        area = area.vertical_scroll_offset(span.start as f32 * row_height);
+        let viewport = ui.available_height();
+        area = area.vertical_scroll_offset(jump_offset(
+            span_rows(&span),
+            row_height,
+            viewport,
+            center,
+        ));
     }
     area.show_rows(ui, row_height, rows, |ui, range| {
         for index in range {

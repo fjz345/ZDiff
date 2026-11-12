@@ -37,6 +37,7 @@ pub(super) struct MenuCtx<'a> {
     pub detected_languages: [Option<&'a str>; 2],
     pub h_scroll_modifier: &'a mut WheelModifier,
     pub h_scroll_linked: &'a mut bool,
+    pub center_jumps: &'a mut bool,
     pub text_diff_shown: bool,
 }
 
@@ -60,6 +61,7 @@ impl ZApp {
             detected_languages,
             h_scroll_modifier,
             h_scroll_linked,
+            center_jumps,
             text_diff_shown,
         } = menu_ctx;
         let keymap = &keybindings.keymap;
@@ -210,6 +212,10 @@ impl ZApp {
                                 FileAction::LinkHScroll,
                                 "Scroll the left and right sides sideways together",
                             ));
+                        ui.checkbox(center_jumps, "Center Jumps").on_hover_text(
+                            "Go to line, next/previous difference and find put their target \
+                             in the middle of the view; off puts it at the top",
+                        );
                         if menu_item(ui, "P4Config", keymap, FileAction::OpenUniversalPath)
                             .clicked()
                         {

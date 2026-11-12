@@ -1,5 +1,7 @@
 //! Unified text mode: the side-by-side rows as one column, deleted lines above inserted ones.
 
+use std::ops::Range;
+
 use zdiff::{
     diff_builder::{DiffRow, LineContent},
     diff_ir::DiffOp,
@@ -166,6 +168,18 @@ pub fn unified_scroll_index(unified: &[UnifiedRow], span: &ScrollSpan) -> Option
                 .position(|u| u.row == span.start && u.side == side)
         })
         .or_else(|| unified_index_of_row(unified, span.start))
+}
+
+pub fn unified_scroll_rows(unified: &[UnifiedRow], span: &ScrollSpan) -> Option<Range<usize>> {
+    let start = unified_scroll_index(unified, span)?;
+    let last = span
+        .maybe_end
+        .and_then(|end| {
+            let rows = span.start..=end;
+            unified.iter().rposition(|u| rows.contains(&u.row))
+        })
+        .map_or(start, |last| last.max(start));
+    Some(start..last + 1)
 }
 
 #[cfg(test)]
@@ -448,6 +462,31 @@ mod tests {
     fn each_conflict_block_scrolls_to_its_first_unified_row() {
         let rows = rows_of("a\nb\nc\nd\ne\nf\n", "a\nX\nY\nd\ne\nF\n", true);
         assert_eq!(conflict_targets(&rows), vec![Some(1), Some(7)]);
+    }
+
+    #[test]
+    fn each_conflict_block_covers_its_deleted_and_inserted_unified_rows() {
+        let rows = rows_of("a\nb\nc\nd\ne\nf\n", "a\nX\nY\nd\ne\nF\n", true);
+        let unified = unified_rows(&rows);
+        let blocks: Vec<_> = precompute_diff_spans(&rows)
+            .iter()
+            .map(|span| {
+                let rows = span.rows();
+                let scroll = ScrollSpan {
+                    start: *rows.start(),
+                    maybe_end: Some(*rows.end()),
+                    side: None,
+                };
+                unified_scroll_rows(&unified, &scroll)
+            })
+            .collect();
+        assert_eq!(blocks, vec![Some(1..5), Some(7..9)]);
+        let goto = ScrollSpan {
+            start: 3,
+            maybe_end: None,
+            side: Some(ActiveSide::Left),
+        };
+        assert_eq!(unified_scroll_rows(&unified, &goto), Some(5..6));
     }
 
     #[test]

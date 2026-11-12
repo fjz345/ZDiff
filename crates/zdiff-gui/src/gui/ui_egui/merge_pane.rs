@@ -23,6 +23,7 @@ use crate::{
     ui_egui::{
         active_side::ActiveSide,
         diff_pane::{FileDiffPane, RowCtx},
+        jump::jump_offset,
         occurrence::{OccurrenceState, RowFind},
         syntax::detect_language,
     },
@@ -658,6 +659,7 @@ fn top_panes_ui(
     occurrences: &mut [OccurrenceState; 3],
     code_language: [&str; 3],
     scroll_to_row: Option<usize>,
+    center_jumps: bool,
 ) -> Option<ChunkClick> {
     let row_h = ui.text_style_height(&egui::TextStyle::Monospace);
     let pane_w = ((ui.available_width() - STRIP_WIDTH) / 3.0).max(0.0);
@@ -692,8 +694,19 @@ fn top_panes_ui(
     let mut scroll = egui::ScrollArea::vertical()
         .id_salt("merge_top_panes")
         .auto_shrink(false);
-    if let Some(row) = scroll_to_row {
-        scroll = scroll.vertical_scroll_offset(row as f32 * row_h);
+    if let Some(start) = scroll_to_row {
+        let chunk = doc.rows[start].chunk;
+        let len = doc.rows[start..]
+            .iter()
+            .take_while(|row| row.chunk == chunk)
+            .count();
+        let viewport = ui.available_height();
+        scroll = scroll.vertical_scroll_offset(jump_offset(
+            start..start + len,
+            row_h,
+            viewport,
+            center_jumps,
+        ));
     }
     scroll.show_rows(ui, row_h, doc.rows.len(), |ui, range| {
         for i in range {
@@ -1276,7 +1289,12 @@ impl MergeView {
     }
 
     /// `Some` once the view is done and closes.
-    pub fn ui(&mut self, ui: &mut egui::Ui, language_override: Option<&str>) -> Option<Closing> {
+    pub fn ui(
+        &mut self,
+        ui: &mut egui::Ui,
+        language_override: Option<&str>,
+        center_jumps: bool,
+    ) -> Option<Closing> {
         let status = self.poll();
         let scroll_to_row = self.scroll_to_row.take();
         let mut close = None;
@@ -1361,6 +1379,7 @@ impl MergeView {
                     &mut self.top_occurrences,
                     doc.languages.map(language),
                     scroll_to_row,
+                    center_jumps,
                 )
             })
             .inner;
