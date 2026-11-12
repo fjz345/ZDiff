@@ -50,6 +50,8 @@ use crate::ui_egui::fs_tree::single_side_rows;
 use crate::ui_egui::fs_tree::tree_hidden;
 use crate::ui_egui::fs_tree::two_folder_cursor_rows;
 use crate::ui_egui::panes::PathDiffView;
+use crate::ui_egui::panes::ViewChoice;
+use crate::ui_egui::panes::view_switch;
 use crate::ui_egui::roots::Side;
 use crate::ui_egui::roots::set_root_or_report;
 use crate::ui_egui::status_line::ToolMessage;
@@ -677,6 +679,7 @@ pub struct DuplicateFilesPaneCtx<'a, 'b> {
     #[allow(dead_code)]
     pub diff_action_pressed: &'a mut bool,
     pub actions: &'a [FolderAction],
+    pub view_request: &'a mut Option<ViewChoice>,
 }
 
 impl DuplicateFilesPane {
@@ -1126,6 +1129,11 @@ impl DuplicateFilesPane {
             self.ui_popups(ui, ctx);
 
             toolbar(ui, |ui| {
+                if let Some(choice) = view_switch(ui, ViewChoice::Duplicates) {
+                    *ctx.view_request = Some(choice);
+                }
+                ui.separator();
+
                 if ui.button("Open Folder").clicked() {
                     self.open_dir_window = true;
                 }
@@ -1650,6 +1658,7 @@ mod tests {
                 conflict_map_resolved: &mut self.conflict_map_resolved,
                 diff_action_pressed: &mut self.diff_action_pressed,
                 actions: &self.actions,
+                view_request: &mut None,
             };
             f(&mut ctx)
         }

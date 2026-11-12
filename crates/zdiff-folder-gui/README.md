@@ -24,14 +24,14 @@ A crash (panic) appends its message, source location and backtrace to `crash.log
     - Sort by Name or State, cursor with keyboard navigation, next/previous differing file
     - Find with highlighted names
     - Blacklist and whitelist filters with presets
-* Map view: Tree | Map in the pane toolbar (Ctrl+M)
+* Map view: Map in the pane toolbar's Tree | Map | Duplicates switch (Ctrl+M toggles Tree and Map)
     - Squarified treemap of the rows the tree shows (filters and find apply): a box per file sized by its larger side, colored by its diff state, equal files muted
     - With L (likeness) on, a box present on both sides, files and folders alike, is colored by how alike its sides are, in the likeness bar's colors (Style: Difference colors), with a legend in the breadcrumb row; boxes on one side only or not compared or measured yet keep their state color
     - A thin bar on a differing file shows the smaller side's share of the larger one
     - Hover shows the path, both sizes, the state and the likeness; click selects (the tree follows), double-click opens the diff
     - Click a folder to zoom in; the breadcrumb, Backspace or the mouse back button zoom out
     - Scroll (or Ctrl+scroll, pinch) zooms about the pointer, so boxes merged into `+N` and closed folders open up into named boxes; drag pans a zoomed map; middle-click, the Fit button, Backspace or the mouse back button show the whole folder again, and every folder change starts fitted
-* Pane toolbar: Tree | Map, Collapse All (Expand All once anything is folded) / Expand Diffs Only and the option toggles in one row, the filters below; the same toolbar look and text-labelled toggles as zdiff-gui. In a narrow window its groups wrap onto more rows instead of clipping
+* Pane toolbar: Tree | Map | Duplicates, Collapse All (Expand All once anything is folded) / Expand Diffs Only and the option toggles in one row, the filters below; the same toolbar look and text-labelled toggles as zdiff-gui. In a narrow window its groups wrap onto more rows instead of clipping
 * Tree background follows the light or dark style (Style window: Table background)
     - F: flat list by depth
     - D: diff only
@@ -45,7 +45,7 @@ A crash (panic) appends its message, source location and backtrace to `crash.log
     - Tools window with presets (zdiff-gui, TortoiseMerge, WinMerge, Beyond Compare, p4merge, VS Code, ...), argument templates, rules and a Test button
     - Executables are found next to the app, at the build path or on PATH
     - Rows a tool can't diff are marked
-* Duplicates tab
+* Duplicates view: Duplicates in the same switch (Ctrl+D toggles it with the folder diff) finds duplicate files in the left folder; its toolbar starts with the switch too, and Tree or Map goes back to the folder diff in that view
     - Size collisions hashed in the background, with progress and Cancel
     - Duplicate groups shown inline in the tree; Duplicates only, Flat, Show parent folders and Hash column toggles
     - Keep this, next/previous group, then Resolve recycles the non-keepers

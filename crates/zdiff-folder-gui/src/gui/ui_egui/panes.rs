@@ -6,7 +6,7 @@ use zcommon::{
     hash::HashService,
     logger::LogBuffer,
 };
-use zcommon_ui::pane::ZAppPane;
+use zcommon_ui::pane::{ZAppPane, toolbar_group};
 use zdiff_folder::{external_diff_tool::DiffToolConfig, filter::PathFilter};
 
 use crate::ui_egui::{
@@ -14,7 +14,7 @@ use crate::ui_egui::{
     duplicate_files_pane::{DuplicateFilesPane, DuplicateFilesPaneCtx},
     folder_keymap::FolderAction,
     fs_tree::{FileSystemView, HScrollLink, RowsId, VisibleRowTwoFolderDiff},
-    path_diff_pane::{FilterPresets, PathDiffPane, PathDiffPaneCtx},
+    path_diff_pane::{FilterPresets, PaneView, PathDiffPane, PathDiffPaneCtx},
     status_line::ToolMessage,
     tree_compare::TreeCompare,
     tree_filter::{DiffFilter, DuplicatesFilter},
@@ -33,6 +33,44 @@ pub struct PathDiffView<'a> {
     pub rows_id: RowsId,
     pub previous_roots: [Option<PathBuf>; 2],
     pub scanning: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ViewChoice {
+    Tree,
+    Map,
+    Duplicates,
+}
+
+impl ViewChoice {
+    pub fn pane_view(self) -> Option<PaneView> {
+        match self {
+            Self::Tree => Some(PaneView::Tree),
+            Self::Map => Some(PaneView::Map),
+            Self::Duplicates => None,
+        }
+    }
+}
+
+impl From<PaneView> for ViewChoice {
+    fn from(view: PaneView) -> Self {
+        match view {
+            PaneView::Tree => Self::Tree,
+            PaneView::Map => Self::Map,
+        }
+    }
+}
+
+pub fn view_switch(ui: &mut egui::Ui, current: ViewChoice) -> Option<ViewChoice> {
+    let mut choice = current;
+    toolbar_group(ui, |ui| {
+        ui.selectable_value(&mut choice, ViewChoice::Tree, "Tree");
+        ui.selectable_value(&mut choice, ViewChoice::Map, "Map")
+            .on_hover_text("Treemap: a box per file, sized by its larger side, colored by state");
+        ui.selectable_value(&mut choice, ViewChoice::Duplicates, "Duplicates")
+            .on_hover_text("Find duplicate files in the left folder");
+    });
+    (choice != current).then_some(choice)
 }
 
 pub struct TreeBehavior<'a, 'b> {
@@ -60,6 +98,7 @@ pub struct TreeBehavior<'a, 'b> {
     pub find: &'a mut TreeFindView<'b>,
     pub keyboard_taken: bool,
     pub actions: &'a [FolderAction],
+    pub view_request: &'a mut Option<ViewChoice>,
 }
 
 impl<'a, 'b> TreeBehavior<'a, 'b> {
@@ -80,6 +119,7 @@ impl<'a, 'b> TreeBehavior<'a, 'b> {
             path_diff_view: self.path_diff_view,
             keyboard_taken: self.keyboard_taken,
             actions: self.actions,
+            view_request: self.view_request,
         }
     }
 
@@ -101,6 +141,7 @@ impl<'a, 'b> TreeBehavior<'a, 'b> {
             conflict_map_resolved: self.conflict_map_resolved,
             diff_action_pressed: self.diff_action_pressed,
             actions: self.actions,
+            view_request: self.view_request,
         }
     }
 }

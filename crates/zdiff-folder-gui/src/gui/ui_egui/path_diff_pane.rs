@@ -19,7 +19,7 @@ use crate::ui_egui::{
         CursorRowsCache, DiffState, FileSystemView, FolderTreeCtx, HScrollLink, TreeMode,
         TreeTable, TwoFolderTable, draw_ui_folder_tree,
     },
-    panes::PathDiffView,
+    panes::{PathDiffView, ViewChoice, view_switch},
     roots::{Side, set_root_or_report},
     status_line::ToolMessage,
     tree_compare::TreeCompare,
@@ -51,6 +51,7 @@ pub struct PathDiffPaneCtx<'a, 'b> {
     /// for the cursor.
     pub keyboard_taken: bool,
     pub actions: &'a [FolderAction],
+    pub view_request: &'a mut Option<ViewChoice>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -73,7 +74,7 @@ pub struct PathDiffPane {
     #[serde(skip)]
     rows_cache: CursorRowsCache,
     #[serde(default)]
-    view: PaneView,
+    pub view: PaneView,
     #[serde(skip)]
     map: TreeMap,
 }
@@ -137,13 +138,12 @@ impl PathDiffPane {
         }
 
         toolbar(ui, |ui| {
-            toolbar_group(ui, |ui| {
-                ui.selectable_value(&mut self.view, PaneView::Tree, "Tree");
-                ui.selectable_value(&mut self.view, PaneView::Map, "Map")
-                    .on_hover_text(
-                        "Treemap: a box per file, sized by its larger side, colored by state",
-                    );
-            });
+            if let Some(choice) = view_switch(ui, self.view.into()) {
+                match choice.pane_view() {
+                    Some(view) => self.view = view,
+                    None => *ctx.view_request = Some(choice),
+                }
+            }
             ui.separator();
 
             toolbar_group(ui, |ui| {

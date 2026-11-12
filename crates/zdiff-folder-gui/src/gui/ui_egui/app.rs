@@ -43,7 +43,7 @@ use crate::ui_egui::{
         FileSystemView, FolderRole, HScrollLink, RowsId, VisibleRowTwoFolderDiff,
         apply_blueprint_results,
     },
-    panes::{Pane, PathDiffView, TreeBehavior},
+    panes::{Pane, PathDiffView, TreeBehavior, ViewChoice},
     path_diff_pane::{FilterPresets, PathDiffPane},
     revision_open,
     roots::{LaunchArgs, Side, apply_launch_args, clear_root, set_root, set_root_or_report},
@@ -1075,23 +1075,6 @@ impl ZApp {
                         ui.checkbox(&mut self.show_frame_breakdown, "Frame Time Breakdown");
                     });
 
-                    let diff_mode_text = if self.diff_mode_path_diff {
-                        "Change to Duplicate Diff"
-                    } else {
-                        "Change to Path Diff"
-                    };
-                    ui.menu_button("Diff Mode", |ui| {
-                        if menu_item(
-                            ui,
-                            diff_mode_text,
-                            &app_ctx.keymap,
-                            FolderAction::ToggleDiffMode,
-                        )
-                        .clicked()
-                        {
-                            self.diff_mode_path_diff = !self.diff_mode_path_diff;
-                        }
-                    });
                     #[cfg(debug_assertions)]
                     ui.menu_button("Debug", |ui| {
                         if ui.button("Clear FileSystemModels").clicked() {
@@ -1315,6 +1298,7 @@ impl ZApp {
                         .then_some(app_ctx.find_applied.query.text.as_str()),
                     chip_event: None,
                 };
+                let mut view_request = None;
                 let mut behavior = TreeBehavior {
                     log_buffer: self.log_buffer.clone(),
                     hash_service: &mut app_ctx.hash_service,
@@ -1339,10 +1323,15 @@ impl ZApp {
                     path_diff_view: &mut path_diff_view,
                     keyboard_taken,
                     actions: &actions,
+                    view_request: &mut view_request,
                 };
 
                 self.tree.ui(&mut behavior, ui);
                 let chip_event = behavior.find.chip_event;
+                if let Some(choice) = view_request {
+                    self.apply_view_choice(choice);
+                    ui.ctx().request_repaint();
+                }
                 self.frame_stats.mark("Pane drawing");
 
                 for (_tile_id, tile) in self.tree.tiles.iter() {
@@ -1497,6 +1486,25 @@ impl ZApp {
         self.tree
             .set_visible(*found_tile_id.expect("Should always find"), visible);
     }
+    fn path_diff_pane_mut(&mut self) -> &mut PathDiffPane {
+        self.tree
+            .tiles
+            .tiles_mut()
+            .find_map(|tile| match tile {
+                Tile::Pane(Pane::PathDiff(pane)) => Some(pane.as_mut()),
+                _ => None,
+            })
+            .expect("Should always find")
+    }
+    fn apply_view_choice(&mut self, choice: ViewChoice) {
+        match choice.pane_view() {
+            Some(view) => {
+                self.diff_mode_path_diff = true;
+                self.path_diff_pane_mut().view = view;
+            }
+            None => self.diff_mode_path_diff = false,
+        }
+    }
 }
 
 impl eframe::App for ZApp {
@@ -1628,7 +1636,8 @@ mod tests {
     };
     use crate::ui_egui::folder_keymap::FolderAction;
     use crate::ui_egui::fs_tree::{DiffState, FileSystemView, HScrollLink};
-    use crate::ui_egui::path_diff_pane::{BLACKLIST_PRESETS, FilterField, FilterPresets};
+    use crate::ui_egui::panes::ViewChoice;
+    use crate::ui_egui::path_diff_pane::{BLACKLIST_PRESETS, FilterField, FilterPresets, PaneView};
     use crate::ui_egui::roots::{Side, clear_root, set_root};
     use crate::ui_egui::tree_compare::PairResult;
     use crate::ui_egui::tree_filter::{DiffFilter, DuplicatesFilter, StateFilter};
@@ -3565,6 +3574,42 @@ mod tests {
         app.diff_mode_path_diff = false;
 
         assert!(settled_repaint_delay(&mut app) <= Duration::from_millis(100));
+    }
+
+    #[test]
+    fn choosing_a_view_sets_the_mode_and_the_folder_pane_view() {
+        let (_left, _right, mut app) = shown_app(HashService::new(0));
+        let ctx = egui::Context::default();
+        let choose = |app: &mut ZApp, choice: ViewChoice| {
+            app.apply_view_choice(choice);
+            repaint_delay(&ctx, app);
+            (
+                app.diff_mode_path_diff,
+                app.is_path_diff(),
+                app.path_diff_pane_mut().view,
+            )
+        };
+
+        assert_eq!(
+            choose(&mut app, ViewChoice::Map),
+            (true, true, PaneView::Map)
+        );
+        assert_eq!(
+            choose(&mut app, ViewChoice::Duplicates),
+            (false, false, PaneView::Map)
+        );
+        assert_eq!(
+            choose(&mut app, ViewChoice::Tree),
+            (true, true, PaneView::Tree)
+        );
+        assert_eq!(
+            choose(&mut app, ViewChoice::Duplicates),
+            (false, false, PaneView::Tree)
+        );
+        assert_eq!(
+            choose(&mut app, ViewChoice::Map),
+            (true, true, PaneView::Map)
+        );
     }
 
     #[test]
