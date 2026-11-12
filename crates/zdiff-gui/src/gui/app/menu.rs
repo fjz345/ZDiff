@@ -36,6 +36,7 @@ pub(super) struct MenuCtx<'a> {
     pub syntax_filter: &'a mut String,
     pub detected_languages: [Option<&'a str>; 2],
     pub h_scroll_modifier: &'a mut WheelModifier,
+    pub h_scroll_linked: &'a mut bool,
     pub text_diff_shown: bool,
 }
 
@@ -58,6 +59,7 @@ impl ZApp {
             syntax_filter,
             detected_languages,
             h_scroll_modifier,
+            h_scroll_linked,
             text_diff_shown,
         } = menu_ctx;
         let keymap = &keybindings.keymap;
@@ -203,6 +205,11 @@ impl ZApp {
                             ui.radio_value(h_scroll_modifier, WheelModifier::Shift, "Shift+Wheel");
                             ui.radio_value(h_scroll_modifier, WheelModifier::Ctrl, "Ctrl+Wheel");
                         });
+                        ui.checkbox(h_scroll_linked, "Link Horizontal Scrolling")
+                            .on_hover_text(keymap.with_shortcut(
+                                FileAction::LinkHScroll,
+                                "Scroll the left and right sides sideways together",
+                            ));
                         if menu_item(ui, "P4Config", keymap, FileAction::OpenUniversalPath)
                             .clicked()
                         {

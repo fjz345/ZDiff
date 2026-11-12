@@ -9,7 +9,6 @@ pub struct OptionSet {
     pub file_markers: bool,
     pub highlight_rows: bool,
     pub ghost_rows: bool,
-    pub h_scroll_linked: bool,
     pub word_wrap: bool,
     pub diff_only_extra_rows: Option<usize>,
 }
@@ -23,12 +22,11 @@ impl OptionSet {
         file_markers: false,
         highlight_rows: false,
         ghost_rows: false,
-        h_scroll_linked: false,
         word_wrap: false,
         diff_only_extra_rows: None,
     };
 
-    pub fn read(options: &DiffBuilderOptions, h_scroll_linked: bool, word_wrap: bool) -> Self {
+    pub fn read(options: &DiffBuilderOptions, word_wrap: bool) -> Self {
         Self {
             whitespace: options.ignore.whitespace,
             comments: options.ignore.comments,
@@ -37,18 +35,12 @@ impl OptionSet {
             file_markers: options.ignore.file_markers,
             highlight_rows: options.highlight_rows,
             ghost_rows: options.ghost_rows,
-            h_scroll_linked,
             word_wrap,
             diff_only_extra_rows: options.diff_only_with_extra_rows,
         }
     }
 
-    pub fn apply(
-        self,
-        options: &mut DiffBuilderOptions,
-        h_scroll_linked: &mut bool,
-        word_wrap: &mut bool,
-    ) {
+    pub fn apply(self, options: &mut DiffBuilderOptions, word_wrap: &mut bool) {
         options.ignore.whitespace = self.whitespace;
         options.ignore.comments = self.comments;
         options.ignore.regex_enabled = self.regex_enabled;
@@ -56,7 +48,6 @@ impl OptionSet {
         options.ignore.file_markers = self.file_markers;
         options.highlight_rows = self.highlight_rows;
         options.ghost_rows = self.ghost_rows;
-        *h_scroll_linked = self.h_scroll_linked;
         *word_wrap = self.word_wrap;
         options.diff_only_with_extra_rows = self.diff_only_extra_rows;
     }
@@ -103,7 +94,6 @@ mod tests {
             file_markers: false,
             highlight_rows: true,
             ghost_rows: false,
-            h_scroll_linked: true,
             word_wrap: true,
             diff_only_extra_rows: Some(5),
         }
@@ -170,9 +160,9 @@ mod tests {
         options.highlight_rows = true;
         options.ghost_rows = true;
         options.diff_only_with_extra_rows = Some(7);
-        let (mut linked, mut wrap) = (true, true);
+        let mut wrap = true;
 
-        let before = OptionSet::read(&options, linked, wrap);
+        let before = OptionSet::read(&options, wrap);
         assert_eq!(
             before,
             OptionSet {
@@ -183,25 +173,20 @@ mod tests {
                 file_markers: true,
                 highlight_rows: true,
                 ghost_rows: true,
-                h_scroll_linked: true,
                 word_wrap: true,
                 diff_only_extra_rows: Some(7),
             }
         );
 
         let mut toggle = ToggleAll::default();
-        toggle
-            .press(before)
-            .apply(&mut options, &mut linked, &mut wrap);
-        assert_eq!(OptionSet::read(&options, linked, wrap), OptionSet::ALL_OFF);
+        toggle.press(before).apply(&mut options, &mut wrap);
+        assert_eq!(OptionSet::read(&options, wrap), OptionSet::ALL_OFF);
         assert_eq!(options.ignore.patterns, IgnorePatterns::new("foo\\d+"));
 
-        toggle.press(OptionSet::read(&options, linked, wrap)).apply(
-            &mut options,
-            &mut linked,
-            &mut wrap,
-        );
-        assert_eq!(OptionSet::read(&options, linked, wrap), before);
+        toggle
+            .press(OptionSet::read(&options, wrap))
+            .apply(&mut options, &mut wrap);
+        assert_eq!(OptionSet::read(&options, wrap), before);
         assert_eq!(options.ignore.patterns, IgnorePatterns::new("foo\\d+"));
     }
 }

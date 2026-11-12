@@ -186,12 +186,6 @@ impl FileDiffPane {
                 );
                 toggle_button(
                     ui,
-                    ctx.h_scroll_linked,
-                    egui::RichText::new("Link").strong(),
-                    &hint(FileAction::LinkHScroll, "Link Horizontal Scrolling"),
-                );
-                toggle_button(
-                    ui,
                     ctx.word_wrap,
                     egui::RichText::new("Wrap").strong(),
                     &hint(FileAction::WordWrap, "Word Wrap"),

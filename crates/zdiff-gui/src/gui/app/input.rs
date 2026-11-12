@@ -204,16 +204,11 @@ impl ZApp {
                         FileAction::ToggleAllOptions => toggle_all_options(
                             &mut app_state_ctx.toggle_all,
                             &mut app_state_ctx.diff_options,
-                            &mut app_state_ctx.h_scroll_linked,
                             &mut app_state_ctx.word_wrap,
                         ),
                     }
                 }
-                let current = OptionSet::read(
-                    &app_state_ctx.diff_options,
-                    app_state_ctx.h_scroll_linked,
-                    app_state_ctx.word_wrap,
-                );
+                let current = OptionSet::read(&app_state_ctx.diff_options, app_state_ctx.word_wrap);
                 app_state_ctx.toggle_all.observe(current);
 
                 let handle_kb = |opt: &Option<Shortcut>, func: &mut dyn FnMut(Shortcut)| {

@@ -129,6 +129,7 @@ impl ZApp {
                     syntax_filter,
                     detected_languages: detected,
                     h_scroll_modifier,
+                    h_scroll_linked,
                     text_diff_shown,
                 },
             );
@@ -546,7 +547,6 @@ impl ZApp {
                 toggle_all_options(
                     toggle_all,
                     &mut app_ctx.diff_options,
-                    &mut app_ctx.h_scroll_linked,
                     &mut app_ctx.word_wrap,
                 );
             }

@@ -22,7 +22,7 @@ GUI for zdiff crate
     - Line pins: align chosen line pairs
     - Overview ruler beside the scrollbar; click or drag to scroll there
     - Collapsed context blocks expand, up to the enclosing scope's opening line
-    - Word wrap with aligned rows, horizontal scrolling with optional linked sides
+    - Word wrap with aligned rows, horizontal scrolling with optional linked sides (Options > Link Horizontal Scrolling, Alt+L; on by default, not part of the toolbar's All)
     - Syntax highlighting for ~190 languages (bat's syntax set), auto-detected per pane by file name, extension or first line, or picked from a filterable list (Options > Syntax Highlighting)
     - Diff status with -/+ counts and compute time per stage
     - Likeness bar at the right end of the toolbar (the same bar as zdiff-folder-gui's), with a dropdown of the metrics the viewer has (hover the bar for the formula and where the pair differs: a strip of changed lines per side, unequal bytes or the sample difference's peak, or for images a thumbnail of the difference map under the current metric): Text: matching lines, or tokens with the Token phase on, both honoring the ignore options (persisted); Hex: equal bytes at the same offset; Image: pixels within the tolerance under the image metric (the same setting as the image toolbar's Metric); Audio: 1 - RMS(left - right) / (RMS(left) + RMS(right)); Video: 1 - the timeline's mean frame difference / 255
@@ -36,7 +36,7 @@ GUI for zdiff crate
         + Diff phases (Options): Scope, Line and Token (both default), Character. Each runs only where the coarser one found a change; with none on, the lines just sit side by side
         + Inline ghost tokens (GR)
         + Diff only (D), with a context row count
-        + Link horizontal scrolling (Link), word wrap (Wrap)
+        + Word wrap (Wrap)
         + Toggle all options (All, Alt+A)
     - In-memory results cache: each diff stage keeps its last 6 results and each side its last 6 file loads (256 MB in all), keyed by the file contents and the options that stage uses, so toggling an option back or returning to an earlier pair shows at once. Unchanged local files (same size and modification time) and fixed revisions (`#rev`, `@change`, full commit SHA) are not read again; head, branch and index sides always are. Refresh and Recompute Diff compute from scratch
 * Sides, named Left and Right in menus and shortcuts

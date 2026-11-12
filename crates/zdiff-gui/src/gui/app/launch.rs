@@ -72,13 +72,10 @@ pub(super) fn apply_launch(
 pub(super) fn toggle_all_options(
     toggle_all: &mut ToggleAll,
     options: &mut DiffBuilderOptions,
-    h_scroll_linked: &mut bool,
     word_wrap: &mut bool,
 ) {
-    let current = OptionSet::read(options, *h_scroll_linked, *word_wrap);
-    toggle_all
-        .press(current)
-        .apply(options, h_scroll_linked, word_wrap);
+    let current = OptionSet::read(options, *word_wrap);
+    toggle_all.press(current).apply(options, word_wrap);
 }
 
 // Mirrors the toolbar buttons in diff_pane.
