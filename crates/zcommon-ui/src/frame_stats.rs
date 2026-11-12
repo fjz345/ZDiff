@@ -7,7 +7,7 @@ use std::{
 
 use eframe::egui;
 
-const FPS_WINDOW: Duration = Duration::from_secs(1);
+const REPAINT_RATE_WINDOW: Duration = Duration::from_secs(1);
 const MAX_FRAME_STARTS: usize = 1024;
 const IDLE_REPAINT_AFTER: Duration = Duration::from_millis(1100);
 const SAMPLES: usize = 120;
@@ -45,8 +45,8 @@ struct Stage {
 #[derive(Default)]
 pub struct FrameStats {
     frame_starts: VecDeque<Instant>,
+    repaint_rate: Option<f32>,
     fps: Option<f32>,
-    last_fps: Option<f32>,
     frame_nr: Option<u64>,
     mark: Option<Instant>,
     stages: Vec<Stage>,
@@ -76,7 +76,7 @@ impl FrameStats {
     fn begin_frame_at(&mut self, frame_nr: u64, cpu_usage: Option<f32>, now: Instant) -> bool {
         self.mark = Some(now);
         match self.frame_nr.replace(frame_nr) {
-            Some(previous) if previous == frame_nr => return self.fps.is_some(),
+            Some(previous) if previous == frame_nr => return self.repaint_rate.is_some(),
             Some(_) => self.finish_frame(cpu_usage),
             None => {}
         }
@@ -87,7 +87,7 @@ impl FrameStats {
         while self
             .frame_starts
             .front()
-            .is_some_and(|&start| now.duration_since(start) > FPS_WINDOW)
+            .is_some_and(|&start| now.duration_since(start) > REPAINT_RATE_WINDOW)
         {
             self.frame_starts.pop_front();
         }
@@ -95,11 +95,8 @@ impl FrameStats {
             .frame_starts
             .front()
             .map_or(0.0, |&oldest| now.duration_since(oldest).as_secs_f32());
-        self.fps = (span > 0.0).then(|| (self.frame_starts.len() - 1) as f32 / span);
-        if self.fps.is_some() {
-            self.last_fps = self.fps;
-        }
-        self.fps.is_some()
+        self.repaint_rate = (span > 0.0).then(|| (self.frame_starts.len() - 1) as f32 / span);
+        self.repaint_rate.is_some()
     }
 
     // eframe reports a frame's CPU time in the next frame, so it pairs with the stages finished here.
@@ -114,6 +111,18 @@ impl FrameStats {
             let cpu = Duration::from_secs_f32(cpu);
             self.cpu.push(cpu);
             self.rest.push(cpu.saturating_sub(update));
+        }
+        if let Some((_, total)) = self.total()
+            && !total.average.is_zero()
+        {
+            self.fps = Some(1.0 / total.average.as_secs_f32());
+        }
+    }
+
+    fn total(&self) -> Option<(&'static str, Timing)> {
+        match self.cpu.timing() {
+            Some(cpu) => Some(("frame CPU", cpu)),
+            None => self.update.timing().map(|update| ("update", update)),
         }
     }
 
@@ -139,11 +148,7 @@ impl FrameStats {
             .iter()
             .filter_map(|stage| Some((stage.name, stage.samples.timing()?)));
         let rest = self.rest.timing().map(|rest| ("egui + paint", rest));
-        let total = match self.cpu.timing() {
-            Some(cpu) => Some(("frame CPU", cpu)),
-            None => self.update.timing().map(|update| ("update", update)),
-        };
-        stages.chain(rest).chain(total).collect()
+        stages.chain(rest).chain(self.total()).collect()
     }
 }
 
@@ -182,7 +187,7 @@ impl IdleWake {
 pub fn fps_label(ui: &mut egui::Ui, stats: &FrameStats, show_breakdown: &mut bool) {
     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
         let mut clicked = false;
-        if let Some(fps) = stats.fps.or(stats.last_fps) {
+        if let Some(fps) = stats.fps {
             let label = egui::Label::new(
                 egui::RichText::new(format!("{fps:.0} fps"))
                     .monospace()
@@ -192,10 +197,13 @@ pub fn fps_label(ui: &mut egui::Ui, stats: &FrameStats, show_breakdown: &mut boo
             .truncate();
             clicked |= ui
                 .add(label)
-                .on_hover_text("Frame time breakdown")
+                .on_hover_text(format!(
+                    "1 / average CPU time per frame over the last {SAMPLES} frames, \
+                     vsync wait excluded. Click for the frame time breakdown."
+                ))
                 .clicked();
         }
-        if stats.fps.is_none() {
+        if stats.repaint_rate.is_none() {
             clicked |= idle_tag(ui).on_hover_text("Frame time breakdown").clicked();
         }
         if clicked {
@@ -231,9 +239,12 @@ pub fn breakdown_window(ctx: &egui::Context, stats: &FrameStats, open: &mut bool
 }
 
 fn breakdown_ui(ui: &mut egui::Ui, stats: &FrameStats) {
-    ui.label(match stats.fps {
-        Some(fps) => format!("{fps:.0} fps, {:.2} ms apart", 1000.0 / fps),
-        None => "idle".to_owned(),
+    if let (Some(fps), Some((total_name, _))) = (stats.fps, stats.total()) {
+        ui.label(format!("{fps:.0} fps = 1 / avg {total_name}"));
+    }
+    ui.label(match stats.repaint_rate {
+        Some(rate) => format!("Repaint rate {rate:.0}/s (follows input)"),
+        None => "Repaint rate: idle".to_owned(),
     });
     let rows = stats.rows();
     let total = rows
@@ -292,54 +303,128 @@ mod tests {
         }
     }
 
+    fn cpu_frames(stats: &mut FrameStats, base: Instant, cpu_secs: &[f32], times_ms: &[f64]) {
+        for (nr, &time) in times_ms.iter().enumerate() {
+            let cpu = cpu_secs[nr % cpu_secs.len()];
+            stats.begin_frame_at(nr as u64, Some(cpu), ms(base, time));
+        }
+    }
+
     fn stage(stats: &FrameStats, name: &str) -> Option<Timing> {
         let stage = stats.stages.iter().find(|stage| stage.name == name)?;
         stage.samples.timing()
     }
 
     #[test]
-    fn sixty_frames_16_7_ms_apart_measure_60_fps() {
+    fn the_fps_is_the_same_for_frames_100_ms_and_5_ms_apart() {
+        let slow_times: Vec<f64> = (0..30).map(|i| i as f64 * 100.0).collect();
+        let fast_times: Vec<f64> = (0..30).map(|i| i as f64 * 5.0).collect();
+        let (mut slow, mut fast) = (FrameStats::default(), FrameStats::default());
+
+        cpu_frames(&mut slow, Instant::now(), &[0.004], &slow_times);
+        cpu_frames(&mut fast, Instant::now(), &[0.004], &fast_times);
+
+        let (slow, fast) = (slow.fps.unwrap(), fast.fps.unwrap());
+        assert!((slow - 250.0).abs() < 0.1, "{slow}");
+        assert!((fast - 250.0).abs() < 0.1, "{fast}");
+    }
+
+    #[test]
+    fn the_fps_inverts_the_average_frame_cpu_not_the_average_rate() {
+        let times: Vec<f64> = (0..41).map(|i| i as f64 * 16.0).collect();
+        let mut stats = FrameStats::default();
+
+        cpu_frames(&mut stats, Instant::now(), &[0.001, 0.003], &times);
+
+        let fps = stats.fps.unwrap();
+        assert!((fps - 500.0).abs() < 0.1, "{fps}");
+    }
+
+    #[test]
+    fn the_fps_averages_the_frame_cpu_of_the_last_samples_frames() {
+        let times: Vec<f64> = (0..=SAMPLES + 20).map(|i| i as f64 * 16.0).collect();
+        let cpu: Vec<f32> = (0..=SAMPLES + 20)
+            .map(|nr| if nr < 20 { 0.1 } else { 0.002 })
+            .collect();
+        let mut stats = FrameStats::default();
+
+        cpu_frames(&mut stats, Instant::now(), &cpu, &times);
+
+        let fps = stats.fps.unwrap();
+        assert!((fps - 500.0).abs() < 0.1, "{fps}");
+    }
+
+    #[test]
+    fn without_frame_cpu_the_fps_inverts_the_average_update_time() {
+        let mut stats = FrameStats::default();
+        let base = Instant::now();
+        for frame in 0..4 {
+            let start = frame as f64 * 50.0;
+            stats.begin_frame_at(frame, None, ms(base, start));
+            stats.mark_at("ui", ms(base, start + 4.0));
+        }
+
+        stats.begin_frame_at(4, None, ms(base, 200.0));
+
+        let fps = stats.fps.unwrap();
+        assert!((fps - 250.0).abs() < 0.1, "{fps}");
+    }
+
+    #[test]
+    fn zero_frame_cpu_has_no_fps() {
+        let times: Vec<f64> = (0..10).map(|i| i as f64 * 16.0).collect();
+        let mut stats = FrameStats::default();
+
+        cpu_frames(&mut stats, Instant::now(), &[0.0], &times);
+
+        assert_eq!(stats.fps, None);
+    }
+
+    #[test]
+    fn sixty_frames_16_7_ms_apart_repaint_60_times_a_second() {
         let mut stats = FrameStats::default();
         let times: Vec<f64> = (0..60).map(|i| i as f64 * 1000.0 / 60.0).collect();
 
         frames(&mut stats, Instant::now(), 0, &times);
 
-        let fps = stats.fps.unwrap();
-        assert!((fps - 60.0).abs() < 0.01, "{fps}");
+        let rate = stats.repaint_rate.unwrap();
+        assert!((rate - 60.0).abs() < 0.01, "{rate}");
     }
 
     #[test]
-    fn a_single_frame_has_no_fps() {
+    fn a_single_frame_is_not_live_and_has_no_fps() {
         let mut stats = FrameStats::default();
 
-        let live = stats.begin_frame_at(0, None, Instant::now());
+        let live = stats.begin_frame_at(0, Some(0.004), Instant::now());
 
         assert!(!live);
+        assert_eq!(stats.repaint_rate, None);
         assert_eq!(stats.fps, None);
     }
 
     #[test]
-    fn a_frame_after_a_gap_longer_than_the_window_is_idle_and_keeps_the_last_fps() {
+    fn a_frame_after_a_gap_longer_than_the_window_is_idle_and_keeps_the_fps() {
         let mut stats = FrameStats::default();
         let base = Instant::now();
-        frames(&mut stats, base, 0, &[0.0, 10.0, 20.0]);
+        cpu_frames(&mut stats, base, &[0.004], &[0.0, 10.0, 20.0]);
 
-        let live = stats.begin_frame_at(3, None, ms(base, 20.0 + 1100.0));
+        let live = stats.begin_frame_at(3, Some(0.004), ms(base, 20.0 + 1100.0));
 
         assert!(!live);
-        assert_eq!(stats.fps, None);
-        assert_eq!(stats.last_fps, Some(100.0));
+        assert_eq!(stats.repaint_rate, None);
+        let fps = stats.fps.unwrap();
+        assert!((fps - 250.0).abs() < 0.1, "{fps}");
     }
 
     #[test]
-    fn a_burst_after_a_long_gap_measures_the_burst_rate() {
+    fn a_burst_after_a_long_gap_measures_the_burst_repaint_rate() {
         let mut stats = FrameStats::default();
         let base = Instant::now();
         frames(&mut stats, base, 0, &[0.0, 100.0, 200.0]);
 
         frames(&mut stats, base, 3, &[5000.0, 5005.0, 5010.0]);
 
-        assert_eq!(stats.fps, Some(200.0));
+        assert_eq!(stats.repaint_rate, Some(200.0));
     }
 
     #[test]
@@ -350,8 +435,8 @@ mod tests {
         frames(&mut stats, Instant::now(), 0, &times);
 
         assert_eq!(stats.frame_starts.len(), MAX_FRAME_STARTS);
-        let fps = stats.fps.unwrap();
-        assert!((fps - 10_000.0).abs() < 1.0, "{fps}");
+        let rate = stats.repaint_rate.unwrap();
+        assert!((rate - 10_000.0).abs() < 1.0, "{rate}");
     }
 
     #[test]

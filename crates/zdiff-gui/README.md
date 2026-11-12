@@ -61,7 +61,7 @@ GUI for zdiff crate
 * 3-way merge view: picks, chunk editing, undo/redo, conflict navigation, save (Ctrl+S)
 * Style window: text, syntax, hex and image colors, presets, and the look of empty and collapsed rows
 * Difference colors (Style window, or the Colors dropdown beside the video difference timeline): Heat (the default), Viridis, Inferno, Grayscale or Solid, one choice shared with zdiff-folder-gui for both themes. It colors the timeline bars by height, the image heatmap and its legend, the likeness bar (low end for alike, high end for unlike) and its hover maps
-* Frame rate counter at the right end of the menu bar, marked idle once frames stop; clicking it (or Options > Frame Time Breakdown) shows the average and max time per frame stage over the last 120 frames
+* Frame rate counter at the right end of the menu bar: 1 / average CPU time per frame over the last 120 frames (vsync wait excluded), so it shows what a frame costs, not how often input makes the app repaint; marked idle once frames stop; clicking it (or Options > Frame Time Breakdown) shows the average and max time per frame stage over the last 120 frames and the input-driven repaint rate
 
 ## Occurrence highlighting
 Selecting text within one row (drag, double-click a word, triple-click the line) highlights every other occurrence of that exact text in the visible rows on both sides, in purple. Matching is case-sensitive. Selections shorter than 2 characters, whitespace-only selections and selections spanning rows highlight nothing. The highlight clears with the selection (Escape, or a click elsewhere).

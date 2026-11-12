@@ -50,7 +50,7 @@ A crash (panic) appends its message, source location and backtrace to `crash.log
 * Undo (Ctrl+Z, mouse back) and redo (Ctrl+Y, Ctrl+Shift+Z, mouse forward) of root changes on either side, revision picks included, and swap sides, up to 100 steps; filters, sort and folding are not undone. Over a zoomed-in map the back button zooms out instead
 * Customizable keybindings (Ctrl+O), shared with zdiff-gui for the common actions (undo and redo included); the middle, back and forward mouse buttons can be bound too, style window
 * Difference colors in the style window (Heat by default, Viridis, Inferno, Grayscale, Solid), shared with zdiff-gui: they color the likeness bars and their hover maps
-* Frame rate counter at the right end of the menu bar, marked idle once frames stop; clicking it (or Options > Frame Time Breakdown) shows the average and max time per frame stage over the last 120 frames
+* Frame rate counter at the right end of the menu bar: 1 / average CPU time per frame over the last 120 frames (vsync wait excluded), so it shows what a frame costs, not how often input makes the app repaint; marked idle once frames stop; clicking it (or Options > Frame Time Breakdown) shows the average and max time per frame stage over the last 120 frames and the input-driven repaint rate
 
 ## Configuration
 
