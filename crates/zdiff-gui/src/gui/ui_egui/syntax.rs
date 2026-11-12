@@ -140,6 +140,13 @@ const VARIANTS: &[(&str, &[&str])] = &[
     ("TypeScript", &["TypeScriptReact"]),
 ];
 
+pub fn variant_base(name: &str) -> Option<&'static str> {
+    VARIANTS
+        .iter()
+        .find(|(_, variants)| variants.contains(&name))
+        .map(|&(base, _)| base)
+}
+
 pub struct Language {
     pub name: &'static str,
     extensions: &'static [String],
@@ -177,9 +184,7 @@ pub fn languages() -> &'static [Language] {
             .map(|syntax| Language {
                 name: &syntax.name,
                 extensions: &syntax.file_extensions,
-                is_variant: VARIANTS
-                    .iter()
-                    .any(|(_, variants)| variants.contains(&syntax.name.as_str())),
+                is_variant: variant_base(&syntax.name).is_some(),
             })
             .collect();
         languages.sort_by_cached_key(|language| language.name.to_lowercase());
