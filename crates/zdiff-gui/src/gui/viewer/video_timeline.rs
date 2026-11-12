@@ -233,7 +233,15 @@ pub struct VideoTimeline {
     values: Vec<f32>,
     sum: f64,
     metric: PixelMetric,
+    finished: Vec<FinishedMetric>,
     run_job: Job<TimelineMessage>,
+}
+
+#[derive(Debug)]
+struct FinishedMetric {
+    metric: PixelMetric,
+    values: Vec<f32>,
+    sum: f64,
 }
 
 impl Default for VideoTimeline {
@@ -246,6 +254,7 @@ impl Default for VideoTimeline {
             values: Vec::new(),
             sum: 0.0,
             metric: PixelMetric::default(),
+            finished: Vec::new(),
             run_job: Job::new(|| {}).on_panic(|e| TimelineMessage::Done(Err(Some(e)))),
         }
     }
@@ -258,6 +267,7 @@ impl VideoTimeline {
             inputs,
             tracks,
         });
+        self.finished.clear();
         self.run();
     }
 
@@ -282,8 +292,24 @@ impl VideoTimeline {
         if self.metric == metric {
             return;
         }
+        if self.job.is_some() && self.state == TimelineState::Done {
+            self.finished.push(FinishedMetric {
+                metric: self.metric,
+                values: std::mem::take(&mut self.values),
+                sum: self.sum,
+            });
+        }
         self.metric = metric;
-        self.compute_again();
+        match self.finished.iter().position(|f| f.metric == metric) {
+            Some(index) => {
+                self.stop();
+                let finished = self.finished.swap_remove(index);
+                self.values = finished.values;
+                self.sum = finished.sum;
+                self.state = TimelineState::Done;
+            }
+            None => self.compute_again(),
+        }
     }
 
     fn stop(&mut self) {
@@ -295,6 +321,7 @@ impl VideoTimeline {
         self.job = None;
         self.state = TimelineState::Done;
         self.clear_values();
+        self.finished.clear();
     }
 
     fn clear_values(&mut self) {
@@ -733,5 +760,80 @@ mod tests {
         timeline.set_metric(PixelMetric::Exact);
         assert!(timeline.running());
         poll_until_stopped(&mut timeline);
+    }
+
+    fn finish_with(timeline: &mut VideoTimeline, values: &[f32]) {
+        poll_until_stopped(timeline);
+        timeline.state = TimelineState::Done;
+        for &value in values {
+            timeline.push(value);
+        }
+    }
+
+    fn ratio(timeline: &VideoTimeline) -> f64 {
+        match timeline.likeness() {
+            Some(Likeness::Measured { ratio, .. }) => ratio,
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn switching_back_to_a_finished_metric_restores_its_values_without_computing() {
+        let mut timeline = VideoTimeline::default();
+        start(&mut timeline);
+        finish_with(&mut timeline, &[0.0, 51.0]);
+
+        timeline.set_metric(PixelMetric::Ssim);
+        assert!(timeline.running() && timeline.values.is_empty());
+        timeline.cancel();
+        timeline.compute_again();
+        finish_with(&mut timeline, &[102.0]);
+
+        timeline.set_metric(PixelMetric::Exact);
+        assert!(!timeline.running());
+        assert_eq!(timeline.state, TimelineState::Done);
+        assert_eq!(timeline.values, [0.0, 51.0]);
+        assert_eq!(ratio(&timeline), 0.9);
+
+        timeline.set_metric(PixelMetric::Ssim);
+        assert!(!timeline.running());
+        assert_eq!(timeline.values, [102.0]);
+        assert_eq!(ratio(&timeline), 0.6);
+    }
+
+    #[test]
+    fn a_metric_left_before_it_finished_computes_again() {
+        let mut timeline = VideoTimeline::default();
+        start(&mut timeline);
+        finish_with(&mut timeline, &[51.0]);
+
+        timeline.set_metric(PixelMetric::Ssim);
+        assert!(timeline.running());
+        timeline.set_metric(PixelMetric::Exact);
+        assert!(!timeline.running());
+        assert_eq!(timeline.values, [51.0]);
+
+        timeline.set_metric(PixelMetric::Ssim);
+        assert!(timeline.running());
+        poll_until_stopped(&mut timeline);
+        assert!(matches!(timeline.state, TimelineState::Failed(_)));
+        timeline.set_metric(PixelMetric::Exact);
+        timeline.set_metric(PixelMetric::Ssim);
+        assert!(timeline.running());
+    }
+
+    #[test]
+    fn a_new_pair_drops_the_finished_metrics() {
+        let mut timeline = VideoTimeline::default();
+        start(&mut timeline);
+        finish_with(&mut timeline, &[51.0]);
+        timeline.set_metric(PixelMetric::Ssim);
+        finish_with(&mut timeline, &[102.0]);
+
+        timeline.clear();
+        start(&mut timeline);
+        finish_with(&mut timeline, &[10.0]);
+        timeline.set_metric(PixelMetric::Exact);
+        assert!(timeline.running() && timeline.values.is_empty());
     }
 }

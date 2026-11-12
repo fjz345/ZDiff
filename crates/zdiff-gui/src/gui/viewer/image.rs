@@ -486,8 +486,31 @@ impl CompareKey {
         self.generation == other.generation && self.channel == other.channel
     }
 
+    fn same_placement(&self, other: &CompareKey) -> bool {
+        self.same_pixels(other) && self.alignment == other.alignment
+    }
+
     fn same_map(&self, other: &CompareKey) -> bool {
-        self.same_pixels(other) && (self.metric, self.alignment) == (other.metric, other.alignment)
+        self.same_placement(other) && self.metric == other.metric
+    }
+}
+
+// Every metric computed for one placement, so switching back to one only thresholds it again.
+#[derive(Default)]
+struct MetricMaps(Vec<(CompareKey, Arc<MetricMap>)>);
+
+impl MetricMaps {
+    fn get(&self, key: &CompareKey) -> Option<&Arc<MetricMap>> {
+        self.0
+            .iter()
+            .find(|(cached, _)| cached.same_map(key))
+            .map(|(_, map)| map)
+    }
+
+    fn keep(&mut self, key: CompareKey, map: Arc<MetricMap>) {
+        self.0
+            .retain(|(cached, _)| cached.same_placement(&key) && cached.metric != key.metric);
+        self.0.push((key, map));
     }
 }
 
@@ -575,8 +598,7 @@ pub struct ImageDiffProcessor {
     diff_map: Option<DiffMap>,
     heat: Option<HeatLayer>,
     histograms: Option<(CompareKey, Arc<[Histogram; 2]>)>,
-    // A tolerance change only thresholds this again.
-    metric_map: Option<(CompareKey, Arc<MetricMap>)>,
+    metric_maps: MetricMaps,
     /// The sampling the uploaded textures were made with.
     texture_sampling: ImageSampling,
     texture_channel: ImageChannel,
@@ -626,7 +648,7 @@ impl Default for ImageDiffProcessor {
             diff_map: None,
             heat: None,
             histograms: None,
-            metric_map: None,
+            metric_maps: MetricMaps::default(),
             texture_sampling: ImageSampling::default(),
             texture_channel: ImageChannel::default(),
             repaint,
@@ -673,7 +695,7 @@ impl ImageDiffProcessor {
         self.diff_map = None;
         self.heat = None;
         self.histograms = None;
-        self.metric_map = None;
+        self.metric_maps = MetricMaps::default();
     }
 
     fn key(&self) -> CompareKey {
@@ -721,9 +743,9 @@ impl ImageDiffProcessor {
                 result.histograms = None;
             }
             if let Some(map) = result.map
-                && result.key.same_map(&self.key())
+                && result.key.same_placement(&self.key())
             {
-                self.metric_map = Some((result.key, map));
+                self.metric_maps.keep(result.key, map);
             }
             if let Some((stats, mask)) = result.diff {
                 self.diff_map = Some(DiffMap {
@@ -761,11 +783,7 @@ impl ImageDiffProcessor {
         }
         self.requested = Some((key, missing));
 
-        let cached_map = self
-            .metric_map
-            .as_ref()
-            .filter(|(cached, _)| cached.same_map(&key))
-            .map(|(_, map)| map.clone());
+        let cached_map = self.metric_maps.get(&key).cloned();
         let (tolerance, channel, gradient) = (key.tolerance, key.channel, self.heat_gradient);
         self.compare_job.start(move |job| {
             let cancel_flag: &AtomicBool = job.cancel_flag();
@@ -829,11 +847,7 @@ impl ImageDiffProcessor {
         else {
             return;
         };
-        let Some((_, map)) = self
-            .metric_map
-            .as_ref()
-            .filter(|(key, _)| key.same_map(&heat.key))
-        else {
+        let Some(map) = self.metric_maps.get(&heat.key) else {
             return;
         };
         heat.image = heat_image(map, heat.key.tolerance, self.heat_gradient);
@@ -957,12 +971,12 @@ impl ImageDiffProcessor {
     }
 
     pub fn difference_map(&self) -> Option<&Arc<MetricMap>> {
-        self.metric_map.as_ref().map(|(_, map)| map)
+        self.metric_maps.get(&self.key())
     }
 
     fn difference_text(&self) -> Option<String> {
-        let (key, map) = self.metric_map.as_ref()?;
-        Some(match key.metric {
+        let map = self.difference_map()?;
+        Some(match self.shown_metric {
             PixelMetric::Ssim => format!("Mean SSIM {:.4}", 1.0 - map.difference),
             _ => format!("Mean difference {:.2} of 255", map.difference * 255.0),
         })
@@ -2696,11 +2710,15 @@ mod tests {
         assert!(!processor.comparing());
     }
 
+    fn shown_map(processor: &ImageDiffProcessor) -> Arc<MetricMap> {
+        processor.difference_map().unwrap().clone()
+    }
+
     #[test]
-    fn a_tolerance_change_reuses_the_metric_map_and_a_metric_or_alignment_change_does_not() {
+    fn a_tolerance_change_reuses_the_metric_map() {
         let mut processor = red_pair_processor(ImageMode::Heatmap);
         poll_until(&mut processor, |p| !p.comparing());
-        let cached = processor.metric_map.as_ref().unwrap().1.clone();
+        let cached = shown_map(&processor);
         assert_eq!(
             processor.difference_text().as_deref(),
             Some("Mean difference 30.00 of 255")
@@ -2710,17 +2728,22 @@ mod tests {
         assert!(processor.comparing());
         poll_until(&mut processor, |p| !p.comparing());
         assert_eq!(changed(&processor), Some((10, 1, 1)));
-        assert!(Arc::ptr_eq(
-            &cached,
-            &processor.metric_map.as_ref().unwrap().1
-        ));
+        assert!(Arc::ptr_eq(&cached, &shown_map(&processor)));
+    }
+
+    #[test]
+    fn switching_back_to_a_computed_metric_reuses_its_map() {
+        let mut processor = red_pair_processor(ImageMode::Heatmap);
+        poll_until(&mut processor, |p| !p.comparing());
+        let exact = shown_map(&processor);
 
         processor.shown_metric = PixelMetric::Ssim;
         assert!(processor.comparing());
+        assert!(processor.difference_map().is_none());
+        assert_eq!(processor.difference_text(), None);
         poll_until(&mut processor, |p| !p.comparing());
-        let (key, map) = processor.metric_map.as_ref().unwrap();
-        assert_eq!(key.metric, PixelMetric::Ssim);
-        assert!(!Arc::ptr_eq(&cached, map));
+        let ssim = shown_map(&processor);
+        assert!(!Arc::ptr_eq(&exact, &ssim));
         assert_eq!(
             processor.difference_text().as_deref(),
             Some("Mean SSIM 0.1378")
@@ -2730,13 +2753,115 @@ mod tests {
             PixelMetric::Ssim
         );
 
+        processor.shown_metric = PixelMetric::Exact;
+        poll_until(&mut processor, |p| !p.comparing());
+        assert!(Arc::ptr_eq(&exact, &shown_map(&processor)));
+        assert_eq!(
+            processor.diff_map.as_ref().unwrap().key.metric,
+            PixelMetric::Exact
+        );
+        assert_eq!(
+            processor.heat.as_ref().unwrap().key.metric,
+            PixelMetric::Exact
+        );
+        assert_eq!(
+            processor.difference_text().as_deref(),
+            Some("Mean difference 30.00 of 255")
+        );
+
+        processor.shown_metric = PixelMetric::Ssim;
+        poll_until(&mut processor, |p| !p.comparing());
+        assert!(Arc::ptr_eq(&ssim, &shown_map(&processor)));
+        assert_eq!(
+            processor.heat.as_ref().unwrap().key.metric,
+            PixelMetric::Ssim
+        );
+    }
+
+    fn with_exact_and_ssim_maps() -> (ImageDiffProcessor, Arc<MetricMap>) {
+        let mut processor = red_pair_processor(ImageMode::Difference);
+        poll_until(&mut processor, |p| !p.comparing());
+        let exact = shown_map(&processor);
+        processor.shown_metric = PixelMetric::Ssim;
+        poll_until(&mut processor, |p| !p.comparing());
+        processor.shown_metric = PixelMetric::Exact;
+        poll_until(&mut processor, |p| !p.comparing());
+        assert_eq!(processor.metric_maps.0.len(), 2);
+        (processor, exact)
+    }
+
+    #[test]
+    fn an_alignment_change_computes_the_metric_maps_again() {
+        let (mut processor, exact) = with_exact_and_ssim_maps();
         processor.shown_alignment = Alignment::Center;
         assert!(processor.comparing());
         poll_until(&mut processor, |p| !p.comparing());
-        assert_eq!(
-            processor.metric_map.as_ref().unwrap().0.alignment,
-            Alignment::Center
+        assert_eq!(processor.metric_maps.0.len(), 1);
+
+        processor.shown_alignment = Alignment::TopLeft;
+        assert!(processor.comparing());
+        poll_until(&mut processor, |p| !p.comparing());
+        assert!(!Arc::ptr_eq(&exact, &shown_map(&processor)));
+        processor.shown_metric = PixelMetric::Ssim;
+        assert!(processor.comparing());
+    }
+
+    #[test]
+    fn a_channel_change_computes_the_metric_maps_again() {
+        let (mut processor, exact) = with_exact_and_ssim_maps();
+        processor.shown_channel = ImageChannel::Red;
+        assert!(processor.comparing());
+        poll_until(&mut processor, |p| !p.comparing());
+        assert_eq!(processor.metric_maps.0.len(), 1);
+
+        processor.shown_channel = ImageChannel::All;
+        poll_until(&mut processor, |p| !p.comparing());
+        assert!(!Arc::ptr_eq(&exact, &shown_map(&processor)));
+    }
+
+    #[test]
+    fn new_files_drop_the_metric_maps() {
+        let (mut processor, _) = with_exact_and_ssim_maps();
+        let first = RgbaImage::from_raw(1, 1, vec![0, 0, 0, 255]).unwrap();
+        let second = RgbaImage::from_raw(1, 1, vec![60, 0, 0, 255]).unwrap();
+        processor.request(
+            Some(png_file("c.png", &first)),
+            Some(png_file("d.png", &second)),
         );
+        assert!(processor.metric_maps.0.is_empty());
+        poll_until(&mut processor, |p| p.difference_map().is_some());
+        assert_eq!(
+            processor.difference_text().as_deref(),
+            Some("Mean difference 60.00 of 255")
+        );
+        processor.shown_metric = PixelMetric::Ssim;
+        assert!(processor.comparing());
+    }
+
+    #[test]
+    fn a_new_frame_computes_every_metric_again() {
+        let mut processor = ImageDiffProcessor::default();
+        let second = frame(1, 0);
+        processor.set_images(
+            [
+                ImageSide::Image(frame(1, 0)),
+                ImageSide::Image(second.clone()),
+            ],
+            usize::MAX,
+        );
+        poll_until(&mut processor, |p| !p.comparing());
+        processor.shown_metric = PixelMetric::Ssim;
+        poll_until(&mut processor, |p| !p.comparing());
+
+        processor.set_images(
+            [ImageSide::Image(frame(1, 40)), ImageSide::Image(second)],
+            usize::MAX,
+        );
+        assert!(processor.difference_map().is_none());
+        poll_until(&mut processor, |p| !p.comparing());
+        assert_eq!(processor.metric_maps.0.len(), 1);
+        processor.shown_metric = PixelMetric::Exact;
+        assert!(processor.comparing());
     }
 
     #[test]
