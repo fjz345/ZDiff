@@ -1416,10 +1416,11 @@ pub fn show(
                 );
             }
             SideState::Decoded { image, texture } => {
-                // In one view the second side's info goes on the right, where its image is shown.
+                // Swipe and overlay show both infos at once; the second side's goes on the right.
                 let info_side = match settings.mode {
                     ImageMode::Swipe => shown_sides[index],
-                    _ => index,
+                    ImageMode::Overlay => index,
+                    _ => 0,
                 };
                 let (info_pos, info_align) = if combined && info_side == 1 {
                     (columns[index].right_top(), egui::Align2::RIGHT_TOP)
