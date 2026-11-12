@@ -78,7 +78,7 @@ pub(super) fn toggle_all_options(
     toggle_all.press(current).apply(options, word_wrap);
 }
 
-// Mirrors the toolbar buttons in diff_pane.
+// Mirrors the toolbar buttons in diff_pane and the Options menu checkboxes.
 pub(super) fn toggle_option(ctx: &mut AppStateCtx, action: FileAction) {
     let options = &mut ctx.diff_options;
     let flip = |b: &mut bool| *b = !*b;

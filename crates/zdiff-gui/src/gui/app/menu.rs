@@ -199,7 +199,8 @@ impl ZApp {
                                 .auto_shrink([ui.is_sizing_pass(), true])
                                 .show(ui, |ui| {
                                     for language in syntax::languages().iter().filter(|l| {
-                                        l.listed(syntax_filter, *search_syntax_variants)
+                                        selected == Some(l.name)
+                                            || l.listed(syntax_filter, *search_syntax_variants)
                                     }) {
                                         ui.horizontal(|ui| {
                                             show_language_icon(ui, icon_for(language.name));
