@@ -1066,6 +1066,12 @@ impl ZApp {
                         {
                             self.style_window.open(ui.ctx());
                         }
+                        ui.add_enabled_ui(self.diff_mode_path_diff, |ui| {
+                            ui.checkbox(&mut app_ctx.h_scroll_link.0, "Link Horizontal Scrolling")
+                                .on_hover_text(
+                                    "Scroll the left and right folder sides sideways together",
+                                );
+                        });
                         ui.checkbox(&mut self.show_frame_breakdown, "Frame Time Breakdown");
                     });
 

@@ -38,7 +38,7 @@ A crash (panic) appends its message, source location and backtrace to `crash.log
     - P: show parent folders (with diff only)
     - L: likeness bar, how alike each pair is (lines, pixels or bytes); hovering a file's bar shows where it differs, computed on the first hover: text a strip of changed lines per side, binary a strip of unequal bytes, images a thumbnail of the per-pixel difference
     - T: tolerance, differing files that pass the size, modification time or likeness criteria count as Similar
-    - Link: horizontal scroll of both sides together
+* Options > Link Horizontal Scrolling (on by default): both folder sides scroll sideways together; off scrolls them independently
 * Sides named Left and Right (menus, shortcuts, status line); an empty pane offers Open Left / Open Right and takes dropped folders, and shows a spinner while the first scan runs; a root that can't be opened (a dropped file, a missing folder, a bad command-line folder) is named in the status line
 * Roots at a git revision or a Perforce depot folder, changelist or shelf, picked from a "Source control" dropdown next to each path bar; its "Back to ..." entry returns to the side's previous revision of the same folder
 * External diff tools

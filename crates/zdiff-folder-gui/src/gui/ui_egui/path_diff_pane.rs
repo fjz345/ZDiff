@@ -230,12 +230,6 @@ impl PathDiffPane {
                 options_menu_button(ui, "Tolerance criteria", |ui| {
                     draw_tolerance_settings(ui, ctx.tolerance)
                 });
-                toggle_button(
-                    ui,
-                    &mut ctx.h_scroll_link.0,
-                    RichText::new("Link").strong(),
-                    "Link horizontal scroll: scroll both folder sides sideways together",
-                );
             });
         });
 
