@@ -1,5 +1,9 @@
 use super::*;
 
+const DROP_ZONE_INSET: f32 = 8.0;
+const DROP_ZONE_DASH: f32 = 6.0;
+const DROP_ZONE_GAP: f32 = 4.0;
+
 pub(super) fn handle_drops(
     ui: &egui::Ui,
     load_file_1_request: &mut Option<UniversalPath>,
@@ -46,6 +50,41 @@ pub(super) fn drop_rects(
     }
     let (left, right) = pane.split_left_right_at_fraction(0.5);
     shown.map(|column| [left, right][column])
+}
+
+pub(super) fn welcome_drop_rects(
+    side_rects: [egui::Rect; 2],
+    pane: egui::Rect,
+    shown: [usize; 2],
+) -> [egui::Rect; 2] {
+    let [left, right] = shown.map(|side| side_rects[side]);
+    let divider = (left.max.x + right.min.x) / 2.0;
+    if !divider.is_finite() {
+        return drop_rects([egui::Rect::NOTHING; 2], pane, shown);
+    }
+    let (left, right) = pane.split_left_right_at_x(divider);
+    shown.map(|column| [left, right][column])
+}
+
+pub(super) fn paint_drop_zones(ui: &egui::Ui, side_rects: [egui::Rect; 2]) {
+    let stroke = egui::Stroke::new(1.0, ui.visuals().weak_text_color());
+    for zone in side_rects.map(|rect| rect.shrink(DROP_ZONE_INSET)) {
+        if zone.is_positive() {
+            let outline = [
+                zone.left_top(),
+                zone.right_top(),
+                zone.right_bottom(),
+                zone.left_bottom(),
+                zone.left_top(),
+            ];
+            ui.painter().extend(egui::Shape::dashed_line(
+                &outline,
+                stroke,
+                DROP_ZONE_DASH,
+                DROP_ZONE_GAP,
+            ));
+        }
+    }
 }
 
 pub(super) fn file_path_segments(path: &UniversalPath, label: Option<&str>) -> Vec<PathSegment> {
@@ -406,6 +445,44 @@ mod tests {
         }
 
         #[test]
+        fn a_welcome_pane_takes_a_drop_anywhere_in_a_column_split_at_the_divider() {
+            use super::super::{drop_rects, welcome_drop_rects};
+            use crate::ui_egui::active_side::shown_sides;
+            use eframe::egui::{Rect, pos2};
+
+            let pane = Rect::from_min_max(pos2(0.0, 0.0), pos2(100.0, 50.0));
+            let columns = [
+                Rect::from_min_max(pos2(0.0, 10.0), pos2(20.0, 50.0)),
+                Rect::from_min_max(pos2(30.0, 10.0), pos2(100.0, 50.0)),
+            ];
+            let left_points = [pos2(5.0, 2.0), pos2(24.0, 30.0)];
+            let right_points = [pos2(26.0, 30.0), pos2(90.0, 2.0)];
+
+            for swapped in [false, true] {
+                let shown = shown_sides(swapped);
+                let side_rects = shown.map(|column| columns[column]);
+                let [file_1, file_2] = welcome_drop_rects(side_rects, pane, shown);
+                let (on_left, on_right) = if swapped {
+                    (file_2, file_1)
+                } else {
+                    (file_1, file_2)
+                };
+                for point in left_points {
+                    assert!(on_left.contains(point) && !on_right.contains(point));
+                }
+                for point in right_points {
+                    assert!(on_right.contains(point) && !on_left.contains(point));
+                }
+            }
+
+            let no_rows = [Rect::NOTHING; 2];
+            assert_eq!(
+                welcome_drop_rects(no_rows, pane, shown_sides(false)),
+                drop_rects(no_rows, pane, shown_sides(false))
+            );
+        }
+
+        #[test]
         fn a_pane_with_a_file_but_no_diff_yet_waits_for_it_instead_of_welcoming() {
             use super::super::{NoDiffState, no_diff_state};
 
@@ -439,5 +516,4 @@ mod tests {
             );
         }
     }
-
 }

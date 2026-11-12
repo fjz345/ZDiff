@@ -43,7 +43,7 @@ GUI for zdiff crate
 * Sides, named Left and Right in menus and shortcuts
     - Breadcrumb path bar per side under a breadcrumb root bar, and a folder browser over that side to pick another file
     - The path bars stay shown with no files loaded ("No file", "No root folder"), so a path can be typed before any diff
-    - An empty pane offers Open Left / Open Right and takes a dropped file on either half, for the side whose header that half shows (also with the sides swapped); files that fail to load show their errors there instead
+    - An empty pane shows both sides under their path bars, each outlined as a drop target, with the welcome and Open Left / Open Right over them. It takes a dropped file anywhere in either side's column, path bars included, split at the divider, for the side whose header that column shows (also with the sides swapped); files that fail to load show their errors there instead
     - The toolbar wraps onto more rows in a narrow window instead of clipping; the diff status moves to its own row when it doesn't fit
     - Local paths, Perforce depot paths, changelists and shelves, git revisions, picked from a "Source control" dropdown per side; its "Back to ..." entry returns to the side's previous revision of the same file, with the header label it had (a quick diff's, for one), as undo does
     - Diff a depot file against its local file (Ctrl+L), a shelved file against its base revision (Ctrl+B)

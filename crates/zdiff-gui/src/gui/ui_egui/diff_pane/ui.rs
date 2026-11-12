@@ -362,6 +362,20 @@ impl FileDiffPane {
             do_not_render_diff = false;
         }
         let diff_rows_len = diff_rows.map(|f| f.len()).unwrap_or_else(|| 0);
+        let no_diff = (do_not_render_diff && !waiting_for_diff).then(|| {
+            let load_errors = [
+                ctx.file_source_load_error.as_deref(),
+                ctx.file_target_load_error.as_deref(),
+            ];
+            let error = ctx
+                .launch_error
+                .map(str::to_owned)
+                .or_else(|| load_error_text(load_errors));
+            let loading = ctx.file_source_loading || ctx.file_target_loading;
+            let any_path = !(ctx.file_source_path.is_empty() && ctx.file_target_path.is_empty());
+            no_diff_state(error, loading, any_path)
+        });
+        let welcome = no_diff == Some(NoDiffState::Welcome);
 
         ui.add_space(4.0);
         ui.style_mut().override_text_style = Some(egui::TextStyle::Monospace);
@@ -388,8 +402,9 @@ impl FileDiffPane {
             ui.set_min_width(available_width);
 
             if table_height > 0.0 {
-                // Without a diff only the path bars show; the pane state fills the rest.
-                let height = if do_not_render_diff {
+                // Without a diff only the path bars show and the pane state fills the rest; the
+                // welcome sits over the empty sides instead, which show where to drop files.
+                let height = if do_not_render_diff && !welcome {
                     header_height.min(table_height)
                 } else {
                     table_height
@@ -986,7 +1001,7 @@ impl FileDiffPane {
                                         };
                             // The table fills what it is given, so header-only gets just the header.
                             // One child id in both cases keeps the path bars' state across a switch.
-                            let rect = if header_only {
+                            let rect = if header_only && !welcome {
                                 egui::Rect::from_min_size(
                                     area.min,
                                     egui::vec2(area.width(), *header_height),
@@ -1076,7 +1091,7 @@ impl FileDiffPane {
                             }
                             if ctx.image_view.is_some() || ctx.video_frames.is_some() {
                                 image_left_width = Some(output.side_rects[0].width());
-                            } else if !header_only {
+                            } else if !header_only || welcome {
                                 side_rects = shown.map(|column| output.side_rects[column]);
                             }
                             if let (Some(image_view), Some(image_cfg), Some(left_width)) = (
@@ -1166,18 +1181,8 @@ impl FileDiffPane {
 
             if waiting_for_diff {
                 loading_state(ui, "Comparing files...");
-            } else if do_not_render_diff {
-                let load_errors = [
-                    ctx.file_source_load_error.as_deref(),
-                    ctx.file_target_load_error.as_deref(),
-                ];
-                let error = ctx
-                    .launch_error
-                    .map(str::to_owned)
-                    .or_else(|| load_error_text(load_errors));
-                let loading = ctx.file_source_loading || ctx.file_target_loading;
-                let any_path = !(ctx.file_source_path.is_empty() && ctx.file_target_path.is_empty());
-                match no_diff_state(error, loading, any_path) {
+            } else if let Some(state) = no_diff {
+                match state {
                     NoDiffState::Error(error) => {
                         error_state(ui, &error);
                     }
@@ -1185,17 +1190,25 @@ impl FileDiffPane {
                         loading_state(ui, text);
                     }
                     NoDiffState::Welcome => {
-                        let (_, clicked) = empty_state(
-                            ui,
-                            "Welcome to ZDiff",
-                            "Drag and drop files here or use the buttons below to start comparing.",
-                            &["Open Left", "Open Right"],
-                        );
-                        *ctx.open_file_request = match clicked {
-                            Some(0) => Some(ActiveSide::Left),
-                            Some(_) => Some(ActiveSide::Right),
-                            None => None,
-                        };
+                        let body = side_rects[0].union(side_rects[1]);
+                        if body.is_positive() {
+                            paint_drop_zones(ui, side_rects);
+                            let mut welcome_ui = ui.new_child(
+                                UiBuilder::new().max_rect(body).id_salt("welcome"),
+                            );
+                            welcome_ui.set_clip_rect(body.intersect(ui.clip_rect()));
+                            let (_, clicked) = empty_state(
+                                &mut welcome_ui,
+                                "Welcome to ZDiff",
+                                "Drag and drop files here or use the buttons below to start comparing.",
+                                &["Open Left", "Open Right"],
+                            );
+                            *ctx.open_file_request = match clicked {
+                                Some(0) => Some(ActiveSide::Left),
+                                Some(_) => Some(ActiveSide::Right),
+                                None => None,
+                            };
+                        }
                     }
                 }
             }
@@ -1273,7 +1286,7 @@ impl FileDiffPane {
         }
 
         let active_rect = side_rects[h_scroll::side_index(active_side)];
-        if active_rect.is_positive() {
+        if active_rect.is_positive() && !welcome {
             ui.painter()
                 .rect_stroke(active_rect, 0.0, outline_stroke(), egui::StrokeKind::Inside);
         }
@@ -1285,7 +1298,11 @@ impl FileDiffPane {
                 .data_mut(|data| data.insert_temp(wheel_rects_id(), side_rects));
         }
 
-        let [file_1_drop_rect, file_2_drop_rect] = drop_rects(side_rects, content_rect, shown);
+        let [file_1_drop_rect, file_2_drop_rect] = if welcome {
+            welcome_drop_rects(side_rects, content_rect, shown)
+        } else {
+            drop_rects(side_rects, content_rect, shown)
+        };
         handle_drops(
             ui,
             ctx.load_file_1_request,
