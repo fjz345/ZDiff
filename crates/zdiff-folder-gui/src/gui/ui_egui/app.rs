@@ -241,6 +241,20 @@ impl AppStateCtx {
         std::array::from_fn(|side| previous_root(&self.nav_history, side, roots[side].as_deref()?))
     }
 
+    fn rows_inputs_changed(&self) -> bool {
+        self.two_folder_diff_rows_filter != self.path_filter
+            || self.two_folder_diff_rows_sort != self.tree_sort
+            || self.two_folder_diff_rows_diff_filter != self.diff_filter
+            || self.two_folder_diff_rows_tolerance != self.tolerance
+    }
+
+    // Without a shown view the rebuild never records its inputs, so they would stay stale.
+    fn rows_are_stale(&self) -> bool {
+        let shown =
+            self.file_system_model_1_view.is_some() || self.file_system_model_2_view.is_some();
+        shown && (self.rows_inputs_changed() || self.two_folder_diff_rows_find != self.find_applied)
+    }
+
     /// Rebuilds the two-folder rows when they were dropped or the filter or sort changed since
     /// they were built. Here rather than at the edit, so the rows are never missing mid-frame.
     fn build_two_folder_diff_rows_if_stale(&mut self) {
@@ -250,11 +264,7 @@ impl AppStateCtx {
         ]);
         let measure_likeness = self.likeness_bar || self.tolerance.uses_likeness();
         let likeness_changed = self.tree_compare.set_likeness(measure_likeness);
-        if self.two_folder_diff_rows_filter != self.path_filter
-            || self.two_folder_diff_rows_sort != self.tree_sort
-            || self.two_folder_diff_rows_diff_filter != self.diff_filter
-            || self.two_folder_diff_rows_tolerance != self.tolerance
-        {
+        if self.rows_inputs_changed() {
             self.two_folder_diff_visible_rows = None;
         }
         if self.two_folder_diff_visible_rows.is_none() {
@@ -1603,6 +1613,11 @@ impl eframe::App for ZApp {
                 self.frame_stats.mark("Blueprint and revision polling");
 
                 self.ui(ctx, frame, &mut state);
+                // The panes drew the old rows under the new flags; the next pass rebuilds
+                // them before drawing, and only that pass is painted.
+                if state.rows_are_stale() {
+                    ctx.request_discard("folder rows are stale");
+                }
 
                 self.process_ctx_inputs(ctx, frame);
                 self.frame_stats.mark("Esc and click handling");
@@ -3306,15 +3321,32 @@ mod tests {
         );
     }
 
-    fn frame_texts(
+    struct PaintedFrame {
+        texts: Vec<(String, egui::Pos2)>,
+        passes: usize,
+    }
+
+    impl PaintedFrame {
+        fn steady_texts(&self) -> Vec<&(String, egui::Pos2)> {
+            self.texts
+                .iter()
+                .filter(|(text, _)| !text.is_empty() && !text.ends_with(" fps") && text != "idle")
+                .collect()
+        }
+    }
+
+    fn painted_frame(
         ctx: &egui::Context,
         app: &mut ZApp,
         screen: egui::Vec2,
         events: Vec<egui::Event>,
-    ) -> Vec<String> {
-        fn collect(shape: &egui::Shape, texts: &mut Vec<String>) {
+    ) -> PaintedFrame {
+        fn collect(shape: &egui::Shape, texts: &mut Vec<(String, egui::Pos2)>) {
             match shape {
-                egui::Shape::Text(text) => texts.push(text.galley.text().to_owned()),
+                egui::Shape::Text(text) => texts.push((
+                    text.galley.text().to_owned(),
+                    text.visual_bounding_rect().center(),
+                )),
                 egui::Shape::Vec(shapes) => shapes.iter().for_each(|s| collect(s, texts)),
                 _ => {}
             }
@@ -3330,7 +3362,23 @@ mod tests {
         for clipped in &output.shapes {
             collect(&clipped.shape, &mut texts);
         }
-        texts
+        PaintedFrame {
+            texts,
+            passes: output.platform_output.num_completed_passes,
+        }
+    }
+
+    fn frame_texts(
+        ctx: &egui::Context,
+        app: &mut ZApp,
+        screen: egui::Vec2,
+        events: Vec<egui::Event>,
+    ) -> Vec<String> {
+        painted_frame(ctx, app, screen, events)
+            .texts
+            .into_iter()
+            .map(|(text, _)| text)
+            .collect()
     }
 
     #[test]
@@ -3488,6 +3536,221 @@ mod tests {
 
         assert!(!before.starts_with("f_0_0_"), "scrolled: {before}");
         assert!(after.contains(&before), "{before} -> {after:?}");
+    }
+
+    const SCREEN: egui::Vec2 = egui::vec2(1600.0, 1000.0);
+
+    fn nested_files(side: usize) -> Vec<FlatEntry> {
+        pending_files()
+            .into_iter()
+            .enumerate()
+            .map(|(i, entry)| FlatEntry {
+                hash: Some(ContentHash {
+                    kind: HashKind::GitBlob,
+                    value: if i % 7 == 0 {
+                        format!("{i} on side {side}")
+                    } else {
+                        i.to_string()
+                    },
+                }),
+                ..entry
+            })
+            .collect()
+    }
+
+    fn nested_folder_diff(tree_sort: TreeSort) -> (TempDir, TempDir, AppStateCtx) {
+        let (left, right) = (tempdir().unwrap(), tempdir().unwrap());
+        let mut state = AppStateCtx {
+            file_system_1_root_path: Some(left.path().to_path_buf()),
+            file_system_2_root_path: Some(right.path().to_path_buf()),
+            file_system_model_1_view: Some(in_memory_view(left.path(), nested_files(1))),
+            file_system_model_2_view: Some(in_memory_view(right.path(), nested_files(2))),
+            tree_sort,
+            ..Default::default()
+        };
+        finish_compare(&mut state);
+        (left, right, state)
+    }
+
+    fn idle_app(state: AppStateCtx) -> ZApp {
+        let mut app = ZApp::new(LogBuffer::default());
+        app.state = Some(AppState::Idle(state));
+        app
+    }
+
+    fn idle_state(app: &ZApp) -> &AppStateCtx {
+        match &app.state {
+            Some(AppState::Idle(state)) => state,
+            _ => unreachable!("the app is idle"),
+        }
+    }
+
+    fn settled_frame(ctx: &egui::Context, app: &mut ZApp) -> PaintedFrame {
+        for _ in 0..3 {
+            painted_frame(ctx, app, SCREEN, Vec::new());
+        }
+        painted_frame(ctx, app, SCREEN, Vec::new())
+    }
+
+    fn text_pos(frame: &PaintedFrame, text: &str) -> egui::Pos2 {
+        frame
+            .texts
+            .iter()
+            .find(|(painted, _)| painted == text)
+            .unwrap_or_else(|| panic!("{text:?} is not painted"))
+            .1
+    }
+
+    fn click_frame(ctx: &egui::Context, app: &mut ZApp, pos: egui::Pos2) -> PaintedFrame {
+        let button = |pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        painted_frame(ctx, app, SCREEN, vec![egui::Event::PointerMoved(pos)]);
+        painted_frame(ctx, app, SCREEN, vec![button(true)]);
+        painted_frame(ctx, app, SCREEN, vec![button(false)])
+    }
+
+    fn click_frame_and_next(app: &mut ZApp, label: &str) -> [PaintedFrame; 3] {
+        let ctx = egui::Context::default();
+        let before = settled_frame(&ctx, app);
+        let click = click_frame(&ctx, app, text_pos(&before, label));
+        let next = painted_frame(&ctx, app, SCREEN, Vec::new());
+        [before, click, next]
+    }
+
+    #[test]
+    fn toggling_flat_paints_the_flat_list_in_the_click_frame() {
+        let (_left, _right, state) = nested_folder_diff(TreeSort::default());
+        let mut app = idle_app(state);
+
+        let [before, click, next] = click_frame_and_next(&mut app, "F");
+
+        assert!(idle_state(&app).tree_sort.flat);
+        assert_ne!(before.steady_texts(), next.steady_texts());
+        assert_eq!(click.steady_texts(), next.steady_texts());
+        assert_eq!(next.passes, 1);
+    }
+
+    #[test]
+    fn toggling_flat_off_paints_the_folded_tree_in_the_click_frame() {
+        let flat = TreeSort {
+            flat: true,
+            ..TreeSort::default()
+        };
+        let (_left, _right, mut state) = nested_folder_diff(flat);
+        let rows = state.two_folder_diff_visible_rows.clone().unwrap();
+        let views = [
+            state.file_system_model_1_view.as_mut().unwrap(),
+            state.file_system_model_2_view.as_mut().unwrap(),
+        ];
+        for row in rows
+            .iter()
+            .filter(|row| row.is_dir && !["", "dir_0"].contains(&row.rel_path.as_str()))
+        {
+            views[0]
+                .collapsed
+                .insert(row.diff_state.first().unwrap(), true);
+            views[1]
+                .collapsed
+                .insert(row.diff_state.second().unwrap(), true);
+        }
+        let mut app = idle_app(state);
+
+        let [before, click, next] = click_frame_and_next(&mut app, "F");
+
+        assert!(!idle_state(&app).tree_sort.flat);
+        assert_ne!(before.steady_texts(), next.steady_texts());
+        assert_eq!(click.steady_texts(), next.steady_texts());
+        assert_eq!(next.passes, 1);
+    }
+
+    #[test]
+    fn the_diff_filter_paints_the_filtered_rows_in_the_click_frame() {
+        let (_left, _right, state) = nested_folder_diff(TreeSort::default());
+        let mut app = idle_app(state);
+
+        let [before, click, next] = click_frame_and_next(&mut app, "D");
+
+        assert_eq!(idle_state(&app).diff_filter.states, StateFilter::Diff);
+        assert_ne!(before.steady_texts(), next.steady_texts());
+        assert_eq!(click.steady_texts(), next.steady_texts());
+        assert_eq!(next.passes, 1);
+    }
+
+    #[test]
+    fn typing_a_path_filter_paints_the_filtered_rows_in_the_typing_frame() {
+        let (_left, _right, state) = nested_folder_diff(TreeSort::default());
+        let mut app = idle_app(state);
+        let ctx = egui::Context::default();
+        let field = text_pos(&settled_frame(&ctx, &mut app), r"*.obj target/ My\ Folder/");
+        let before = click_frame(&ctx, &mut app, field);
+
+        let typed = painted_frame(
+            &ctx,
+            &mut app,
+            SCREEN,
+            vec![egui::Event::Text("dir_0/".to_owned())],
+        );
+        let next = painted_frame(&ctx, &mut app, SCREEN, Vec::new());
+
+        assert_eq!(idle_state(&app).path_filter, blacklist("dir_0/"));
+        assert_ne!(before.steady_texts(), next.steady_texts());
+        assert_eq!(typed.steady_texts(), next.steady_texts());
+        assert_eq!(next.passes, 1);
+    }
+
+    #[test]
+    fn toggling_flat_in_the_duplicates_tab_paints_the_flat_list_in_the_click_frame() {
+        let (_left, _right, mut state) = nested_folder_diff(TreeSort::default());
+        state.hash_service = HashService::new(0);
+        let mut app = idle_app(state);
+        app.diff_mode_path_diff = false;
+
+        let [before, click, next] = click_frame_and_next(&mut app, "F");
+
+        assert!(idle_state(&app).tree_sort.flat);
+        assert_ne!(before.steady_texts(), next.steady_texts());
+        assert_eq!(click.steady_texts(), next.steady_texts());
+        assert_eq!(next.passes, 1);
+    }
+
+    #[test]
+    fn the_rows_go_stale_with_each_of_their_inputs_until_rebuilt() {
+        let (_left, _right, mut state) = nested_folder_diff(TreeSort::default());
+        let changes: [fn(&mut AppStateCtx); 6] = [
+            |state| state.tree_sort.flat = true,
+            |state| state.diff_filter.states = StateFilter::Diff,
+            |state| state.diff_filter.show_parents = false,
+            |state| state.tolerance.enabled = !state.tolerance.enabled,
+            |state| state.path_filter = blacklist("dir_1/"),
+            |state| {
+                state.folder_find.query.text = "f_2".to_owned();
+                state.apply_find();
+            },
+        ];
+
+        assert!(!state.rows_are_stale());
+        for change in changes {
+            change(&mut state);
+            assert!(state.rows_are_stale());
+            state.build_two_folder_diff_rows_if_stale();
+            assert!(!state.rows_are_stale());
+        }
+    }
+
+    #[test]
+    fn a_changed_sort_without_a_shown_folder_paints_in_one_pass_and_idles() {
+        let mut state = AppStateCtx::default();
+        state.tree_sort.flat = true;
+        state.diff_filter.states = StateFilter::Diff;
+        let mut app = idle_app(state);
+
+        assert!(!idle_state(&app).rows_are_stale());
+        assert_eq!(settled_frame(&egui::Context::default(), &mut app).passes, 1);
+        assert_eq!(settled_repaint_delay(&mut app), Duration::MAX);
     }
 
     fn repaint_delay(ctx: &egui::Context, app: &mut ZApp) -> Duration {
