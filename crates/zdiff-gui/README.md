@@ -28,15 +28,15 @@ GUI for zdiff crate
     - Likeness bar at the right end of the toolbar (the same bar as zdiff-folder-gui's), with a dropdown of the metrics the viewer has (hover the bar for the formula and where the pair differs: a strip of changed lines per side, unequal bytes or the sample difference's peak, or for images a thumbnail of the difference map under the current metric): Text: matching lines, or tokens with the Token phase on, both honoring the ignore options (persisted); Hex: equal bytes at the same offset; Image: pixels within the tolerance under the image metric (the same setting as the image toolbar's Metric); Audio: 1 - RMS(left - right) / (RMS(left) + RMS(right)); Video: 1 - the timeline's mean frame difference / 255
     - Revert a hunk on disk, with undo/redo (refused after an external change); read-only Perforce files are offered a `p4 edit`
     - Occurrence highlight: selecting text in a row highlights its other occurrences in the visible rows, on both sides
-    - Diff options (toolbar; text-labelled toggles with tooltips, the same toolbar look as zdiff-folder-gui)
+    - Diff options (toolbar; icon or short text toggles with tooltips, the same toolbar look as zdiff-folder-gui)
         + Ignore whitespace (WS), comments (//), and regex patterns (.*, with presets); ignored regex matches are dimmed
-        + Ignore line endings (EOL, Alt+E): CRLF, LF and CR compare equal
+        + Ignore line endings (EOL, Alt+E): CRLF, LF and CR compare equal. EOL and BOM are drawn as bordered tags: they name markers, not text
         + Ignore file markers (BOM, Alt+M): a UTF-8 BOM at the start and the presence of a final line break
         + Highlight rows that differ (HL): switches the diff marks on/off; its dropdown picks changed scopes, lines, tokens and/or characters
         + Diff phases (Options): Scope, Line and Token (both default), Character. Each runs only where the coarser one found a change; with none on, the lines just sit side by side
-        + Inline ghost tokens (GR)
-        + Diff only (D), with a context row count
-        + Word wrap (Wrap)
+        + Inline ghost tokens (👻)
+        + Diff only (±), with a context row count
+        + Word wrap (↩)
         + Toggle all options (All, Alt+A)
     - In-memory results cache: each diff stage keeps its last 6 results and each side its last 6 file loads (256 MB in all), keyed by the file contents and the options that stage uses, so toggling an option back or returning to an earlier pair shows at once. Unchanged local files (same size and modification time) and fixed revisions (`#rev`, `@change`, full commit SHA) are not read again; head, branch and index sides always are. Refresh and Recompute Diff compute from scratch
 * Sides, named Left and Right in menus and shortcuts

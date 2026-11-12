@@ -101,6 +101,49 @@ pub(super) fn ignore_patterns_btn(
     ui.data_mut(|d| d.insert_temp(open_id, open || keep_open));
 }
 
+const MARKER_TAG_MARGIN: Vec2 = egui::vec2(3.0, 1.0);
+
+pub(super) fn marker_toggle_button(
+    ui: &mut egui::Ui,
+    value: &mut bool,
+    marker: &str,
+    tooltip: &str,
+) -> bool {
+    let color = ui.visuals().strong_text_color();
+    let galley = egui::WidgetText::from(egui::RichText::new(marker).monospace().color(color))
+        .into_galley(
+            ui,
+            Some(egui::TextWrapMode::Extend),
+            f32::INFINITY,
+            egui::TextStyle::Monospace,
+        );
+    let tag_id = egui::Id::new("marker_tag");
+    let tag_size = galley.size() + 2.0 * MARKER_TAG_MARGIN;
+    let width = tag_size.x + 2.0 * ui.spacing().button_padding.x;
+    let size = egui::vec2(width.max(TOGGLE_BUTTON_SIZE.x), TOGGLE_BUTTON_SIZE.y);
+    let button = egui::Button::new(egui::Atom::custom(tag_id, tag_size)).selected(*value);
+    let layout = egui::Layout::centered_and_justified(ui.layout().main_dir());
+    let response = ui
+        .allocate_ui_with_layout(size, layout, |ui| button.atom_ui(ui))
+        .inner;
+    if let Some(tag) = response.rect(tag_id) {
+        let painter = ui.painter();
+        painter.rect_stroke(
+            tag,
+            3.0,
+            egui::Stroke::new(1.0, color),
+            egui::StrokeKind::Inside,
+        );
+        let text_pos = egui::Align2::CENTER_CENTER.align_size_within_rect(galley.size(), tag);
+        painter.galley(text_pos.min, galley, color);
+    }
+    let clicked = response.response.on_hover_text(tooltip).clicked();
+    if clicked {
+        *value = !*value;
+    }
+    clicked
+}
+
 /// Auto / Text / Hex for the current pair. A warning sign carries the fallback reason when the
 /// pair is shown in another viewer than it asked for.
 pub(super) fn text_mode_combo(ui: &mut egui::Ui, text_mode: &mut TextMode) {

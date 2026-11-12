@@ -140,19 +140,19 @@ impl FileDiffPane {
                     egui::RichText::new("//").monospace().strong(),
                     &hint(FileAction::IgnoreComments, "Ignore Comments"),
                 );
-                toggle_button(
+                marker_toggle_button(
                     ui,
                     &mut ctx.diff_options.ignore.line_endings,
-                    egui::RichText::new("EOL").strong(),
+                    "EOL",
                     &hint(
                         FileAction::IgnoreLineEndings,
                         "Ignore Line Endings: CRLF, LF and CR are equal",
                     ),
                 );
-                toggle_button(
+                marker_toggle_button(
                     ui,
                     &mut ctx.diff_options.ignore.file_markers,
-                    egui::RichText::new("BOM").strong(),
+                    "BOM",
                     &hint(
                         FileAction::IgnoreFileMarkers,
                         "Ignore File Markers: a BOM at the start and the line break at the end of the file",
@@ -181,13 +181,13 @@ impl FileDiffPane {
                 toggle_button(
                     ui,
                     &mut ctx.diff_options.ghost_rows,
-                    egui::RichText::new("GR").strong(),
+                    egui::RichText::new("👻").strong(),
                     &hint(FileAction::GhostRows, "Ghost Rows"),
                 );
                 toggle_button(
                     ui,
                     ctx.word_wrap,
-                    egui::RichText::new("Wrap").strong(),
+                    egui::RichText::new("↩").strong(),
                     &hint(FileAction::WordWrap, "Word Wrap"),
                 );
 
@@ -195,7 +195,7 @@ impl FileDiffPane {
                 if toggle_button(
                     ui,
                     &mut active,
-                    egui::RichText::new("D").strong(),
+                    egui::RichText::new("±").strong(),
                     &hint(FileAction::DiffOnly, "Diff Only"),
                 ) {
                     ctx.diff_options.diff_only_with_extra_rows =
