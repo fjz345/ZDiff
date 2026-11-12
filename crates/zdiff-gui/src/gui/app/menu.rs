@@ -19,6 +19,8 @@ use crate::{
     viewer::{FfmpegSetting, SharedKinds, ui_extension_map, ui_ffmpeg_setting},
 };
 
+const SYNTAX_LIST_ROWS: f32 = 16.0;
+
 pub(super) struct MenuCtx<'a> {
     pub file_1: &'a mut FileProcessor,
     pub file_2: &'a mut FileProcessor,
@@ -180,8 +182,14 @@ impl ZApp {
                             let selected = code_language_override
                                 .as_deref()
                                 .and_then(syntax::language_name);
+                            let list_height = SYNTAX_LIST_ROWS
+                                * (ui.spacing().interact_size.y + ui.spacing().item_spacing.y);
+                            // Popups get last frame's height; without the min a filtered list never regrows.
                             egui::ScrollArea::vertical()
-                                .max_height(320.0)
+                                .max_height(list_height)
+                                .min_scrolled_height(list_height)
+                                // Fill so the bar hugs the menu edge; filling while sizing locks it at 600px.
+                                .auto_shrink([ui.is_sizing_pass(), true])
                                 .show(ui, |ui| {
                                     for language in syntax::languages()
                                         .iter()
