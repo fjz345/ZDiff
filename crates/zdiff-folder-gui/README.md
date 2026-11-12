@@ -26,6 +26,7 @@ A crash (panic) appends its message, source location and backtrace to `crash.log
     - Blacklist and whitelist filters with presets
 * Map view: Tree | Map in the pane toolbar (Ctrl+M)
     - Squarified treemap of the rows the tree shows (filters and find apply): a box per file sized by its larger side, colored by its diff state, equal files muted
+    - With L (likeness) on, a box present on both sides, files and folders alike, is colored by how alike its sides are, in the likeness bar's colors (Style: Difference colors), with a legend in the breadcrumb row; boxes on one side only or not compared or measured yet keep their state color
     - A thin bar on a differing file shows the smaller side's share of the larger one
     - Hover shows the path, both sizes, the state and the likeness; click selects (the tree follows), double-click opens the diff
     - Click a folder to zoom in; the breadcrumb, Backspace or the mouse back button zoom out

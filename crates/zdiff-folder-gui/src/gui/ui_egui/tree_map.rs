@@ -1,9 +1,12 @@
 use std::collections::HashMap;
 
 use eframe::egui::{
-    self, Align2, Color32, FontId, Pos2, Rect, RichText, Stroke, StrokeKind, Vec2, vec2,
+    self, Align2, Color32, FontId, Pos2, Rect, RichText, Stroke, StrokeKind, Vec2, pos2, vec2,
 };
-use zcommon_ui::{likeness::percent, style_window::role_color};
+use zcommon_ui::{
+    likeness::{percent, ratio_color},
+    style_window::role_color,
+};
 use zdiff_folder::{external_diff_tool::DiffToolConfig, fs::FsNodeId};
 
 use crate::ui_egui::{
@@ -15,7 +18,7 @@ use crate::ui_egui::{
     status_line::ToolMessage,
     tree_compare::TreeCompare,
     tree_cursor::{CursorRequest, TreeCursor},
-    tree_likeness::FolderLikeness,
+    tree_likeness::{LikenessCell, likeness_cell},
 };
 
 pub const ROOT: usize = 0;
@@ -120,6 +123,7 @@ pub struct MapNode {
     pub sizes: [u64; 2],
     pub weight: u64,
     pub files: u64,
+    pub likeness: Option<f64>,
     pub children: Vec<usize>,
 }
 
@@ -135,6 +139,7 @@ impl MapNode {
             sizes: [0, 0],
             weight: 0,
             files: 0,
+            likeness: None,
             children: Vec::new(),
         }
     }
@@ -206,6 +211,16 @@ impl MapTree {
             tree.nodes[i].children = children;
         }
         tree
+    }
+
+    pub fn fill_likeness(
+        &mut self,
+        rows: &[VisibleRowTwoFolderDiff],
+        ratio: impl Fn(&VisibleRowTwoFolderDiff) -> Option<f64>,
+    ) {
+        for node in &mut self.nodes {
+            node.likeness = node.row.and_then(|row| ratio(&rows[row]));
+        }
     }
 
     pub fn path<'r>(&self, rows: &'r [VisibleRowTwoFolderDiff], node: usize) -> &'r str {
@@ -473,6 +488,7 @@ pub struct MapCtx<'a> {
     pub file_system_2_view: &'a mut Option<FileSystemView>,
     pub rows: &'a [VisibleRowTwoFolderDiff],
     pub rows_id: RowsId,
+    pub likeness: bool,
     pub compare: &'a TreeCompare,
     pub diff_tool_config: &'a DiffToolConfig,
     pub tool_message: &'a mut Option<ToolMessage>,
@@ -543,7 +559,7 @@ impl MapView {
 pub struct TreeMap {
     zoom: String,
     view: MapView,
-    tree: Option<(RowsId, MapTree)>,
+    tree: Option<((RowsId, bool), MapTree)>,
     cells: Option<(LayoutKey, Vec<MapCell>)>,
 }
 
@@ -560,6 +576,7 @@ impl TreeMap {
             file_system_2_view,
             rows,
             rows_id,
+            likeness,
             compare,
             diff_tool_config,
             tool_message,
@@ -569,11 +586,14 @@ impl TreeMap {
         if self
             .tree
             .as_ref()
-            .is_none_or(|(built, _)| *built != rows_id)
+            .is_none_or(|(built, _)| *built != (rows_id, likeness))
         {
             let views = [file_system_1_view.as_ref(), file_system_2_view.as_ref()];
-            let tree = MapTree::build(rows, |row| file_sizes(views, &row.diff_state));
-            self.tree = Some((rows_id, tree));
+            let mut tree = MapTree::build(rows, |row| file_sizes(views, &row.diff_state));
+            if likeness {
+                tree.fill_likeness(rows, |row| row_ratio(row, views, compare));
+            }
+            self.tree = Some(((rows_id, likeness), tree));
         }
         let tree = &self.tree.as_ref().expect("built above").1;
         let mut root = tree.resolve(rows, &self.zoom);
@@ -598,13 +618,17 @@ impl TreeMap {
             let [left, right] = shown.sizes.map(size_text);
             ui.weak(format!("{} files, {left} | {right}", shown.files))
                 .on_hover_text(
-                    "Each box is a file sized by its larger side, colored by its diff state. \
+                    "Each box is a file sized by its larger side, colored by its diff state, \
+                     or by its likeness while the L toggle is on. \
                      Shows what the tree shows: filters and find apply.\n\
                      Click selects, double-click opens the diff, a folder click zooms in, \
                      Backspace or mouse back zooms out.\n\
                      Scroll zooms about the pointer and drag pans; middle-click or Fit \
                      shows the whole folder again.",
                 );
+            if likeness {
+                likeness_legend(ui);
+            }
             if !self.view.is_fit() {
                 fit = ui
                     .small_button("Fit")
@@ -784,6 +808,7 @@ fn size_text(bytes: u64) -> String {
 }
 
 struct Look {
+    ctx: egui::Context,
     bg: Color32,
     text: Color32,
     weak: Color32,
@@ -799,6 +824,7 @@ impl Look {
     fn new(ui: &egui::Ui, params: LayoutParams) -> Self {
         let visuals = ui.visuals();
         Self {
+            ctx: ui.ctx().clone(),
             bg: visuals.extreme_bg_color,
             text: visuals.strong_text_color(),
             weak: visuals.weak_text_color(),
@@ -811,8 +837,15 @@ impl Look {
         }
     }
 
-    fn tint(&self, state: CellState, strength: f32) -> Color32 {
-        self.bg.lerp_to_gamma(self.roles[state as usize], strength)
+    fn base(&self, node: &MapNode) -> Color32 {
+        match node.likeness {
+            Some(ratio) => ratio_color(&self.ctx, ratio),
+            None => self.roles[node.state as usize],
+        }
+    }
+
+    fn tint(&self, color: Color32, strength: f32) -> Color32 {
+        self.bg.lerp_to_gamma(color, strength)
     }
 
     fn text(&self, painter: &egui::Painter, rect: Rect, text: &str, color: Color32) -> f32 {
@@ -833,11 +866,12 @@ impl Look {
     ) {
         let node = &tree.nodes[cell.node];
         let state = node.state;
+        let base = self.base(node);
         let name = || format!("{}{}", state.name_prefix(), tree.name(rows, cell.node));
         match cell.kind {
             CellKind::File | CellKind::Closed => {
                 let rect = cell.rect.shrink(0.5);
-                painter.rect_filled(rect, 0.0, self.tint(state, state.fill_strength()));
+                painter.rect_filled(rect, 0.0, self.tint(base, state.fill_strength()));
                 let size = node.sizes[0].max(node.sizes[1]);
                 if cell.kind == CellKind::File {
                     self.paint_size_delta(painter, rect, node);
@@ -857,12 +891,12 @@ impl Look {
             }
             CellKind::Folder { header } => {
                 let rect = cell.rect;
-                painter.rect_filled(rect, 0.0, self.tint(state, 0.08));
-                let border = Stroke::new(1.0, self.tint(state, 0.45));
+                painter.rect_filled(rect, 0.0, self.tint(base, 0.08));
+                let border = Stroke::new(1.0, self.tint(base, 0.45));
                 painter.rect_stroke(rect, 0.0, border, StrokeKind::Inside);
                 if header {
                     let strip = rect.with_max_y(rect.min.y + self.header);
-                    painter.rect_filled(strip, 0.0, self.tint(state, 0.3));
+                    painter.rect_filled(strip, 0.0, self.tint(base, 0.3));
                     let width = self.text(painter, strip, &name(), self.text);
                     let after = strip.with_min_x(strip.min.x + width + 6.0);
                     let size = node.sizes[0].max(node.sizes[1]);
@@ -871,7 +905,11 @@ impl Look {
             }
             CellKind::Rest { count } => {
                 let rect = cell.rect.shrink(0.5);
-                painter.rect_filled(rect, 0.0, self.tint(CellState::Pending, 0.2));
+                painter.rect_filled(
+                    rect,
+                    0.0,
+                    self.tint(self.roles[CellState::Pending as usize], 0.2),
+                );
                 if rect.width() >= 28.0 && rect.height() >= self.line + 2.0 {
                     self.text(painter, rect, &format!("+{count}"), self.weak);
                 }
@@ -929,7 +967,7 @@ fn tooltip(
         };
         ui.label(format!("{side}: {size}"));
     }
-    if let Some(ratio) = row.and_then(|row| likeness(row, views, compare)) {
+    if let Some(ratio) = row.and_then(|row| row_ratio(row, views, compare)) {
         ui.label(format!("Likeness: {} %", percent(ratio)));
     }
     if node.is_dir {
@@ -937,32 +975,56 @@ fn tooltip(
     }
 }
 
-fn likeness(
+fn row_ratio(
     row: &VisibleRowTwoFolderDiff,
     views: [Option<&FileSystemView>; 2],
     compare: &TreeCompare,
 ) -> Option<f64> {
-    if let Some(FolderLikeness::Known(ratio)) = row.folder_likeness {
-        return Some(ratio);
+    let ids = [row.diff_state.first(), row.diff_state.second()];
+    let nodes = [0, 1].map(|side| {
+        views[side]
+            .zip(ids[side])
+            .and_then(|(view, id)| view.file_system.get_node(id))
+    });
+    match likeness_cell(row, nodes, compare) {
+        LikenessCell::Folder(ratio) => Some(ratio),
+        LikenessCell::Same => Some(1.0),
+        LikenessCell::Known(likeness) => likeness.ratio(),
+        LikenessCell::Waiting | LikenessCell::Empty => None,
     }
-    let (DiffState::Different(left, right) | DiffState::Similar(left, right)) = row.diff_state
-    else {
-        return None;
-    };
-    let nodes = [
-        views[0]?.file_system.get_node(left)?,
-        views[1]?.file_system.get_node(right)?,
-    ];
-    if !nodes.iter().all(|node| node.is_file()) {
-        return None;
+}
+
+fn likeness_legend(ui: &mut egui::Ui) {
+    const STEPS: u32 = 16;
+    ui.weak("Likeness 0 %");
+    let size = vec2(80.0, ui.text_style_height(&egui::TextStyle::Small));
+    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::hover());
+    let mut mesh = egui::Mesh::default();
+    for step in 0..=STEPS {
+        let ratio = step as f32 / STEPS as f32;
+        let x = rect.left() + rect.width() * ratio;
+        let color = ratio_color(ui.ctx(), ratio as f64);
+        mesh.colored_vertex(pos2(x, rect.top()), color);
+        mesh.colored_vertex(pos2(x, rect.bottom()), color);
+        if step > 0 {
+            let right = 2 * step;
+            mesh.add_triangle(right - 2, right - 1, right);
+            mesh.add_triangle(right - 1, right, right + 1);
+        }
     }
-    compare.likeness_of(&row.rel_path, nodes)?.ratio()
+    ui.painter().add(mesh);
+    ui.weak("100 %");
+    response.on_hover_text(
+        "How alike the two sides of each box are, as in the tree's likeness bar \
+         (Style: Difference colors). Boxes on one side only, not compared or measured yet \
+         keep their diff-state color.",
+    );
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use eframe::egui::{pos2, vec2};
+    use crate::ui_egui::tree_likeness::FolderLikeness;
 
     fn row(rel_path: &str, is_dir: bool, state: DiffState) -> VisibleRowTwoFolderDiff {
         VisibleRowTwoFolderDiff {
@@ -1337,6 +1399,7 @@ mod tests {
         compare: TreeCompare,
         config: DiffToolConfig,
         message: Option<ToolMessage>,
+        likeness: bool,
         time: f64,
     }
 
@@ -1389,6 +1452,7 @@ mod tests {
                     mark_undiffable: false,
                 },
                 message: None,
+                likeness: false,
                 time: 0.0,
             }
         }
@@ -1411,6 +1475,7 @@ mod tests {
                             file_system_2_view: view_2,
                             rows: &self.rows,
                             rows_id: RowsId::default(),
+                            likeness: self.likeness,
                             compare: &self.compare,
                             diff_tool_config: &self.config,
                             tool_message: &mut self.message,
@@ -1541,6 +1606,40 @@ mod tests {
                     .is_collapsed(ids[side].unwrap())
             })
         }
+    }
+
+    #[test]
+    fn with_likeness_on_boxes_take_their_rows_likeness_and_lose_it_when_off() {
+        let mut map = MapHarness::new(&[("a/x.txt", 3000), ("a/y.txt", 1000), ("b/z.txt", 2000)]);
+        for row in &mut map.rows {
+            match row.rel_path.as_str() {
+                "a" => row.folder_likeness = Some(FolderLikeness::Known(0.25)),
+                "b" => row.folder_likeness = Some(FolderLikeness::Unknown),
+                "a/y.txt" => {
+                    let DiffState::Different(left, right) = row.diff_state else {
+                        unreachable!()
+                    };
+                    row.diff_state = DiffState::Same(left, right);
+                }
+                _ => {}
+            }
+        }
+        let likeness = |map: &MapHarness| {
+            let tree = &map.map.tree.as_ref().unwrap().1;
+            ["a", "a/x.txt", "a/y.txt", "b", "b/z.txt"]
+                .map(|path| tree.nodes[node_at(tree, &map.rows, path)].likeness)
+        };
+
+        map.frame(Vec::new());
+        assert_eq!(likeness(&map), [None; 5]);
+
+        map.likeness = true;
+        map.frame(Vec::new());
+        assert_eq!(likeness(&map), [Some(0.25), None, Some(1.0), None, None]);
+
+        map.likeness = false;
+        map.frame(Vec::new());
+        assert_eq!(likeness(&map), [None; 5]);
     }
 
     #[test]

@@ -258,6 +258,7 @@ impl PathDiffPane {
                     file_system_2_view: ctx.path_diff_view.file_system_2_view,
                     rows,
                     rows_id: ctx.path_diff_view.rows_id,
+                    likeness: *ctx.likeness_bar,
                     compare: ctx.tree_compare,
                     diff_tool_config: ctx.diff_tool_config,
                     tool_message: ctx.tool_message,

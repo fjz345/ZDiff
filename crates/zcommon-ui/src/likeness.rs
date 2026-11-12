@@ -15,7 +15,7 @@ pub fn likeness_bar(ui: &mut egui::Ui, ratio: f64, size: egui::Vec2) -> egui::Re
     painter.rect_filled(rect, 2.0, ui.visuals().extreme_bg_color);
     let mut filled = rect;
     filled.set_width(rect.width() * ratio.clamp(0.0, 1.0) as f32);
-    painter.rect_filled(filled, 2.0, likeness_color(ratio, diff_gradient(ui.ctx())));
+    painter.rect_filled(filled, 2.0, ratio_color(ui.ctx(), ratio));
     painter.text(
         rect.center(),
         egui::Align2::CENTER_CENTER,
@@ -24,6 +24,10 @@ pub fn likeness_bar(ui: &mut egui::Ui, ratio: f64, size: egui::Vec2) -> egui::Re
         ui.visuals().strong_text_color(),
     );
     response
+}
+
+pub fn ratio_color(ctx: &egui::Context, ratio: f64) -> egui::Color32 {
+    likeness_color(ratio, diff_gradient(ctx))
 }
 
 fn likeness_color(ratio: f64, gradient: GradientPreset) -> egui::Color32 {
