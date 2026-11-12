@@ -130,6 +130,7 @@ impl PatchView {
     }
 
     pub(super) fn ui(&mut self, ui: &mut egui::Ui) {
+        let _scope = zcommon_ui::frame_stats::scope("Patch view");
         let font = egui::TextStyle::Monospace.resolve(ui.style());
         let width = self.width(ui, &font);
         let patch = match &self.patch {

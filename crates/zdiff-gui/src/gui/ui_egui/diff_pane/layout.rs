@@ -77,6 +77,7 @@ pub(super) fn wrapped_heights<'c, T: RawTokenTrait>(
     file_target: Option<&CachedFile<T>>,
     text_widths: [f32; 2],
 ) -> &'c RowHeights {
+    let _scope = zcommon_ui::frame_stats::scope("Wrapped row heights");
     let pixels_per_point = egui_ctx.pixels_per_point();
     let cached = cache.get_or_insert_with(
         rows,
@@ -131,6 +132,7 @@ impl FileDiffPane {
         rows: &Arc<DiffRows>,
         diff_ctx: &MinimalDiffCtx,
     ) -> [f32; 2] {
+        let _scope = zcommon_ui::frame_stats::scope("Content widths");
         let font_id = egui::TextStyle::Monospace.resolve(ui.style());
         let pixels_per_point = ui.ctx().pixels_per_point();
         self.content_widths

@@ -41,6 +41,7 @@ where
             .with_icon(
                 eframe::icon_data::from_png_bytes(icon_png).expect("embedded icon.png decodes"),
             ),
+        vsync: crate::vsync::load(app_id),
         ..Default::default()
     };
     let event_loop = EventLoop::<eframe::UserEvent>::with_user_event().build()?;

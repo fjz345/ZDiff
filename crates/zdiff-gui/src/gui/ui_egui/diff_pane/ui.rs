@@ -1015,8 +1015,10 @@ impl FileDiffPane {
                                     .id_salt("file_diff_table_ui"),
                             );
                             let ruler_rows = rows;
+                            let timed = zcommon_ui::frame_stats::scope("Row table and path bars");
                             let output =
                                 table.show(&mut table_ui, *header_height, header, rows, cell);
+                            drop(timed);
                             ui.advance_cursor_after_rect(rect);
                             let ruler_spans = match (show_ruler, &ctx.hex_view, ctx.diff_ctx) {
                                 (false, _, _) => None,

@@ -57,6 +57,7 @@ pub fn draw_ui_folder_tree(
     ctx: FolderTreeCtx,
     mode: TreeMode,
 ) -> egui::response::Response {
+    let _scope = zcommon_ui::frame_stats::scope("Folder tree table");
     let FolderTreeCtx {
         file_system_1_view,
         file_system_2_view,

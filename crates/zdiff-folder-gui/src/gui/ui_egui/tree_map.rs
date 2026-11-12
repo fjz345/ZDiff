@@ -505,6 +505,7 @@ impl TreeMap {
     }
 
     pub fn ui(&mut self, ui: &mut egui::Ui, ctx: MapCtx) {
+        let _scope = zcommon_ui::frame_stats::scope("Treemap");
         let MapCtx {
             file_system_1_view,
             file_system_2_view,

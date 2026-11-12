@@ -797,6 +797,7 @@ fn draw_ruler(ui: &egui::Ui, rect: Rect, view: TimeView) {
 /// Wheel zooms about the cursor, drag and sideways scroll pan, double-click fits. Both sides share
 /// one time axis.
 pub fn show(ui: &mut egui::Ui, processor: &mut AudioDiffProcessor, settings: &mut AudioSettings) {
+    let _scope = zcommon_ui::frame_stats::scope("Audio view");
     let mut fit = false;
     ui.horizontal(|ui| {
         fit = ui.button("Fit").clicked();

@@ -1112,6 +1112,7 @@ impl DuplicateFilesPane {
         ui: &mut egui::Ui,
         ctx: &mut DuplicateFilesPaneCtx,
     ) -> egui_tiles::UiResponse {
+        let _scope = zcommon_ui::frame_stats::scope("Duplicate files pane");
         self.forget_cursor_of_other_root(ctx.path_diff_view.file_system_1_view.as_ref());
         self.hash_size_collisions(ctx);
         self.set_regroup_wake(ui.ctx());

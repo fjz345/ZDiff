@@ -22,7 +22,7 @@ use std::{
     },
 };
 use zcommon_ui::app::{default_zoom, deserialize_zoom, sync_zoom};
-use zcommon_ui::frame_stats::FrameStats;
+use zcommon_ui::frame_stats::{self, FrameStats};
 use zcommon_ui::h_scroll::{self};
 
 use zcommon_ui::keymap_editor::KeymapEditor;
@@ -242,6 +242,7 @@ impl eframe::App for ZApp {
         self.frame_stats.begin_frame(ctx, frame);
         // Update conflict cursor before input processing
         {
+            let _scope = frame_stats::scope("Conflict count");
             let app_ctx = self
                 .state
                 .as_mut()
@@ -281,8 +282,10 @@ impl eframe::App for ZApp {
             load_shared(&mut state.ctx_mut().keybindings.keymap);
         }
 
+        let timed = frame_stats::scope("Shortcut dispatch");
         self.process_ctx_inputs(ctx, frame);
-        self.frame_stats.mark("inputs");
+        drop(timed);
+        self.frame_stats.mark("Input and shortcuts");
 
         let current_state = self
             .state
@@ -306,6 +309,7 @@ impl eframe::App for ZApp {
             AppState::Idle(mut state) => {
                 self.zoom = sync_zoom(ctx);
 
+                let timed = frame_stats::scope("Viewer resolution");
                 state.file_1.set_pdb_options(&state.pdb_options);
                 state.file_2.set_pdb_options(&state.pdb_options);
                 let loaded_1 = state.file_1.get_loaded_file();
@@ -326,6 +330,7 @@ impl eframe::App for ZApp {
                     loaded_1.as_ref().map(side),
                     loaded_2.as_ref().map(side),
                 );
+                drop(timed);
                 let files_for = |resolution: &Option<ViewerResolution>, kind| {
                     resolution.as_ref().map_or([None, None], |r| {
                         r.viewers
@@ -335,6 +340,7 @@ impl eframe::App for ZApp {
                 // Decoding follows the first resolution, so a failed decode stays cached (and
                 // the pair stays in Hex) instead of being retried every frame. No files drops
                 // the old pair's pixels and textures.
+                let timed = frame_stats::scope("Image");
                 let [image_1, image_2] = files_for(&resolution, ViewerKind::Image);
                 state.image_processor.request(image_1, image_2);
                 state
@@ -342,7 +348,9 @@ impl eframe::App for ZApp {
                     .poll(ctx.input(|i| i.max_texture_side));
                 let resolution =
                     resolution.map(|r| image_decode_fallback(r, &state.image_processor.failures()));
+                drop(timed);
                 // Like the image decode above: probing follows the first resolution.
+                let timed = frame_stats::scope("Video frames");
                 let video_files = files_for(&resolution, ViewerKind::Video);
                 let video = video_files.iter().any(Option::is_some);
                 let ffmpeg = video.then(|| state.ffmpeg.lookup().ok()).flatten();
@@ -350,6 +358,8 @@ impl eframe::App for ZApp {
                 state.video_frames.poll(ctx.input(|i| i.max_texture_side));
                 let resolution = resolution
                     .map(|r| decode_fallback(r, ViewerKind::Video, &state.video_frames.failures()));
+                drop(timed);
+                let timed = frame_stats::scope("Audio");
                 // Only a media pair looks ffmpeg up.
                 let resolution = resolution.map(|r| {
                     if r.viewers.shows(ViewerKind::Audio) || r.viewers.shows(ViewerKind::Video) {
@@ -381,6 +391,7 @@ impl eframe::App for ZApp {
                 let resolution = resolution.map(|r| {
                     decode_fallback(r, ViewerKind::Audio, &state.audio_processor.failures())
                 });
+                drop(timed);
                 // Resolved every frame, so only a changed reason is logged.
                 let fallback = resolution.as_ref().and_then(|r| r.fallback.clone());
                 if fallback != state.viewer_fallback {
@@ -391,6 +402,7 @@ impl eframe::App for ZApp {
                 }
                 state.viewers = resolution.as_ref().map(|r| r.viewers);
                 // Metadata compares two files, so a mismatched pair has none.
+                let timed = frame_stats::scope("Media metadata");
                 let audio_pair = match (state.viewers, &loaded_1, &loaded_2) {
                     (Some(Viewers::Pair(ViewerKind::Audio)), Some(a), Some(b)) => state
                         .ffmpeg
@@ -409,6 +421,8 @@ impl eframe::App for ZApp {
                     _ => None,
                 };
                 state.video_meta.request(video_pair);
+                drop(timed);
+                let timed = frame_stats::scope("Hex");
                 let [hex_1, hex_2] = files_for(&resolution, ViewerKind::Hex);
                 let hex_files = [hex_1.clone(), hex_2.clone()];
                 // The cursor may hold the text diff's or the previous pair's stop.
@@ -418,7 +432,9 @@ impl eframe::App for ZApp {
                     state.diff_processor.conflict_cursor.set(0);
                 }
                 state.hex_processor.poll();
+                drop(timed);
 
+                let timed = frame_stats::scope("Hex strings");
                 // The text diff's state is the other mode's (or another pair's) on a switch.
                 let strings_view = state.strings_view();
                 if strings_view != state.strings_active {
@@ -435,7 +451,9 @@ impl eframe::App for ZApp {
                 } else {
                     state.hex_strings.clear();
                 }
-                self.frame_stats.mark("viewers");
+                drop(timed);
+                self.frame_stats.mark("Viewer requests and polling");
+                let timed = frame_stats::scope("Build diff input");
                 let strings_files = state
                     .hex_strings
                     .sides()
@@ -476,7 +494,9 @@ impl eframe::App for ZApp {
                     pdb_dumps,
                     strings_view: strings_files.is_some(),
                 };
+                drop(timed);
 
+                let timed = frame_stats::scope("Compare with shown diff");
                 let diff_ctx_invalidated = if state.file_1.get_loading_path().is_some()
                     || state.file_2.get_loading_path().is_some()
                 {
@@ -493,6 +513,7 @@ impl eframe::App for ZApp {
                 } else {
                     state.diff_processor.in_progress_input.is_none()
                 };
+                drop(timed);
 
                 if diff_ctx_invalidated
                     && is_text
@@ -500,11 +521,14 @@ impl eframe::App for ZApp {
                         || state.file_1.get_cached_file().is_some()
                         || state.file_2.get_cached_file().is_some())
                 {
+                    let _scope = frame_stats::scope("Request recompute");
                     state.diff_processor.request_update(update_input);
                 }
 
+                let timed = frame_stats::scope("Poll diff stages");
                 state.diff_processor.update();
-                self.frame_stats.mark("diff");
+                drop(timed);
+                self.frame_stats.mark("Text diff pipeline");
 
                 self.ui(ctx, frame, &mut state);
 

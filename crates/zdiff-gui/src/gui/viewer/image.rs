@@ -1147,6 +1147,7 @@ pub fn show(
     left_width: f32,
     shown_sides: [usize; 2],
 ) {
+    let _scope = zcommon_ui::frame_stats::scope("Image view");
     let _ = processor.repaint.set(ui.ctx().clone());
     let mut fit = false;
     let mut actual_size = false;

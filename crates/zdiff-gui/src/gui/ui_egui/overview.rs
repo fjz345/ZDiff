@@ -180,6 +180,7 @@ pub struct OverviewCtx<'a> {
 /// Draws the change bins of `len` rows in `rect` with the rows `viewport` (top, bottom as row
 /// positions) marked. Returns the row under a press or drag.
 pub fn show(ui: &mut egui::Ui, ctx: OverviewCtx<'_>) -> Option<usize> {
+    let _scope = zcommon_ui::frame_stats::scope("Overview ruler");
     let OverviewCtx {
         id,
         rect,

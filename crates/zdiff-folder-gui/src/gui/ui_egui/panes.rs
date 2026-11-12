@@ -161,6 +161,7 @@ impl ZAppPane for LogPane {
 
 impl LogPane {
     fn ui(&mut self, ui: &mut egui::Ui, log_buffer: &LogBuffer) -> egui_tiles::UiResponse {
+        let _scope = zcommon_ui::frame_stats::scope("Log pane");
         zcommon_ui::log_window::log_window(ui, log_buffer.clone(), &mut self.scroll_to_bottom);
 
         egui_tiles::UiResponse::None

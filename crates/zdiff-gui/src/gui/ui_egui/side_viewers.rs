@@ -60,6 +60,7 @@ pub fn show(
     columns: [Rect; 2],
     mut text_row: impl FnMut(&mut egui::Ui, usize),
 ) {
+    let _scope = zcommon_ui::frame_stats::scope("Side viewers");
     let area = ui.available_rect_before_wrap();
     let row_height =
         ui.text_style_height(&egui::TextStyle::Monospace) + ui.spacing().item_spacing.y;

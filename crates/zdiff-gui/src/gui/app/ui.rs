@@ -9,6 +9,7 @@ use eframe::egui::{self, Layout};
 use std::sync::atomic::Ordering;
 use zcommon_ui::common::show_custom_popup;
 use zcommon_ui::find_popup::{FindPopupEvent, find_popup};
+use zcommon_ui::frame_stats;
 
 use zdiff::universal_path::UniversalPath;
 
@@ -88,10 +89,12 @@ impl ZApp {
                 p4_profiles,
                 regex_ignore_presets,
             } = app_ctx;
+            let timed = frame_stats::scope("Language detection");
             let detected = [
                 detected_languages[0].get(file_1.get_cached_file().as_deref()),
                 detected_languages[1].get(file_2.get_cached_file().as_deref()),
             ];
+            drop(timed);
             let pair_kind = viewers.and_then(Viewers::pair);
             let sides = match *viewers {
                 Some(Viewers::Sides(sides)) => Some(sides),
@@ -137,7 +140,7 @@ impl ZApp {
                     text_diff_shown,
                 },
             );
-            self.frame_stats.mark("menu");
+            self.frame_stats.mark("Menu bar and windows");
             let code_language = match code_language_override.as_deref() {
                 Some(code) => [code; 2],
                 None => detected.map(|language| language.unwrap_or("")),
@@ -145,6 +148,7 @@ impl ZApp {
 
             ui.separator();
 
+            let timed = frame_stats::scope("Goto and find popups");
             let mut goto_window_open = *goto_open;
             show_custom_popup(ctx, &mut goto_window_open, "Goto", true, |ui| {
                 // Hex gotos a byte offset, in decimal or 0x hex.
@@ -197,7 +201,9 @@ impl ZApp {
                     None => {}
                 }
             }
+            drop(timed);
 
+            let timed = frame_stats::scope("Pane context");
             // The text diff's state is stale while another viewer shows the pair.
             let text_scroll = side_shows(ViewerKind::Text)
                 .then(|| diff_processor.get_scroll_to_row())
@@ -355,6 +361,7 @@ impl ZApp {
                     video: file_diff.video_frames.take(),
                 });
             }
+            drop(timed);
 
             if let Some(request) = self.open_merge_form.ui(ctx) {
                 self.merge = Some(MergeView::new(request, *myers_diff_algorithm));
@@ -367,18 +374,19 @@ impl ZApp {
                     ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
                 }
             }
-            self.frame_stats.mark("other");
+            self.frame_stats.mark("Popups and pane setup");
             ui.with_layout(
                 Layout::left_to_right(egui::Align::Min),
                 |ui| match &mut self.merge {
                     Some(merge) => {
+                        let _scope = frame_stats::scope("Merge view");
                         let closed = merge.ui(ui, code_language_override.as_deref(), *center_jumps);
                         close_merge = close_merge.or(closed);
                     }
                     None => self.tree.ui(&mut behavior, ui),
                 },
             );
-            self.frame_stats.mark("panes");
+            self.frame_stats.mark("Pane drawing");
             if let Some(closing) = close_merge {
                 let merge = self.merge.take().expect("only an open merge closes");
                 self.exit_code.store(merge.exit_code(), Ordering::Relaxed);
@@ -429,6 +437,7 @@ impl ZApp {
                 None => {}
             }
             if let Some(revert_request) = *behavior.ctx_file_diff.revert_request {
+                let _scope = frame_stats::scope("Hunk revert");
                 log::debug!(
                     "new revert request: hunk {} into {:?}",
                     revert_request.hunk,
@@ -489,6 +498,7 @@ impl ZApp {
             }
 
             if let Some((target, pending)) = self.pending_p4_edit.take() {
+                let _scope = frame_stats::scope("p4 edit prompt");
                 let mut confirmed = None;
                 let modal = egui::Modal::new(egui::Id::new("p4_edit_prompt")).show(ctx, |ui| {
                     ui.heading("Check out for edit?");
@@ -559,6 +569,7 @@ impl ZApp {
 
             for (_tile_id, tile) in self.tree.tiles.iter() {
                 if let Tile::Pane(Pane::FileDiff(..)) = tile {
+                    let _scope = frame_stats::scope("Window title");
                     let source = app_ctx.file_1.display_name();
                     let target = app_ctx.file_2.display_name();
                     let total_adds = app_ctx
@@ -599,7 +610,7 @@ impl ZApp {
                     break;
                 }
             }
-            self.frame_stats.mark("other");
+            self.frame_stats.mark("Pane requests and window title");
         });
     }
 }

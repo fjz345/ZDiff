@@ -18,6 +18,7 @@ pub fn toolbar<R>(
     ui: &mut egui::Ui,
     add_contents: impl FnOnce(&mut egui::Ui) -> R,
 ) -> egui::InnerResponse<R> {
+    let _scope = crate::frame_stats::scope("Toolbars");
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing.x = TOOLBAR_SPACING;
         add_contents(ui)

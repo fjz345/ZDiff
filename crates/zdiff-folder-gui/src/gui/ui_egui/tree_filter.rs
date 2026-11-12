@@ -153,6 +153,7 @@ pub fn arrange_two_folder_rows(
     filter: DiffFilter,
     sort: TreeSort,
 ) -> Vec<VisibleRowTwoFolderDiff> {
+    let _scope = zcommon_ui::frame_stats::scope("Arrange rows (state filter, sort)");
     let rows = filter_diff_rows(rows, filter);
     if filter.lists_files() {
         sort_file_list(rows, sort)

@@ -1,5 +1,7 @@
 use std::{
+    cell::RefCell,
     collections::VecDeque,
+    marker::PhantomData,
     sync::{Arc, Mutex},
     thread,
     time::{Duration, Instant},
@@ -11,6 +13,14 @@ const REPAINT_RATE_WINDOW: Duration = Duration::from_secs(1);
 const MAX_FRAME_STARTS: usize = 1024;
 const IDLE_REPAINT_AFTER: Duration = Duration::from_millis(1100);
 const SAMPLES: usize = 120;
+const TOTAL_CPU: &str = "Total CPU";
+const TOTAL_APP_CODE: &str = "Total (app code only)";
+const OUTSIDE_APP: &str = "egui + OpenGL (outside app code)";
+const EGUI_PASS_START: &str = "egui pass start";
+const EGUI_PASS_END: &str = "egui pass end";
+const PAINT: &str = "Tessellation and OpenGL paint";
+const REST: &str = "(rest of section)";
+const SUB_INDENT: f32 = 16.0;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Timing {
@@ -22,6 +32,10 @@ pub struct Timing {
 struct Samples(VecDeque<Duration>);
 
 impl Samples {
+    fn zeros(len: usize) -> Self {
+        Self(std::iter::repeat_n(Duration::ZERO, len).collect())
+    }
+
     fn push(&mut self, sample: Duration) {
         if self.0.len() == SAMPLES {
             self.0.pop_front();
@@ -36,10 +50,188 @@ impl Samples {
     }
 }
 
-struct Stage {
+thread_local! {
+    static SCOPES: RefCell<Scopes> = const {
+        RefCell::new(Scopes {
+            depth: 0,
+            closed: Vec::new(),
+        })
+    };
+}
+
+struct Scopes {
+    depth: u32,
+    closed: Vec<(&'static str, Duration)>,
+}
+
+#[must_use = "a scope measures until it is dropped"]
+pub struct Scope {
+    outermost: Option<&'static str>,
+    start: Instant,
+    _same_thread: PhantomData<*const ()>,
+}
+
+// Nested scopes count toward the outermost one only, so sub-sections never overlap.
+pub fn scope(name: &'static str) -> Scope {
+    let outermost = SCOPES.with_borrow_mut(|scopes| {
+        scopes.depth += 1;
+        scopes.depth == 1
+    });
+    Scope {
+        outermost: outermost.then_some(name),
+        start: Instant::now(),
+        _same_thread: PhantomData,
+    }
+}
+
+impl Drop for Scope {
+    fn drop(&mut self) {
+        let elapsed = self.start.elapsed();
+        SCOPES.with_borrow_mut(|scopes| scopes.depth -= 1);
+        if let Some(name) = self.outermost {
+            record_scope(name, elapsed);
+        }
+    }
+}
+
+fn record_scope(name: &'static str, elapsed: Duration) {
+    SCOPES.with_borrow_mut(|scopes| {
+        match scopes.closed.iter_mut().find(|(closed, _)| *closed == name) {
+            Some((_, time)) => *time += elapsed,
+            None => scopes.closed.push((name, elapsed)),
+        }
+    });
+}
+
+fn drop_closed_scopes() {
+    SCOPES.with_borrow_mut(|scopes| scopes.closed.clear());
+}
+
+struct Sub {
     name: &'static str,
     current: Duration,
     samples: Samples,
+}
+
+struct Section {
+    name: &'static str,
+    current: Duration,
+    samples: Samples,
+    subs: Vec<Sub>,
+    rest: Samples,
+}
+
+impl Section {
+    // Zero-filled to the finished frames, so it averages over the same frames as the total.
+    fn new(name: &'static str, finished_frames: usize) -> Self {
+        Self {
+            name,
+            current: Duration::ZERO,
+            samples: Samples::zeros(finished_frames),
+            subs: Vec::new(),
+            rest: Samples::zeros(finished_frames),
+        }
+    }
+
+    fn add_sub(&mut self, name: &'static str, time: Duration) {
+        match self.subs.iter_mut().find(|sub| sub.name == name) {
+            Some(sub) => sub.current += time,
+            None => self.subs.push(Sub {
+                name,
+                current: time,
+                samples: Samples::zeros(self.samples.0.len()),
+            }),
+        }
+    }
+
+    fn finish_frame(&mut self) -> Duration {
+        let total = std::mem::take(&mut self.current);
+        let mut in_subs = Duration::ZERO;
+        for sub in &mut self.subs {
+            let time = std::mem::take(&mut sub.current);
+            in_subs += time;
+            sub.samples.push(time);
+        }
+        self.samples.push(total);
+        self.rest.push(total.saturating_sub(in_subs));
+        total
+    }
+
+    fn row(&self) -> Option<SectionRow> {
+        let timing = self.samples.timing()?;
+        let subs = self
+            .subs
+            .iter()
+            .filter_map(|sub| Some((sub.name, sub.samples.timing()?)));
+        let rest = self
+            .rest
+            .timing()
+            .filter(|_| !self.subs.is_empty())
+            .map(|rest| (REST, rest));
+        Some(SectionRow {
+            name: self.name,
+            timing,
+            subs: subs.chain(rest).collect(),
+        })
+    }
+}
+
+#[derive(Debug, PartialEq)]
+struct SectionRow {
+    name: &'static str,
+    timing: Timing,
+    subs: Vec<(&'static str, Timing)>,
+}
+
+struct Breakdown {
+    total_name: &'static str,
+    total: Timing,
+    sections: Vec<SectionRow>,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct EguiPasses {
+    start: Duration,
+    end: Duration,
+}
+
+#[derive(Default)]
+struct PassTimer {
+    start_began: Option<Instant>,
+    end_began: Option<Instant>,
+    passes: EguiPasses,
+}
+
+impl PassTimer {
+    fn take(&mut self) -> EguiPasses {
+        std::mem::take(&mut self.passes)
+    }
+}
+
+impl egui::Plugin for PassTimer {
+    fn debug_name(&self) -> &'static str {
+        "frame_stats::PassTimer"
+    }
+
+    fn input_hook(&mut self, _input: &mut egui::RawInput) {
+        self.start_began = Some(Instant::now());
+    }
+
+    fn on_begin_pass(&mut self, _ctx: &egui::Context) {
+        if let Some(began) = self.start_began.take() {
+            self.passes.start += began.elapsed();
+        }
+    }
+
+    fn on_end_pass(&mut self, _ctx: &egui::Context) {
+        self.end_began = Some(Instant::now());
+    }
+
+    fn output_hook(&mut self, _output: &mut egui::FullOutput) {
+        if let Some(began) = self.end_began.take() {
+            self.passes.end += began.elapsed();
+        }
+    }
 }
 
 #[derive(Default)]
@@ -49,17 +241,23 @@ pub struct FrameStats {
     fps: Option<f32>,
     frame_nr: Option<u64>,
     mark: Option<Instant>,
-    stages: Vec<Stage>,
+    sections: Vec<Section>,
     update: Samples,
     cpu: Samples,
-    rest: Samples,
+    outside_app: Option<Section>,
+    egui_passes: EguiPasses,
     idle_wake: IdleWake,
 }
 
 impl FrameStats {
     pub fn begin_frame(&mut self, ctx: &egui::Context, frame: &eframe::Frame) {
         let now = Instant::now();
-        if self.begin_frame_at(ctx.cumulative_frame_nr(), frame.info().cpu_usage, now) {
+        let passes = ctx.with_plugin(PassTimer::take).unwrap_or_else(|| {
+            ctx.add_plugin(PassTimer::default());
+            EguiPasses::default()
+        });
+        let frame_nr = ctx.cumulative_frame_nr();
+        if self.begin_pass_at(frame_nr, frame.info().cpu_usage, passes, now) {
             let ctx = ctx.clone();
             // A zero delay runs two frames, and the second one would measure as live again.
             let one_frame = Duration::from_millis(1);
@@ -69,11 +267,26 @@ impl FrameStats {
         }
     }
 
-    pub fn mark(&mut self, stage: &'static str) {
-        self.mark_at(stage, Instant::now());
+    pub fn mark(&mut self, section: &'static str) {
+        self.mark_at(section, Instant::now());
+    }
+
+    // The previous pass ended in the frame that begin_frame_at may finish, so its end goes first.
+    fn begin_pass_at(
+        &mut self,
+        frame_nr: u64,
+        cpu_usage: Option<f32>,
+        passes: EguiPasses,
+        now: Instant,
+    ) -> bool {
+        self.egui_passes.end += passes.end;
+        let live = self.begin_frame_at(frame_nr, cpu_usage, now);
+        self.egui_passes.start += passes.start;
+        live
     }
 
     fn begin_frame_at(&mut self, frame_nr: u64, cpu_usage: Option<f32>, now: Instant) -> bool {
+        drop_closed_scopes();
         self.mark = Some(now);
         match self.frame_nr.replace(frame_nr) {
             Some(previous) if previous == frame_nr => return self.repaint_rate.is_some(),
@@ -101,16 +314,21 @@ impl FrameStats {
 
     // eframe reports a frame's CPU time in the next frame, so it pairs with the stages finished here.
     fn finish_frame(&mut self, cpu_usage: Option<f32>) {
-        let mut update = Duration::ZERO;
-        for stage in &mut self.stages {
-            update += stage.current;
-            stage.samples.push(std::mem::take(&mut stage.current));
-        }
+        let update: Duration = self.sections.iter_mut().map(Section::finish_frame).sum();
         self.update.push(update);
+        let passes = std::mem::take(&mut self.egui_passes);
         if let Some(cpu) = cpu_usage {
             let cpu = Duration::from_secs_f32(cpu);
             self.cpu.push(cpu);
-            self.rest.push(cpu.saturating_sub(update));
+            let outside_app = cpu.saturating_sub(update);
+            let section = self
+                .outside_app
+                .get_or_insert_with(|| Section::new(OUTSIDE_APP, 0));
+            section.current = outside_app;
+            section.add_sub(EGUI_PASS_START, passes.start);
+            section.add_sub(EGUI_PASS_END, passes.end);
+            section.add_sub(PAINT, outside_app.saturating_sub(passes.start + passes.end));
+            section.finish_frame();
         }
         if let Some((_, total)) = self.total()
             && !total.average.is_zero()
@@ -121,34 +339,46 @@ impl FrameStats {
 
     fn total(&self) -> Option<(&'static str, Timing)> {
         match self.cpu.timing() {
-            Some(cpu) => Some(("frame CPU", cpu)),
-            None => self.update.timing().map(|update| ("update", update)),
+            Some(cpu) => Some((TOTAL_CPU, cpu)),
+            None => self.update.timing().map(|update| (TOTAL_APP_CODE, update)),
         }
     }
 
-    fn mark_at(&mut self, stage: &'static str, now: Instant) {
+    fn mark_at(&mut self, section: &'static str, now: Instant) {
         let since = self
             .mark
             .replace(now)
             .expect("begin_frame runs before the first mark");
-        let elapsed = now.duration_since(since);
-        match self.stages.iter_mut().find(|s| s.name == stage) {
-            Some(stage) => stage.current += elapsed,
-            None => self.stages.push(Stage {
-                name: stage,
-                current: elapsed,
-                samples: Samples::default(),
-            }),
-        }
+        let index = match self.sections.iter().position(|s| s.name == section) {
+            Some(index) => index,
+            None => {
+                let finished_frames = self.update.0.len();
+                self.sections.push(Section::new(section, finished_frames));
+                self.sections.len() - 1
+            }
+        };
+        let section = &mut self.sections[index];
+        section.current += now.duration_since(since);
+        SCOPES.with_borrow_mut(|scopes| {
+            for (name, time) in scopes.closed.drain(..) {
+                section.add_sub(name, time);
+            }
+        });
     }
 
-    fn rows(&self) -> Vec<(&'static str, Timing)> {
-        let stages = self
-            .stages
+    fn breakdown(&self) -> Option<Breakdown> {
+        let (total_name, total) = self.total()?;
+        let sections = self
+            .sections
             .iter()
-            .filter_map(|stage| Some((stage.name, stage.samples.timing()?)));
-        let rest = self.rest.timing().map(|rest| ("egui + paint", rest));
-        stages.chain(rest).chain(self.total()).collect()
+            .chain(&self.outside_app)
+            .filter_map(Section::row)
+            .collect();
+        Some(Breakdown {
+            total_name,
+            total,
+            sections,
+        })
     }
 }
 
@@ -229,6 +459,7 @@ fn idle_tag(ui: &mut egui::Ui) -> egui::Response {
 }
 
 pub fn breakdown_window(ctx: &egui::Context, stats: &FrameStats, open: &mut bool) {
+    let _scope = scope("Frame time window");
     egui::Window::new("Frame Time")
         .open(open)
         .resizable(false)
@@ -239,53 +470,140 @@ pub fn breakdown_window(ctx: &egui::Context, stats: &FrameStats, open: &mut bool
 }
 
 fn breakdown_ui(ui: &mut egui::Ui, stats: &FrameStats) {
-    if let (Some(fps), Some((total_name, _))) = (stats.fps, stats.total()) {
-        ui.label(format!("{fps:.0} fps = 1 / avg {total_name}"));
+    match stats.breakdown() {
+        Some(breakdown) => {
+            total_block(ui, stats, &breakdown);
+            ui.add_space(6.0);
+            ui.separator();
+            ui.label(egui::RichText::new("Breakdown").strong());
+            section_grid(ui, &breakdown);
+            ui.weak(format!(
+                "Over the last {} frames. Indented rows split the section above them.",
+                stats.update.0.len()
+            ));
+        }
+        None => {
+            ui.weak("No finished frame yet.");
+        }
     }
-    ui.label(match stats.repaint_rate {
-        Some(rate) => format!("Repaint rate {rate:.0}/s (follows input)"),
-        None => "Repaint rate: idle".to_owned(),
-    });
-    let rows = stats.rows();
-    let total = rows
-        .last()
-        .map_or(Duration::ZERO, |(_, total)| total.average);
-    let ms = |time: Duration| format!("{:7.3}", time.as_secs_f64() * 1000.0);
+    ui.separator();
+    crate::vsync::checkbox(ui);
+}
+
+fn total_block(ui: &mut egui::Ui, stats: &FrameStats, breakdown: &Breakdown) {
+    let total_tooltip = if breakdown.total_name == TOTAL_CPU {
+        "eframe's CPU time per frame: input, app code, egui and OpenGL paint. \
+         The v-sync wait is excluded."
+    } else {
+        "eframe reports no frame CPU time, so this sums the app code sections only."
+    };
+    egui::Frame::group(ui.style())
+        .fill(ui.visuals().extreme_bg_color)
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new(breakdown.total_name).heading().strong())
+                    .on_hover_text(total_tooltip);
+                ui.label(
+                    egui::RichText::new(format!(
+                        "{:.3} ms avg",
+                        breakdown.total.average.as_secs_f64() * 1000.0
+                    ))
+                    .heading(),
+                );
+            });
+            ui.horizontal(|ui| {
+                ui.label(format!(
+                    "{:.3} ms max",
+                    breakdown.total.max.as_secs_f64() * 1000.0
+                ));
+                if let Some(fps) = stats.fps {
+                    ui.label(format!("{fps:.0} fps = 1 / avg"));
+                }
+            });
+            ui.weak(match stats.repaint_rate {
+                Some(rate) => format!("Repaint rate {rate:.0}/s (follows input)"),
+                None => "Repaint rate: idle".to_owned(),
+            });
+        });
+}
+
+fn section_grid(ui: &mut egui::Ui, breakdown: &Breakdown) {
+    let total = breakdown.total.average;
     egui::Grid::new("frame_time_breakdown")
         .num_columns(4)
         .striped(true)
         .show(ui, |ui| {
-            ui.strong("Stage");
-            ui.strong("avg ms");
-            ui.strong("max ms");
+            ui.weak("Section");
+            ui.weak("avg ms");
+            ui.weak("max ms");
+            ui.weak("share of total");
             ui.end_row();
-            for (name, timing) in rows {
-                ui.label(name);
-                ui.monospace(ms(timing.average));
-                ui.monospace(ms(timing.max));
-                share_bar(ui, timing.average, total);
+            for section in &breakdown.sections {
+                with_tooltip(ui.strong(section.name), section.name);
+                ui.monospace(ms(section.timing.average));
+                ui.monospace(ms(section.timing.max));
+                share_bar(ui, section.timing.average, total, false);
                 ui.end_row();
+                for &(name, timing) in section.subs.iter().filter(|(_, t)| !t.max.is_zero()) {
+                    let label = ui
+                        .horizontal(|ui| {
+                            ui.add_space(SUB_INDENT);
+                            ui.label(egui::RichText::new(name).weak())
+                        })
+                        .inner;
+                    with_tooltip(label, name);
+                    ui.label(egui::RichText::new(ms(timing.average)).monospace().weak());
+                    ui.label(egui::RichText::new(ms(timing.max)).monospace().weak());
+                    share_bar(ui, timing.average, total, true);
+                    ui.end_row();
+                }
             }
         });
-    ui.weak(format!(
-        "Over the last {} frames. Frame CPU excludes vsync.",
-        stats.update.0.len()
-    ));
 }
 
-fn share_bar(ui: &mut egui::Ui, part: Duration, total: Duration) {
-    let size = egui::vec2(80.0, ui.spacing().interact_size.y * 0.5);
-    let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
+fn with_tooltip(label: egui::Response, name: &str) {
+    let tooltip = match name {
+        OUTSIDE_APP => {
+            "Frame CPU outside the app's update code: egui's own work before and after it, \
+             and eframe's OpenGL backend."
+        }
+        EGUI_PASS_START => "egui begin_pass: input events, widget hit testing and focus.",
+        EGUI_PASS_END => {
+            "egui end_pass: shapes collected by layer, font atlas and texture changes, \
+             accessibility tree and window commands."
+        }
+        PAINT => {
+            "Shapes turned into triangles, OpenGL draw calls and texture uploads, \
+             cursor and clipboard output. The v-sync wait is excluded."
+        }
+        REST => "Time in this section outside its indented sub-sections.",
+        _ => return,
+    };
+    label.on_hover_text(tooltip);
+}
+
+fn ms(time: Duration) -> String {
+    format!("{:7.3}", time.as_secs_f64() * 1000.0)
+}
+
+fn share_bar(ui: &mut egui::Ui, part: Duration, total: Duration, sub: bool) {
+    let height = ui.spacing().interact_size.y * if sub { 0.25 } else { 0.5 };
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(80.0, height), egui::Sense::hover());
     let share = if total.is_zero() {
         0.0
     } else {
         (part.as_secs_f32() / total.as_secs_f32()).min(1.0)
     };
+    let fill = ui.visuals().selection.bg_fill;
     let painter = ui.painter();
     painter.rect_filled(rect, 2.0, ui.visuals().extreme_bg_color);
     let mut filled = rect;
     filled.set_width(rect.width() * share);
-    painter.rect_filled(filled, 2.0, ui.visuals().selection.bg_fill);
+    painter.rect_filled(
+        filled,
+        2.0,
+        if sub { fill.gamma_multiply(0.6) } else { fill },
+    );
 }
 
 #[cfg(test)]
@@ -295,6 +613,17 @@ mod tests {
 
     fn ms(base: Instant, ms: f64) -> Instant {
         base + Duration::from_secs_f64(ms / 1000.0)
+    }
+
+    fn millis(ms: f64) -> Duration {
+        Duration::from_micros((ms * 1000.0).round() as u64)
+    }
+
+    fn timing(average: f64, max: f64) -> Timing {
+        Timing {
+            average: millis(average),
+            max: millis(max),
+        }
     }
 
     fn frames(stats: &mut FrameStats, base: Instant, first_nr: u64, times_ms: &[f64]) {
@@ -310,9 +639,18 @@ mod tests {
         }
     }
 
-    fn stage(stats: &FrameStats, name: &str) -> Option<Timing> {
-        let stage = stats.stages.iter().find(|stage| stage.name == name)?;
-        stage.samples.timing()
+    fn section(stats: &FrameStats, name: &str) -> Option<Timing> {
+        let section = stats.sections.iter().find(|section| section.name == name)?;
+        section.samples.timing()
+    }
+
+    fn section_row(stats: &FrameStats, name: &str) -> SectionRow {
+        let breakdown = stats.breakdown().unwrap();
+        breakdown
+            .sections
+            .into_iter()
+            .find(|section| section.name == name)
+            .unwrap()
     }
 
     #[test]
@@ -451,7 +789,7 @@ mod tests {
         stats.begin_frame_at(8, None, ms(base, 16.0));
 
         assert_eq!(stats.frame_starts.len(), 2);
-        let ui = stage(&stats, "ui").unwrap();
+        let ui = section(&stats, "ui").unwrap();
         assert_eq!(ui.average, Duration::from_millis(6));
     }
 
@@ -468,31 +806,129 @@ mod tests {
 
         stats.begin_frame_at(2, None, ms(base, 32.0));
 
-        let timing = |average: u64, max: u64| Timing {
-            average: Duration::from_millis(average),
-            max: Duration::from_millis(max),
-        };
-        assert_eq!(stage(&stats, "inputs"), Some(timing(2, 3)));
-        assert_eq!(stage(&stats, "panes"), Some(timing(3, 4)));
-        assert_eq!(stats.update.timing(), Some(timing(5, 5)));
+        assert_eq!(section(&stats, "inputs"), Some(timing(2.0, 3.0)));
+        assert_eq!(section(&stats, "panes"), Some(timing(3.0, 4.0)));
+        assert_eq!(stats.update.timing(), Some(timing(5.0, 5.0)));
     }
 
     #[test]
-    fn the_cpu_time_beyond_the_stages_pairs_with_the_previous_frames_update() {
+    fn a_section_splits_into_its_sub_scopes_and_the_rest_of_each_frame() {
+        let mut stats = FrameStats::default();
+        let base = Instant::now();
+        for (frame, (length, table, ruler)) in [(10.0, 4.0, None), (6.0, 1.0, Some(2.0))]
+            .into_iter()
+            .enumerate()
+        {
+            let start = frame as f64 * 16.0;
+            stats.begin_frame_at(frame as u64, None, ms(base, start));
+            record_scope("table", millis(table));
+            if let Some(ruler) = ruler {
+                record_scope("ruler", millis(ruler));
+            }
+            stats.mark_at("panes", ms(base, start + length));
+        }
+
+        stats.begin_frame_at(2, None, ms(base, 32.0));
+
+        assert_eq!(
+            section_row(&stats, "panes"),
+            SectionRow {
+                name: "panes",
+                timing: timing(8.0, 10.0),
+                subs: vec![
+                    ("table", timing(2.5, 4.0)),
+                    ("ruler", timing(1.0, 2.0)),
+                    (REST, timing(4.5, 6.0)),
+                ],
+            }
+        );
+    }
+
+    #[test]
+    fn a_section_first_marked_late_averages_over_every_finished_frame() {
         let mut stats = FrameStats::default();
         let base = Instant::now();
         stats.begin_frame_at(0, None, base);
+        stats.mark_at("inputs", ms(base, 2.0));
+        stats.begin_frame_at(1, None, ms(base, 16.0));
+        stats.mark_at("inputs", ms(base, 18.0));
+        stats.mark_at("viewers", ms(base, 22.0));
+
+        stats.begin_frame_at(2, None, ms(base, 32.0));
+
+        assert_eq!(section(&stats, "viewers"), Some(timing(2.0, 4.0)));
+        assert_eq!(stats.update.timing(), Some(timing(4.0, 6.0)));
+    }
+
+    #[test]
+    fn scopes_closed_outside_a_frames_marks_count_toward_no_section() {
+        let mut stats = FrameStats::default();
+        let base = Instant::now();
+        record_scope("before the frame", millis(5.0));
+        stats.begin_frame_at(0, None, base);
+        record_scope("table", millis(1.0));
+        stats.mark_at("panes", ms(base, 2.0));
+        record_scope("after the last mark", millis(5.0));
+        stats.begin_frame_at(1, None, ms(base, 16.0));
+        stats.mark_at("panes", ms(base, 18.0));
+
+        stats.begin_frame_at(2, None, ms(base, 32.0));
+
+        let names: Vec<_> = section_row(&stats, "panes")
+            .subs
+            .iter()
+            .map(|(name, _)| *name)
+            .collect();
+        assert_eq!(names, ["table", REST]);
+    }
+
+    #[test]
+    fn a_scope_inside_another_counts_only_toward_the_outer_one() {
+        let mut stats = FrameStats::default();
+        stats.begin_frame_at(0, None, Instant::now());
+        {
+            let _outer = scope("outer");
+            let _inner = scope("inner");
+        }
+        stats.mark_at("panes", Instant::now());
+
+        stats.begin_frame_at(1, None, Instant::now());
+
+        let names: Vec<_> = section_row(&stats, "panes")
+            .subs
+            .iter()
+            .map(|(name, _)| *name)
+            .collect();
+        assert_eq!(names, ["outer", REST]);
+    }
+
+    #[test]
+    fn the_cpu_outside_app_code_splits_into_the_same_frames_egui_passes_and_paint() {
+        let mut stats = FrameStats::default();
+        let base = Instant::now();
+        let passes = |start: f64, end: f64| EguiPasses {
+            start: millis(start),
+            end: millis(end),
+        };
+        stats.begin_pass_at(0, None, passes(1.0, 0.0), base);
         stats.mark_at("ui", ms(base, 3.0));
 
-        stats.begin_frame_at(1, Some(0.005), ms(base, 16.0));
+        stats.begin_pass_at(1, Some(0.010), passes(0.5, 2.0), ms(base, 16.0));
 
         let cpu = stats.cpu.timing().unwrap();
-        let rest = stats.rest.timing().unwrap();
-        assert!((cpu.average.as_secs_f64() - 0.005).abs() < 1e-6, "{cpu:?}");
-        assert!(
-            (rest.average.as_secs_f64() - 0.002).abs() < 1e-6,
-            "{rest:?}"
-        );
+        assert!((cpu.average.as_secs_f64() - 0.010).abs() < 1e-6, "{cpu:?}");
+        let outside = section_row(&stats, OUTSIDE_APP);
+        let near = |actual: Timing, expected_ms: f64| {
+            (actual.average.as_secs_f64() * 1000.0 - expected_ms).abs() < 1e-3
+        };
+        assert!(near(outside.timing, 7.0), "{outside:?}");
+        let [start, end, paint, ..] = &outside.subs[..] else {
+            panic!("{outside:?}");
+        };
+        assert_eq!(*start, (EGUI_PASS_START, timing(1.0, 1.0)));
+        assert_eq!(*end, (EGUI_PASS_END, timing(2.0, 2.0)));
+        assert_eq!(paint.0, PAINT);
+        assert!(near(paint.1, 4.0), "{outside:?}");
     }
 
     #[test]
@@ -502,13 +938,7 @@ mod tests {
             samples.push(Duration::from_millis(if i < 10 { 100 } else { 1 }));
         }
 
-        assert_eq!(
-            samples.timing(),
-            Some(Timing {
-                average: Duration::from_millis(1),
-                max: Duration::from_millis(1),
-            })
-        );
+        assert_eq!(samples.timing(), Some(timing(1.0, 1.0)));
     }
 
     #[test]

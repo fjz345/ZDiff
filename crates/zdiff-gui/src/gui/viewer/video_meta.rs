@@ -261,6 +261,7 @@ pub fn show(
     shown_sides: [usize; 2],
     audio: Option<(&mut AudioDiffProcessor, &mut AudioSettings)>,
 ) {
+    let _scope = zcommon_ui::frame_stats::scope("Video view");
     processor.poll();
     if processor.probing() {
         ui.ctx().request_repaint();

@@ -16,4 +16,5 @@ pub mod shared_keymap;
 pub mod style_window;
 pub mod table;
 pub mod toggle;
+mod vsync;
 pub mod window_memory;

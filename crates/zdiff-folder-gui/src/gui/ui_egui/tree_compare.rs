@@ -474,6 +474,7 @@ impl TreeCompare {
         views: [Option<&FileSystemView>; 2],
         now: Instant,
     ) {
+        let _scope = zcommon_ui::frame_stats::scope("Start compare");
         let tasks = self.tasks(rows, views);
         let started = self.job.as_ref().map_or(now, |job| job.started);
         self.job = (!self.cancelled && !tasks.is_empty()).then(|| {
@@ -561,6 +562,7 @@ impl TreeCompare {
     }
 
     pub fn poll(&mut self, now: Instant) -> CompareUpdate {
+        let _scope = zcommon_ui::frame_stats::scope("Compare polling");
         let Some(job) = &mut self.job else {
             return CompareUpdate::Idle;
         };

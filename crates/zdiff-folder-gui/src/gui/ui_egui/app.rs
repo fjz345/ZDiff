@@ -347,6 +347,7 @@ impl AppStateCtx {
     }
 
     fn narrow_rows_to_find(&mut self) {
+        let _scope = frame_stats::scope("Find narrowing");
         let flat = self.diff_filter.is_flat(self.tree_sort);
         let arranged = self
             .two_folder_diff_arranged_rows
@@ -382,6 +383,7 @@ impl AppStateCtx {
 
     /// Reads no file: pairs without a known state are Pending.
     fn build_rows(&mut self, check_blueprints: bool) -> Option<Vec<VisibleRowTwoFolderDiff>> {
+        let _scope = frame_stats::scope("Build rows");
         let compare = &self.tree_compare;
         let detector = &mut self.blueprint_detector;
         FileSystemView::build_two_folder_diff_rows(
@@ -422,6 +424,7 @@ impl AppStateCtx {
         match update {
             CompareUpdate::Idle => {}
             CompareUpdate::Patch => {
+                let _scope = frame_stats::scope("Patch row states");
                 let patch_start = Instant::now();
                 if self.two_folder_diff_visible_rows.is_some()
                     && let Some(fresh) = self.build_rows(false)
@@ -447,6 +450,7 @@ impl AppStateCtx {
             .blueprints_applied
             .is_none_or(|applied| now >= applied + BLUEPRINT_APPLY_INTERVAL);
         if due && !self.blueprint_results.is_empty() {
+            let _scope = frame_stats::scope("Apply blueprint results");
             self.blueprints_applied = Some(now);
             let results = std::mem::take(&mut self.blueprint_results);
             self.built_rows_cache.clear();
@@ -490,6 +494,7 @@ impl AppStateCtx {
     }
 
     fn update_scans(&mut self, repaint: &egui::Context) {
+        let _scope = frame_stats::scope("Scan polling");
         update_side_scan(
             Side::Folder1,
             &mut self.file_system_1_root_path,
@@ -1152,6 +1157,7 @@ impl ZApp {
         let mut actions = if capturing {
             Vec::new()
         } else {
+            let _scope = frame_stats::scope("Shortcut dispatch");
             ctx.input(|i| {
                 let claimed = |e: &egui::Event| {
                     map_claims_back
@@ -1217,8 +1223,10 @@ impl ZApp {
             self.find_open = false;
         }
         if self.find_open {
+            let _scope = frame_stats::scope("Find popup");
             self.show_find(ctx, app_ctx);
         }
+        let timed = frame_stats::scope("Status line");
         let working = app_ctx.file_system_1_scan.is_scanning()
             || app_ctx.file_system_2_scan.is_scanning()
             || app_ctx.tree_compare.is_comparing();
@@ -1270,10 +1278,11 @@ impl ZApp {
                 ui_tool_message(ui, app_ctx.tool_message.as_ref());
             });
         }
-        self.frame_stats.mark("other");
+        drop(timed);
+        self.frame_stats.mark("Shortcuts, find and status line");
         egui::CentralPanel::default().show(ctx, |ui| {
             self.show_menu(ui, app_ctx);
-            self.frame_stats.mark("menu");
+            self.frame_stats.mark("Menu bar and windows");
 
             ui.separator();
 
@@ -1328,7 +1337,7 @@ impl ZApp {
 
                 self.tree.ui(&mut behavior, ui);
                 let chip_event = behavior.find.chip_event;
-                self.frame_stats.mark("panes");
+                self.frame_stats.mark("Pane drawing");
 
                 for (_tile_id, tile) in self.tree.tiles.iter() {
                     if let Tile::Pane(Pane::DuplicateFiles(_file_explorer)) = tile {
@@ -1373,7 +1382,7 @@ impl ZApp {
                     ctx.request_repaint();
                 }
             });
-            self.frame_stats.mark("other");
+            self.frame_stats.mark("Window title and find chip");
         });
     }
 
@@ -1558,9 +1567,9 @@ impl eframe::App for ZApp {
                 state.update_scans(ctx);
                 state.tree_compare.set_repaint(ctx);
                 state.update_compare(Instant::now());
-                self.frame_stats.mark("jobs");
+                self.frame_stats.mark("Scan and compare polling");
                 state.build_two_folder_diff_rows_if_stale();
-                self.frame_stats.mark("rows");
+                self.frame_stats.mark("Row rebuild");
                 if state.file_system_1_scan.is_scanning()
                     || state.file_system_2_scan.is_scanning()
                     || state.tree_compare.is_comparing()
@@ -1577,12 +1586,12 @@ impl eframe::App for ZApp {
                 if fetching {
                     ctx.request_repaint_after(Duration::from_millis(100));
                 }
-                self.frame_stats.mark("jobs");
+                self.frame_stats.mark("Blueprint and revision polling");
 
                 self.ui(ctx, frame, &mut state);
 
                 self.process_ctx_inputs(ctx, frame);
-                self.frame_stats.mark("inputs");
+                self.frame_stats.mark("Esc and click handling");
                 let frame_time = frame_start.elapsed();
                 if frame_time > LONG_FRAME {
                     log::warn!("UI frame took {} ms", frame_time.as_millis());
