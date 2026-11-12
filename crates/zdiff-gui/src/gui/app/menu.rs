@@ -36,6 +36,7 @@ pub(super) struct MenuCtx<'a> {
     pub diff_phases: &'a mut DiffPhases,
     pub code_language_override: &'a mut Option<String>,
     pub syntax_filter: &'a mut String,
+    pub search_syntax_variants: &'a mut bool,
     pub detected_languages: [Option<&'a str>; 2],
     pub h_scroll_modifier: &'a mut WheelModifier,
     pub h_scroll_linked: &'a mut bool,
@@ -60,6 +61,7 @@ impl ZApp {
             diff_phases,
             code_language_override,
             syntax_filter,
+            search_syntax_variants,
             detected_languages,
             h_scroll_modifier,
             h_scroll_linked,
@@ -179,6 +181,11 @@ impl ZApp {
                                 egui::TextEdit::singleline(syntax_filter)
                                     .hint_text("Filter (name or extension)"),
                             );
+                            ui.checkbox(search_syntax_variants, "Show variants when filtering")
+                                .on_hover_text(
+                                    "A typed filter also lists variants such as HTML (Rails) or \
+                                     Git Config; the unfiltered list never shows them",
+                                );
                             let selected = code_language_override
                                 .as_deref()
                                 .and_then(syntax::language_name);
@@ -191,10 +198,9 @@ impl ZApp {
                                 // Fill so the bar hugs the menu edge; filling while sizing locks it at 600px.
                                 .auto_shrink([ui.is_sizing_pass(), true])
                                 .show(ui, |ui| {
-                                    for language in syntax::languages()
-                                        .iter()
-                                        .filter(|l| l.matches(syntax_filter))
-                                    {
+                                    for language in syntax::languages().iter().filter(|l| {
+                                        l.listed(syntax_filter, *search_syntax_variants)
+                                    }) {
                                         ui.horizontal(|ui| {
                                             show_language_icon(ui, icon_for(language.name));
                                             if ui

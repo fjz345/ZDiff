@@ -98,6 +98,8 @@ pub struct AppStateCtx {
     pub code_language_override: Option<String>,
     #[cfg_attr(feature = "serde", serde(skip), serde(default))]
     pub syntax_filter: String,
+    #[cfg_attr(feature = "serde", serde(default = "default_search_syntax_variants"))]
+    pub search_syntax_variants: bool,
     #[cfg_attr(feature = "serde", serde(skip), serde(default))]
     pub detected_languages: [DetectedLanguage; 2],
 
@@ -150,6 +152,10 @@ fn default_center_jumps() -> bool {
     true
 }
 
+fn default_search_syntax_variants() -> bool {
+    true
+}
+
 impl Default for AppStateCtx {
     fn default() -> Self {
         Self {
@@ -199,6 +205,7 @@ impl Default for AppStateCtx {
             myers_diff_algorithm: Default::default(),
             code_language_override: None,
             syntax_filter: String::new(),
+            search_syntax_variants: default_search_syntax_variants(),
             detected_languages: Default::default(),
         }
     }
@@ -281,6 +288,25 @@ mod tests {
         let restored: AppStateCtx = serde_json::from_str(&json).unwrap();
 
         assert!(restored.sides_swapped);
+    }
+
+    #[test]
+    fn the_syntax_variant_search_survives_a_restart_and_an_old_save_searches_them() {
+        assert!(AppStateCtx::default().search_syntax_variants);
+        let state = AppStateCtx {
+            search_syntax_variants: false,
+            ..Default::default()
+        };
+        let mut json = serde_json::to_value(&state).unwrap();
+        let restored: AppStateCtx = serde_json::from_value(json.clone()).unwrap();
+        assert!(!restored.search_syntax_variants);
+
+        json.as_object_mut()
+            .unwrap()
+            .remove("search_syntax_variants")
+            .unwrap();
+        let old: AppStateCtx = serde_json::from_value(json).unwrap();
+        assert!(old.search_syntax_variants);
     }
 
     #[test]

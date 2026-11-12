@@ -80,20 +80,90 @@ pub fn language_name(language: &str) -> Option<&'static str> {
     find_syntax(language).map(|syntax| syntax.name.as_str())
 }
 
+// Curated, as names mislead (Graphviz (DOT) is the only DOT syntax); Git and SSH are family labels.
+const VARIANTS: &[(&str, &[&str])] = &[
+    (
+        "CMake",
+        &["CMake C Header", "CMake C++ Header", "CMakeCache"],
+    ),
+    ("Dockerfile", &["Dockerfile (with bash)"]),
+    (
+        "Fortran (Modern)",
+        &["Fortran (Fixed Form)", "Fortran Namelist"],
+    ),
+    (
+        "Git",
+        &[
+            "Git Attributes",
+            "Git Commit",
+            "Git Config",
+            "Git Ignore",
+            "Git Link",
+            "Git Log",
+            "Git Mailmap",
+            "Git Rebase Todo",
+        ],
+    ),
+    ("Go", &["Gomod", "Gosum"]),
+    ("Haskell", &["Literate Haskell"]),
+    (
+        "HTML",
+        &[
+            "HTML (ASP)",
+            "HTML (EEx)",
+            "HTML (Erlang)",
+            "HTML (Jinja2)",
+            "HTML (Rails)",
+            "HTML (Tcl)",
+            "HTML (Twig)",
+        ],
+    ),
+    ("Java", &["Java Properties", "Java Server Page (JSP)"]),
+    ("JavaScript", &["JavaScript (Rails)"]),
+    ("LaTeX", &["LaTeX Log"]),
+    ("Markdown", &["MultiMarkdown"]),
+    ("OCaml", &["camlp4", "OCamllex", "OCamlyacc"]),
+    ("Protocol Buffer", &["Protocol Buffer (TEXT)"]),
+    ("R", &["R Console", "Rd (R Documentation)"]),
+    ("Ruby", &["Ruby Haml", "Ruby on Rails", "Ruby Slim"]),
+    (
+        "Separated Values",
+        &[
+            "Comma Separated Values",
+            "Pipe Separated Values",
+            "Semi-Colon Separated Values",
+            "Tab Separated Values",
+        ],
+    ),
+    ("SQL", &["SQL (Rails)"]),
+    ("SSH", &["SSH Config", "SSHD Config"]),
+    ("TypeScript", &["TypeScriptReact"]),
+];
+
 pub struct Language {
     pub name: &'static str,
     extensions: &'static [String],
+    is_variant: bool,
+}
+
+fn trimmed_filter(filter: &str) -> &str {
+    filter.trim().trim_start_matches('.')
 }
 
 impl Language {
     pub fn matches(&self, filter: &str) -> bool {
-        let filter = filter.trim().trim_start_matches('.');
+        let filter = trimmed_filter(filter);
         filter.is_empty()
             || self.name.to_lowercase().contains(&filter.to_lowercase())
             || self
                 .extensions
                 .iter()
                 .any(|e| e.eq_ignore_ascii_case(filter))
+    }
+
+    pub fn listed(&self, filter: &str, search_variants: bool) -> bool {
+        let typed = !trimmed_filter(filter).is_empty();
+        self.matches(filter) && (!self.is_variant || (typed && search_variants))
     }
 }
 
@@ -107,6 +177,9 @@ pub fn languages() -> &'static [Language] {
             .map(|syntax| Language {
                 name: &syntax.name,
                 extensions: &syntax.file_extensions,
+                is_variant: VARIANTS
+                    .iter()
+                    .any(|(_, variants)| variants.contains(&syntax.name.as_str())),
             })
             .collect();
         languages.sort_by_cached_key(|language| language.name.to_lowercase());
@@ -531,6 +604,62 @@ mod tests {
         }
         for filter in ["py", ".py", "rst"] {
             assert!(!rust.matches(filter), "{filter:?}");
+        }
+    }
+
+    #[test]
+    fn variants_are_listed_only_by_a_typed_filter_that_searches_them() {
+        let find = |name| languages().iter().find(|l| l.name == name).unwrap();
+        let html = find("HTML");
+        let rails = find("HTML (Rails)");
+        for search_variants in [false, true] {
+            for filter in ["", "  ", "."] {
+                assert!(html.listed(filter, search_variants), "{filter:?}");
+                assert!(
+                    !rails.listed(filter, search_variants),
+                    "{filter:?} {search_variants}"
+                );
+            }
+            assert!(html.listed("html", search_variants));
+            assert!(!html.listed("rails", search_variants));
+            assert!(!rails.listed("rust", search_variants));
+        }
+        for filter in ["rails", "HTML", " html ", "erb", ".erb"] {
+            assert!(rails.listed(filter, true), "{filter:?}");
+            assert!(!rails.listed(filter, false), "{filter:?}");
+        }
+    }
+
+    #[test]
+    fn the_variant_table_names_listed_languages() {
+        let names: Vec<&str> = languages().iter().map(|l| l.name).collect();
+        let mut table: Vec<&str> = VARIANTS
+            .iter()
+            .flat_map(|(_, variants)| variants.iter().copied())
+            .collect();
+        for (base, _) in VARIANTS {
+            assert!(
+                names.contains(base) || ["Git", "SSH"].contains(base),
+                "{base}"
+            );
+            assert!(!table.contains(base), "{base}");
+        }
+        let mut flagged: Vec<&str> = languages()
+            .iter()
+            .filter(|l| l.is_variant)
+            .map(|l| l.name)
+            .collect();
+        table.sort_unstable();
+        flagged.sort_unstable();
+        assert_eq!(flagged, table);
+        for name in [
+            "Graphviz (DOT)",
+            "Bourne Again Shell (bash)",
+            "AsciiDoc (Asciidoctor)",
+            "GDScript (Godot Engine)",
+            "Separated Values",
+        ] {
+            assert!(names.contains(&name) && !flagged.contains(&name), "{name}");
         }
     }
 
