@@ -824,6 +824,8 @@ fn tooltip(
     views: [Option<&FileSystemView>; 2],
     compare: &TreeCompare,
 ) {
+    // All cells share one tooltip Area, which otherwise keeps the last cell's width (egui#5167).
+    ui.set_max_width(ui.spacing().tooltip_width);
     let node = &tree.nodes[cell.node];
     if let CellKind::Rest { count } = cell.kind {
         ui.label(format!("{count} more entries, too small to show"));
