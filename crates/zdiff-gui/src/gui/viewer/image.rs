@@ -5,10 +5,7 @@
 use std::{
     borrow::Cow,
     io::Cursor,
-    sync::{
-        Arc, OnceLock,
-        atomic::AtomicBool,
-    },
+    sync::{Arc, OnceLock, atomic::AtomicBool},
     time::{Duration, Instant},
 };
 
@@ -486,31 +483,88 @@ impl CompareKey {
         self.generation == other.generation && self.channel == other.channel
     }
 
-    fn same_placement(&self, other: &CompareKey) -> bool {
-        self.same_pixels(other) && self.alignment == other.alignment
-    }
-
     fn same_map(&self, other: &CompareKey) -> bool {
-        self.same_placement(other) && self.metric == other.metric
+        self.same_pixels(other) && (self.metric, self.alignment) == (other.metric, other.alignment)
     }
 }
 
-// Every metric computed for one placement, so switching back to one only thresholds it again.
+const METRIC_MAPS_MAX_BYTES: usize = 256 << 20;
+
+// Every map made for the shown pixels; one still computing keeps computing when another is shown.
 #[derive(Default)]
-struct MetricMaps(Vec<(CompareKey, Arc<MetricMap>)>);
+struct MetricMaps {
+    done: Vec<(CompareKey, Arc<MetricMap>)>,
+    computing: Vec<(CompareKey, Job<Arc<MetricMap>>)>,
+}
 
 impl MetricMaps {
     fn get(&self, key: &CompareKey) -> Option<&Arc<MetricMap>> {
-        self.0
+        self.done
             .iter()
             .find(|(cached, _)| cached.same_map(key))
             .map(|(_, map)| map)
     }
 
-    fn keep(&mut self, key: CompareKey, map: Arc<MetricMap>) {
-        self.0
-            .retain(|(cached, _)| cached.same_placement(&key) && cached.metric != key.metric);
-        self.0.push((key, map));
+    fn computing(&self, key: &CompareKey) -> bool {
+        self.computing
+            .iter()
+            .any(|(computing, _)| computing.same_map(key))
+    }
+
+    fn start(
+        &mut self,
+        key: CompareKey,
+        [first, second]: [Arc<DecodedImage>; 2],
+        wake: impl Fn() + Send + Sync + 'static,
+    ) {
+        let mut job = Job::new(wake);
+        job.start(move |job| {
+            let (first, second) = (first.buffer(), second.buffer());
+            let (first_rgba, second_rgba) = (
+                apply_channel(first.rgba, key.channel),
+                apply_channel(second.rgba, key.channel),
+            );
+            let first = RgbaBuffer {
+                rgba: &first_rgba,
+                ..first
+            };
+            let second = RgbaBuffer {
+                rgba: &second_rgba,
+                ..second
+            };
+            let cancel_flag: &AtomicBool = job.cancel_flag();
+            if let Some(map) = metric_map(first, second, key.metric, key.alignment, cancel_flag) {
+                job.send(Arc::new(map));
+            }
+        });
+        self.computing.push((key, job));
+    }
+
+    fn poll(&mut self, shown: &CompareKey) {
+        let generation = shown.generation;
+        self.done.retain(|(key, _)| key.generation == generation);
+        self.computing
+            .retain(|(key, _)| key.generation == generation);
+        for (key, job) in &mut self.computing {
+            self.done
+                .extend(job.poll().into_iter().map(|map| (*key, map)));
+        }
+        let done = &self.done;
+        self.computing
+            .retain(|(key, _)| !done.iter().any(|(cached, _)| cached.same_map(key)));
+        self.evict(shown, METRIC_MAPS_MAX_BYTES);
+    }
+
+    fn evict(&mut self, shown: &CompareKey, max_bytes: usize) {
+        let mut bytes: usize = self.done.iter().map(|(_, map)| map.magnitude.len()).sum();
+        let mut index = 0;
+        while bytes > max_bytes && index < self.done.len() {
+            if self.done[index].0.same_map(shown) {
+                index += 1;
+                continue;
+            }
+            bytes -= self.done.remove(index).1.magnitude.len();
+        }
     }
 }
 
@@ -529,6 +583,7 @@ impl Missing {
 
 struct DiffMap {
     key: CompareKey,
+    map: Arc<MetricMap>,
     stats: PixelStats,
     /// The union canvas, in image pixels.
     size: Vec2,
@@ -558,8 +613,7 @@ type DecodeResult = Result<DecodedImage, String>;
 
 struct CompareResult {
     key: CompareKey,
-    map: Option<Arc<MetricMap>>,
-    diff: Option<(PixelStats, ColorImage)>,
+    diff: Option<(Arc<MetricMap>, PixelStats, ColorImage)>,
     heat: Option<(GradientPreset, ColorImage)>,
     histograms: Option<[Histogram; 2]>,
 }
@@ -613,17 +667,19 @@ impl std::fmt::Debug for ImageDiffProcessor {
     }
 }
 
+fn repaint_waker(repaint: &Arc<OnceLock<egui::Context>>) -> impl Fn() + Send + Sync + 'static {
+    let repaint = repaint.clone();
+    move || {
+        if let Some(ctx) = repaint.get() {
+            ctx.request_repaint();
+        }
+    }
+}
+
 impl Default for ImageDiffProcessor {
     fn default() -> Self {
         let repaint: Arc<OnceLock<egui::Context>> = Arc::default();
-        let wake = || {
-            let repaint = repaint.clone();
-            move || {
-                if let Some(ctx) = repaint.get() {
-                    ctx.request_repaint();
-                }
-            }
-        };
+        let wake = || repaint_waker(&repaint);
         Self {
             files: [None, None],
             sides: [SideState::Empty, SideState::Empty],
@@ -730,6 +786,8 @@ impl ImageDiffProcessor {
     }
 
     fn compare(&mut self) {
+        let key = self.key();
+        self.metric_maps.poll(&key);
         for mut result in self.compare_job.poll() {
             // A result for an abandoned key must not replace one that is current again.
             let stale = self.stale();
@@ -742,14 +800,10 @@ impl ImageDiffProcessor {
             if !stale.histograms {
                 result.histograms = None;
             }
-            if let Some(map) = result.map
-                && result.key.same_placement(&self.key())
-            {
-                self.metric_maps.keep(result.key, map);
-            }
-            if let Some((stats, mask)) = result.diff {
+            if let Some((map, stats, mask)) = result.diff {
                 self.diff_map = Some(DiffMap {
                     key: result.key,
+                    map,
                     stats,
                     size: vec2(mask.size[0] as f32, mask.size[1] as f32),
                     mask,
@@ -777,55 +831,39 @@ impl ImageDiffProcessor {
         let (Some(first), Some(second)) = (decoded(&self.sides[0]), decoded(&self.sides[1])) else {
             return;
         };
-        let (key, missing) = (self.key(), self.missing());
-        if !missing.any() || self.requested == Some((key, missing)) {
+        let missing = self.missing();
+        let map = self.metric_maps.get(&key).cloned();
+        if (missing.diff || missing.heat) && map.is_none() && !self.metric_maps.computing(&key) {
+            let images = [first.clone(), second.clone()];
+            self.metric_maps
+                .start(key, images, repaint_waker(&self.repaint));
+        }
+        let ready = Missing {
+            diff: missing.diff && map.is_some(),
+            heat: missing.heat && map.is_some(),
+            ..missing
+        };
+        if !ready.any() || self.requested == Some((key, ready)) {
             return;
         }
-        self.requested = Some((key, missing));
+        self.requested = Some((key, ready));
 
-        let cached_map = self.metric_maps.get(&key).cloned();
         let (tolerance, channel, gradient) = (key.tolerance, key.channel, self.heat_gradient);
         self.compare_job.start(move |job| {
-            let cancel_flag: &AtomicBool = job.cancel_flag();
-            let (first, second) = (first.buffer(), second.buffer());
-            let (first_rgba, second_rgba) = (
-                apply_channel(first.rgba, channel),
-                apply_channel(second.rgba, channel),
-            );
-            let first = RgbaBuffer {
-                rgba: &first_rgba,
-                ..first
-            };
-            let second = RgbaBuffer {
-                rgba: &second_rgba,
-                ..second
-            };
-            let map = match cached_map {
-                _ if !missing.diff && !missing.heat => None,
-                Some(map) => Some(map),
-                None => {
-                    let map = metric_map(first, second, key.metric, key.alignment, cancel_flag);
-                    let Some(map) = map else {
-                        return;
-                    };
-                    Some(Arc::new(map))
-                }
-            };
-            let diff = map.as_deref().filter(|_| missing.diff).map(|map| {
-                let diff = changed_pixels(map, tolerance);
+            let diff = map.clone().filter(|_| ready.diff).map(|map| {
+                let diff = changed_pixels(&map, tolerance);
                 let mask = mask_image(&diff);
-                (diff.stats, mask)
+                (map, diff.stats, mask)
             });
             let heat = map
                 .as_deref()
-                .filter(|_| missing.heat)
+                .filter(|_| ready.heat)
                 .map(|map| (gradient, heat_image(map, tolerance, gradient)));
-            let histograms = missing
-                .histograms
-                .then(|| [histogram(first.rgba), histogram(second.rgba)]);
+            let histograms = ready.histograms.then(|| {
+                [first, second].map(|image| histogram(&apply_channel(&image.rgba, channel)))
+            });
             job.send(CompareResult {
                 key,
-                map,
                 diff,
                 heat,
                 histograms,
@@ -971,12 +1009,12 @@ impl ImageDiffProcessor {
     }
 
     pub fn difference_map(&self) -> Option<&Arc<MetricMap>> {
-        self.metric_maps.get(&self.key())
+        self.diff_map.as_ref().map(|shown| &shown.map)
     }
 
     fn difference_text(&self) -> Option<String> {
-        let map = self.difference_map()?;
-        Some(match self.shown_metric {
+        let DiffMap { key, map, .. } = self.diff_map.as_ref()?;
+        Some(match key.metric {
             PixelMetric::Ssim => format!("Mean SSIM {:.4}", 1.0 - map.difference),
             _ => format!("Mean difference {:.2} of 255", map.difference * 255.0),
         })
@@ -2740,8 +2778,12 @@ mod tests {
 
         processor.shown_metric = PixelMetric::Ssim;
         assert!(processor.comparing());
-        assert!(processor.difference_map().is_none());
-        assert_eq!(processor.difference_text(), None);
+        processor.poll(usize::MAX);
+        assert!(Arc::ptr_eq(&exact, &shown_map(&processor)));
+        assert_eq!(
+            processor.difference_text().as_deref(),
+            Some("Mean difference 30.00 of 255")
+        );
         poll_until(&mut processor, |p| !p.comparing());
         let ssim = shown_map(&processor);
         assert!(!Arc::ptr_eq(&exact, &ssim));
@@ -2787,37 +2829,85 @@ mod tests {
         poll_until(&mut processor, |p| !p.comparing());
         processor.shown_metric = PixelMetric::Exact;
         poll_until(&mut processor, |p| !p.comparing());
-        assert_eq!(processor.metric_maps.0.len(), 2);
+        assert_eq!(processor.metric_maps.done.len(), 2);
         (processor, exact)
     }
 
-    #[test]
-    fn an_alignment_change_computes_the_metric_maps_again() {
-        let (mut processor, exact) = with_exact_and_ssim_maps();
-        processor.shown_alignment = Alignment::Center;
-        assert!(processor.comparing());
-        poll_until(&mut processor, |p| !p.comparing());
-        assert_eq!(processor.metric_maps.0.len(), 1);
-
-        processor.shown_alignment = Alignment::TopLeft;
-        assert!(processor.comparing());
-        poll_until(&mut processor, |p| !p.comparing());
-        assert!(!Arc::ptr_eq(&exact, &shown_map(&processor)));
-        processor.shown_metric = PixelMetric::Ssim;
-        assert!(processor.comparing());
+    fn kept_map(processor: &ImageDiffProcessor, metric: PixelMetric) -> Option<Arc<MetricMap>> {
+        let key = CompareKey {
+            metric,
+            ..processor.key()
+        };
+        processor.metric_maps.get(&key).cloned()
     }
 
     #[test]
-    fn a_channel_change_computes_the_metric_maps_again() {
+    fn switching_back_to_an_alignment_reuses_its_metric_maps() {
+        let (mut processor, exact) = with_exact_and_ssim_maps();
+        let ssim = kept_map(&processor, PixelMetric::Ssim).unwrap();
+        processor.shown_alignment = Alignment::Center;
+        assert!(processor.comparing());
+        poll_until(&mut processor, |p| !p.comparing());
+        assert!(!Arc::ptr_eq(&exact, &shown_map(&processor)));
+        assert!(kept_map(&processor, PixelMetric::Ssim).is_none());
+
+        processor.shown_alignment = Alignment::TopLeft;
+        poll_until(&mut processor, |p| !p.comparing());
+        assert!(Arc::ptr_eq(&exact, &shown_map(&processor)));
+        assert!(Arc::ptr_eq(
+            &ssim,
+            &kept_map(&processor, PixelMetric::Ssim).unwrap()
+        ));
+    }
+
+    #[test]
+    fn switching_back_to_a_channel_reuses_its_metric_maps() {
         let (mut processor, exact) = with_exact_and_ssim_maps();
         processor.shown_channel = ImageChannel::Red;
         assert!(processor.comparing());
         poll_until(&mut processor, |p| !p.comparing());
-        assert_eq!(processor.metric_maps.0.len(), 1);
+        assert!(!Arc::ptr_eq(&exact, &shown_map(&processor)));
 
         processor.shown_channel = ImageChannel::All;
         poll_until(&mut processor, |p| !p.comparing());
-        assert!(!Arc::ptr_eq(&exact, &shown_map(&processor)));
+        assert!(Arc::ptr_eq(&exact, &shown_map(&processor)));
+        assert!(kept_map(&processor, PixelMetric::Ssim).is_some());
+    }
+
+    fn noise(width: u32, height: u32, seed: u32) -> Arc<DecodedImage> {
+        let rgba = (0..width * height * 4)
+            .map(|i| (i.wrapping_add(seed).wrapping_mul(2_654_435_761) >> 24) as u8)
+            .collect();
+        Arc::new(DecodedImage {
+            width,
+            height,
+            format: "Frame",
+            rgba,
+        })
+    }
+
+    #[test]
+    fn a_metric_left_while_computing_is_kept_when_it_arrives() {
+        let mut processor = ImageDiffProcessor::default();
+        processor.set_images(
+            [
+                ImageSide::Image(noise(256, 256, 0)),
+                ImageSide::Image(noise(256, 256, 1)),
+            ],
+            usize::MAX,
+        );
+        poll_until(&mut processor, |p| !p.comparing());
+        processor.shown_metric = PixelMetric::Ssim;
+        processor.poll(usize::MAX);
+        processor.shown_metric =
+            PixelMetric::Neighborhood(zdiff::pixel_metric::NeighborhoodSize::Three);
+        poll_until(&mut processor, |p| !p.comparing());
+        poll_until(&mut processor, |p| kept_map(p, PixelMetric::Ssim).is_some());
+        let ssim = kept_map(&processor, PixelMetric::Ssim).unwrap();
+
+        processor.shown_metric = PixelMetric::Ssim;
+        poll_until(&mut processor, |p| !p.comparing());
+        assert!(Arc::ptr_eq(&ssim, &shown_map(&processor)));
     }
 
     #[test]
@@ -2829,7 +2919,7 @@ mod tests {
             Some(png_file("c.png", &first)),
             Some(png_file("d.png", &second)),
         );
-        assert!(processor.metric_maps.0.is_empty());
+        assert!(processor.metric_maps.done.is_empty());
         poll_until(&mut processor, |p| p.difference_map().is_some());
         assert_eq!(
             processor.difference_text().as_deref(),
@@ -2853,16 +2943,50 @@ mod tests {
         poll_until(&mut processor, |p| !p.comparing());
         processor.shown_metric = PixelMetric::Ssim;
         poll_until(&mut processor, |p| !p.comparing());
+        let previous = shown_map(&processor);
 
         processor.set_images(
             [ImageSide::Image(frame(1, 40)), ImageSide::Image(second)],
             usize::MAX,
         );
-        assert!(processor.difference_map().is_none());
+        processor.poll(usize::MAX);
+        assert!(Arc::ptr_eq(&previous, &shown_map(&processor)));
         poll_until(&mut processor, |p| !p.comparing());
-        assert_eq!(processor.metric_maps.0.len(), 1);
+        assert_eq!(processor.metric_maps.done.len(), 1);
         processor.shown_metric = PixelMetric::Exact;
         assert!(processor.comparing());
+    }
+
+    #[test]
+    fn past_the_byte_budget_the_oldest_maps_drop_but_never_the_shown_one() {
+        let key = |metric| CompareKey {
+            generation: 1,
+            tolerance: 0,
+            channel: ImageChannel::All,
+            metric,
+            alignment: Alignment::TopLeft,
+        };
+        let map = Arc::new(MetricMap {
+            width: 10,
+            height: 1,
+            magnitude: vec![0; 10],
+            overlap: zdiff::pixel::PixelBounds { x: 0..10, y: 0..1 },
+            difference: 0.0,
+        });
+        let three = PixelMetric::Neighborhood(zdiff::pixel_metric::NeighborhoodSize::Three);
+        let mut maps = MetricMaps::default();
+        for metric in [PixelMetric::Exact, PixelMetric::Ssim, three] {
+            maps.done.push((key(metric), map.clone()));
+        }
+
+        maps.evict(&key(PixelMetric::Exact), 20);
+        assert!(maps.get(&key(PixelMetric::Exact)).is_some());
+        assert!(maps.get(&key(PixelMetric::Ssim)).is_none());
+        assert!(maps.get(&key(three)).is_some());
+
+        maps.evict(&key(PixelMetric::Exact), 5);
+        assert_eq!(maps.done.len(), 1);
+        assert!(maps.get(&key(PixelMetric::Exact)).is_some());
     }
 
     #[test]

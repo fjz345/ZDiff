@@ -222,8 +222,8 @@ enum TimelineMessage {
     Done(Result<(), Option<String>>),
 }
 
-/// One job per video pair, started once both sides are probed. A cancelled job keeps the samples
-/// it computed until it runs again.
+/// One job per video pair and metric, started once both sides are probed. A cancelled job keeps
+/// the samples it computed until it runs again.
 #[derive(Debug)]
 pub struct VideoTimeline {
     job: Option<TimelineJob>,
@@ -233,15 +233,35 @@ pub struct VideoTimeline {
     values: Vec<f32>,
     sum: f64,
     metric: PixelMetric,
-    finished: Vec<FinishedMetric>,
+    // The pair's other metrics; a running one keeps computing while another is shown.
+    parked: Vec<ParkedRun>,
     run_job: Job<TimelineMessage>,
 }
 
 #[derive(Debug)]
-struct FinishedMetric {
+struct ParkedRun {
     metric: PixelMetric,
+    state: TimelineState,
     values: Vec<f32>,
     sum: f64,
+    job: Job<TimelineMessage>,
+}
+
+fn timeline_job() -> Job<TimelineMessage> {
+    Job::new(|| {}).on_panic(|e| TimelineMessage::Done(Err(Some(e))))
+}
+
+fn receive(state: &mut TimelineState, message: TimelineMessage) -> Option<f32> {
+    match message {
+        TimelineMessage::Value(value) => return Some(value),
+        TimelineMessage::Done(Ok(())) => *state = TimelineState::Done,
+        TimelineMessage::Done(Err(None)) => *state = TimelineState::Cancelled,
+        TimelineMessage::Done(Err(Some(reason))) => {
+            log::warn!("Video difference timeline failed: {reason}");
+            *state = TimelineState::Failed(reason);
+        }
+    }
+    None
 }
 
 impl Default for VideoTimeline {
@@ -254,8 +274,8 @@ impl Default for VideoTimeline {
             values: Vec::new(),
             sum: 0.0,
             metric: PixelMetric::default(),
-            finished: Vec::new(),
-            run_job: Job::new(|| {}).on_panic(|e| TimelineMessage::Done(Err(Some(e)))),
+            parked: Vec::new(),
+            run_job: timeline_job(),
         }
     }
 }
@@ -267,7 +287,7 @@ impl VideoTimeline {
             inputs,
             tracks,
         });
-        self.finished.clear();
+        self.parked.clear();
         self.run();
     }
 
@@ -292,23 +312,25 @@ impl VideoTimeline {
         if self.metric == metric {
             return;
         }
-        if self.job.is_some() && self.state == TimelineState::Done {
-            self.finished.push(FinishedMetric {
+        if self.job.is_some() {
+            self.parked.push(ParkedRun {
                 metric: self.metric,
+                state: std::mem::replace(&mut self.state, TimelineState::Done),
                 values: std::mem::take(&mut self.values),
-                sum: self.sum,
+                sum: std::mem::take(&mut self.sum),
+                job: std::mem::replace(&mut self.run_job, timeline_job()),
             });
         }
         self.metric = metric;
-        match self.finished.iter().position(|f| f.metric == metric) {
-            Some(index) => {
-                self.stop();
-                let finished = self.finished.swap_remove(index);
-                self.values = finished.values;
-                self.sum = finished.sum;
-                self.state = TimelineState::Done;
+        let parked = self.parked.iter().position(|run| run.metric == metric);
+        match parked.map(|index| self.parked.swap_remove(index)) {
+            Some(run) if !matches!(run.state, TimelineState::Failed(_)) => {
+                self.state = run.state;
+                self.values = run.values;
+                self.sum = run.sum;
+                self.run_job = run.job;
             }
-            None => self.compute_again(),
+            _ => self.compute_again(),
         }
     }
 
@@ -321,7 +343,7 @@ impl VideoTimeline {
         self.job = None;
         self.state = TimelineState::Done;
         self.clear_values();
-        self.finished.clear();
+        self.parked.clear();
     }
 
     fn clear_values(&mut self) {
@@ -366,6 +388,12 @@ impl VideoTimeline {
             self.stop();
             self.state = TimelineState::Cancelled;
         }
+        for run in &mut self.parked {
+            if run.state == TimelineState::Running {
+                run.job.cancel();
+                run.state = TimelineState::Cancelled;
+            }
+        }
     }
 
     pub fn compute_again(&mut self) {
@@ -376,13 +404,15 @@ impl VideoTimeline {
 
     pub fn poll(&mut self) {
         for message in self.run_job.poll() {
-            match message {
-                TimelineMessage::Value(value) => self.push(value),
-                TimelineMessage::Done(Ok(())) => self.state = TimelineState::Done,
-                TimelineMessage::Done(Err(None)) => self.state = TimelineState::Cancelled,
-                TimelineMessage::Done(Err(Some(reason))) => {
-                    log::warn!("Video difference timeline failed: {reason}");
-                    self.state = TimelineState::Failed(reason);
+            if let Some(value) = receive(&mut self.state, message) {
+                self.push(value);
+            }
+        }
+        for run in &mut self.parked {
+            for message in run.job.poll() {
+                if let Some(value) = receive(&mut run.state, message) {
+                    run.values.push(value);
+                    run.sum += value as f64;
                 }
             }
         }
@@ -802,24 +832,49 @@ mod tests {
     }
 
     #[test]
-    fn a_metric_left_before_it_finished_computes_again() {
+    fn a_metric_left_while_computing_keeps_its_run() {
         let mut timeline = VideoTimeline::default();
         start(&mut timeline);
-        finish_with(&mut timeline, &[51.0]);
+        timeline.push(1.0);
 
         timeline.set_metric(PixelMetric::Ssim);
+        assert!(timeline.running() && timeline.values.is_empty());
+        timeline.set_metric(PixelMetric::Exact);
         assert!(timeline.running());
+        assert_eq!(timeline.values, [1.0]);
+    }
+
+    #[test]
+    fn a_left_run_is_still_polled_and_one_that_failed_computes_again() {
+        let mut timeline = VideoTimeline::default();
+        start(&mut timeline);
+        timeline.push(1.0);
+        timeline.set_metric(PixelMetric::Ssim);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while timeline.parked[0].state == TimelineState::Running {
+            assert!(Instant::now() < deadline, "timed out: {timeline:?}");
+            timeline.poll();
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert!(matches!(timeline.parked[0].state, TimelineState::Failed(_)));
+
+        timeline.set_metric(PixelMetric::Exact);
+        assert!(timeline.running() && timeline.values.is_empty());
+    }
+
+    #[test]
+    fn cancel_stops_the_left_runs_too() {
+        let mut timeline = VideoTimeline::default();
+        start(&mut timeline);
+        timeline.push(1.0);
+        timeline.set_metric(PixelMetric::Ssim);
+        timeline.cancel();
+        assert_eq!(timeline.state, TimelineState::Cancelled);
+
         timeline.set_metric(PixelMetric::Exact);
         assert!(!timeline.running());
-        assert_eq!(timeline.values, [51.0]);
-
-        timeline.set_metric(PixelMetric::Ssim);
-        assert!(timeline.running());
-        poll_until_stopped(&mut timeline);
-        assert!(matches!(timeline.state, TimelineState::Failed(_)));
-        timeline.set_metric(PixelMetric::Exact);
-        timeline.set_metric(PixelMetric::Ssim);
-        assert!(timeline.running());
+        assert_eq!(timeline.state, TimelineState::Cancelled);
+        assert_eq!(timeline.values, [1.0]);
     }
 
     #[test]
