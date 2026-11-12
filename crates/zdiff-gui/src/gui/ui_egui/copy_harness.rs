@@ -23,6 +23,7 @@ use zdiff::{
     universal_path::UniversalPath,
 };
 
+use crate::diff_ctx::diff_row_chars;
 use crate::ui_egui::{
     active_side::{ActiveSide, ActiveSideState},
     diff_pane::{
@@ -189,10 +190,12 @@ impl CopyHarness {
 
     /// The pane's horizontal extent of each side, measured with `glyph_width`.
     pub fn content_widths(&self, glyph_width: impl FnMut(char) -> f32) -> [f32; 2] {
+        let files = [Some(&*self.file_source), Some(&*self.file_target)];
         side_content_widths(
             &self.rows,
-            Some(&*self.file_source),
-            Some(&*self.file_target),
+            &diff_row_chars(&self.rows, files),
+            files[0],
+            files[1],
             glyph_width,
         )
     }
@@ -608,7 +611,10 @@ fn measure_rows(
     text_widths: [f32; 2],
 ) -> Vec<f32> {
     let (source, target) = (Some(file_source), Some(file_target));
-    let natural_widths = natural_row_widths(fonts, font_id, rows, source, target);
+    let row_chars = diff_row_chars(rows, [source, target]);
+    let natural_widths = natural_row_widths(rows, &row_chars, source, target, |c| {
+        fonts.glyph_width(font_id, c)
+    });
     measure_wrapped_rows(
         fonts,
         font_id,

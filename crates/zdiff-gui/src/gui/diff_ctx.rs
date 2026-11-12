@@ -30,7 +30,7 @@ use zdiff::{
         Side, line_diff, myers_count_add_deletes, myers_diff_path_traced, token_diff,
         validate_pins,
     },
-    row_text::build_row_text,
+    row_text::{RowChars, build_row_text, row_chars},
     scope::{changed_scopes, scope_lines},
     trace::PhaseTrace,
 };
@@ -38,7 +38,10 @@ use zdiff::{
 use crate::{
     clamped_cursor::ClampedCursor,
     scope,
-    ui_egui::active_side::ActiveSide,
+    ui_egui::{
+        active_side::ActiveSide,
+        overview::{ChangeSpan, row_change_spans},
+    },
     viewer::audio::{RepaintContext, repaint_job},
 };
 
@@ -244,6 +247,43 @@ pub struct ScrollSpan {
     pub side: Option<ActiveSide>,
 }
 pub type DiffRows = Vec<DiffRow>; // Span with optional end
+/// Per row, each side's `RowChars`, so the pane sizes rows without building their text.
+pub type DiffRowChars = Vec<[RowChars; 2]>;
+
+pub(crate) fn diff_row_chars(
+    rows: &[DiffRow],
+    files: [Option<&CachedFile<RawToken>>; 2],
+) -> DiffRowChars {
+    let side = |content: &LineContent| match content {
+        LineContent::Code { tokens, .. } => row_chars(tokens, files[0], files[1]),
+        LineContent::Void | LineContent::Collapsed => RowChars::default(),
+    };
+    rows.iter()
+        .map(|row| [side(&row.left), side(&row.right)])
+        .collect()
+}
+
+/// Mirrors `expand_rows` for the rows' chars.
+fn expand_row_chars(
+    base: &[[RowChars; 2]],
+    hidden: &[DiffRowChars],
+    row_blocks: &[RowBlock],
+) -> DiffRowChars {
+    assert_eq!(hidden.len(), row_blocks.len());
+    let mut chars = Vec::new();
+    let mut next = 0;
+    for (block, hidden) in row_blocks.iter().zip(hidden) {
+        chars.extend_from_slice(&base[next..block.key]);
+        if !block.expanded {
+            chars.push(base[block.key]);
+        }
+        let revealed = block.rows.len() - usize::from(!block.expanded);
+        chars.extend_from_slice(&hidden[hidden.len() - revealed..]);
+        next = block.key + 1;
+    }
+    chars.extend_from_slice(&base[next..]);
+    chars
+}
 
 #[derive(Debug, PartialEq, Clone, Copy)]
 enum HighlightSource {
@@ -377,6 +417,9 @@ pub struct DiffRowsCtx {
     /// Every block unexpanded.
     row_blocks: Arc<Vec<RowBlock>>,
     changed_scopes: Arc<[Vec<Range<usize>>; 2]>,
+    row_chars: Arc<DiffRowChars>,
+    hidden_row_chars: Arc<Vec<DiffRowChars>>,
+    ruler_spans: Arc<Vec<ChangeSpan>>,
     elapsed: Duration,
 }
 
@@ -396,7 +439,7 @@ impl DiffStageTimes {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct MinimalDiffCtx {
     #[cfg(debug_assertions)]
     pub debug_file_1_path: UniversalPath,
@@ -425,6 +468,9 @@ pub struct MinimalDiffCtx {
     pub row_blocks: Arc<Vec<RowBlock>>,
     /// Per side, 0-based line ranges of the top-level scopes holding a visible change.
     pub changed_scopes: Arc<[Vec<Range<usize>>; 2]>,
+    pub row_chars: Arc<DiffRowChars>,
+    pub hidden_row_chars: Arc<Vec<DiffRowChars>>,
+    pub ruler_spans: Arc<Vec<ChangeSpan>>,
 }
 
 macro_rules! check_cancel {
@@ -530,10 +576,11 @@ impl StageCtx for DiffRowsCtx {
         // Equal tokens sit on both sides of their row.
         let row_tokens = 2 * self.input.diff_ir.entries.len();
         let (left_lines, right_lines) = &*self.precomputed_file_rows;
-        (self.rows.len() + hidden_rows) * size_of::<DiffRow>()
+        (self.rows.len() + hidden_rows) * (size_of::<DiffRow>() + size_of::<[RowChars; 2]>())
             + row_tokens * size_of::<(zdiff::diff_ir::DiffResult, bool, bool)>()
             + (left_lines.len() + right_lines.len()) * size_of::<usize>()
             + self.precomputed_diffs.len() * size_of::<DiffSpan>()
+            + self.ruler_spans.len() * size_of::<ChangeSpan>()
     }
 }
 
@@ -1047,6 +1094,13 @@ impl DiffCtx {
                     );
                     let row_blocks = unexpanded_row_blocks(&collapsed_blocks);
                     let changed_scopes = changed_scope_lines(&rows, [c1, c2]);
+                    let files = [input.file_1.as_deref(), input.file_2.as_deref()];
+                    let row_chars = diff_row_chars(&rows, files);
+                    let hidden_row_chars = collapsed_blocks
+                        .iter()
+                        .map(|block| diff_row_chars(&block.hidden, files))
+                        .collect();
+                    let ruler_spans = row_change_spans(&rows);
                     job.send(Some(DiffRowsCtx {
                         input,
                         rows: Arc::new(rows),
@@ -1055,6 +1109,9 @@ impl DiffCtx {
                         collapsed_blocks: Arc::new(collapsed_blocks),
                         row_blocks: Arc::new(row_blocks),
                         changed_scopes: Arc::new(changed_scopes),
+                        row_chars: Arc::new(row_chars),
+                        hidden_row_chars: Arc::new(hidden_row_chars),
+                        ruler_spans: Arc::new(ruler_spans),
                         elapsed: start.elapsed(),
                     }));
                 } else {
@@ -1082,6 +1139,9 @@ impl DiffCtx {
         let collapsed_blocks = diff_row_ctx.collapsed_blocks.clone();
         let row_blocks = diff_row_ctx.row_blocks.clone();
         let changed_scopes = diff_row_ctx.changed_scopes.clone();
+        let row_chars = diff_row_ctx.row_chars.clone();
+        let hidden_row_chars = diff_row_ctx.hidden_row_chars.clone();
+        let ruler_spans = diff_row_ctx.ruler_spans.clone();
         let diff_rows_elapsed = diff_row_ctx.elapsed;
         // Rows are only returned when they were built from the current IR ctx. Read it here
         // rather than requesting it again, which would clone and compare the Myers path.
@@ -1116,6 +1176,9 @@ impl DiffCtx {
             collapsed_blocks,
             row_blocks,
             changed_scopes,
+            row_chars,
+            hidden_row_chars,
+            ruler_spans,
         })
     }
 }
@@ -1150,6 +1213,8 @@ pub struct DiffProcessor {
     last_find_scroll_to_row: Option<ScrollSpan>,
     /// `None` while every block is collapsed.
     expansion: Option<RowExpansion>,
+    /// The last finished diff, while a request for the same files computes.
+    previous: Option<MinimalDiffCtx>,
 }
 
 impl Default for DiffProcessor {
@@ -1175,6 +1240,7 @@ impl Default for DiffProcessor {
             last_conflict_scroll_to_row: None,
             last_find_scroll_to_row: None,
             expansion: None,
+            previous: None,
         }
     }
 }
@@ -1185,6 +1251,7 @@ impl DiffProcessor {
         let old = std::mem::replace(&mut self.ctx, fresh);
         // Its caches can hold a gigabyte of stage results, too slow to free on the UI thread.
         std::thread::spawn(move || drop(old));
+        self.previous = None;
         self.reset_ui();
     }
 
@@ -1206,6 +1273,10 @@ impl DiffProcessor {
 
     pub fn is_in_progress(&self) -> bool {
         self.in_progress_input.is_some()
+    }
+
+    pub fn diff_ctx_while_computing(&self) -> Option<MinimalDiffCtx> {
+        self.previous.clone().filter(|_| self.is_in_progress())
     }
 
     pub fn cancel_in_progress(&mut self) {
@@ -1238,6 +1309,25 @@ impl DiffProcessor {
         }
         input.pins = self.pins.clone();
 
+        if !self.is_in_progress() {
+            self.previous = self.get_minimal_diff_ctx();
+        }
+        let same_file = |a: &Option<Arc<CachedFile<RawToken>>>,
+                         b: &Option<Arc<CachedFile<RawToken>>>| {
+            match (a, b) {
+                (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+                (None, None) => true,
+                _ => false,
+            }
+        };
+        let same_files = self.previous.as_ref().is_some_and(|previous| {
+            same_file(&previous.input.file_1, &input.file_1)
+                && same_file(&previous.input.file_2, &input.file_2)
+        });
+        if !same_files {
+            self.previous = None;
+        }
+
         self.cancel_in_progress();
         self.ctx.cancel_all();
         self.in_progress_input = Some(input.clone());
@@ -1260,6 +1350,7 @@ impl DiffProcessor {
 
         if self.is_in_progress() && self.ctx.request_minimal_diff_ctx().is_some() {
             self.in_progress_input = None;
+            self.previous = None;
             // Render-only option changes are served from the rows cache: same rows, same UI state.
             reset_ui = !matches!(
                 (&shown_rows, &self.ctx.diff_rows_ctx),
@@ -1610,6 +1701,8 @@ struct RowExpansion {
     precomputed_diffs: Arc<PrecomputedDiffs>,
     precomputed_file_rows: Arc<PrecomputedFileRows>,
     row_blocks: Arc<Vec<RowBlock>>,
+    row_chars: Arc<DiffRowChars>,
+    ruler_spans: Arc<Vec<ChangeSpan>>,
 }
 impl RowExpansion {
     fn new(base: &MinimalDiffCtx, expanded: BTreeMap<usize, usize>) -> Self {
@@ -1620,13 +1713,17 @@ impl RowExpansion {
             c1.metadata.line_starts.len(),
             c2.metadata.line_starts.len(),
         );
+        let row_chars = expand_row_chars(&base.row_chars, &base.hidden_row_chars, &row_blocks);
+        assert_eq!(row_chars.len(), rows.len());
         Self {
             base: base.diff_rows.clone(),
             expanded,
             precomputed_diffs: Arc::new(precompute_diff_spans(&rows)),
             precomputed_file_rows: Arc::new(precomputed_file_rows),
+            ruler_spans: Arc::new(row_change_spans(&rows)),
             diff_rows: Arc::new(rows),
             row_blocks: Arc::new(row_blocks),
+            row_chars: Arc::new(row_chars),
         }
     }
 
@@ -1635,6 +1732,8 @@ impl RowExpansion {
         ctx.precomputed_diffs = self.precomputed_diffs.clone();
         ctx.precomputed_file_rows = self.precomputed_file_rows.clone();
         ctx.row_blocks = self.row_blocks.clone();
+        ctx.row_chars = self.row_chars.clone();
+        ctx.ruler_spans = self.ruler_spans.clone();
     }
 }
 
@@ -1811,6 +1910,13 @@ fn update_diff_rows_minimal_diff_ctx(
         c2.metadata.line_starts.len(),
     );
     let changed_scopes = changed_scope_lines(&final_rows, [c1, c2]);
+    let files = [input.file_1.as_deref(), input.file_2.as_deref()];
+    let row_chars = diff_row_chars(&final_rows, files);
+    let hidden_row_chars = collapsed_blocks
+        .iter()
+        .map(|block| diff_row_chars(&block.hidden, files))
+        .collect();
+    let ruler_spans = row_change_spans(&final_rows);
     let stage_times = DiffStageTimes {
         line_diff: line_elapsed,
         token_diff: token_elapsed,
@@ -1838,6 +1944,9 @@ fn update_diff_rows_minimal_diff_ctx(
         row_blocks: Arc::new(unexpanded_row_blocks(&collapsed_blocks)),
         collapsed_blocks: Arc::new(collapsed_blocks),
         changed_scopes: Arc::new(changed_scopes),
+        row_chars: Arc::new(row_chars),
+        hidden_row_chars: Arc::new(hidden_row_chars),
+        ruler_spans: Arc::new(ruler_spans),
     })
 }
 
@@ -2499,6 +2608,42 @@ mod tests {
         }
 
         #[test]
+        fn an_option_change_shows_the_last_finished_diff_until_it_completes_a_file_change_does_not()
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let a = (
+                load(&write_source(&dir.path().join("a1.rs"), 20_000, 1)),
+                load(&write_source(&dir.path().join("a2.rs"), 20_000, 2)),
+            );
+            let b = load(&write_source(&dir.path().join("b.rs"), 20_000, 3));
+            let mut processor = DiffProcessor::default();
+            let mut current = input(&a.0, &a.1);
+            open(&mut processor, &current);
+            assert!(processor.diff_ctx_while_computing().is_none());
+            let first = settle(&mut processor).expect("first diff never completed");
+            assert!(processor.diff_ctx_while_computing().is_none());
+
+            for toggle in [
+                |o: &mut DiffBuilderOptions| o.ignore.whitespace = true,
+                |o: &mut DiffBuilderOptions| o.ignore.comments = true,
+            ] {
+                toggle(&mut current.options);
+                open(&mut processor, &current);
+                assert!(processor.is_in_progress());
+                let shown = processor
+                    .diff_ctx_while_computing()
+                    .expect("last diff shown");
+                assert!(Arc::ptr_eq(&shown.diff_rows, &first.diff_rows));
+            }
+            settle(&mut processor).expect("toggle never completed");
+            assert!(processor.diff_ctx_while_computing().is_none());
+
+            open(&mut processor, &input(&a.0, &b));
+            assert!(processor.is_in_progress());
+            assert!(processor.diff_ctx_while_computing().is_none());
+        }
+
+        #[test]
         fn a_diff_stage_result_equal_to_a_cached_one_reuses_its_diff_ir() {
             let dir = tempfile::tempdir().unwrap();
             let a = (
@@ -3009,6 +3154,25 @@ mod tests {
                     format!("{:?}", ctx.diff_rows),
                     format!("{:?}", full.diff_rows)
                 );
+            }
+
+            #[test]
+            fn row_chars_match_the_shown_rows_through_partial_and_full_expansions() {
+                let dir = tempfile::tempdir().unwrap();
+                let pair = gap_pair(dir.path());
+                let (mut processor, collapsed) = opened(&diff_only(&pair, 2));
+                let key = only_block(&collapsed);
+                let recounted = |ctx: &MinimalDiffCtx| {
+                    let files = [ctx.input.file_1.as_deref(), ctx.input.file_2.as_deref()];
+                    diff_row_chars(&ctx.diff_rows, files)
+                };
+                assert_eq!(*collapsed.row_chars, recounted(&collapsed));
+
+                for from in [Some(3), Some(0), None] {
+                    processor.set_block_revealed_from(key, from);
+                    let ctx = processor.get_minimal_diff_ctx().expect("diff still shown");
+                    assert_eq!(*ctx.row_chars, recounted(&ctx), "revealed from {from:?}");
+                }
             }
 
             #[test]

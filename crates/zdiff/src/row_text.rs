@@ -83,6 +83,58 @@ pub fn build_row_text<T: RawTokenTrait>(
     row
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CharCount {
+    pub printable: u32,
+    pub tabs: u32,
+    pub other: u32,
+}
+
+impl CharCount {
+    fn add(&mut self, text: &str) {
+        for &byte in text.as_bytes() {
+            match byte {
+                b' '..=b'~' => self.printable += 1,
+                b'\t' => self.tabs += 1,
+                // A UTF-8 continuation byte belongs to the char its lead byte counted.
+                _ if byte & 0xC0 == 0x80 => {}
+                _ => self.other += 1,
+            }
+        }
+    }
+}
+
+/// The chars `build_row_text` puts in a row's text and in its ghosts.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RowChars {
+    pub text: CharCount,
+    pub ghosts: CharCount,
+}
+
+pub fn row_chars<T: RawTokenTrait>(
+    tokens: &[(DiffResult, IsDimmed, IsGhost)],
+    file_source: Option<&CachedFile<T>>,
+    file_target: Option<&CachedFile<T>>,
+) -> RowChars {
+    let mut chars = RowChars::default();
+    for (diff_result, _, is_ghost) in tokens {
+        let Some((file, token_idx)) = resolve_token(diff_result, file_source, file_target) else {
+            continue;
+        };
+        let token = file.tokens[token_idx as usize].as_ref();
+        if token.kind == TokenKind::Newline {
+            continue;
+        }
+        let count = if *is_ghost {
+            &mut chars.ghosts
+        } else {
+            &mut chars.text
+        };
+        count.add(file.read_content_span(token.span.clone()));
+    }
+    chars
+}
+
 fn resolve_token<'a, T: RawTokenTrait>(
     diff_result: &DiffResult,
     file_source: Option<&'a CachedFile<T>>,
@@ -191,6 +243,35 @@ mod tests {
         let row = build_row_text(&tokens, &[], Some(&file), Some(&file));
         assert_eq!(row.text, "ab cd ef");
         assert_eq!(row.changed_tokens, [Range { start: 3, end: 5 }]);
+    }
+
+    #[test]
+    fn row_chars_count_the_text_and_ghost_chars_by_kind() {
+        let file = cached_file("let s = \"é\";\t// ü\r\n");
+        let counted = CharCount {
+            printable: 14,
+            tabs: 1,
+            other: 2,
+        };
+        let real = row_chars(&all_real(&file), Some(&file), Some(&file));
+        assert_eq!(
+            real,
+            RowChars {
+                text: counted,
+                ghosts: CharCount::default()
+            }
+        );
+        let ghosts: Vec<_> = (0..file.tokens.len() as u32)
+            .map(|i| (ghost_delete(i), false, true))
+            .collect();
+        let ghost = row_chars(&ghosts, Some(&file), Some(&file));
+        assert_eq!(
+            ghost,
+            RowChars {
+                text: CharCount::default(),
+                ghosts: counted
+            }
+        );
     }
 
     #[test]

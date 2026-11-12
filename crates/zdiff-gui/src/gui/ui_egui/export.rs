@@ -4,6 +4,7 @@ use std::sync::{Arc, atomic::AtomicBool};
 use zdiff::{
     cached_file::CachedFile,
     diff_builder::{DiffBuilderOptions, DiffRow, LineContent, RowSides, build_diff_rows},
+    diff_ir::DiffIR,
     lexer::RawToken,
 };
 
@@ -44,12 +45,24 @@ pub fn patch_text(diff_ctx: &MinimalDiffCtx) -> Option<String> {
     let (Some(source), Some(target)) = (&diff_ctx.input.file_1, &diff_ctx.input.file_2) else {
         return None;
     };
+    Some(patch_text_of(
+        [source, target],
+        &diff_ctx.input.options,
+        &diff_ctx.diff_ir,
+    ))
+}
+
+pub(crate) fn patch_text_of(
+    [source, target]: [&CachedFile<RawToken>; 2],
+    options: &DiffBuilderOptions,
+    diff_ir: &DiffIR,
+) -> String {
     let options = DiffBuilderOptions {
         ghost_rows: false,
-        ..diff_ctx.input.options.clone()
+        ..options.clone()
     };
     let rows = build_diff_rows(
-        (*diff_ctx.diff_ir).clone(),
+        diff_ir.clone(),
         RowSides {
             tokens_source: Some(&source.tokens),
             tokens_target: Some(&target.tokens),
@@ -59,7 +72,7 @@ pub fn patch_text(diff_ctx: &MinimalDiffCtx) -> Option<String> {
         &options,
         source.metadata.num_lines().max(target.metadata.num_lines()),
     );
-    Some(unified_diff_text(rows, [source, target]))
+    unified_diff_text(rows, [source, target])
 }
 
 #[derive(Clone, Copy, PartialEq)]

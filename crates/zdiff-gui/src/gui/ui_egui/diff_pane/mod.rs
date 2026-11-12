@@ -10,7 +10,6 @@ mod patch;
 mod path_bar;
 mod pins;
 mod row;
-mod ruler;
 mod toolbar;
 mod trace;
 mod ui;
@@ -30,7 +29,6 @@ use patch::*;
 use path_bar::*;
 use pins::*;
 use row::*;
-use ruler::*;
 use toolbar::*;
 use trace::*;
 use unified::*;
@@ -65,8 +63,7 @@ use crate::{
         jump::{jump_target, span_rows},
         occurrence::{OccurrenceState, RowFind, find_ranges},
         overview::{
-            self, BinCache, ChangeKind, ChangeSpan, RULER_WIDTH, RulerColors, row_at,
-            row_change_spans, row_tops,
+            self, BinCache, ChangeKind, ChangeSpan, RULER_WIDTH, RulerColors, row_at, row_tops,
         },
         revision_dropdown::revision_dropdown,
         side_viewers::{self, SideViewers},
@@ -115,7 +112,7 @@ use zdiff::{
     ignore::IgnorePatterns,
     lexer::RawTokenTrait,
     myers::{MyersNumAddDelete, Pin},
-    row_text::{GhostInsertion, RowText, build_row_text},
+    row_text::{CharCount, GhostInsertion, RowChars, RowText, build_row_text},
     trace::{PhaseTrace, TraceSpan},
     universal_path::UniversalPath,
 };
@@ -216,8 +213,6 @@ pub struct FileDiffPane {
     #[serde(skip)]
     row_heights: RowsMemo<RowHeights>,
     #[serde(skip)]
-    ruler_spans: RowsMemo<Vec<ChangeSpan>>,
-    #[serde(skip)]
     ruler_bins: BinCache,
     #[serde(skip)]
     occurrences: OccurrenceState,
@@ -233,10 +228,12 @@ pub struct FileDiffPane {
     #[serde(skip)]
     center_layout: Option<CenterLayoutCache>,
     #[serde(skip)]
-    unified: Option<Arc<UnifiedView>>,
+    unified: RowsMemo<Arc<UnifiedView>>,
     #[serde(skip)]
-    patch: Option<PatchView>,
+    patch: PatchCache,
 }
+
+const UPDATING_TEXT: &str = "Updating...";
 
 /// The text rows' rects of the last drawn frame, taken by the app's raw input hook, which runs
 /// before the pane.
@@ -257,7 +254,6 @@ impl FileDiffPane {
             active_side: ActiveSideState::default(),
             content_widths: RowsMemo::default(),
             row_heights: RowsMemo::default(),
-            ruler_spans: RowsMemo::default(),
             ruler_bins: BinCache::default(),
             occurrences: OccurrenceState::default(),
             pin_input: PinInput::default(),
@@ -265,8 +261,8 @@ impl FileDiffPane {
             split: Split::default(),
             header_height: 0.0,
             center_layout: None,
-            unified: None,
-            patch: None,
+            unified: RowsMemo::default(),
+            patch: PatchCache::default(),
         }
     }
 

@@ -1,7 +1,10 @@
 use std::ops::Range;
+use std::sync::Weak;
 
 use super::*;
-use crate::ui_egui::export::patch_text;
+use crate::{diff_ctx::STAGE_CACHE_ENTRIES, ui_egui::export::patch_text_of};
+use zcommon::job::Job;
+use zcommon_ui::h_scroll;
 use zdiff::{diff_ir::DiffIR, lexer::RawToken};
 
 const TEXT_MARGIN: f32 = 4.0;
@@ -53,52 +56,114 @@ struct Patch {
     hunks: usize,
 }
 
-pub(super) struct PatchView {
-    // Kept alive so the pointer comparisons can't match a new allocation at the same address.
-    ir: Arc<DiffIR>,
-    files: [Option<Arc<CachedFile<RawToken>>>; 2],
+// A `Weak` keeps its allocation, so a new IR or file never takes a dropped one's address.
+#[derive(Clone)]
+struct PatchKey {
+    ir: Weak<DiffIR>,
+    files: [Option<Weak<CachedFile<RawToken>>>; 2],
     options: DiffBuilderOptions,
+}
+
+impl PatchKey {
+    fn of(diff_ctx: &MinimalDiffCtx) -> Self {
+        Self {
+            ir: Arc::downgrade(&diff_ctx.diff_ir),
+            files: [&diff_ctx.input.file_1, &diff_ctx.input.file_2]
+                .map(|file| file.as_ref().map(Arc::downgrade)),
+            options: diff_ctx.input.options.clone(),
+        }
+    }
+
+    fn builds(&self, diff_ctx: &MinimalDiffCtx) -> bool {
+        let same_file = |key: &Option<Weak<_>>, file: &Option<Arc<_>>| match (key, file) {
+            (Some(key), Some(file)) => key.as_ptr() == Arc::as_ptr(file),
+            (None, None) => true,
+            _ => false,
+        };
+        self.ir.as_ptr() == Arc::as_ptr(&diff_ctx.diff_ir)
+            && same_file(&self.files[0], &diff_ctx.input.file_1)
+            && same_file(&self.files[1], &diff_ctx.input.file_2)
+            && !DiffBuilderOptions::need_invalidation(&self.options, &diff_ctx.input.options)
+    }
+
+    fn alive(&self) -> bool {
+        self.ir.strong_count() > 0 && self.files.iter().flatten().all(|f| f.strong_count() > 0)
+    }
+}
+
+pub(super) struct PatchView {
+    key: PatchKey,
     patch: Option<Patch>,
     width: Option<(egui::FontId, f32, f32)>,
 }
 
-fn same_file(a: &Option<Arc<CachedFile<RawToken>>>, b: &Option<Arc<CachedFile<RawToken>>>) -> bool {
-    match (a, b) {
-        (Some(a), Some(b)) => Arc::ptr_eq(a, b),
-        (None, None) => true,
-        _ => false,
-    }
+#[derive(Default)]
+pub(super) struct PatchCache {
+    views: Vec<PatchView>,
+    building: Option<PatchKey>,
+    job: Option<Job<PatchView>>,
 }
 
+fn build_patch(
+    files: [Option<Arc<CachedFile<RawToken>>>; 2],
+    options: &DiffBuilderOptions,
+    ir: &DiffIR,
+) -> Option<Patch> {
+    let [Some(source), Some(target)] = files else {
+        return None;
+    };
+    let text = patch_text_of([&source, &target], options, ir);
+    let lines = patch_lines(&text);
+    let hunks = lines
+        .iter()
+        .filter(|line| line.kind == PatchLineKind::Hunk)
+        .count();
+    Some(Patch { text, lines, hunks })
+}
+
+/// The patch of `diff_ctx`, or while it builds the last patch shown, flagged stale (`false`).
 pub(super) fn patch_view<'a>(
-    cache: &'a mut Option<PatchView>,
+    cache: &'a mut PatchCache,
     diff_ctx: &MinimalDiffCtx,
-) -> &'a mut PatchView {
-    let files = [diff_ctx.input.file_1.clone(), diff_ctx.input.file_2.clone()];
-    let fresh = cache.as_ref().is_some_and(|view| {
-        Arc::ptr_eq(&view.ir, &diff_ctx.diff_ir)
-            && same_file(&view.files[0], &files[0])
-            && same_file(&view.files[1], &files[1])
-            && !DiffBuilderOptions::need_invalidation(&view.options, &diff_ctx.input.options)
+    egui_ctx: &egui::Context,
+) -> Option<(&'a mut PatchView, bool)> {
+    let PatchCache {
+        views,
+        building,
+        job,
+    } = cache;
+    let job = job.get_or_insert_with(|| {
+        let egui_ctx = egui_ctx.clone();
+        Job::new(move || egui_ctx.request_repaint())
     });
-    if !fresh {
-        let patch = patch_text(diff_ctx).map(|text| {
-            let lines = patch_lines(&text);
-            let hunks = lines
-                .iter()
-                .filter(|line| line.kind == PatchLineKind::Hunk)
-                .count();
-            Patch { text, lines, hunks }
-        });
-        *cache = Some(PatchView {
-            ir: diff_ctx.diff_ir.clone(),
-            files,
-            options: diff_ctx.input.options.clone(),
-            patch,
-            width: None,
+    for view in job.poll() {
+        *building = None;
+        views.push(view);
+    }
+    views.retain(|view| view.key.alive());
+    if views.len() > STAGE_CACHE_ENTRIES {
+        views.remove(0);
+    }
+    if let Some(index) = views.iter().position(|view| view.key.builds(diff_ctx)) {
+        let view = views.remove(index);
+        views.push(view);
+        return views.last_mut().map(|view| (view, true));
+    }
+    if !building.as_ref().is_some_and(|key| key.builds(diff_ctx)) {
+        let key = PatchKey::of(diff_ctx);
+        *building = Some(key.clone());
+        let files = [diff_ctx.input.file_1.clone(), diff_ctx.input.file_2.clone()];
+        let ir = diff_ctx.diff_ir.clone();
+        job.start(move |job| {
+            let patch = build_patch(files, &key.options, &ir);
+            job.send(PatchView {
+                key,
+                patch,
+                width: None,
+            });
         });
     }
-    cache.as_mut().expect("the cache was just filled")
+    views.last_mut().map(|view| (view, false))
 }
 
 impl PatchView {
@@ -114,22 +179,18 @@ impl PatchView {
             return 0.0;
         };
         let width = ui.fonts_mut(|fonts| {
+            let mut glyph_width = ascii_cached_glyph_width(fonts, font);
             patch
                 .lines
                 .iter()
-                .map(|line| {
-                    patch.text[line.text.clone()]
-                        .chars()
-                        .map(|c| fonts.glyph_width(font, c))
-                        .sum::<f32>()
-                })
+                .map(|line| h_scroll::text_width(&patch.text[line.text.clone()], &mut glyph_width))
                 .fold(0.0, f32::max)
         }) + 2.0 * TEXT_MARGIN;
         self.width = Some((font.clone(), pixels_per_point, width));
         width
     }
 
-    pub(super) fn ui(&mut self, ui: &mut egui::Ui) {
+    pub(super) fn ui(&mut self, ui: &mut egui::Ui, stale: bool) {
         let _scope = zcommon_ui::frame_stats::scope("Patch view");
         let font = egui::TextStyle::Monospace.resolve(ui.style());
         let width = self.width(ui, &font);
@@ -153,6 +214,9 @@ impl PatchView {
                 n => format!("{n} hunks"),
             };
             ui.add(egui::Label::new(hunks).selectable(false));
+            if stale {
+                ui.add(egui::Label::new(UPDATING_TEXT).selectable(false));
+            }
         });
         let look = line_look(ui);
         let row_height = ui.text_style_height(&egui::TextStyle::Monospace);

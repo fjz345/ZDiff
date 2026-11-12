@@ -41,6 +41,7 @@ impl FileDiffPane {
                 Some(unified_view(
                     &mut self.unified,
                     &diff_ctx.diff_rows,
+                    &diff_ctx.row_chars,
                     *ctx.text_mode,
                 ))
             }
@@ -65,13 +66,13 @@ impl FileDiffPane {
         };
         let content_widths = match (ctx.diff_ctx, &unified) {
             (Some(diff_ctx), Some(view)) => {
-                let [left, _] = self.content_widths(ui, &view.rows, diff_ctx);
+                let [left, _] = self.content_widths(ui, &view.rows, &view.row_chars, diff_ctx);
                 let extra = column_gutter.width() - GUTTER_WIDTH;
                 [if left > 0.0 { left + extra } else { left }, 0.0]
             }
             (Some(diff_ctx), None) => {
                 let extra = side_gutter.width() - GUTTER_WIDTH;
-                self.content_widths(ui, &diff_ctx.diff_rows, diff_ctx)
+                self.content_widths(ui, &diff_ctx.diff_rows, &diff_ctx.row_chars, diff_ctx)
                     .map(|width| if width > 0.0 { width + extra } else { width })
             }
             (None, _) => [0.0; 2],
@@ -88,9 +89,8 @@ impl FileDiffPane {
         let patch_rows = ctx
             .diff_ctx
             .filter(|_| patch)
-            .map(|diff_ctx| patch_view(&mut self.patch, diff_ctx));
+            .and_then(|diff_ctx| patch_view(&mut self.patch, diff_ctx, ui.ctx()));
         let row_heights = &mut self.row_heights;
-        let ruler_cache = &mut self.ruler_spans;
         let ruler_bins = &mut self.ruler_bins;
         let occurrences = &mut self.occurrences;
         let pin_input = &mut self.pin_input;
@@ -269,8 +269,9 @@ impl FileDiffPane {
                 if side_viewers.is_none() {
                     likeness_ui(ui, ctx, text_viewer);
                 }
-                // No diff ctx while a diff is in flight, so a partial time is never shown.
-                if let Some(diff_ctx) = ctx.diff_ctx {
+                if ctx.diff_loading && ctx.diff_ctx.is_some() {
+                    ui.add(egui::Label::new(UPDATING_TEXT).selectable(false));
+                } else if let Some(diff_ctx) = ctx.diff_ctx {
                     let (label, tooltip) = diff_status_text(
                         diff_ctx.num_add_deletes,
                         diff_ctx.change_unit,
@@ -350,7 +351,8 @@ impl FileDiffPane {
             }
             (Some(_), Some(_), Some(_)) => false,
         };
-        waiting_for_diff |= ctx.diff_loading;
+        // A diff shown while loading is the last one of these files, kept until the new one is in.
+        waiting_for_diff |= ctx.diff_loading && diff_rows.is_none();
         do_not_render_diff |= waiting_for_diff;
         // The hex and image viewers draw the loaded bytes and need no text diff.
         let other_viewer = ctx.hex_view.is_some()
@@ -660,25 +662,28 @@ impl FileDiffPane {
                             } else {
                                 let (measured, text_widths, count) = match &unified {
                                     Some(view) => (
-                                        Some(&view.rows),
+                                        Some((&view.rows, &view.row_chars[..])),
                                         [column_gutter.text_width(area.width()), 0.0],
                                         view.meta.len(),
                                     ),
                                     None => (
-                                        ctx.diff_ctx.map(|d| &d.diff_rows),
+                                        ctx.diff_ctx.map(|d| (&d.diff_rows, &d.row_chars[..])),
                                         shown.map(|column| side_gutter.text_width(side_widths[column])),
                                         diff_rows_len,
                                     ),
                                 };
                                 let heights = match (ctx.diff_ctx, measured) {
-                                    (Some(diff_ctx), Some(rows)) if wrap => {
+                                    (Some(diff_ctx), Some((rows, row_chars))) if wrap => {
                                         let cached = wrapped_heights(
                                             row_heights,
                                             &egui_ctx,
                                             &mono_font,
                                             rows,
-                                            diff_ctx.input.file_1.as_deref(),
-                                            diff_ctx.input.file_2.as_deref(),
+                                            row_chars,
+                                            [
+                                                diff_ctx.input.file_1.as_deref(),
+                                                diff_ctx.input.file_2.as_deref(),
+                                            ],
                                             text_widths,
                                         );
                                         ruler_tops = &cached.tops;
@@ -1030,9 +1035,7 @@ impl FileDiffPane {
                                             .as_slice()
                                     })
                                 }
-                                (true, None, Some(diff_ctx)) => {
-                                    Some(ruler_spans(ruler_cache, diff_ctx))
-                                }
+                                (true, None, Some(diff_ctx)) => Some(&diff_ctx.ruler_spans[..]),
                                 (true, None, None) => None,
                             };
                             if show_ruler && let Some(spans) = ruler_spans {
@@ -1103,8 +1106,9 @@ impl FileDiffPane {
                             ) {
                                 image::show(ui, image_view, image_cfg, left_width, shown);
                             }
-                            if let Some(view) = patch_rows.filter(|_| !do_not_render_diff) {
-                                view.ui(ui);
+                            if let Some((view, built)) = patch_rows.filter(|_| !do_not_render_diff)
+                            {
+                                view.ui(ui, !built);
                             }
                             if let (Some(meta), Some(frames), Some(image_cfg), Some(left_width)) = (
                                 ctx.video_meta.as_deref_mut(),

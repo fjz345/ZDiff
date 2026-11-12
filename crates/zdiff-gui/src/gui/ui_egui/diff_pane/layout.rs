@@ -18,14 +18,17 @@ impl<T> Default for RowsMemo<T> {
     }
 }
 
-impl<T> RowsMemo<T> {
+impl<T: Send + 'static> RowsMemo<T> {
     pub(super) fn get_or_insert_with(
         &mut self,
         rows: &Arc<DiffRows>,
         valid: impl Fn(&T) -> bool,
         make: impl FnOnce() -> T,
     ) -> &mut T {
-        self.entries.retain(|(weak, _)| weak.strong_count() > 0);
+        let mut dropped: Vec<_> = self
+            .entries
+            .extract_if(.., |(weak, _)| weak.strong_count() == 0)
+            .collect();
         let found = self
             .entries
             .iter()
@@ -34,12 +37,16 @@ impl<T> RowsMemo<T> {
             Some(index) => self.entries.remove(index),
             None => {
                 if self.entries.len() == STAGE_CACHE_ENTRIES {
-                    self.entries.remove(0);
+                    dropped.push(self.entries.remove(0));
                 }
                 (Arc::downgrade(rows), make())
             }
         };
         self.entries.push(entry);
+        if !dropped.is_empty() {
+            // A unified view holds as many rows as its diff, too slow to free on the UI thread.
+            std::thread::spawn(move || drop(dropped));
+        }
         &mut self.entries.last_mut().expect("pushed above").1
     }
 
@@ -73,8 +80,8 @@ pub(super) fn wrapped_heights<'c, T: RawTokenTrait>(
     egui_ctx: &egui::Context,
     font_id: &egui::FontId,
     rows: &Arc<DiffRows>,
-    file_source: Option<&CachedFile<T>>,
-    file_target: Option<&CachedFile<T>>,
+    row_chars: &[[RowChars; 2]],
+    [file_source, file_target]: [Option<&CachedFile<T>>; 2],
     text_widths: [f32; 2],
 ) -> &'c RowHeights {
     let _scope = zcommon_ui::frame_stats::scope("Wrapped row heights");
@@ -84,8 +91,13 @@ pub(super) fn wrapped_heights<'c, T: RawTokenTrait>(
         |cached| cached.font_id == *font_id && cached.pixels_per_point == pixels_per_point,
         || {
             let (natural_widths, heights) = egui_ctx.fonts_mut(|fonts| {
-                let natural_widths =
-                    natural_row_widths(fonts, font_id, rows, file_source, file_target);
+                let natural_widths = natural_row_widths(
+                    rows,
+                    row_chars,
+                    file_source,
+                    file_target,
+                    ascii_cached_glyph_width(fonts, font_id),
+                );
                 let heights = measure_wrapped_rows(
                     fonts,
                     font_id,
@@ -130,6 +142,7 @@ impl FileDiffPane {
         &mut self,
         ui: &egui::Ui,
         rows: &Arc<DiffRows>,
+        row_chars: &[[RowChars; 2]],
         diff_ctx: &MinimalDiffCtx,
     ) -> [f32; 2] {
         let _scope = zcommon_ui::frame_stats::scope("Content widths");
@@ -141,12 +154,12 @@ impl FileDiffPane {
                 |cached| cached.font_id == font_id && cached.pixels_per_point == pixels_per_point,
                 || ContentWidths {
                     widths: ui.fonts_mut(|fonts| {
-                        let mut glyph_width = ascii_cached_glyph_width(fonts, &font_id);
                         side_content_widths(
                             rows,
+                            row_chars,
                             diff_ctx.input.file_1.as_deref(),
                             diff_ctx.input.file_2.as_deref(),
-                            &mut glyph_width,
+                            ascii_cached_glyph_width(fonts, &font_id),
                         )
                     }),
                     font_id: font_id.clone(),
@@ -158,7 +171,7 @@ impl FileDiffPane {
 }
 
 /// `glyph_width` with a table for ASCII: a font lookup per char dominated measuring every row.
-fn ascii_cached_glyph_width<'f>(
+pub(super) fn ascii_cached_glyph_width<'f>(
     fonts: &'f mut egui::epaint::FontsView<'_>,
     font_id: &'f egui::FontId,
 ) -> impl FnMut(char) -> f32 + 'f {
@@ -175,27 +188,74 @@ pub(in crate::ui_egui) fn wrap_width(cell_width: f32, gutter_width: f32) -> f32 
     cell_width - gutter_width - GUTTER_GAP
 }
 
+#[derive(Clone, Copy)]
+struct CountedWidths {
+    printable: f32,
+    tab: f32,
+}
+
+impl CountedWidths {
+    fn new(glyph_width: &mut impl FnMut(char) -> f32) -> Option<Self> {
+        let printable = glyph_width(' ');
+        (b'!'..=b'~')
+            .all(|c| glyph_width(char::from(c)) == printable)
+            .then(|| Self {
+                printable,
+                tab: glyph_width('\t'),
+            })
+    }
+
+    fn of(self, count: CharCount) -> Option<f32> {
+        (count.other == 0)
+            .then_some(count.printable as f32 * self.printable + count.tabs as f32 * self.tab)
+    }
+}
+
+/// Sums counted chars where the font allows: building each row's text took 70 ms at 4.65 MB.
+fn one_line_side_widths<'r, T: RawTokenTrait>(
+    rows: &'r [DiffRow],
+    row_chars: &'r [[RowChars; 2]],
+    file_source: Option<&'r CachedFile<T>>,
+    file_target: Option<&'r CachedFile<T>>,
+    mut glyph_width: impl FnMut(char) -> f32 + 'r,
+) -> impl Iterator<Item = [Option<f32>; 2]> + 'r {
+    assert_eq!(rows.len(), row_chars.len());
+    let counted = CountedWidths::new(&mut glyph_width);
+    rows.iter().zip(row_chars).map(move |(row, chars)| {
+        let mut side = |content: &LineContent, chars: RowChars| match content {
+            LineContent::Code { tokens, .. } => Some(
+                counted
+                    .and_then(|widths| Some(widths.of(chars.text)? + widths.of(chars.ghosts)?))
+                    .unwrap_or_else(|| {
+                        let row_text = build_row_text(tokens, &[], file_source, file_target);
+                        one_line_width(&row_text, &mut glyph_width)
+                    }),
+            ),
+            LineContent::Void | LineContent::Collapsed => None,
+        };
+        [side(&row.left, chars[0]), side(&row.right, chars[1])]
+    })
+}
+
 /// Width of each side's widest row: gutter, text and ghost text. Measured over all rows, since
 /// the table only lays out the visible ones.
 pub(in crate::ui_egui) fn side_content_widths<T: RawTokenTrait>(
     rows: &[DiffRow],
+    row_chars: &[[RowChars; 2]],
     file_source: Option<&CachedFile<T>>,
     file_target: Option<&CachedFile<T>>,
-    mut glyph_width: impl FnMut(char) -> f32,
+    glyph_width: impl FnMut(char) -> f32,
 ) -> [f32; 2] {
-    let mut row_width = |content: &LineContent| match content {
-        LineContent::Code { tokens, .. } => {
-            let row_text = build_row_text(tokens, &[], file_source, file_target);
-            GUTTER_WIDTH + GUTTER_GAP + one_line_width(&row_text, &mut glyph_width)
-        }
-        LineContent::Void | LineContent::Collapsed => 0.0,
-    };
-    rows.iter().fold([0.0; 2], |[left, right], row| {
-        [
-            left.max(row_width(&row.left)),
-            right.max(row_width(&row.right)),
-        ]
-    })
+    let row_width = |width: Option<f32>| width.map_or(0.0, |w| GUTTER_WIDTH + GUTTER_GAP + w);
+    one_line_side_widths(rows, row_chars, file_source, file_target, glyph_width).fold(
+        [0.0; 2],
+        |[left, right], [left_row, right_row]| {
+            [
+                left.max(row_width(left_row)),
+                right.max(row_width(right_row)),
+            ]
+        },
+    )
 }
 
 fn one_line_width(row_text: &RowText, mut glyph_width: impl FnMut(char) -> f32) -> f32 {
@@ -206,22 +266,14 @@ fn one_line_width(row_text: &RowText, mut glyph_width: impl FnMut(char) -> f32) 
 }
 
 pub(in crate::ui_egui) fn natural_row_widths<T: RawTokenTrait>(
-    fonts: &mut egui::epaint::FontsView<'_>,
-    font_id: &egui::FontId,
     rows: &[DiffRow],
+    row_chars: &[[RowChars; 2]],
     file_source: Option<&CachedFile<T>>,
     file_target: Option<&CachedFile<T>>,
+    glyph_width: impl FnMut(char) -> f32,
 ) -> Vec<[f32; 2]> {
-    let mut glyph_width = ascii_cached_glyph_width(fonts, font_id);
-    let mut side_width = |content: &LineContent| match content {
-        LineContent::Code { tokens, .. } => {
-            let row_text = build_row_text(tokens, &[], file_source, file_target);
-            one_line_width(&row_text, &mut glyph_width)
-        }
-        LineContent::Void | LineContent::Collapsed => 0.0,
-    };
-    rows.iter()
-        .map(|row| [side_width(&row.left), side_width(&row.right)])
+    one_line_side_widths(rows, row_chars, file_source, file_target, glyph_width)
+        .map(|widths| widths.map(|width| width.unwrap_or(0.0)))
         .collect()
 }
 
@@ -307,7 +359,54 @@ mod tests {
 
     use zdiff::diff_builder::{DiffBuilderOptions, LineContent};
 
+    use crate::diff_ctx::diff_row_chars;
     use crate::ui_egui::copy_harness::{CopyHarness, measure_in_fresh_context};
+
+    #[test]
+    fn widths_from_char_counts_match_the_measured_row_text() {
+        fn monospace(c: char) -> f32 {
+            match c {
+                '\t' => 28.0,
+                ' '..='~' => 7.0,
+                _ => 13.0,
+            }
+        }
+        fn proportional(c: char) -> f32 {
+            if c == 'i' { 3.0 } else { monospace(c) }
+        }
+        let source = "a\tb = \"é\";\nplain line\n\tindented\n";
+        let target = "a\tb = \"ü\";\nplain line changed\n\tindented\n";
+        let harness = CopyHarness::new(source, target, &DiffBuilderOptions::default());
+        let rows = harness.rows();
+        let [file_source, file_target] = harness.files().map(Some);
+        let chars = diff_row_chars(rows, [file_source, file_target]);
+        assert!(chars.iter().flatten().any(|side| side.ghosts.printable > 0));
+
+        for glyph_width in [monospace, proportional] {
+            let measured: Vec<[f32; 2]> = rows
+                .iter()
+                .map(|row| {
+                    [&row.left, &row.right].map(|content| match content {
+                        LineContent::Code { tokens, .. } => one_line_width(
+                            &build_row_text(tokens, &[], file_source, file_target),
+                            glyph_width,
+                        ),
+                        LineContent::Void | LineContent::Collapsed => 0.0,
+                    })
+                })
+                .collect();
+            let natural = natural_row_widths(rows, &chars, file_source, file_target, glyph_width);
+            assert_eq!(natural, measured);
+            let widest = measured
+                .iter()
+                .fold([0.0f32; 2], |[l, r], m| [l.max(m[0]), r.max(m[1])]);
+            assert_eq!(
+                side_content_widths(rows, &chars, file_source, file_target, glyph_width),
+                widest.map(|width| GUTTER_WIDTH + GUTTER_GAP + width)
+            );
+        }
+    }
+
     // One point per char, so a width is the gutter plus a char count.
     fn char_count_widths(source: &str, target: &str) -> [f32; 2] {
         CopyHarness::new(source, target, &DiffBuilderOptions::default()).content_widths(|_| 1.0)
@@ -370,7 +469,8 @@ mod tests {
         let target = format!("{}\nshort\n", line.replace("theta", "iota"));
         let harness = CopyHarness::new(&source, &target, &DiffBuilderOptions::default());
         let rows = Arc::new(harness.rows().to_vec());
-        let [file_source, file_target] = harness.files();
+        let files = harness.files().map(Some);
+        let row_chars = diff_row_chars(&rows, files);
         let ctx = egui::Context::default();
         let mut cache = RowsMemo::default();
         let mut heights_at = |text_widths| {
@@ -382,8 +482,8 @@ mod tests {
                     ctx,
                     &font_id,
                     &rows,
-                    Some(file_source),
-                    Some(file_target),
+                    &row_chars,
+                    files,
                     text_widths,
                 );
                 assert_eq!(cached.tops, row_tops(&cached.heights));

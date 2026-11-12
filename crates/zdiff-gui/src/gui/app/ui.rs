@@ -246,7 +246,9 @@ impl ZApp {
             let diff_ctx = if hex_bytes || strings_pending || is_image || media_view.is_some() {
                 None
             } else {
-                diff_processor.get_minimal_diff_ctx()
+                diff_processor
+                    .get_minimal_diff_ctx()
+                    .or_else(|| diff_processor.diff_ctx_while_computing())
             };
             let (diff_ctx, side_text) = match sides {
                 Some(_) => (None, diff_ctx.filter(|_| side_shows(ViewerKind::Text))),

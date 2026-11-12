@@ -238,18 +238,18 @@ fn shown_likeness<'a>(
     }
     let phases = ctx.diff_options.phases;
     let likeness = match ctx.diff_ctx {
-        Some(diff_ctx) => {
+        Some(diff_ctx) if !ctx.diff_loading => {
             let shown = shown_text_metric(*ctx.text_likeness, phases);
             shown.readout(diff_ctx.likeness?)
         }
-        None if text_viewer
+        _ if text_viewer
             && ctx.diff_loading
             && ctx.file_source_path_valid
             && ctx.file_target_path_valid =>
         {
             Likeness::Pending
         }
-        None => return None,
+        _ => return None,
     };
     let preview = ctx.diff_ctx.map(PreviewKey::text);
     Some((
