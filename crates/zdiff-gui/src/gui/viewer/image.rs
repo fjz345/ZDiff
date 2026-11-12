@@ -232,6 +232,17 @@ impl ImageChannel {
             ImageChannel::Luminance => "Luminance",
         }
     }
+
+    fn description(self) -> &'static str {
+        match self {
+            ImageChannel::All => "Every channel, in color",
+            ImageChannel::Red => "Only the red channel, as gray",
+            ImageChannel::Green => "Only the green channel, as gray",
+            ImageChannel::Blue => "Only the blue channel, as gray",
+            ImageChannel::Alpha => "Only the alpha (opacity) channel, as gray",
+            ImageChannel::Luminance => "Rec. 709 luma of the straight colors, as gray",
+        }
+    }
 }
 
 /// Straight RGBA8 with only `channel` kept, as opaque gray. Luminance is Rec. 709 on the straight
@@ -924,7 +935,7 @@ impl ImageDiffProcessor {
             "{unchanged} of {} pixels within tolerance {} under {}, channel {}",
             stats.total,
             key.tolerance,
-            key.metric.label(),
+            key.metric.name(),
             key.channel.label()
         );
         if let Some(difference) = self.difference_text() {
@@ -1099,7 +1110,10 @@ pub fn show(
                 .on_hover_text(
                     "Alternate between the two images. Double-click to reset the interval",
                 ),
-            ui.selectable_value(&mut settings.mode, ImageMode::Difference, "Difference"),
+            ui.selectable_value(&mut settings.mode, ImageMode::Difference, "Difference")
+                .on_hover_text(
+                    "Mark the pixels whose difference under the metric is above the tolerance",
+                ),
             ui.selectable_value(&mut settings.mode, ImageMode::Heatmap, "Heatmap")
                 .on_hover_text("Color each pixel by its difference under the metric"),
             ui.selectable_value(&mut settings.mode, ImageMode::Histogram, "Histogram")
@@ -1147,7 +1161,8 @@ pub fn show(
             .selected_text(format!("Channel: {}", settings.channel.label()))
             .show_ui(ui, |ui| {
                 for channel in ImageChannel::ALL {
-                    ui.selectable_value(&mut settings.channel, channel, channel.label());
+                    ui.selectable_value(&mut settings.channel, channel, channel.label())
+                        .on_hover_text(channel.description());
                 }
             })
             .response
@@ -1156,20 +1171,21 @@ pub fn show(
             .selected_text(format!("Metric: {}", settings.metric.label()))
             .show_ui(ui, |ui| {
                 for metric in PixelMetric::ALL {
-                    ui.selectable_value(&mut settings.metric, metric, metric.label());
+                    ui.selectable_value(&mut settings.metric, metric, metric.label())
+                        .on_hover_text(metric.description());
                 }
             })
             .response
             .on_hover_text(
-                "Exact: the largest channel difference at the same pixel. Neighborhood: to the \
-                 closest match nearby, forgiving small shifts and resampling. SSIM: local \
-                 structure of the luma. Also used by the video difference timeline",
+                "How each pixel's difference is measured. Also used by the video difference \
+                 timeline and the likeness bar",
             );
         egui::ComboBox::from_id_salt("image_alignment")
             .selected_text(format!("Align: {}", settings.alignment.label()))
             .show_ui(ui, |ui| {
                 for alignment in Alignment::ALL {
-                    ui.selectable_value(&mut settings.alignment, alignment, alignment.label());
+                    ui.selectable_value(&mut settings.alignment, alignment, alignment.label())
+                        .on_hover_text(alignment.description());
                 }
             })
             .response
@@ -1177,11 +1193,19 @@ pub fn show(
         egui::ComboBox::from_id_salt("image_sampling")
             .selected_text(format!("Sampling: {:?}", settings.sampling))
             .show_ui(ui, |ui| {
-                ui.selectable_value(&mut settings.sampling, ImageSampling::Nearest, "Nearest");
-                ui.selectable_value(&mut settings.sampling, ImageSampling::Linear, "Linear");
+                ui.selectable_value(&mut settings.sampling, ImageSampling::Nearest, "Nearest")
+                    .on_hover_text(
+                        "Each image pixel a sharp square; zoomed out, single-pixel differences \
+                         stay visible",
+                    );
+                ui.selectable_value(&mut settings.sampling, ImageSampling::Linear, "Linear")
+                    .on_hover_text(
+                        "Smooth when zoomed in, averaged when zoomed out, so single-pixel \
+                         differences can fade",
+                    );
             })
             .response
-            .on_hover_text("Nearest keeps single-pixel differences sharp when zoomed out");
+            .on_hover_text("How the images are filtered when zoomed");
         compare_status_ui(ui, processor);
     });
     processor.shown_channel = settings.channel;

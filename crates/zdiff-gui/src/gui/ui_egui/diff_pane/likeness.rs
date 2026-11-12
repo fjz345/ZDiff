@@ -117,20 +117,21 @@ impl TextMetric {
         }
     }
 
+    fn description(self) -> &'static str {
+        match self {
+            Self::Lines => "1 - changed lines / lines of both sides; ignored text is no change",
+            Self::Tokens => "1 - changed tokens / tokens of both sides, ignored tokens left out",
+        }
+    }
+
     fn readout(self, likeness: TextLikeness) -> Likeness {
-        let (ratio, detail) = match self {
-            Self::Lines => (
-                likeness.lines,
-                "1 - changed lines / lines of both sides; ignored text is no change",
-            ),
-            Self::Tokens => (
-                likeness.tokens,
-                "1 - changed tokens / tokens of both sides, ignored tokens left out",
-            ),
+        let ratio = match self {
+            Self::Lines => likeness.lines,
+            Self::Tokens => likeness.tokens,
         };
         Likeness::Measured {
             ratio,
-            detail: detail.to_string(),
+            detail: self.description().to_string(),
         }
     }
 }
@@ -170,6 +171,7 @@ pub(super) fn likeness_ui(ui: &mut egui::Ui, ctx: &mut FileDiffPaneCtx, text_vie
                 for &metric in text_metrics(phases) {
                     if ui
                         .selectable_label(metric == shown, metric.label())
+                        .on_hover_text(metric.description())
                         .clicked()
                     {
                         *chosen = metric;
@@ -179,7 +181,8 @@ pub(super) fn likeness_ui(ui: &mut egui::Ui, ctx: &mut FileDiffPaneCtx, text_vie
         }
         Metrics::Pixel(chosen) => metric_combo(ui, chosen.label(), |ui| {
             for metric in PixelMetric::ALL {
-                ui.selectable_value(chosen, metric, metric.label());
+                ui.selectable_value(chosen, metric, metric.label())
+                    .on_hover_text(metric.description());
             }
         }),
         Metrics::Fixed(label) => metric_combo(ui, label, |_| {}),

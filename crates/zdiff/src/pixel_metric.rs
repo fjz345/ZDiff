@@ -50,10 +50,42 @@ impl PixelMetric {
     pub fn label(self) -> &'static str {
         match self {
             PixelMetric::Exact => "Exact",
+            PixelMetric::Neighborhood(NeighborhoodSize::Three) => "3x3",
+            PixelMetric::Neighborhood(NeighborhoodSize::Five) => "5x5",
+            PixelMetric::Neighborhood(NeighborhoodSize::Seven) => "7x7",
+            PixelMetric::Ssim => "SSIM",
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            PixelMetric::Exact | PixelMetric::Ssim => self.label(),
             PixelMetric::Neighborhood(NeighborhoodSize::Three) => "Neighborhood 3x3",
             PixelMetric::Neighborhood(NeighborhoodSize::Five) => "Neighborhood 5x5",
             PixelMetric::Neighborhood(NeighborhoodSize::Seven) => "Neighborhood 7x7",
-            PixelMetric::Ssim => "SSIM",
+        }
+    }
+
+    pub fn description(self) -> &'static str {
+        match self {
+            PixelMetric::Exact => "The largest channel difference at the same pixel",
+            PixelMetric::Neighborhood(NeighborhoodSize::Three) => {
+                "The largest channel difference to the closest pixel within 1 pixel in the other \
+                 image, the worse of both directions. Forgives one-pixel shifts and resampling"
+            }
+            PixelMetric::Neighborhood(NeighborhoodSize::Five) => {
+                "The largest channel difference to the closest pixel within 2 pixels in the other \
+                 image, the worse of both directions. Forgives shifts of up to 2 pixels"
+            }
+            PixelMetric::Neighborhood(NeighborhoodSize::Seven) => {
+                "The largest channel difference to the closest pixel within 3 pixels in the other \
+                 image, the worse of both directions. Forgives shifts of up to 3 pixels"
+            }
+            PixelMetric::Ssim => {
+                "Structural similarity of the luma in the 7x7 window around each pixel, as \
+                 (1 - SSIM) x 255. Compares local brightness, contrast and structure rather than \
+                 exact values; transparent counts as black"
+            }
         }
     }
 }
@@ -76,6 +108,20 @@ impl Alignment {
             Alignment::TopLeft => "Top left",
             Alignment::Center => "Center",
             Alignment::ScaleToFit => "Scale to fit",
+        }
+    }
+
+    pub fn description(self) -> &'static str {
+        match self {
+            Alignment::TopLeft => {
+                "Both images at the top-left corner; pixels only one image covers count as changed"
+            }
+            Alignment::Center => {
+                "Both images centered on each other; pixels only one image covers count as changed"
+            }
+            Alignment::ScaleToFit => {
+                "Both images scaled bilinearly to the larger width by the larger height"
+            }
         }
     }
 }

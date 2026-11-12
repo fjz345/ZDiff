@@ -320,7 +320,7 @@ impl VideoTimeline {
             ratio: (1.0 - mean / 255.0).clamp(0.0, 1.0),
             detail: format!(
                 "1 - mean {} difference / 255 over {} timeline frames{partial}",
-                self.metric.label(),
+                self.metric.name(),
                 self.values.len()
             ),
         })
@@ -392,7 +392,7 @@ impl VideoTimeline {
                 Some(peak) if self.metric == PixelMetric::Exact => {
                     format!("Mean pixel difference per frame, {peak}")
                 }
-                Some(peak) => format!("Mean {} difference per frame, {peak}", self.metric.label()),
+                Some(peak) => format!("Mean {} difference per frame, {peak}", self.metric.name()),
                 None => "No difference between the frames".to_string(),
             },
         }
