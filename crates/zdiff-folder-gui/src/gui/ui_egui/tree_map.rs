@@ -851,9 +851,10 @@ impl Look {
     fn text(&self, painter: &egui::Painter, rect: Rect, text: &str, color: Color32) -> f32 {
         let galley = painter.layout_no_wrap(text.to_owned(), self.font.clone(), color);
         let width = galley.size().x;
+        let shown = rect.intersect(painter.clip_rect());
         painter
-            .with_clip_rect(rect.intersect(painter.clip_rect()))
-            .galley(rect.min + vec2(3.0, 1.0), galley, color);
+            .with_clip_rect(shown)
+            .galley(shown.min + vec2(3.0, 1.0), galley, color);
         width
     }
 
@@ -876,15 +877,16 @@ impl Look {
                 if cell.kind == CellKind::File {
                     self.paint_size_delta(painter, rect, node);
                 }
-                if rect.width() >= 28.0 && rect.height() >= self.line + 2.0 {
+                let shown = rect.intersect(painter.clip_rect());
+                if shown.width() >= 28.0 && shown.height() >= self.line + 2.0 {
                     let name = if cell.kind == CellKind::Closed {
                         format!("{}/", name())
                     } else {
                         name()
                     };
-                    self.text(painter, rect, &name, self.text);
-                    if rect.height() >= 2.0 * self.line + 4.0 {
-                        let below = rect.with_min_y(rect.min.y + self.line);
+                    self.text(painter, shown, &name, self.text);
+                    if shown.height() >= 2.0 * self.line + 4.0 {
+                        let below = shown.with_min_y(shown.min.y + self.line);
                         self.text(painter, below, &size_text(size), self.weak);
                     }
                 }
@@ -898,7 +900,8 @@ impl Look {
                     let strip = rect.with_max_y(rect.min.y + self.header);
                     painter.rect_filled(strip, 0.0, self.tint(base, 0.3));
                     let width = self.text(painter, strip, &name(), self.text);
-                    let after = strip.with_min_x(strip.min.x + width + 6.0);
+                    let name_x = strip.min.x.max(painter.clip_rect().min.x);
+                    let after = strip.with_min_x(name_x + width + 6.0);
                     let size = node.sizes[0].max(node.sizes[1]);
                     self.text(painter, after, &size_text(size), self.weak);
                 }
