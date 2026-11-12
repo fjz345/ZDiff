@@ -156,7 +156,10 @@ fn shown_text_metric(chosen: TextMetric, phases: DiffPhases) -> TextMetric {
 enum Metrics<'a> {
     Text(&'a mut TextMetric, DiffPhases),
     Pixel(&'a mut PixelMetric),
-    Fixed(&'static str),
+    Fixed {
+        label: &'static str,
+        about: &'static str,
+    },
 }
 
 pub(super) fn likeness_ui(ui: &mut egui::Ui, ctx: &mut FileDiffPaneCtx, text_viewer: bool) {
@@ -185,7 +188,7 @@ pub(super) fn likeness_ui(ui: &mut egui::Ui, ctx: &mut FileDiffPaneCtx, text_vie
                     .on_hover_text(metric.description());
             }
         }),
-        Metrics::Fixed(label) => metric_combo(ui, label, |_| {}),
+        Metrics::Fixed { label, about } => fixed_metric(ui, label, about),
     }
     ui.separator();
 }
@@ -198,11 +201,21 @@ fn shown_likeness<'a>(
         Some(ViewerKind::Audio) => {
             let (audio, _) = ctx.audio_view.as_ref()?;
             let preview = audio.sample_difference().cloned().map(PreviewKey::Samples);
-            return Some((audio.likeness()?, Metrics::Fixed("RMS"), preview));
+            let metric = Metrics::Fixed {
+                label: "RMS",
+                about: "Likeness of the samples: how loud left minus right is (RMS), \
+                        relative to the loudness of both sides",
+            };
+            return Some((audio.likeness()?, metric, preview));
         }
         Some(ViewerKind::Video) => {
             let frames = ctx.video_frames.as_ref()?;
-            return Some((frames.likeness()?, Metrics::Fixed("Frames"), None));
+            let metric = Metrics::Fixed {
+                label: "Frames",
+                about: "Likeness of the frames: the mean difference of the difference \
+                        timeline's frames, under the image Metric",
+            };
+            return Some((frames.likeness()?, metric, None));
         }
         _ => {}
     }
@@ -211,7 +224,11 @@ fn shown_likeness<'a>(
             .file_1
             .zip(hex.file_2)
             .map(|(left, right)| PreviewKey::Bytes([left.clone(), right.clone()]));
-        return Some((hex.likeness()?, Metrics::Fixed("Bytes"), preview));
+        let metric = Metrics::Fixed {
+            label: "Bytes",
+            about: "Likeness of the bytes: the share equal at the same offset",
+        };
+        return Some((hex.likeness()?, metric, preview));
     }
     if let Some(image) = ctx.image_view.as_deref() {
         let likeness = image.likeness()?;
@@ -272,6 +289,11 @@ fn metric_combo(ui: &mut egui::Ui, selected: &str, options: impl FnOnce(&mut egu
         .show_ui(ui, options)
         .response
         .on_hover_text("How the likeness is measured");
+}
+
+fn fixed_metric(ui: &mut egui::Ui, label: &str, about: &str) {
+    ui.add(egui::Label::new(egui::RichText::new(label).weak()).selectable(false))
+        .on_hover_text(about);
 }
 
 #[cfg(test)]
