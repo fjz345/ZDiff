@@ -881,6 +881,8 @@ pub struct ZApp {
     window_memory: WindowMemory,
     #[serde(skip)]
     frame_stats: FrameStats,
+    #[serde(skip)]
+    last_discard_frame: Option<u64>,
     #[serde(default)]
     show_frame_breakdown: bool,
 }
@@ -888,6 +890,15 @@ pub struct ZApp {
 const LONG_FRAME: Duration = Duration::from_millis(200);
 const SCAN_PROGRESS_INTERVAL: Duration = Duration::from_millis(100);
 const BLUEPRINT_APPLY_INTERVAL: Duration = Duration::from_millis(250);
+
+// A drag changes the rows' inputs every frame; discarding each one would double its cost.
+fn discard_stale_rows(stale: bool, last_discard_frame: &mut Option<u64>, frame: u64) -> bool {
+    let discard = stale && last_discard_frame.is_none_or(|last| last + 1 < frame);
+    if discard {
+        *last_discard_frame = Some(frame);
+    }
+    discard
+}
 
 fn restored_log_buffer() -> LogBuffer {
     logger::global_log_buffer().unwrap_or_default()
@@ -938,6 +949,7 @@ impl ZApp {
             title: String::new(),
             window_memory: WindowMemory::default(),
             frame_stats: FrameStats::default(),
+            last_discard_frame: None,
             show_frame_breakdown: false,
         }
     }
@@ -1615,7 +1627,11 @@ impl eframe::App for ZApp {
                 self.ui(ctx, frame, &mut state);
                 // The panes drew the old rows under the new flags; the next pass rebuilds
                 // them before drawing, and only that pass is painted.
-                if state.rows_are_stale() {
+                if discard_stale_rows(
+                    state.rows_are_stale(),
+                    &mut self.last_discard_frame,
+                    ctx.cumulative_frame_nr(),
+                ) {
                     ctx.request_discard("folder rows are stale");
                 }
 
@@ -1646,8 +1662,8 @@ impl eframe::App for ZApp {
 #[cfg(test)]
 mod tests {
     use super::{
-        AppState, AppStateCtx, ScanAction, ZApp, cancel_scan, finish_side_scan, scan_action,
-        scan_progress_text, update_side_scan,
+        AppState, AppStateCtx, ScanAction, ZApp, cancel_scan, discard_stale_rows,
+        finish_side_scan, scan_action, scan_progress_text, update_side_scan,
     };
     use crate::ui_egui::folder_keymap::FolderAction;
     use crate::ui_egui::fs_tree::{DiffState, FileSystemView, HScrollLink};
@@ -3619,6 +3635,17 @@ mod tests {
         let click = click_frame(&ctx, app, text_pos(&before, label));
         let next = painted_frame(&ctx, app, SCREEN, Vec::new());
         [before, click, next]
+    }
+
+    #[test]
+    fn stale_rows_never_discard_two_frames_in_a_row() {
+        let mut last = None;
+        let discarded: Vec<bool> = (10..16)
+            .map(|frame| discard_stale_rows(true, &mut last, frame))
+            .collect();
+        assert_eq!(discarded, [true, false, true, false, true, false]);
+        assert!(!discard_stale_rows(false, &mut last, 20));
+        assert!(discard_stale_rows(true, &mut last, 21));
     }
 
     #[test]
