@@ -1,31 +1,75 @@
 use super::*;
+use std::sync::Weak;
+
+use crate::diff_ctx::STAGE_CACHE_ENTRIES;
+
+/// Results per rows for as many rows as the stage caches keep, so toggling back to cached rows
+/// measures nothing.
+pub(super) struct RowsMemo<T> {
+    // `Weak` frees the rows but keeps their address from matching a new allocation.
+    entries: Vec<(Weak<DiffRows>, T)>,
+}
+
+impl<T> Default for RowsMemo<T> {
+    fn default() -> Self {
+        Self {
+            entries: Vec::new(),
+        }
+    }
+}
+
+impl<T> RowsMemo<T> {
+    pub(super) fn get_or_insert_with(
+        &mut self,
+        rows: &Arc<DiffRows>,
+        valid: impl Fn(&T) -> bool,
+        make: impl FnOnce() -> T,
+    ) -> &mut T {
+        self.entries.retain(|(weak, _)| weak.strong_count() > 0);
+        let found = self
+            .entries
+            .iter()
+            .position(|(weak, value)| weak.as_ptr() == Arc::as_ptr(rows) && valid(value));
+        let entry = match found {
+            Some(index) => self.entries.remove(index),
+            None => {
+                if self.entries.len() == STAGE_CACHE_ENTRIES {
+                    self.entries.remove(0);
+                }
+                (Arc::downgrade(rows), make())
+            }
+        };
+        self.entries.push(entry);
+        &mut self.entries.last_mut().expect("pushed above").1
+    }
+
+    pub(super) fn clear(&mut self) {
+        self.entries.clear();
+    }
+}
 
 /// Each side's widest row, measured once per rows and font.
 pub(super) struct ContentWidths {
-    // Kept alive so the pointer comparison can't match a new allocation at the same address.
-    pub(super) rows: Arc<DiffRows>,
-    pub(super) font_id: egui::FontId,
-    pub(super) pixels_per_point: f32,
-    pub(super) widths: [f32; 2],
+    font_id: egui::FontId,
+    pixels_per_point: f32,
+    widths: [f32; 2],
 }
 
 /// Row heights with wrap on, measured once per rows, font and wrap widths. Dropped while wrap
 /// is off.
 pub(super) struct RowHeights {
-    // Kept alive so the pointer comparison can't match a new allocation at the same address.
-    pub(super) rows: Arc<DiffRows>,
-    pub(super) font_id: egui::FontId,
-    pub(super) pixels_per_point: f32,
+    font_id: egui::FontId,
+    pixels_per_point: f32,
     natural_widths: Vec<[f32; 2]>,
-    pub(super) text_widths: [f32; 2],
+    text_widths: [f32; 2],
     pub(super) heights: Vec<f32>,
     pub(super) tops: Vec<f32>,
 }
 
 /// The cached wrapped row heights. A `text_widths` change lays out only the rows too wide for
-/// the new widths; a rows, font or zoom change measures every row's one-line width again.
+/// the new widths; new rows, font or zoom measure every row's one-line width again.
 pub(super) fn wrapped_heights<'c, T: RawTokenTrait>(
-    cache: &'c mut Option<RowHeights>,
+    cache: &'c mut RowsMemo<RowHeights>,
     egui_ctx: &egui::Context,
     font_id: &egui::FontId,
     rows: &Arc<DiffRows>,
@@ -34,29 +78,10 @@ pub(super) fn wrapped_heights<'c, T: RawTokenTrait>(
     text_widths: [f32; 2],
 ) -> &'c RowHeights {
     let pixels_per_point = egui_ctx.pixels_per_point();
-    match cache {
-        Some(cached)
-            if Arc::ptr_eq(&cached.rows, rows)
-                && cached.font_id == *font_id
-                && cached.pixels_per_point == pixels_per_point =>
-        {
-            if cached.text_widths != text_widths {
-                cached.heights = egui_ctx.fonts_mut(|fonts| {
-                    measure_wrapped_rows(
-                        fonts,
-                        font_id,
-                        rows,
-                        file_source,
-                        file_target,
-                        &cached.natural_widths,
-                        text_widths,
-                    )
-                });
-                cached.tops = row_tops(&cached.heights);
-                cached.text_widths = text_widths;
-            }
-        }
-        _ => {
+    let cached = cache.get_or_insert_with(
+        rows,
+        |cached| cached.font_id == *font_id && cached.pixels_per_point == pixels_per_point,
+        || {
             let (natural_widths, heights) = egui_ctx.fonts_mut(|fonts| {
                 let natural_widths =
                     natural_row_widths(fonts, font_id, rows, file_source, file_target);
@@ -71,18 +96,32 @@ pub(super) fn wrapped_heights<'c, T: RawTokenTrait>(
                 );
                 (natural_widths, heights)
             });
-            *cache = Some(RowHeights {
-                rows: rows.clone(),
+            RowHeights {
                 font_id: font_id.clone(),
                 pixels_per_point,
                 natural_widths,
                 text_widths,
                 tops: row_tops(&heights),
                 heights,
-            });
-        }
+            }
+        },
+    );
+    if cached.text_widths != text_widths {
+        cached.heights = egui_ctx.fonts_mut(|fonts| {
+            measure_wrapped_rows(
+                fonts,
+                font_id,
+                rows,
+                file_source,
+                file_target,
+                &cached.natural_widths,
+                text_widths,
+            )
+        });
+        cached.tops = row_tops(&cached.heights);
+        cached.text_widths = text_widths;
     }
-    cache.as_ref().expect("filled above")
+    cached
 }
 
 impl FileDiffPane {
@@ -94,30 +133,39 @@ impl FileDiffPane {
     ) -> [f32; 2] {
         let font_id = egui::TextStyle::Monospace.resolve(ui.style());
         let pixels_per_point = ui.ctx().pixels_per_point();
-        if let Some(cached) = &self.content_widths
-            && Arc::ptr_eq(&cached.rows, rows)
-            && cached.font_id == font_id
-            && cached.pixels_per_point == pixels_per_point
-        {
-            return cached.widths;
-        }
-        let widths = ui.fonts_mut(|fonts| {
-            side_content_widths(
+        self.content_widths
+            .get_or_insert_with(
                 rows,
-                diff_ctx.input.file_1.as_deref(),
-                diff_ctx.input.file_2.as_deref(),
-                |c| fonts.glyph_width(&font_id, c),
+                |cached| cached.font_id == font_id && cached.pixels_per_point == pixels_per_point,
+                || ContentWidths {
+                    widths: ui.fonts_mut(|fonts| {
+                        let mut glyph_width = ascii_cached_glyph_width(fonts, &font_id);
+                        side_content_widths(
+                            rows,
+                            diff_ctx.input.file_1.as_deref(),
+                            diff_ctx.input.file_2.as_deref(),
+                            &mut glyph_width,
+                        )
+                    }),
+                    font_id: font_id.clone(),
+                    pixels_per_point,
+                },
             )
-        });
-        self.content_widths = Some(ContentWidths {
-            rows: rows.clone(),
-            font_id,
-            pixels_per_point,
-            widths,
-        });
-        widths
+            .widths
     }
+}
 
+/// `glyph_width` with a table for ASCII: a font lookup per char dominated measuring every row.
+fn ascii_cached_glyph_width<'f>(
+    fonts: &'f mut egui::epaint::FontsView<'_>,
+    font_id: &'f egui::FontId,
+) -> impl FnMut(char) -> f32 + 'f {
+    let ascii: [f32; 128] =
+        std::array::from_fn(|c| fonts.glyph_width(font_id, char::from(c as u8)));
+    move |c| match ascii.get(c as usize) {
+        Some(width) => *width,
+        None => fonts.glyph_width(font_id, c),
+    }
 }
 
 /// Width a side's text wraps at in a cell `cell_width` wide: what the gutter leaves.
@@ -162,10 +210,11 @@ pub(in crate::ui_egui) fn natural_row_widths<T: RawTokenTrait>(
     file_source: Option<&CachedFile<T>>,
     file_target: Option<&CachedFile<T>>,
 ) -> Vec<[f32; 2]> {
+    let mut glyph_width = ascii_cached_glyph_width(fonts, font_id);
     let mut side_width = |content: &LineContent| match content {
         LineContent::Code { tokens, .. } => {
             let row_text = build_row_text(tokens, &[], file_source, file_target);
-            one_line_width(&row_text, |c| fonts.glyph_width(font_id, c))
+            one_line_width(&row_text, &mut glyph_width)
         }
         LineContent::Void | LineContent::Collapsed => 0.0,
     };
@@ -251,12 +300,9 @@ pub(super) fn unscrolled_cell(ui: &egui::Ui) -> egui::Rect {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::test_support::{char_width, collapsed_row};
-    
+    use super::*;
 
-    
-    
     use zdiff::diff_builder::{DiffBuilderOptions, LineContent};
 
     use crate::ui_egui::copy_harness::{CopyHarness, measure_in_fresh_context};
@@ -324,7 +370,7 @@ mod tests {
         let rows = Arc::new(harness.rows().to_vec());
         let [file_source, file_target] = harness.files();
         let ctx = egui::Context::default();
-        let mut cache = None;
+        let mut cache = RowsMemo::default();
         let mut heights_at = |text_widths| {
             let mut heights = Vec::new();
             let _ = ctx.run(egui::RawInput::default(), |ctx| {
@@ -352,6 +398,40 @@ mod tests {
                 "at {chars} chars"
             );
         }
+    }
+
+    #[test]
+    fn the_rows_memo_serves_revisited_rows_until_they_are_dropped_or_evicted() {
+        let mut memo = RowsMemo::default();
+        let mut made = 0;
+        let mut get = |memo: &mut RowsMemo<usize>, rows: &Arc<DiffRows>, valid: bool| {
+            *memo.get_or_insert_with(
+                rows,
+                |_| valid,
+                || {
+                    made += 1;
+                    made
+                },
+            )
+        };
+        let first = Arc::new(DiffRows::new());
+        let second = Arc::new(DiffRows::new());
+
+        assert_eq!(get(&mut memo, &first, true), 1);
+        assert_eq!(get(&mut memo, &second, true), 2);
+        assert_eq!(get(&mut memo, &first, true), 1);
+        assert_eq!(get(&mut memo, &first, false), 3);
+
+        drop(second);
+        let others: Vec<Arc<DiffRows>> = (0..STAGE_CACHE_ENTRIES)
+            .map(|_| Arc::new(DiffRows::new()))
+            .collect();
+        for rows in &others {
+            get(&mut memo, rows, true);
+        }
+        assert_eq!(memo.entries.len(), STAGE_CACHE_ENTRIES);
+        assert_eq!(get(&mut memo, &others[0], true), 4);
+        assert_eq!(get(&mut memo, &first, true), 4 + STAGE_CACHE_ENTRIES);
     }
 
     #[test]
@@ -434,5 +514,4 @@ mod tests {
         assert_eq!(heights[0], egui_wrapped_height(target.trim_end(), width));
         assert!(heights[0] >= 3.0 * line_height, "{heights:?}");
     }
-
 }

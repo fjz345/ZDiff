@@ -12,7 +12,7 @@ use eframe::egui;
 use rayon::prelude::*;
 use zcommon::find::{FindError, FindQuery, Matcher};
 use zcommon::job::Job;
-use zcommon::lru::{DEFAULT_MAX_ENTRIES, LruCache};
+use zcommon::lru::LruCache;
 use zdiff::universal_path::UniversalPath;
 use zdiff::{
     cached_file::CachedFile,
@@ -320,10 +320,17 @@ impl From<&UpdateDiffRowsInput> for MyersCtxInput {
         }
     }
 }
-#[derive(Debug, Clone, PartialEq)]
+/// Compared by identity: the Myers job hands out the cached Arcs for an equal result.
+#[derive(Debug, Clone)]
 pub struct DiffIRInput {
     pub myers_path: Arc<MyersPath>,
     pub char_ranges: Arc<CharRanges>,
+}
+impl PartialEq for DiffIRInput {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.myers_path, &other.myers_path)
+            && Arc::ptr_eq(&self.char_ranges, &other.char_ranges)
+    }
 }
 #[derive(Debug, Clone)]
 pub struct DiffRowsInput {
@@ -336,7 +343,7 @@ impl PartialEq for DiffRowsInput {
     fn eq(&self, other: &Self) -> bool {
         self.file_1 == other.file_1
             && self.file_2 == other.file_2
-            && self.diff_ir == other.diff_ir
+            && Arc::ptr_eq(&self.diff_ir, &other.diff_ir)
             && !DiffBuilderOptions::need_invalidation(&self.diff_options, &other.diff_options)
     }
 }
@@ -441,13 +448,53 @@ macro_rules! track_alloc {
     ($reg:expr, $step:expr) => {};
 }
 
-// The stage caches keep the files of their inputs alive; the Myers stage counts them.
-const MYERS_CACHE_BYTES: usize = 96 << 20;
-const DIFF_IR_CACHE_BYTES: usize = 32 << 20;
-const DIFF_ROWS_CACHE_BYTES: usize = 64 << 20;
+// A 4.65 MB, 135k-line pair takes ~14 MB Myers, ~28 MB IR and ~86 MB rows per option state, so
+// these keep 12 of its states; a 25k-line pair keeps all of them.
+pub const STAGE_CACHE_ENTRIES: usize = 16;
+const MYERS_CACHE_BYTES: usize = 192 << 20;
+const DIFF_IR_CACHE_BYTES: usize = 320 << 20;
+const DIFF_ROWS_CACHE_BYTES: usize = 1 << 30;
+
+trait StageInput {
+    fn files(&self) -> [Option<&Arc<CachedFile<RawToken>>>; 2] {
+        [None, None]
+    }
+}
+
+impl StageInput for MyersCtxInput {
+    fn files(&self) -> [Option<&Arc<CachedFile<RawToken>>>; 2] {
+        [self.file_1.as_ref(), self.file_2.as_ref()]
+    }
+}
+
+impl StageInput for DiffIRInput {}
+
+impl StageInput for DiffRowsInput {
+    fn files(&self) -> [Option<&Arc<CachedFile<RawToken>>>; 2] {
+        [self.file_1.as_ref(), self.file_2.as_ref()]
+    }
+}
+
+/// Bytes of the files only the cache keeps alive: the shown pair is alive anyway, and a file
+/// several keys hold counts once.
+fn pinned_file_bytes<I: StageInput>(
+    keys: &[&I],
+    shown: [&Option<Arc<CachedFile<RawToken>>>; 2],
+) -> usize {
+    let mut counted: Vec<*const CachedFile<RawToken>> =
+        shown.into_iter().flatten().map(Arc::as_ptr).collect();
+    let mut bytes = 0;
+    for file in keys.iter().flat_map(|key| key.files()).flatten() {
+        if !counted.contains(&Arc::as_ptr(file)) {
+            counted.push(Arc::as_ptr(file));
+            bytes += file.approx_bytes();
+        }
+    }
+    bytes
+}
 
 trait StageCtx {
-    type Input: PartialEq + Clone;
+    type Input: PartialEq + Clone + StageInput;
     fn input(&self) -> &Self::Input;
     fn approx_bytes(&self) -> usize;
 }
@@ -458,13 +505,7 @@ impl StageCtx for MyersCtx {
         &self.input
     }
     fn approx_bytes(&self) -> usize {
-        let files = [&self.input.file_1, &self.input.file_2]
-            .into_iter()
-            .flatten()
-            .map(|f| f.approx_bytes());
-        files.sum::<usize>()
-            + self.path.len() * size_of::<(i32, i32)>()
-            + char_ranges_bytes(&self.char_ranges)
+        self.path.len() * size_of::<(i32, i32)>() + char_ranges_bytes(&self.char_ranges)
     }
 }
 
@@ -500,23 +541,49 @@ fn char_ranges_bytes(ranges: &CharRanges) -> usize {
     (ranges.source.len() + ranges.target.len()) * size_of::<Range<usize>>()
 }
 
-fn store_finished<C: StageCtx>(
+fn store_finished<C: StageCtx + Send + Sync + 'static>(
     results: Vec<Option<C>>,
     inflight: &mut Option<C::Input>,
     current: &mut Option<Arc<C>>,
     cache: &mut LruCache<C::Input, Arc<C>>,
+    shown: [&Option<Arc<CachedFile<RawToken>>>; 2],
 ) {
+    let mut dropped = Vec::new();
     for result in results {
         match result {
             Some(res) if inflight.as_ref() == Some(res.input()) => {
                 let res = Arc::new(res);
-                cache.insert(res.input().clone(), res.clone(), res.approx_bytes());
-                *current = Some(res);
+                dropped.extend(cache.insert(res.input().clone(), res.clone(), res.approx_bytes()));
+                dropped.extend(cache.evict_over_budget(|keys| pinned_file_bytes(keys, shown)));
+                dropped.extend(current.replace(res));
                 *inflight = None;
             }
-            Some(_) => {}
+            Some(stale) => dropped.push(Arc::new(stale)),
             None => *inflight = None,
         }
+    }
+    drop_off_ui_thread(dropped);
+}
+
+fn shared_or_new<'a, T: PartialEq + 'a>(
+    value: T,
+    cached: impl IntoIterator<Item = &'a Arc<T>>,
+) -> Arc<T> {
+    cached
+        .into_iter()
+        .find(|cached| ***cached == value)
+        .cloned()
+        .unwrap_or_else(|| Arc::new(value))
+}
+
+// Freeing a stage result's row and token allocations takes milliseconds on a large pair.
+fn drop_off_ui_thread<C: Send + Sync + 'static>(values: Vec<Arc<C>>) {
+    let last: Vec<Arc<C>> = values
+        .into_iter()
+        .filter(|value| Arc::strong_count(value) == 1)
+        .collect();
+    if !last.is_empty() {
+        std::thread::spawn(move || drop(last));
     }
 }
 
@@ -611,13 +678,13 @@ impl DiffCtx {
             diff_rows_job: repaint_job(&repaint),
             myers_inflight_input: None,
             myers_ctx: None,
-            myers_cache: LruCache::new(DEFAULT_MAX_ENTRIES, MYERS_CACHE_BYTES),
+            myers_cache: LruCache::new(STAGE_CACHE_ENTRIES, MYERS_CACHE_BYTES),
             diff_ir_inflight_input: None,
             diff_ir_ctx: None,
-            diff_ir_cache: LruCache::new(DEFAULT_MAX_ENTRIES, DIFF_IR_CACHE_BYTES),
+            diff_ir_cache: LruCache::new(STAGE_CACHE_ENTRIES, DIFF_IR_CACHE_BYTES),
             diff_rows_inflight_input: None,
             diff_rows_ctx: None,
-            diff_rows_cache: LruCache::new(DEFAULT_MAX_ENTRIES, DIFF_ROWS_CACHE_BYTES),
+            diff_rows_cache: LruCache::new(STAGE_CACHE_ENTRIES, DIFF_ROWS_CACHE_BYTES),
             repaint,
         }
     }
@@ -674,6 +741,10 @@ impl DiffCtx {
             &mut self.myers_inflight_input,
             &mut self.myers_ctx,
             &mut self.myers_cache,
+            [
+                &self.update_diff_rows_input.file_1,
+                &self.update_diff_rows_input.file_2,
+            ],
         );
     }
 
@@ -683,6 +754,10 @@ impl DiffCtx {
             &mut self.diff_ir_inflight_input,
             &mut self.diff_ir_ctx,
             &mut self.diff_ir_cache,
+            [
+                &self.update_diff_rows_input.file_1,
+                &self.update_diff_rows_input.file_2,
+            ],
         );
     }
 
@@ -692,6 +767,10 @@ impl DiffCtx {
             &mut self.diff_rows_inflight_input,
             &mut self.diff_rows_ctx,
             &mut self.diff_rows_cache,
+            [
+                &self.update_diff_rows_input.file_1,
+                &self.update_diff_rows_input.file_2,
+            ],
         );
     }
 
@@ -724,6 +803,7 @@ impl DiffCtx {
             }
             self.myers_inflight_input = Some(expected_input.clone());
             let input = expected_input;
+            let cached_ir_inputs: Vec<DiffIRInput> = self.diff_ir_cache.keys().cloned().collect();
 
             log::info!("new request_myers");
             self.myers_job.start(move |job| {
@@ -832,13 +912,14 @@ impl DiffCtx {
                     });
                     let likeness = (change_unit.is_some() && one_sided.is_none())
                         .then(|| text_likeness(&path, t1, t2, &ignore));
+                    let cached = cached_ir_inputs.iter();
                     job.send(Some(MyersCtx {
                         input,
                         num_add_delete,
                         change_unit,
                         likeness,
-                        path: Arc::new(path),
-                        char_ranges: Arc::new(char_ranges),
+                        path: shared_or_new(path, cached.clone().map(|ir| &ir.myers_path)),
+                        char_ranges: shared_or_new(char_ranges, cached.map(|ir| &ir.char_ranges)),
                         ignored_pins,
                         phase_trace: trace.map(Arc::new),
                         line_elapsed,
@@ -1100,7 +1181,10 @@ impl Default for DiffProcessor {
 
 impl DiffProcessor {
     pub fn reset_ctx(&mut self) {
-        self.ctx = DiffCtx::new(UpdateDiffRowsInput::default(), self.ctx.repaint.clone());
+        let fresh = DiffCtx::new(UpdateDiffRowsInput::default(), self.ctx.repaint.clone());
+        let old = std::mem::replace(&mut self.ctx, fresh);
+        // Its caches can hold a gigabyte of stage results, too slow to free on the UI thread.
+        std::thread::spawn(move || drop(old));
         self.reset_ui();
     }
 
@@ -2367,6 +2451,102 @@ mod tests {
                 assert!(Arc::ptr_eq(&back.diff_rows, &first.diff_rows), "{name}");
                 assert_eq!(back.stage_times, first.stage_times, "{name}");
             }
+        }
+
+        #[test]
+        fn cycling_through_fourteen_option_states_and_again_is_served_from_the_stage_caches() {
+            let dir = tempfile::tempdir().unwrap();
+            let a = (
+                load(&write_source(&dir.path().join("a1.rs"), 300, 1)),
+                load(&write_source(&dir.path().join("a2.rs"), 300, 2)),
+            );
+            let toggles: [fn(&mut DiffBuilderOptions); 7] = [
+                |o| o.ignore.whitespace = !o.ignore.whitespace,
+                |o| o.ignore.comments = !o.ignore.comments,
+                |o| o.ignore.line_endings = !o.ignore.line_endings,
+                |o| o.phases.character = !o.phases.character,
+                |o| o.phases.scope = !o.phases.scope,
+                |o| o.ghost_rows = !o.ghost_rows,
+                |o| {
+                    o.diff_only_with_extra_rows = match o.diff_only_with_extra_rows {
+                        Some(_) => None,
+                        None => Some(2),
+                    }
+                },
+            ];
+            let cycle = toggles.iter().chain(&toggles);
+            let mut processor = DiffProcessor::default();
+            let mut current = input(&a.0, &a.1);
+            open(&mut processor, &current);
+            settle(&mut processor).expect("first diff never completed");
+            let mut first_visits = Vec::new();
+            for toggle in cycle.clone() {
+                toggle(&mut current.options);
+                open(&mut processor, &current);
+                first_visits.push(settle(&mut processor).expect("toggle never completed"));
+            }
+
+            for (step, (toggle, first)) in cycle.zip(&first_visits).enumerate() {
+                toggle(&mut current.options);
+                open(&mut processor, &current);
+                assert!(!processor.is_in_progress(), "step {step} recomputed");
+                let again = processor.get_minimal_diff_ctx().expect("cached diff");
+                assert!(
+                    Arc::ptr_eq(&again.diff_rows, &first.diff_rows),
+                    "step {step}"
+                );
+            }
+        }
+
+        #[test]
+        fn a_diff_stage_result_equal_to_a_cached_one_reuses_its_diff_ir() {
+            let dir = tempfile::tempdir().unwrap();
+            let a = (
+                load(&write_source(&dir.path().join("a1.rs"), 300, 1)),
+                load(&write_source(&dir.path().join("a2.rs"), 300, 2)),
+            );
+            let mut processor = DiffProcessor::default();
+            let mut current = input(&a.0, &a.1);
+            open(&mut processor, &current);
+            let first = settle(&mut processor).expect("first diff never completed");
+
+            current.options.ignore.file_markers = !current.options.ignore.file_markers;
+            open(&mut processor, &current);
+            assert!(processor.ctx.myers_inflight_input.is_some());
+            let toggled = settle(&mut processor).expect("toggle never completed");
+
+            assert!(Arc::ptr_eq(&toggled.diff_ir, &first.diff_ir));
+        }
+
+        #[test]
+        fn files_of_the_shown_pair_are_free_and_other_files_count_once() {
+            let dir = tempfile::tempdir().unwrap();
+            let a = (
+                load(&write_source(&dir.path().join("a1.rs"), 300, 1)),
+                load(&write_source(&dir.path().join("a2.rs"), 300, 2)),
+            );
+            let b = load(&write_source(&dir.path().join("b.rs"), 300, 3));
+            let mut whitespace = input(&a.0, &a.1);
+            whitespace.options.ignore.whitespace = true;
+            let keys: Vec<MyersCtxInput> = [
+                input(&a.0, &a.1),
+                whitespace,
+                input(&a.0, &b),
+                input(&b, &a.1),
+            ]
+            .iter()
+            .map(MyersCtxInput::from)
+            .collect();
+            let keys: Vec<&MyersCtxInput> = keys.iter().collect();
+            let bytes =
+                |file: &Option<Arc<CachedFile<RawToken>>>| file.as_ref().unwrap().approx_bytes();
+
+            assert_eq!(pinned_file_bytes(&keys[..2], [&a.0, &a.1]), 0);
+            assert_eq!(pinned_file_bytes(&keys, [&a.0, &a.1]), bytes(&b));
+            assert_eq!(
+                pinned_file_bytes(&keys, [&b, &None]),
+                bytes(&a.0) + bytes(&a.1)
+            );
         }
 
         #[test]

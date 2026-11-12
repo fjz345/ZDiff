@@ -41,17 +41,45 @@ impl<K: PartialEq, V> LruCache<K, V> {
         self.entries.last().map(|e| &e.value)
     }
 
-    pub fn insert(&mut self, key: K, value: V, bytes: usize) {
-        self.retain(|k| *k != key);
+    /// Hands back the values it drops, so the caller decides where they are freed.
+    pub fn insert(&mut self, key: K, value: V, bytes: usize) -> Vec<V> {
+        let mut dropped = Vec::new();
+        if let Some(index) = self.entries.iter().position(|e| e.key == key) {
+            dropped.push(self.remove(index));
+        }
         if bytes > self.max_bytes {
-            return;
+            dropped.push(value);
+            return dropped;
         }
         self.bytes += bytes;
         self.entries.push(Entry { key, value, bytes });
         while self.entries.len() > self.max_entries || self.bytes > self.max_bytes {
-            let evicted = self.entries.remove(0);
-            self.bytes -= evicted.bytes;
+            dropped.push(self.remove(0));
         }
+        dropped
+    }
+
+    /// For bytes the entries share, like a file several keys hold, which no entry can count alone.
+    pub fn evict_over_budget(&mut self, shared_bytes: impl Fn(&[&K]) -> usize) -> Vec<V> {
+        let mut evicted = Vec::new();
+        while self.entries.len() > 1 {
+            let keys: Vec<&K> = self.keys().collect();
+            if self.bytes + shared_bytes(&keys) <= self.max_bytes {
+                break;
+            }
+            evicted.push(self.remove(0));
+        }
+        evicted
+    }
+
+    pub fn keys(&self) -> impl Iterator<Item = &K> {
+        self.entries.iter().map(|e| &e.key)
+    }
+
+    fn remove(&mut self, index: usize) -> V {
+        let entry = self.entries.remove(index);
+        self.bytes -= entry.bytes;
+        entry.value
     }
 
     pub fn retain(&mut self, mut keep: impl FnMut(&K) -> bool) {
@@ -319,6 +347,40 @@ mod tests {
         map.insert(1, "uno", 10);
         assert_eq!(map.get(&1), Some(&"uno"));
         assert_eq!(map.bytes, 10);
+    }
+
+    #[test]
+    fn insert_hands_back_the_replaced_and_evicted_values() {
+        let mut cache = LruCache::new(2, 100);
+        assert!(cache.insert(1, "one", 10).is_empty());
+        assert_eq!(cache.insert(1, "uno", 10), ["one"]);
+        cache.insert(2, "two", 10);
+        assert_eq!(cache.insert(3, "three", 10), ["uno"]);
+        assert_eq!(cache.insert(4, "huge", 101), ["huge"]);
+    }
+
+    #[test]
+    fn shared_bytes_evict_the_least_recently_used_entries_but_never_the_newest() {
+        let mut cache = LruCache::new(10, 100);
+        for key in 1..=4 {
+            cache.insert(key, "v", 10);
+        }
+        let shared = |keys: &[&u32]| keys.iter().filter(|k| ***k < 3).count() * 40;
+
+        assert_eq!(cache.evict_over_budget(shared), ["v"]);
+        assert_eq!(keys(&cache), [2, 3, 4]);
+        assert_eq!(cache.evict_over_budget(|_| 1000), ["v", "v"]);
+        assert_eq!(keys(&cache), [4]);
+        assert_eq!(cache.bytes, 10);
+    }
+
+    #[test]
+    fn keys_lists_the_cached_keys_least_recently_used_first() {
+        let mut cache = LruCache::new(3, 100);
+        cache.insert(1, "one", 1);
+        cache.insert(2, "two", 1);
+        cache.get(&1);
+        assert_eq!(cache.keys().copied().collect::<Vec<_>>(), [2, 1]);
     }
 
     #[test]

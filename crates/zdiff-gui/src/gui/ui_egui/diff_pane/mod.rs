@@ -212,11 +212,11 @@ pub struct FileDiffPane {
     #[serde(skip)]
     active_side: ActiveSideState,
     #[serde(skip)]
-    content_widths: Option<ContentWidths>,
+    content_widths: RowsMemo<ContentWidths>,
     #[serde(skip)]
-    row_heights: Option<RowHeights>,
+    row_heights: RowsMemo<RowHeights>,
     #[serde(skip)]
-    ruler_spans: Option<RulerSpans>,
+    ruler_spans: RowsMemo<Vec<ChangeSpan>>,
     #[serde(skip)]
     ruler_bins: BinCache,
     #[serde(skip)]
@@ -255,9 +255,9 @@ impl FileDiffPane {
         Self {
             title,
             active_side: ActiveSideState::default(),
-            content_widths: None,
-            row_heights: None,
-            ruler_spans: None,
+            content_widths: RowsMemo::default(),
+            row_heights: RowsMemo::default(),
+            ruler_spans: RowsMemo::default(),
             ruler_bins: BinCache::default(),
             occurrences: OccurrenceState::default(),
             pin_input: PinInput::default(),

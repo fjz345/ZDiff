@@ -83,7 +83,7 @@ impl FileDiffPane {
         let row_height = ui.text_style_height(&egui::TextStyle::Monospace);
         let wrap = *ctx.word_wrap;
         if !wrap {
-            self.row_heights = None;
+            self.row_heights.clear();
         }
         let patch_rows = ctx
             .diff_ctx

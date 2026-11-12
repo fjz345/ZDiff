@@ -39,7 +39,7 @@ GUI for zdiff crate
         + Diff only (±), with a context row count
         + Word wrap (↩)
         + Toggle all options (All, Alt+A)
-    - In-memory results cache: each diff stage keeps its last 6 results and each side its last 6 file loads (256 MB in all), keyed by the file contents and the options that stage uses, so toggling an option back or returning to an earlier pair shows at once. Unchanged local files (same size and modification time) and fixed revisions (`#rev`, `@change`, full commit SHA) are not read again; head, branch and index sides always are. Refresh and Recompute Diff compute from scratch
+    - In-memory results cache: each diff stage keeps its last 16 results (up to 1.5 GB in all; a 4.6 MB pair keeps 12 option states, pairs up to about 3 MB all 16) and each side its last 6 file loads (32 MB), keyed by the file contents and the options that stage uses, so toggling an option back or returning to an earlier pair shows at once, in one frame. The pane remembers its row measurements for those results too. A first visit still measures every row on the UI thread (about 15 ms per 25k lines, more with word wrap). Unchanged local files (same size and modification time) and fixed revisions (`#rev`, `@change`, full commit SHA) are not read again; head, branch and index sides always are. Refresh and Recompute Diff compute from scratch
 * Sides, named Left and Right in menus and shortcuts
     - Breadcrumb path bar per side under a breadcrumb root bar, and a folder browser over that side to pick another file
     - The path bars stay shown with no files loaded ("No file", "No root folder"), so a path can be typed before any diff
