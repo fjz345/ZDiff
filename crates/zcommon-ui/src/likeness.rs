@@ -3,10 +3,6 @@ use zcommon::style::GradientPreset;
 
 use crate::style_window::{diff_gradient, gradient_color};
 
-const UNLIKE_COLOR: egui::Color32 = egui::Color32::from_rgb(0xB0, 0x3A, 0x2E);
-const HALF_LIKE_COLOR: egui::Color32 = egui::Color32::from_rgb(0xA8, 0x8C, 0x1E);
-const ALIKE_COLOR: egui::Color32 = egui::Color32::from_rgb(0x3A, 0x8C, 0x3A);
-
 /// Floored, so a pair that differs reads 100 % only when measured so.
 pub fn percent(ratio: f64) -> u32 {
     // The epsilon keeps 0.29 * 100 = 28.999... at 29.
@@ -30,16 +26,8 @@ pub fn likeness_bar(ui: &mut egui::Ui, ratio: f64, size: egui::Vec2) -> egui::Re
     response
 }
 
-fn likeness_color(ratio: f64, gradient: Option<GradientPreset>) -> egui::Color32 {
-    if let Some(gradient) = gradient {
-        return gradient_color(gradient, 1.0 - ratio.clamp(0.0, 1.0) as f32);
-    }
-    let t = ratio.clamp(0.0, 1.0) as f32 * 2.0;
-    if t <= 1.0 {
-        UNLIKE_COLOR.lerp_to_gamma(HALF_LIKE_COLOR, t)
-    } else {
-        HALF_LIKE_COLOR.lerp_to_gamma(ALIKE_COLOR, t - 1.0)
-    }
+fn likeness_color(ratio: f64, gradient: GradientPreset) -> egui::Color32 {
+    gradient_color(gradient, 1.0 - ratio.clamp(0.0, 1.0) as f32)
 }
 
 #[cfg(test)]

@@ -75,11 +75,12 @@ pub fn collapsed_look(ctx: &egui::Context) -> RowLook {
     row_looks(ctx).1
 }
 
-pub fn diff_gradient(ctx: &egui::Context) -> Option<GradientPreset> {
-    ctx.data(|d| d.get_temp(diff_gradient_id())).flatten()
+pub fn diff_gradient(ctx: &egui::Context) -> GradientPreset {
+    ctx.data(|d| d.get_temp(diff_gradient_id()))
+        .unwrap_or_default()
 }
 
-fn set_diff_gradient(ctx: &egui::Context, gradient: Option<GradientPreset>) {
+fn set_diff_gradient(ctx: &egui::Context, gradient: GradientPreset) {
     ctx.data_mut(|d| d.insert_temp(diff_gradient_id(), gradient));
 }
 
@@ -102,28 +103,19 @@ pub fn diff_gradient_picker(ui: &mut egui::Ui, id_salt: &str) {
     }
 }
 
-fn diff_gradient_combo(
-    ui: &mut egui::Ui,
-    id_salt: &str,
-    gradient: &mut Option<GradientPreset>,
-) -> bool {
-    let label =
-        |gradient: Option<GradientPreset>| gradient.map_or("Default", GradientPreset::label);
+fn diff_gradient_combo(ui: &mut egui::Ui, id_salt: &str, gradient: &mut GradientPreset) -> bool {
     let mut changed = false;
     egui::ComboBox::from_id_salt(id_salt)
-        .selected_text(format!("Colors: {}", label(*gradient)))
+        .selected_text(format!("Colors: {}", gradient.label()))
         .show_ui(ui, |ui| {
-            for option in std::iter::once(None).chain(GradientPreset::ALL.map(Some)) {
+            for option in GradientPreset::ALL {
                 changed |= ui
-                    .selectable_value(gradient, option, label(option))
+                    .selectable_value(gradient, option, option.label())
                     .changed();
             }
         })
         .response
-        .on_hover_text(
-            "Colors of the difference bars, heatmaps, change maps and likeness bars. \
-             Default keeps each view's own colors",
-        );
+        .on_hover_text("Colors of the difference bars, heatmaps, change maps and likeness bars");
     changed
 }
 
@@ -265,7 +257,7 @@ fn style_ui<R: Role>(ui: &mut egui::Ui, style: &mut Style, app_group: &str, synt
                 if syntax {
                     style.palette.reset_all::<SyntaxCategory>();
                 }
-                style.diff_gradient = None;
+                style.diff_gradient = GradientPreset::default();
                 changed = true;
             }
         });
@@ -366,7 +358,7 @@ fn role_grid<R: Role>(ui: &mut egui::Ui, title: &str, palette: &mut Palette, ton
     changed
 }
 
-fn diff_gradient_ui(ui: &mut egui::Ui, gradient: &mut Option<GradientPreset>) -> bool {
+fn diff_gradient_ui(ui: &mut egui::Ui, gradient: &mut GradientPreset) -> bool {
     let mut changed = false;
     egui::CollapsingHeader::new(egui::RichText::new("Difference colors").strong())
         .id_salt("style_group_diff_gradient")
@@ -374,12 +366,7 @@ fn diff_gradient_ui(ui: &mut egui::Ui, gradient: &mut Option<GradientPreset>) ->
         .show(ui, |ui| {
             ui.horizontal(|ui| {
                 changed = diff_gradient_combo(ui, "style_diff_gradient", gradient);
-                match *gradient {
-                    Some(preset) => gradient_swatch(ui, preset),
-                    None => {
-                        ui.weak("Each view's own colors");
-                    }
-                }
+                gradient_swatch(ui, *gradient);
             });
         });
     changed
@@ -459,14 +446,14 @@ mod tests {
             path: Some(path.clone()),
             ..StyleWindow::default()
         };
-        assert_eq!(diff_gradient(&ctx), None);
+        assert_eq!(diff_gradient(&ctx), GradientPreset::Heat);
 
-        set_diff_gradient(&ctx, Some(GradientPreset::Inferno));
+        set_diff_gradient(&ctx, GradientPreset::Inferno);
         window.show::<NoRole>(&ctx, "Test");
-        assert_eq!(window.style.diff_gradient, Some(GradientPreset::Inferno));
+        assert_eq!(window.style.diff_gradient, GradientPreset::Inferno);
         assert_eq!(
             Style::load(&path).unwrap().diff_gradient,
-            Some(GradientPreset::Inferno)
+            GradientPreset::Inferno
         );
     }
 
@@ -486,10 +473,10 @@ mod tests {
         };
         other_app.save(&path).unwrap();
 
-        set_diff_gradient(&ctx, Some(GradientPreset::Inferno));
+        set_diff_gradient(&ctx, GradientPreset::Inferno);
         window.show::<NoRole>(&ctx, "Test");
         let saved = Style::load(&path).unwrap();
-        assert_eq!(saved.diff_gradient, Some(GradientPreset::Inferno));
+        assert_eq!(saved.diff_gradient, GradientPreset::Inferno);
         assert_eq!(saved.mode, Mode::Light);
         assert_eq!(window.style.mode, Mode::Light);
     }

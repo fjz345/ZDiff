@@ -395,9 +395,10 @@ impl Palette {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum GradientPreset {
+    #[default]
     Heat,
     Viridis,
     Inferno,
@@ -491,7 +492,18 @@ pub struct Style {
     pub palette: Palette,
     pub void_look: RowLook,
     pub collapsed_look: RowLook,
-    pub diff_gradient: Option<GradientPreset>,
+    #[cfg_attr(feature = "serde", serde(deserialize_with = "null_as_default"))]
+    pub diff_gradient: GradientPreset,
+}
+
+// Older builds saved null for their "Default" difference colors.
+#[cfg(feature = "serde")]
+fn null_as_default<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::Deserialize<'de> + Default,
+{
+    Ok(<Option<T> as serde::Deserialize>::deserialize(deserializer)?.unwrap_or_default())
 }
 
 pub type Segment = [[f32; 2]; 2];
@@ -853,6 +865,11 @@ mod tests {
         assert_eq!(sums, vec![-32.0, -24.0]);
     }
 
+    #[test]
+    fn default_gradient_is_heat() {
+        assert_eq!(Style::default().diff_gradient, GradientPreset::Heat);
+    }
+
     #[cfg(feature = "serde")]
     mod file {
         use super::*;
@@ -862,7 +879,7 @@ mod tests {
                 mode: Mode::System,
                 void_look: RowLook::Stripes,
                 collapsed_look: RowLook::Empty,
-                diff_gradient: Some(GradientPreset::Viridis),
+                diff_gradient: GradientPreset::Viridis,
                 ..Style::default()
             };
             style.palette.set(TestRole::A, Tone::Dark, RED);
@@ -908,7 +925,7 @@ mod tests {
             let style = Style::load(&path).unwrap();
             assert_eq!(style.mode, Mode::Light);
             assert_eq!(style.void_look, RowLook::default());
-            assert_eq!(style.diff_gradient, None);
+            assert_eq!(style.diff_gradient, GradientPreset::Heat);
             assert_eq!(style.palette.get(TestRole::A, Tone::Dark), RED);
             assert_eq!(
                 style.palette.get(TestRole::A, Tone::Light),
@@ -922,6 +939,21 @@ mod tests {
                 style.palette.get(SharedRole::DeleteText, Tone::Dark),
                 SharedRole::DeleteText.dark()
             );
+        }
+
+        #[test]
+        fn null_gradient_from_an_older_build_loads_as_heat_and_keeps_the_rest() {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("style.json");
+            std::fs::write(
+                &path,
+                r#"{ "mode": "Light", "palette": { "test_a": { "dark": [255, 0, 0, 255] } }, "diff_gradient": null }"#,
+            )
+            .unwrap();
+            let style = Style::load(&path).unwrap();
+            assert_eq!(style.diff_gradient, GradientPreset::Heat);
+            assert_eq!(style.mode, Mode::Light);
+            assert_eq!(style.palette.get(TestRole::A, Tone::Dark), RED);
         }
 
         #[test]

@@ -1188,7 +1188,7 @@ pub fn show(
     processor.shown_mode = settings.mode;
     processor.shown_metric = settings.metric;
     processor.shown_alignment = settings.alignment;
-    processor.set_heat_gradient(diff_gradient(ui.ctx()).unwrap_or(GradientPreset::Heat));
+    processor.set_heat_gradient(diff_gradient(ui.ctx()));
     processor.set_texture_sampling(settings.sampling);
     if processor.texture_channel != settings.channel {
         processor.texture_channel = settings.channel;

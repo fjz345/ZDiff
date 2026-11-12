@@ -13,14 +13,13 @@ use std::{
 use eframe::egui::{self, Sense, Stroke, pos2, vec2};
 use zcommon::ffmpeg::{FfmpegError, FfmpegPaths, run_ffmpeg, scaled_frames_args};
 use zcommon::job::{Job, JobCtx};
-use zcommon_ui::style_window::{diff_gradient, diff_gradient_picker, gradient_color, role_color};
+use zcommon_ui::style_window::{diff_gradient, diff_gradient_picker, gradient_color};
 
 use zdiff::pixel::RgbaBuffer;
 use zdiff::pixel_metric::{Alignment, PixelMetric, metric_map};
 
 use super::Likeness;
 use super::video_frames::{VideoTrack, end_time, format_time};
-use crate::ui_egui::file_role::FileRole;
 
 pub const TIMELINE_WIDTH: u32 = 160;
 const MAX_TIMELINE_HEIGHT: u32 = 4 * TIMELINE_WIDTH;
@@ -415,7 +414,6 @@ pub fn show(
         // Samples arrive from workers; keep frames coming until they are polled.
         ui.ctx().request_repaint_after(Duration::from_millis(50));
     }
-    let diff_color = role_color(ui.ctx(), FileRole::ImageDiff);
     let gradient = diff_gradient(ui.ctx());
     ui.horizontal(|ui| {
         ui.label(timeline.status_text());
@@ -452,7 +450,7 @@ pub fn show(
         let x = rect.left() + column as f32 + 0.5;
         let height = peak / scale;
         let top = rect.bottom() - (height * (rect.height() - 2.0)).max(1.0);
-        let color = gradient.map_or(diff_color, |gradient| gradient_color(gradient, height));
+        let color = gradient_color(gradient, height);
         painter.line_segment(
             [pos2(x, rect.bottom()), pos2(x, top)],
             Stroke::new(1.0_f32, color),

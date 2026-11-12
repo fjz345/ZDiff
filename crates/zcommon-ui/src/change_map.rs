@@ -100,7 +100,7 @@ pub fn change_preview_ui<K: PartialEq + Send + 'static>(
             ui.label(format!("No preview: {error}"));
         }
         Preview::Ready(map, texture) => {
-            let gradient = diff_gradient(ui.ctx()).unwrap_or(GradientPreset::Heat);
+            let gradient = diff_gradient(ui.ctx());
             map_ui(ui, map, texture, gradient);
         }
     }
