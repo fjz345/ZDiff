@@ -494,8 +494,7 @@ macro_rules! track_alloc {
     ($reg:expr, $step:expr) => {};
 }
 
-// A 4.65 MB, 135k-line pair takes ~14 MB Myers, ~28 MB IR and ~86 MB rows per option state, so
-// these keep 12 of its states; a 25k-line pair keeps all of them.
+// Keeps 12 option states of a 4.65 MB pair (~14 MB Myers, ~28 MB IR, ~86 MB rows each).
 pub const STAGE_CACHE_ENTRIES: usize = 16;
 const MYERS_CACHE_BYTES: usize = 192 << 20;
 const DIFF_IR_CACHE_BYTES: usize = 320 << 20;

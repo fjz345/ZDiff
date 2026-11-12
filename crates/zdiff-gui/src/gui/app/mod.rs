@@ -337,10 +337,10 @@ impl eframe::App for ZApp {
                             .files_for(kind, [loaded_1.clone(), loaded_2.clone()])
                     })
                 };
+                let timed = frame_stats::scope("Image");
                 // Decoding follows the first resolution, so a failed decode stays cached (and
                 // the pair stays in Hex) instead of being retried every frame. No files drops
                 // the old pair's pixels and textures.
-                let timed = frame_stats::scope("Image");
                 let [image_1, image_2] = files_for(&resolution, ViewerKind::Image);
                 state.image_processor.request(image_1, image_2);
                 state
