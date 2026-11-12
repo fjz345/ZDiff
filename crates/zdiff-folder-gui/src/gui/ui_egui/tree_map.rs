@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 
-use eframe::egui::{self, Align2, Color32, FontId, Pos2, Rect, RichText, Stroke, StrokeKind, vec2};
+use eframe::egui::{
+    self, Align2, Color32, FontId, Pos2, Rect, RichText, Stroke, StrokeKind, Vec2, vec2,
+};
 use zcommon_ui::{likeness::percent, style_window::role_color};
 use zdiff_folder::{external_diff_tool::DiffToolConfig, fs::FsNodeId};
 
@@ -354,6 +356,7 @@ pub struct LayoutParams {
     pub header: f32,
     pub pad: f32,
     pub min_side: f32,
+    pub visible: Rect,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -421,7 +424,7 @@ fn layout_entries(
     for (&child, &rect) in children[..shown].iter().zip(&rects) {
         layout_node(tree, child, rect, params, cells);
     }
-    if rest > 0 {
+    if rest > 0 && rects[shown].intersects(params.visible) {
         cells.push(MapCell {
             node: folder,
             rect: rects[shown],
@@ -437,6 +440,9 @@ fn layout_node(
     params: LayoutParams,
     cells: &mut Vec<MapCell>,
 ) {
+    if !rect.intersects(params.visible) {
+        return;
+    }
     let cell = |kind| MapCell { node, rect, kind };
     if !tree.nodes[node].is_dir {
         cells.push(cell(CellKind::File));
@@ -492,9 +498,51 @@ pub fn take_mouse_back_claim(ctx: &egui::Context) -> bool {
         .unwrap_or(false)
 }
 
+const MAX_SCALE: f32 = 256.0;
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct MapView {
+    scale: f32,
+    pan: Vec2,
+}
+
+impl Default for MapView {
+    fn default() -> Self {
+        Self {
+            scale: 1.0,
+            pan: Vec2::ZERO,
+        }
+    }
+}
+
+impl MapView {
+    fn is_fit(&self) -> bool {
+        self.scale <= 1.0
+    }
+
+    fn virtual_rect(&self, viewport: Rect) -> Rect {
+        Rect::from_min_size(viewport.min + self.pan, viewport.size() * self.scale)
+    }
+
+    fn clamped(self, viewport: Rect) -> Self {
+        let pan = self
+            .pan
+            .clamp(viewport.size() * (1.0 - self.scale), Vec2::ZERO);
+        Self { pan, ..self }
+    }
+
+    fn zoomed_about(self, pointer: Pos2, factor: f32, viewport: Rect) -> Self {
+        let scale = (self.scale * factor).clamp(1.0, MAX_SCALE);
+        let at = pointer - viewport.min;
+        let pan = at - (at - self.pan) * (scale / self.scale);
+        Self { scale, pan }.clamped(viewport)
+    }
+}
+
 #[derive(Default)]
 pub struct TreeMap {
     zoom: String,
+    view: MapView,
     tree: Option<(RowsId, MapTree)>,
     cells: Option<(LayoutKey, Vec<MapCell>)>,
 }
@@ -502,6 +550,7 @@ pub struct TreeMap {
 impl TreeMap {
     pub fn clear_zoom(&mut self) {
         self.zoom.clear();
+        self.view = MapView::default();
     }
 
     pub fn ui(&mut self, ui: &mut egui::Ui, ctx: MapCtx) {
@@ -530,6 +579,7 @@ impl TreeMap {
         let mut root = tree.resolve(rows, &self.zoom);
 
         let mut zoom = None;
+        let mut fit = false;
         ui.horizontal(|ui| {
             for (i, node) in tree.ancestors(root).into_iter().enumerate() {
                 if i > 0 {
@@ -551,28 +601,55 @@ impl TreeMap {
                     "Each box is a file sized by its larger side, colored by its diff state. \
                      Shows what the tree shows: filters and find apply.\n\
                      Click selects, double-click opens the diff, a folder click zooms in, \
-                     Backspace or mouse back zooms out.",
+                     Backspace or mouse back zooms out.\n\
+                     Scroll zooms about the pointer and drag pans; middle-click or Fit \
+                     shows the whole folder again.",
                 );
+            if !self.view.is_fit() {
+                fit = ui
+                    .small_button("Fit")
+                    .on_hover_text("Show the whole folder (middle-click, Backspace)")
+                    .clicked();
+            }
         });
         if let Some(node) = zoom {
             root = node;
+            fit = true;
         }
+
+        let (rect, response) =
+            ui.allocate_exact_size(ui.available_size(), egui::Sense::click_and_drag());
+        if fit || response.middle_clicked() {
+            self.view = MapView::default();
+        }
+        if response.dragged() {
+            self.view.pan += response.drag_delta();
+        }
+        if let Some(pointer) = response.hover_pos() {
+            let (scroll, pinch) = ui.input(|i| (i.smooth_scroll_delta.y, i.zoom_delta()));
+            let factor = (scroll / 200.0).exp() * pinch;
+            if factor != 1.0 {
+                self.view = self.view.zoomed_about(pointer, factor, rect);
+            }
+        }
+        self.view = self.view.clamped(rect);
 
         let line = ui.text_style_height(&egui::TextStyle::Small);
         let params = LayoutParams {
             header: line + 4.0,
             pad: 2.0,
             min_side: 4.0,
+            visible: rect,
         };
-        let (rect, response) = ui.allocate_exact_size(ui.available_size(), egui::Sense::click());
+        let virtual_rect = self.view.virtual_rect(rect);
         let key = LayoutKey {
             rows: rows_id,
             root,
-            rect,
+            rect: virtual_rect,
             params,
         };
         if self.cells.as_ref().is_none_or(|(built, _)| *built != key) {
-            self.cells = Some((key, layout(tree, root, rect, params)));
+            self.cells = Some((key, layout(tree, root, virtual_rect, params)));
         }
         let cells = &self.cells.as_ref().expect("laid out above").1;
 
@@ -631,10 +708,15 @@ impl TreeMap {
         let back = (!keyboard_taken && ui.input(|i| i.key_pressed(egui::Key::Backspace)))
             || (response.hovered()
                 && ui.input(|i| i.pointer.button_clicked(egui::PointerButton::Extra1)));
-        let claims_back = response.hovered() && root != ROOT;
+        let claims_back = response.hovered() && (root != ROOT || !self.view.is_fit());
         ui.data_mut(|d| d.insert_temp(mouse_back_claim_id(), claims_back));
-        if back && root != ROOT {
-            zoom = Some(tree.nodes[root].parent);
+        if back {
+            if !self.view.is_fit() {
+                self.view = MapView::default();
+                ui.ctx().request_repaint();
+            } else if root != ROOT {
+                zoom = Some(tree.nodes[root].parent);
+            }
         }
         if let Some(i) = hovered {
             let views = [file_system_1_view.as_ref(), file_system_2_view.as_ref()];
@@ -643,6 +725,7 @@ impl TreeMap {
 
         if let Some(node) = zoom {
             self.zoom = tree.path(rows, node).to_owned();
+            self.view = MapView::default();
             ui.ctx().request_repaint();
         }
         let mut request = |request: CursorRequest| {
@@ -1101,6 +1184,7 @@ mod tests {
         header: 16.0,
         pad: 2.0,
         min_side: 4.0,
+        visible: Rect::EVERYTHING,
     };
 
     #[test]
@@ -1165,6 +1249,82 @@ mod tests {
         let a_cell = cells.iter().find(|c| c.node == a).unwrap();
         assert_eq!(a_cell.kind, CellKind::Closed);
         assert!(cells.iter().all(|c| tree.nodes[c.node].parent != a));
+    }
+
+    #[test]
+    fn layout_culled_to_a_visible_rect_keeps_exactly_the_cells_touching_it() {
+        let mut rows = nested_rows();
+        let mut sizes: HashMap<String, [u64; 2]> =
+            SIZES.iter().map(|(p, s)| (p.to_string(), *s)).collect();
+        for i in 0..200 {
+            let path = format!("a/b/n_{i:03}");
+            sizes.insert(path.clone(), [1 << (i % 20), 3]);
+            rows.push(file(&path, DiffState::Same(i, i)));
+        }
+        let tree = MapTree::build(&rows, |row| {
+            sizes.get(&row.rel_path).copied().unwrap_or_default()
+        });
+        let rect = Rect::from_min_size(pos2(-900.0, -300.0), vec2(4000.0, 3000.0));
+        let full = layout(&tree, ROOT, rect, PARAMS);
+        assert!(full.iter().any(|c| matches!(c.kind, CellKind::Rest { .. })));
+        for visible in [
+            Rect::from_min_size(pos2(10.0, 20.0), vec2(800.0, 600.0)),
+            Rect::from_min_size(pos2(2500.3, 1200.7), vec2(37.0, 900.0)),
+            Rect::from_min_size(pos2(-5000.0, -5000.0), vec2(10.0, 10.0)),
+        ] {
+            let culled = layout(&tree, ROOT, rect, LayoutParams { visible, ..PARAMS });
+            let touching: Vec<_> = full
+                .iter()
+                .copied()
+                .filter(|cell| cell.rect.intersects(visible))
+                .collect();
+            assert_eq!(culled, touching, "{visible:?}");
+        }
+    }
+
+    #[test]
+    fn map_view_zooms_about_the_pointer_and_always_covers_the_viewport() {
+        let viewport = Rect::from_min_size(pos2(10.0, 30.0), vec2(800.0, 500.0));
+        let fraction = |view: MapView, at: Pos2| {
+            let shown = view.virtual_rect(viewport);
+            (at - shown.min) / shown.size()
+        };
+        let covers = |view: MapView, viewport: Rect| {
+            view.virtual_rect(viewport)
+                .expand(1e-3)
+                .contains_rect(viewport)
+        };
+        let pointers = [
+            viewport.center(),
+            viewport.min,
+            viewport.max,
+            pos2(100.0, 400.0),
+            pos2(790.0, 40.0),
+        ];
+        for at in pointers {
+            let mut view = MapView::default();
+            for factor in [1.5, 3.0, 10.0, 0.7] {
+                let before = fraction(view, at);
+                view = view.zoomed_about(at, factor, viewport);
+                assert!(
+                    (fraction(view, at) - before).length() < 1e-4,
+                    "{at:?} x{factor}"
+                );
+                assert!(covers(view, viewport), "{at:?} x{factor}: {view:?}");
+            }
+            assert_eq!(view.zoomed_about(at, 1e9, viewport).scale, MAX_SCALE);
+            let out = view.zoomed_about(at, 0.5, viewport);
+            assert!(covers(out, viewport), "{at:?}: {out:?}");
+            assert_eq!(view.zoomed_about(at, 1e-9, viewport), MapView::default());
+
+            let smaller = Rect::from_min_size(viewport.min, viewport.size() * 0.3);
+            let larger = Rect::from_min_size(viewport.min, viewport.size() * 2.0);
+            for resized in [smaller, larger] {
+                let kept = view.clamped(resized);
+                assert_eq!(kept.scale, view.scale);
+                assert!(covers(kept, resized), "{at:?}: {kept:?} in {resized:?}");
+            }
+        }
     }
 
     struct MapHarness {
@@ -1262,35 +1422,100 @@ mod tests {
             });
         }
 
+        fn cells(&self) -> &[MapCell] {
+            &self.map.cells.as_ref().unwrap().1
+        }
+
+        fn viewport(&self) -> Rect {
+            self.map.cells.as_ref().unwrap().0.params.visible
+        }
+
+        fn path_at(&self, pos: Pos2) -> &str {
+            let tree = &self.map.tree.as_ref().unwrap().1;
+            let cell = self.cells()[cell_at(self.cells(), pos).unwrap()];
+            tree.path(&self.rows, cell.node)
+        }
+
         fn point_on(&self, path: &str) -> Pos2 {
             let tree = &self.map.tree.as_ref().unwrap().1;
-            let cells = &self.map.cells.as_ref().unwrap().1;
-            let cell = cells
+            let cell = self
+                .cells()
                 .iter()
                 .find(|cell| {
                     !matches!(cell.kind, CellKind::Rest { .. })
                         && tree.path(&self.rows, cell.node) == path
                 })
                 .unwrap_or_else(|| panic!("no cell for {path}"));
+            let shown = cell.rect.intersect(self.viewport());
             match cell.kind {
-                CellKind::Folder { .. } => pos2(cell.rect.center().x, cell.rect.top() + 1.0),
-                _ => cell.rect.center(),
+                CellKind::Folder { .. } => pos2(shown.center().x, cell.rect.top() + 1.0),
+                _ => shown.center(),
             }
         }
 
-        fn clicks(&mut self, path: &str, count: usize) {
-            let pos = self.point_on(path);
-            let button = |pressed| egui::Event::PointerButton {
+        fn clicks_at(&mut self, pos: Pos2, button: egui::PointerButton, count: usize) {
+            let event = |pressed| egui::Event::PointerButton {
                 pos,
-                button: egui::PointerButton::Primary,
+                button,
                 pressed,
                 modifiers: egui::Modifiers::NONE,
             };
             self.frame(vec![egui::Event::PointerMoved(pos)]);
             for _ in 0..count {
-                self.frame(vec![button(true)]);
-                self.frame(vec![button(false)]);
+                self.frame(vec![event(true)]);
+                self.frame(vec![event(false)]);
             }
+            self.frame(Vec::new());
+        }
+
+        fn clicks(&mut self, path: &str, count: usize) {
+            let pos = self.point_on(path);
+            self.clicks_at(pos, egui::PointerButton::Primary, count);
+        }
+
+        fn zoom_at(&mut self, pos: Pos2, factor: f32) {
+            self.frame(vec![egui::Event::PointerMoved(pos)]);
+            self.frame(vec![egui::Event::Zoom(factor)]);
+        }
+
+        fn wheel_at(&mut self, pos: Pos2, delta: f32) {
+            self.frame(vec![egui::Event::PointerMoved(pos)]);
+            self.frame(vec![egui::Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Point,
+                delta: vec2(0.0, delta),
+                modifiers: egui::Modifiers::NONE,
+            }]);
+            for _ in 0..10 {
+                self.frame(Vec::new());
+            }
+        }
+
+        fn drag(&mut self, from: Pos2, by: Vec2) {
+            let event = |pos, pressed| egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::NONE,
+            };
+            self.frame(vec![egui::Event::PointerMoved(from)]);
+            self.frame(vec![event(from, true)]);
+            for step in 1..=4 {
+                self.frame(vec![egui::Event::PointerMoved(
+                    from + by * step as f32 / 4.0,
+                )]);
+            }
+            self.frame(vec![event(from + by, false)]);
+            self.frame(Vec::new());
+        }
+
+        fn backspace(&mut self) {
+            self.frame(vec![egui::Event::Key {
+                key: egui::Key::Backspace,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            }]);
             self.frame(Vec::new());
         }
 
@@ -1415,5 +1640,88 @@ mod tests {
         assert_eq!(map.cursor, TreeCursor::at("big.bin"));
         let error = map.message.and_then(|message| message.error).unwrap();
         assert!(error.contains("diffing failed"), "{error}");
+    }
+
+    #[test]
+    fn scrolling_zooms_in_until_merged_entries_become_boxes_and_back_out_to_fit() {
+        let names: Vec<String> = (0..200).map(|i| format!("tiny_{i:03}")).collect();
+        let mut files = vec![("huge.bin", 50_000)];
+        files.extend(names.iter().map(|name| (name.as_str(), 1)));
+        let mut map = MapHarness::new(&files);
+        map.frame(Vec::new());
+        let rest = map
+            .cells()
+            .iter()
+            .find(|cell| matches!(cell.kind, CellKind::Rest { .. }))
+            .expect("tiny files merged at fit")
+            .rect
+            .center();
+
+        map.wheel_at(rest, 300.0);
+        assert!(map.map.view.scale > 4.0, "{:?}", map.map.view);
+        assert!(
+            map.path_at(rest).starts_with("tiny_"),
+            "{}",
+            map.path_at(rest)
+        );
+        assert!(
+            map.cells()
+                .iter()
+                .all(|cell| !matches!(cell.kind, CellKind::Rest { .. }))
+        );
+
+        map.wheel_at(rest, -3000.0);
+        assert_eq!(map.map.view, MapView::default());
+        assert!(
+            map.cells()
+                .iter()
+                .any(|cell| matches!(cell.kind, CellKind::Rest { .. }))
+        );
+    }
+
+    #[test]
+    fn a_zoomed_map_pans_on_drag_and_fits_on_middle_click_backspace_and_folder_click() {
+        let mut map = MapHarness::new(&[("a/x.txt", 3000), ("a/y.txt", 1000), ("b.bin", 5000)]);
+        map.frame(Vec::new());
+        let center = map.viewport().center();
+        let at_center = map.path_at(center).to_owned();
+
+        map.zoom_at(center, 2.0);
+        let zoomed = map.map.view;
+        assert_eq!(zoomed.scale, 2.0);
+        assert_eq!(map.path_at(center), at_center);
+        map.drag(center, vec2(-40.0, 0.0));
+        assert!(map.map.view.pan.x < zoomed.pan.x, "{:?}", map.map.view);
+        assert_eq!(map.map.view.pan.y, zoomed.pan.y);
+        assert_eq!(map.cursor, TreeCursor::default());
+        assert_eq!(map.map.zoom, "");
+        assert_eq!(map.message, None);
+
+        map.click("b.bin");
+        assert_eq!(map.cursor, TreeCursor::at("b.bin"));
+        assert_eq!(map.map.view.scale, 2.0);
+        assert!(take_mouse_back_claim(&map.ctx));
+
+        map.clicks_at(center, egui::PointerButton::Middle, 1);
+        assert_eq!(map.map.view, MapView::default());
+
+        map.zoom_at(center, 2.0);
+        map.backspace();
+        assert_eq!(map.map.view, MapView::default());
+        assert_eq!(map.map.zoom, "");
+
+        let header = map.point_on("a");
+        map.zoom_at(header, 2.0);
+        assert_eq!(map.map.view.scale, 2.0);
+        map.clicks_at(header, egui::PointerButton::Primary, 1);
+        assert_eq!(map.map.zoom, "a");
+        assert_eq!(map.map.view, MapView::default());
+
+        map.zoom_at(center, 3.0);
+        map.backspace();
+        assert_eq!(map.map.zoom, "a");
+        assert_eq!(map.map.view, MapView::default());
+        map.backspace();
+        assert_eq!(map.map.zoom, "");
     }
 }
