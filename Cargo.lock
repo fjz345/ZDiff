@@ -5187,7 +5187,7 @@ dependencies = [
 
 [[package]]
 name = "zdiff-folder-gui"
-version = "2.0.1"
+version = "2.1.0"
 dependencies = [
  "color-backtrace",
  "eframe",
@@ -5207,7 +5207,7 @@ dependencies = [
 
 [[package]]
 name = "zdiff-gui"
-version = "2.0.1"
+version = "2.1.0"
 dependencies = [
  "color-backtrace",
  "eframe",
