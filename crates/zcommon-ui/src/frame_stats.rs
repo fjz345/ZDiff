@@ -418,18 +418,20 @@ pub fn fps_label(ui: &mut egui::Ui, stats: &FrameStats, show_breakdown: &mut boo
     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
         let mut clicked = false;
         if let Some(fps) = stats.fps {
-            let label = egui::Label::new(
-                egui::RichText::new(format!("{fps:.0} fps"))
-                    .monospace()
-                    .weak(),
-            )
-            .sense(egui::Sense::click())
-            .truncate();
+            let text = match stats.repaint_rate {
+                Some(rate) => format!("{fps:.0} fps ({rate:.0})"),
+                None => format!("{fps:.0} fps"),
+            };
+            let label = egui::Label::new(egui::RichText::new(text).monospace().weak())
+                .sense(egui::Sense::click())
+                .truncate();
             clicked |= ui
                 .add(label)
                 .on_hover_text(format!(
                     "1 / average CPU time per frame over the last {SAMPLES} frames, \
-                     vsync wait excluded. Click for the frame time breakdown."
+                     vsync wait excluded.\n\
+                     In parentheses: frames actually started in the last second (follows input).\n\
+                     Click for the frame time breakdown."
                 ))
                 .clicked();
         }
@@ -460,13 +462,21 @@ fn idle_tag(ui: &mut egui::Ui) -> egui::Response {
 
 pub fn breakdown_window(ctx: &egui::Context, stats: &FrameStats, open: &mut bool) {
     let _scope = scope("Frame time window");
+    // egui clamps a window's height to this rect without the content frame's margin and stroke.
+    let mut constrain = ctx.content_rect();
+    constrain.max.y -= egui::Frame::window(&ctx.style()).total_margin().sum().y;
     egui::Window::new("Frame Time")
         .open(open)
         .resizable(false)
         .collapsible(false)
+        .constrain_to(constrain)
+        // The scroll area is capped at this height, which the window clamps to the screen.
+        .resize(|resize| resize.default_height(f32::INFINITY))
         .pivot(egui::Align2::RIGHT_TOP)
         .default_pos(ctx.content_rect().right_top() + egui::vec2(-8.0, 32.0))
-        .show(ctx, |ui| breakdown_ui(ui, stats));
+        .show(ctx, |ui| {
+            egui::ScrollArea::vertical().show(ui, |ui| breakdown_ui(ui, stats));
+        });
 }
 
 fn breakdown_ui(ui: &mut egui::Ui, stats: &FrameStats) {

@@ -3346,7 +3346,7 @@ mod tests {
         fn steady_texts(&self) -> Vec<&(String, egui::Pos2)> {
             self.texts
                 .iter()
-                .filter(|(text, _)| !text.is_empty() && !text.ends_with(" fps") && text != "idle")
+                .filter(|(text, _)| !text.is_empty() && !text.contains(" fps") && text != "idle")
                 .collect()
         }
     }

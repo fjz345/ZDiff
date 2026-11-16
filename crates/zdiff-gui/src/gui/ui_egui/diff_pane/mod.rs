@@ -10,6 +10,7 @@ mod patch;
 mod path_bar;
 mod pins;
 mod row;
+mod scope_bar;
 mod toolbar;
 mod trace;
 mod ui;
@@ -29,6 +30,7 @@ use patch::*;
 use path_bar::*;
 use pins::*;
 use row::*;
+use scope_bar::*;
 use toolbar::*;
 use trace::*;
 use unified::*;
@@ -178,6 +180,8 @@ pub struct FileDiffPaneCtx<'a> {
     pub revert_request: &'a mut Option<RevertRequest>,
     /// `RowBlock::key` of the block whose button was clicked, and what the button asks for.
     pub block_toggle_request: &'a mut Option<(usize, BlockToggle)>,
+    pub scope_breadcrumb: bool,
+    pub reveal_line_request: &'a mut Option<(ActiveSide, usize)>,
     /// Set when the pair resolved to the Hex viewer; the table then shows hex rows.
     pub hex_view: Option<HexViewCtx<'a>>,
     /// Set when the pair resolved to the Hex viewer. In Strings mode the table shows the text diff
@@ -231,6 +235,8 @@ pub struct FileDiffPane {
     unified: RowsMemo<Arc<UnifiedView>>,
     #[serde(skip)]
     patch: PatchCache,
+    #[serde(skip)]
+    scopes: ScopeCache,
 }
 
 const UPDATING_TEXT: &str = "Updating...";
@@ -263,6 +269,7 @@ impl FileDiffPane {
             center_layout: None,
             unified: RowsMemo::default(),
             patch: PatchCache::default(),
+            scopes: ScopeCache::default(),
         }
     }
 

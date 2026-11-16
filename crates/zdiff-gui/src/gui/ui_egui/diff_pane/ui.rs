@@ -97,6 +97,7 @@ impl FileDiffPane {
         let split = &mut self.split;
         let header_height = &mut self.header_height;
         let center_layout_cache = &mut self.center_layout;
+        let scope_cache = &mut self.scopes;
         let mono_font = egui::TextStyle::Monospace.resolve(ui.style());
         let egui_ctx = ui.ctx().clone();
         let keymap = ctx.keymap;
@@ -395,6 +396,8 @@ impl FileDiffPane {
             !other_viewer && !patch && !do_not_render_diff && diff_rows_len > 0
         };
         let ruler_id = egui::Id::new("file_diff_ruler");
+        let scope_bar_id = egui::Id::new("file_diff_scope_bar");
+        let bar_layout = BarLayout::of(ctx.scope_breadcrumb);
 
         let mut side_rects = [egui::Rect::NOTHING; 2];
         let mut header_rects = [egui::Rect::NOTHING; 2];
@@ -631,6 +634,9 @@ impl FileDiffPane {
                                 || side_viewers.is_some()
                                 || patch
                                 || do_not_render_diff;
+                            let scope_diff = ctx.diff_ctx.filter(|_| {
+                                unified.is_none() && !header_only && ctx.hex_view.is_none() && !strings
+                            });
                             let mut offsets = [
                                 *ctx.scroll_left,
                                 if unified.is_some() { 0.0 } else { *ctx.scroll_right },
@@ -694,8 +700,21 @@ impl FileDiffPane {
                                 text_rows(heights, row_height, count)
                             };
 
+                            let scope_jump = ui.data_mut(|d| d.remove_temp::<(usize, usize)>(scope_bar_id));
+                            let scope_jump_offset = scope_jump.and_then(|(side, line)| {
+                                let diff_ctx = scope_diff?;
+                                let file = [&diff_ctx.input.file_1, &diff_ctx.input.file_2][side].as_ref()?;
+                                let file_rows = &diff_ctx.precomputed_file_rows;
+                                let line_rows = [&file_rows.0, &file_rows.1][side];
+                                let row = shown_row(&diff_ctx.diff_rows, line_rows, side, line)?;
+                                let scopes = scope_cache.scopes(side, file);
+                                let top = row_top(&rows, ruler_tops, row);
+                                Some(jump_offset(&scopes, line, top, bar_layout, row_height))
+                            });
                             let ruler_row = ui.data_mut(|d| d.remove_temp::<usize>(ruler_id.with("scroll_to")));
-                            if let Some(row) = ruler_row {
+                            if let Some(offset) = scope_jump_offset {
+                                table = table.vertical_scroll_offset(offset);
+                            } else if let Some(row) = ruler_row {
                                 table = table.scroll_to_row(row, Some(egui::Align::Center));
                             } else if let Some(span) = ctx.scroll_to_row_span {
                                 log::trace!("scroll_to_row_span: {:?}", span);
@@ -1025,6 +1044,38 @@ impl FileDiffPane {
                                 table.show(&mut table_ui, *header_height, header, rows, cell);
                             drop(timed);
                             ui.advance_cursor_after_rect(rect);
+                            if let Some(diff_ctx) = scope_diff {
+                                let _timed = zcommon_ui::frame_stats::scope("Scope bar");
+                                let look = BarLook {
+                                    row_height,
+                                    font: mono_font.clone(),
+                                };
+                                for side in 0..2 {
+                                    let Some(file) = [&diff_ctx.input.file_1, &diff_ctx.input.file_2][side].as_ref() else {
+                                        continue;
+                                    };
+                                    let scopes = scope_cache.scopes(side, file);
+                                    let line_below_bar = |bar_rows: usize| {
+                                        let y = output.scroll_offset + bar_rows as f32 * row_height;
+                                        let row = row_at(&ruler_rows, ruler_tops, y) as usize;
+                                        line_near(&diff_ctx.diff_rows, side, row)
+                                    };
+                                    let chain = bar_scopes(&scopes, bar_layout, line_below_bar);
+                                    let rect = output.side_rects[shown[side]];
+                                    let id = scope_bar_id.with(side);
+                                    let clicked = scope_bar::show(ui, id, rect, &chain, &file.contents, bar_layout, &look);
+                                    if let Some(line) = clicked {
+                                        let file_rows = &diff_ctx.precomputed_file_rows;
+                                        let line_rows = [&file_rows.0, &file_rows.1][side];
+                                        if shown_row(&diff_ctx.diff_rows, line_rows, side, line).is_none() {
+                                            let active = [ActiveSide::Left, ActiveSide::Right][side];
+                                            *ctx.reveal_line_request = Some((active, line));
+                                        }
+                                        ui.data_mut(|d| d.insert_temp(scope_bar_id, (side, line)));
+                                        ui.ctx().request_repaint();
+                                    }
+                                }
+                            }
                             let ruler_spans = match (show_ruler, &ctx.hex_view, ctx.diff_ctx) {
                                 (false, _, _) => None,
                                 (true, Some(hex_view), _) => Some(hex_view.change_spans),

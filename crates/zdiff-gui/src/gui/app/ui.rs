@@ -46,6 +46,7 @@ impl ZApp {
                 h_scroll_modifier,
                 center_jumps,
                 word_wrap,
+                scope_breadcrumb,
                 text_mode,
                 text_likeness,
                 sides_swapped,
@@ -137,6 +138,7 @@ impl ZApp {
                     h_scroll_modifier,
                     h_scroll_linked,
                     center_jumps,
+                    scope_breadcrumb,
                     text_diff_shown,
                 },
             );
@@ -261,6 +263,7 @@ impl ZApp {
                 None => [&[][..]; 2],
             };
             let mut block_toggle_request = None;
+            let mut reveal_line_request = None;
             let mut toggle_all_request = false;
             let mut behavior = TreeBehavior {
                 ctx_file_diff: FileDiffPaneCtx {
@@ -321,6 +324,8 @@ impl ZApp {
                     code_language,
                     revert_request: &mut None,
                     block_toggle_request: &mut block_toggle_request,
+                    scope_breadcrumb: *scope_breadcrumb,
+                    reveal_line_request: &mut reveal_line_request,
                     toggle_all_held: toggle_all.is_held(),
                     toggle_all_request: &mut toggle_all_request,
                     hex_view: hex_bytes.then(|| hex_processor.view_ctx()),
@@ -559,6 +564,10 @@ impl ZApp {
             diff_processor.conflict_cursor = clone_conflict;
             if let Some((key, toggle)) = block_toggle_request {
                 diff_processor.toggle_block(key, toggle);
+                ctx.request_repaint();
+            }
+            if let Some((side, line)) = reveal_line_request {
+                diff_processor.reveal_line(side, line);
                 ctx.request_repaint();
             }
             if toggle_all_request {

@@ -10,6 +10,7 @@ pub mod ignore;
 pub mod lexer;
 pub mod merge;
 pub mod myers;
+pub mod nesting;
 pub mod pixel;
 pub mod pixel_metric;
 pub mod row_text;

@@ -124,6 +124,8 @@ pub struct AppStateCtx {
     #[cfg_attr(feature = "serde", serde(default))]
     pub word_wrap: bool,
     #[cfg_attr(feature = "serde", serde(default))]
+    pub scope_breadcrumb: bool,
+    #[cfg_attr(feature = "serde", serde(default))]
     pub text_mode: TextMode,
     #[cfg_attr(feature = "serde", serde(default))]
     pub text_likeness: TextMetric,
@@ -190,6 +192,7 @@ impl Default for AppStateCtx {
             h_scroll_modifier: WheelModifier::Shift,
             center_jumps: default_center_jumps(),
             word_wrap: false,
+            scope_breadcrumb: false,
             text_mode: Default::default(),
             text_likeness: Default::default(),
             sides_swapped: false,

@@ -34,8 +34,6 @@ cargo run -p zdiff-folder-gui
 Build `zdiff-gui` before `zdiff-folder-gui`: zdiff-folder-gui's build script bakes in the path to `zdiff-gui.exe` as the default external diff tool. The audio and video viewers need ffmpeg (`cargo xtask fetch-ffmpeg`).
 
 # Todo
-* Folder view resets every so often on large folders: rebuilds after a compare, filter or sort now keep the top row in place, and non-UTF-8 names no longer abort the app. The original trigger is unconfirmed; check whether it still happens.
-* Mouse moves still cost one full frame each (frames are about 25% cheaper in both apps, idle CPU is 0%). Re-measure the ~2% CPU while moving the mouse and the "string diff view" window-move case in a release build.
 
 ---
 

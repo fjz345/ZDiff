@@ -41,6 +41,7 @@ pub(super) struct MenuCtx<'a> {
     pub h_scroll_modifier: &'a mut WheelModifier,
     pub h_scroll_linked: &'a mut bool,
     pub center_jumps: &'a mut bool,
+    pub scope_breadcrumb: &'a mut bool,
     pub text_diff_shown: bool,
 }
 
@@ -66,6 +67,7 @@ impl ZApp {
             h_scroll_modifier,
             h_scroll_linked,
             center_jumps,
+            scope_breadcrumb,
             text_diff_shown,
         } = menu_ctx;
         let keymap = &keybindings.keymap;
@@ -231,6 +233,11 @@ impl ZApp {
                             "Go to line, next/previous difference and find put their target \
                              in the middle of the view; off puts it at the top",
                         );
+                        ui.checkbox(scope_breadcrumb, "Scope Bar as Breadcrumb")
+                            .on_hover_text(
+                                "The scopes the top line is in show as one row of names; off shows \
+                             each scope's first line as its own row",
+                            );
                         if menu_item(ui, "P4Config", keymap, FileAction::OpenUniversalPath)
                             .clicked()
                         {

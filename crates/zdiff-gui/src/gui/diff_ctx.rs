@@ -1604,6 +1604,28 @@ impl DiffProcessor {
         self.set_block_revealed_from(key, Some(from));
     }
 
+    pub fn reveal_line(&mut self, side: ActiveSide, line: usize) {
+        let Some(ctx) = self.get_minimal_diff_ctx() else {
+            log::warn!("No diff shown to reveal line {} in", line + 1);
+            return;
+        };
+        let holds_line = |row: &DiffRow| {
+            let content = match side {
+                ActiveSide::Left => &row.left,
+                ActiveSide::Right => &row.right,
+            };
+            matches!(content, LineContent::Code { line_num, .. } if *line_num as usize == line + 1)
+        };
+        let found = ctx.collapsed_blocks.iter().find_map(|block| {
+            let index = block.hidden.iter().position(holds_line)?;
+            Some((block.row, index))
+        });
+        match found {
+            Some((key, index)) => self.set_block_revealed_from(key, Some(index)),
+            None => log::error!("Line {} of the {side:?} side is in no collapsed block", line + 1),
+        }
+    }
+
     /// Reveals the block's hidden rows from index `from` down, or none of them. Row indices held
     /// across frames (find hits, highlights, the last scroll targets) follow their rows, so the
     /// view doesn't jump.
@@ -3320,6 +3342,26 @@ mod tests {
                     load(&UniversalPath::from(path))
                 };
                 (write("left.rs", false), write("right.rs", true))
+            }
+
+            #[test]
+            fn revealing_a_hidden_line_expands_its_block_from_that_line_down() {
+                let dir = tempfile::tempdir().unwrap();
+                let pair = gap_pair(dir.path());
+                let (mut processor, collapsed) = opened(&diff_only(&pair, 2));
+                let key = only_block(&collapsed);
+
+                processor.reveal_line(ActiveSide::Right, 8);
+                let ctx = processor.get_minimal_diff_ctx().expect("diff still shown");
+
+                assert_eq!(collapsed_rows(&ctx.diff_rows), vec![key]);
+                let shown: Vec<_> = ctx.diff_rows[key + 1..key + 8]
+                    .iter()
+                    .map(line_nums)
+                    .collect();
+                let expected: Vec<_> = (9..=15).map(|n| (n, n)).collect();
+                assert_eq!(shown, expected);
+                assert_eq!(ctx.precomputed_file_rows.1[8], key + 1);
             }
 
             #[test]
