@@ -5159,7 +5159,7 @@ dependencies = [
 
 [[package]]
 name = "zdiff"
-version = "2.0.1"
+version = "2.1.0"
 dependencies = [
  "log",
  "rayon",
@@ -5171,7 +5171,7 @@ dependencies = [
 
 [[package]]
 name = "zdiff-folder"
-version = "2.0.1"
+version = "2.1.0"
 dependencies = [
  "image",
  "log",
