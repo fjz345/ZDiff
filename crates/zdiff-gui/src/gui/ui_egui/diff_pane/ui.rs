@@ -427,6 +427,7 @@ impl FileDiffPane {
                             let button_padding = ui.spacing().button_padding.x;
                             let center = CenterLayout {
                                 toggles: ctx.diff_ctx.is_some_and(|d| !d.row_blocks.is_empty()),
+                                reverts: ctx.revert_buttons,
                                 ..center_layout(
                                     center_layout_cache,
                                     &mono_font,
@@ -979,7 +980,7 @@ impl FileDiffPane {
                                                     let [expand_slot, toggle_slot, left_slot, symbol_slot, right_slot] =
                                                         center.slots(ui.max_rect(), ui.spacing().interact_size.y);
                                                     let diff_ctx = ctx.diff_ctx;
-                                                    let hunk = diff_ctx.filter(|_| !strings).and_then(|d| {
+                                                    let hunk = diff_ctx.filter(|_| center.reverts && !strings).and_then(|d| {
                                                         revert::hunk_starting_at(&d.precomputed_diffs, row_index)
                                                             .map(|hunk| (d, hunk))
                                                     });

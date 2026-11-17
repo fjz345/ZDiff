@@ -125,6 +125,8 @@ pub struct AppStateCtx {
     pub word_wrap: bool,
     #[cfg_attr(feature = "serde", serde(default))]
     pub scope_breadcrumb: bool,
+    #[cfg_attr(feature = "serde", serde(default = "default_revert_buttons"))]
+    pub revert_buttons: bool,
     #[cfg_attr(feature = "serde", serde(default))]
     pub text_mode: TextMode,
     #[cfg_attr(feature = "serde", serde(default))]
@@ -151,6 +153,10 @@ fn default_h_scroll_linked() -> bool {
 }
 
 fn default_center_jumps() -> bool {
+    true
+}
+
+fn default_revert_buttons() -> bool {
     true
 }
 
@@ -193,6 +199,7 @@ impl Default for AppStateCtx {
             center_jumps: default_center_jumps(),
             word_wrap: false,
             scope_breadcrumb: false,
+            revert_buttons: default_revert_buttons(),
             text_mode: Default::default(),
             text_likeness: Default::default(),
             sides_swapped: false,
@@ -566,6 +573,30 @@ mod tests {
             .unwrap();
         let restored: AppStateCtx = serde_json::from_value(json).unwrap();
         assert!(restored.center_jumps);
+    }
+
+    #[test]
+    fn revert_buttons_default_shown_and_survive_a_restart() {
+        assert!(AppStateCtx::default().revert_buttons);
+
+        let ctx = AppStateCtx {
+            revert_buttons: false,
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&ctx).unwrap();
+        let restored: AppStateCtx = serde_json::from_str(&json).unwrap();
+        assert!(!restored.revert_buttons);
+    }
+
+    #[test]
+    fn a_save_without_the_revert_buttons_setting_shows_them() {
+        let mut json = serde_json::to_value(AppStateCtx::default()).unwrap();
+        json.as_object_mut()
+            .unwrap()
+            .remove("revert_buttons")
+            .unwrap();
+        let restored: AppStateCtx = serde_json::from_value(json).unwrap();
+        assert!(restored.revert_buttons);
     }
 
     #[test]

@@ -47,6 +47,7 @@ impl ZApp {
                 center_jumps,
                 word_wrap,
                 scope_breadcrumb,
+                revert_buttons,
                 text_mode,
                 text_likeness,
                 sides_swapped,
@@ -139,6 +140,7 @@ impl ZApp {
                     h_scroll_linked,
                     center_jumps,
                     scope_breadcrumb,
+                    revert_buttons,
                     text_diff_shown,
                 },
             );
@@ -325,6 +327,7 @@ impl ZApp {
                     revert_request: &mut None,
                     block_toggle_request: &mut block_toggle_request,
                     scope_breadcrumb: *scope_breadcrumb,
+                    revert_buttons: *revert_buttons,
                     reveal_line_request: &mut reveal_line_request,
                     toggle_all_held: toggle_all.is_held(),
                     toggle_all_request: &mut toggle_all_request,

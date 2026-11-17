@@ -47,6 +47,7 @@ pub(super) struct CenterLayout {
     pub(super) button: f32,
     pub(super) symbol: f32,
     pub(super) toggles: bool,
+    pub(super) reverts: bool,
 }
 
 impl CenterLayout {
@@ -56,23 +57,24 @@ impl CenterLayout {
             button: widest(&['+', '{', '-', '<', '>']) + 2.0 * button_padding,
             symbol: widest(&['≠', '-', '+']),
             toggles: true,
+            reverts: true,
         }
     }
 
     pub(super) fn width(self) -> f32 {
-        let buttons = if self.toggles { 4.0 } else { 2.0 };
+        let buttons = f32::from(2 * (u8::from(self.toggles) + u8::from(self.reverts)));
         buttons * self.button + self.symbol + buttons * CENTER_GAP
     }
 
     /// Expand, scope or collapse, revert-left, symbol, revert-right; at most `height` tall,
-    /// centered in `cell`. Without toggles the first two are empty and take no room.
+    /// centered in `cell`. Absent toggles or reverts are empty and take no room.
     pub(super) fn slots(self, cell: egui::Rect, height: f32) -> [egui::Rect; 5] {
         let half = height.min(cell.height()) / 2.0;
         let y = egui::Rangef::new(cell.center().y - half, cell.center().y + half);
         let mut left = cell.left();
-        let button = self.button;
-        let toggle = if self.toggles { button } else { 0.0 };
-        [toggle, toggle, button, self.symbol, button].map(|width| {
+        let toggle = if self.toggles { self.button } else { 0.0 };
+        let revert = if self.reverts { self.button } else { 0.0 };
+        [toggle, toggle, revert, self.symbol, revert].map(|width| {
             let slot = egui::Rect::from_x_y_ranges(left..=left + width, y);
             if width > 0.0 {
                 left += width + CENTER_GAP;
@@ -167,6 +169,7 @@ mod tests {
                         button: size,
                         symbol: size,
                         toggles: true,
+                        reverts: true,
                     }
                 },
             );
@@ -182,7 +185,8 @@ mod tests {
             CenterLayout {
                 button: 15.0,
                 symbol: 9.0,
-                toggles: true
+                toggles: true,
+                reverts: true
             }
         );
         assert_eq!(layout.width(), 4.0 * 15.0 + 9.0 + 4.0 * CENTER_GAP);
@@ -194,6 +198,7 @@ mod tests {
             button: 15.0,
             symbol: 9.0,
             toggles: true,
+            reverts: true,
         };
         let cell =
             egui::Rect::from_min_size(egui::pos2(100.0, 40.0), egui::vec2(layout.width(), 14.0));
@@ -216,6 +221,7 @@ mod tests {
             button: 15.0,
             symbol: 9.0,
             toggles: false,
+            reverts: true,
         };
         assert_eq!(layout.width(), 2.0 * 15.0 + 9.0 + 2.0 * CENTER_GAP);
 
@@ -232,11 +238,54 @@ mod tests {
     }
 
     #[test]
+    fn center_without_revert_buttons_has_only_block_toggles_and_symbol() {
+        let layout = CenterLayout {
+            button: 15.0,
+            symbol: 9.0,
+            toggles: true,
+            reverts: false,
+        };
+        assert_eq!(layout.width(), 2.0 * 15.0 + 9.0 + 2.0 * CENTER_GAP);
+
+        let cell =
+            egui::Rect::from_min_size(egui::pos2(100.0, 40.0), egui::vec2(layout.width(), 14.0));
+        let [expand, toggle, left, symbol, right] = layout.slots(cell, 18.0);
+
+        assert_eq!(left.width(), 0.0);
+        assert_eq!(right.width(), 0.0);
+        assert_eq!(expand.left(), cell.left());
+        assert_eq!(toggle.left() - expand.right(), CENTER_GAP);
+        assert_eq!(symbol.left() - toggle.right(), CENTER_GAP);
+        assert_eq!(symbol.right(), cell.right());
+    }
+
+    #[test]
+    fn center_without_any_buttons_is_just_the_symbol() {
+        let layout = CenterLayout {
+            button: 15.0,
+            symbol: 9.0,
+            toggles: false,
+            reverts: false,
+        };
+        assert_eq!(layout.width(), 9.0);
+
+        let cell =
+            egui::Rect::from_min_size(egui::pos2(100.0, 40.0), egui::vec2(layout.width(), 14.0));
+        let [expand, toggle, left, symbol, right] = layout.slots(cell, 18.0);
+
+        for button in [expand, toggle, left, right] {
+            assert_eq!(button.width(), 0.0);
+        }
+        assert_eq!(symbol.x_range(), cell.x_range());
+    }
+
+    #[test]
     fn center_slots_in_a_tall_row_are_one_button_high_and_centered() {
         let layout = CenterLayout {
             button: 15.0,
             symbol: 9.0,
             toggles: true,
+            reverts: true,
         };
         let cell =
             egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(layout.width(), 50.0));

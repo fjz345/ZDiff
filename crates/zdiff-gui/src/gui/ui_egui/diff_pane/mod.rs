@@ -181,6 +181,7 @@ pub struct FileDiffPaneCtx<'a> {
     /// `RowBlock::key` of the block whose button was clicked, and what the button asks for.
     pub block_toggle_request: &'a mut Option<(usize, BlockToggle)>,
     pub scope_breadcrumb: bool,
+    pub revert_buttons: bool,
     pub reveal_line_request: &'a mut Option<(ActiveSide, usize)>,
     /// Set when the pair resolved to the Hex viewer; the table then shows hex rows.
     pub hex_view: Option<HexViewCtx<'a>>,
