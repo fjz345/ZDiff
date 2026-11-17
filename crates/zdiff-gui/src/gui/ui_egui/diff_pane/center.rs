@@ -3,10 +3,33 @@ use super::*;
 pub(super) fn block_toggle_buttons(
     ui: &mut egui::Ui,
     block: &RowBlock,
-    [expand_slot, toggle_slot]: [egui::Rect; 2],
+    shown_rows: usize,
+    slots: [egui::Rect; 4],
     request: &mut Option<(usize, BlockToggle)>,
 ) {
-    let mut toggle_button = |slot: egui::Rect, label: &str, hover: &str, toggle: BlockToggle| {
+    for (slot, toggle) in slots.into_iter().zip(block_buttons(block, shown_rows)) {
+        let Some(toggle) = toggle else {
+            continue;
+        };
+        let (label, hover) = match toggle {
+            BlockToggle::Expand => (
+                "+",
+                format!("Expand all {}", hidden_lines_label(block.hidden)),
+            ),
+            BlockToggle::ExpandDown => (
+                "⏷",
+                format!("Expand down: show the next {EXPAND_STEP} hidden lines"),
+            ),
+            BlockToggle::ExpandUp => (
+                "⏶",
+                format!("Expand up: show the last {EXPAND_STEP} hidden lines"),
+            ),
+            BlockToggle::ExpandToScope => (
+                "{",
+                "Expand up to the line opening the scope of the change below".to_owned(),
+            ),
+            BlockToggle::Collapse => ("-", "Collapse these rows again".to_owned()),
+        };
         if ui
             .put(slot, egui::Button::new(label))
             .on_hover_text(hover)
@@ -14,31 +37,31 @@ pub(super) fn block_toggle_buttons(
         {
             *request = Some((block.key, toggle));
         }
-    };
-    if !block.expanded {
-        toggle_button(
-            expand_slot,
-            "+",
-            "Expand the collapsed rows",
-            BlockToggle::Expand,
-        );
     }
-    // Only on a fully collapsed block: once rows are revealed, the scope expansion has been done
-    // or wouldn't add anything.
-    if !block.expanded && block.rows.len() == 1 {
-        toggle_button(
-            toggle_slot,
-            "{",
-            "Expand up to the line opening the scope of the change below",
-            BlockToggle::ExpandToScope,
-        );
-    } else {
-        toggle_button(
-            toggle_slot,
-            "-",
-            "Collapse these rows again",
-            BlockToggle::Collapse,
-        );
+}
+
+/// The action of each of `CenterLayout::block_slots`.
+fn block_buttons(block: &RowBlock, shown_rows: usize) -> [Option<BlockToggle>; 4] {
+    let [down, up] = block.steps(shown_rows);
+    // Scope only on a fully collapsed block: once rows are revealed, the scope expansion has been
+    // done or wouldn't add anything.
+    let fully_collapsed = !block.expanded() && block.rows.len() == 1;
+    [
+        (!block.expanded()).then_some(BlockToggle::Expand),
+        Some(if fully_collapsed {
+            BlockToggle::ExpandToScope
+        } else {
+            BlockToggle::Collapse
+        }),
+        down.then_some(BlockToggle::ExpandDown),
+        up.then_some(BlockToggle::ExpandUp),
+    ]
+}
+
+pub(super) fn hidden_lines_label(hidden_rows: usize) -> String {
+    match hidden_rows {
+        1 => "1 hidden line".to_owned(),
+        n => format!("{n} hidden lines"),
     }
 }
 
@@ -54,7 +77,7 @@ impl CenterLayout {
     pub(super) fn measure(mut glyph_width: impl FnMut(char) -> f32, button_padding: f32) -> Self {
         let mut widest = |chars: &[char]| chars.iter().map(|&c| glyph_width(c)).fold(0.0, f32::max);
         Self {
-            button: widest(&['+', '{', '-', '<', '>']) + 2.0 * button_padding,
+            button: widest(&['+', '{', '-', '<', '>', '⏷', '⏶']) + 2.0 * button_padding,
             symbol: widest(&['≠', '-', '+']),
             toggles: true,
             reverts: true,
@@ -63,7 +86,23 @@ impl CenterLayout {
 
     pub(super) fn width(self) -> f32 {
         let buttons = f32::from(2 * (u8::from(self.toggles) + u8::from(self.reverts)));
-        buttons * self.button + self.symbol + buttons * CENTER_GAP
+        let row = buttons * self.button + self.symbol + buttons * CENTER_GAP;
+        if self.toggles {
+            row.max(4.0 * self.button + 3.0 * CENTER_GAP)
+        } else {
+            row
+        }
+    }
+
+    /// Expand all, scope or collapse, expand down, expand up: a block's button row holds no
+    /// revert button or symbol, so its buttons take the column from the left.
+    pub(super) fn block_slots(self, cell: egui::Rect, height: f32) -> [egui::Rect; 4] {
+        let half = height.min(cell.height()) / 2.0;
+        let y = egui::Rangef::new(cell.center().y - half, cell.center().y + half);
+        [0.0, 1.0, 2.0, 3.0].map(|slot| {
+            let left = cell.left() + slot * (self.button + CENTER_GAP);
+            egui::Rect::from_x_y_ranges(left..=left + self.button, y)
+        })
     }
 
     /// Expand, scope or collapse, revert-left, symbol, revert-right; at most `height` tall,
@@ -245,7 +284,7 @@ mod tests {
             toggles: true,
             reverts: false,
         };
-        assert_eq!(layout.width(), 2.0 * 15.0 + 9.0 + 2.0 * CENTER_GAP);
+        assert_eq!(layout.width(), 4.0 * 15.0 + 3.0 * CENTER_GAP);
 
         let cell =
             egui::Rect::from_min_size(egui::pos2(100.0, 40.0), egui::vec2(layout.width(), 14.0));
@@ -256,7 +295,76 @@ mod tests {
         assert_eq!(expand.left(), cell.left());
         assert_eq!(toggle.left() - expand.right(), CENTER_GAP);
         assert_eq!(symbol.left() - toggle.right(), CENTER_GAP);
-        assert_eq!(symbol.right(), cell.right());
+        assert!(symbol.right() <= cell.right());
+    }
+
+    #[test]
+    fn a_block_offers_stepwise_expansion_only_while_more_than_a_step_is_hidden() {
+        use crate::diff_ctx::{BlockToggle::*, EXPAND_STEP, RowBlock};
+
+        let block = |rows, top, hidden| RowBlock {
+            key: 4,
+            rows,
+            top,
+            hidden,
+        };
+        let buttons = |block: RowBlock| super::block_buttons(&block, 100);
+
+        assert_eq!(
+            buttons(block(4..5, 0, EXPAND_STEP + 1)),
+            [
+                Some(Expand),
+                Some(ExpandToScope),
+                Some(ExpandDown),
+                Some(ExpandUp)
+            ]
+        );
+        assert_eq!(
+            buttons(block(4..25, 20, EXPAND_STEP + 1)),
+            [
+                Some(Expand),
+                Some(Collapse),
+                Some(ExpandDown),
+                Some(ExpandUp)
+            ]
+        );
+        assert_eq!(
+            buttons(block(4..5, 0, EXPAND_STEP)),
+            [Some(Expand), Some(ExpandToScope), None, None]
+        );
+        assert_eq!(
+            buttons(block(4..25, 20, EXPAND_STEP)),
+            [Some(Expand), Some(Collapse), None, None]
+        );
+        assert_eq!(
+            buttons(block(4..44, 0, 0)),
+            [None, Some(Collapse), None, None]
+        );
+    }
+
+    #[test]
+    fn the_four_block_buttons_fit_the_center_column_with_or_without_revert_buttons() {
+        for reverts in [true, false] {
+            let layout = CenterLayout {
+                button: 15.0,
+                symbol: 9.0,
+                toggles: true,
+                reverts,
+            };
+            let cell = egui::Rect::from_min_size(
+                egui::pos2(100.0, 40.0),
+                egui::vec2(layout.width(), 14.0),
+            );
+            let slots = layout.block_slots(cell, 18.0);
+
+            assert_eq!(slots.map(|s| s.width()), [15.0; 4]);
+            assert_eq!(slots[0].left(), cell.left());
+            assert!(slots[3].right() <= cell.right());
+            for pair in slots.windows(2) {
+                assert_eq!(pair[1].left() - pair[0].right(), CENTER_GAP);
+            }
+            assert_eq!(slots[..2], layout.slots(cell, 18.0)[..2]);
+        }
     }
 
     #[test]

@@ -51,8 +51,8 @@ use crate::{
     browser::{BrowserAction, DepotFolder, FolderBrowser, FolderSource, LocalFolder},
     clamped_cursor::ClampedCursor,
     diff_ctx::{
-        BlockToggle, DiffRows, DiffStageTimes, FindHit, MinimalDiffCtx, RowBlock, ScrollSpan,
-        insert_pin, pin_line_counts,
+        BlockToggle, DiffRows, DiffStageTimes, EXPAND_STEP, FindHit, MinimalDiffCtx, RowBlock,
+        ScrollSpan, block_with_buttons_at, insert_pin, pin_line_counts,
     },
     diff_phases::{Marks, diff_marks_checkboxes, in_scopes},
     file::FileProcessor,

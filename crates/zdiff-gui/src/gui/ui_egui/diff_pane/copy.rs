@@ -199,7 +199,7 @@ mod tests {
             sync::{Arc, atomic::AtomicBool},
         };
 
-        use crate::diff_ctx::{expand_rows, finalize_diff_rows};
+        use crate::diff_ctx::{BlockReveal, expand_rows, finalize_diff_rows};
 
         // Lines 1 and 12 differ, so one context row each leaves lines 3..=10 collapsed.
         let source: String = (1..=12).map(|n| format!("line {n}\n")).collect();
@@ -228,7 +228,11 @@ mod tests {
         let without_newlines: String = copied.chars().filter(|c| *c != '\n').collect();
         assert_eq!(without_newlines, "line 2line 11");
 
-        let (expanded, _) = expand_rows(&collapsed, &blocks, &BTreeMap::from([(block.row, 0)]));
+        let (expanded, _) = expand_rows(
+            &collapsed,
+            &blocks,
+            &BTreeMap::from([(block.row, BlockReveal::ALL)]),
+        );
         harness.set_rows(expanded);
         let expected: Vec<String> = (2..=11).map(|n| format!("line {n}")).collect();
         let copied = harness.drag_and_copy(Side::Left, (1, 0), (10, 7));

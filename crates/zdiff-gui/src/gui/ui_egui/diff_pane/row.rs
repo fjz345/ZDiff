@@ -13,6 +13,7 @@ pub(in crate::ui_egui) struct RowCtx<'a, T: RawTokenTrait> {
     pub(in crate::ui_egui) accent_line_num: bool,
     pub(in crate::ui_egui) find: RowFind<'a>,
     pub(in crate::ui_egui) selectable: bool,
+    pub(in crate::ui_egui) hidden_rows: Option<usize>,
     pub(in crate::ui_egui) code_language: &'a str,
     pub(in crate::ui_egui) trace: Option<&'a PhaseTrace>,
 }
@@ -57,6 +58,7 @@ impl FileDiffPane {
             accent_line_num,
             find,
             selectable,
+            hidden_rows,
             code_language,
             trace,
         } = row;
@@ -353,6 +355,8 @@ impl FileDiffPane {
                     highlight,
                 );
 
+                let label = hidden_rows
+                    .map_or_else(|| "Collapsed context".to_owned(), hidden_lines_label);
                 ui.scope_builder(UiBuilder::new().max_rect(rect), |ui| {
                     ui.horizontal_centered(|ui| {
                         ui.spacing_mut().item_spacing.x = 0.0;
@@ -370,7 +374,7 @@ impl FileDiffPane {
 
                         ui.add(
                             egui::Label::new(
-                                egui::RichText::new("Collapsed context")
+                                egui::RichText::new(label)
                                     .color(egui::Color32::from_gray(130))
                                     .size(11.0),
                             )

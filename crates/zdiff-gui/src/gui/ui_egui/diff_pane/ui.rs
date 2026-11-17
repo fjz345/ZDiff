@@ -771,6 +771,11 @@ impl FileDiffPane {
                                         .diff_ctx
                                         .filter(|_| ctx.phase_overlay && !strings)
                                         .and_then(|d| d.phase_trace.as_deref());
+                                    let hidden_rows_at = |row: usize| {
+                                        ctx.diff_ctx
+                                            .and_then(|d| block_with_buttons_at(&d.row_blocks, row))
+                                            .map(|block| block.hidden)
+                                    };
                                     let cell = |row_index: usize, column: SplitColumn, ui: &mut egui::Ui| {
                                             let column = if unified.is_some() { column } else { data_column(column) };
                                             if let Some(hex_view) = &ctx.hex_view {
@@ -812,6 +817,7 @@ impl FileDiffPane {
                                                             accent_line_num: accent,
                                                             find,
                                                             selectable: true,
+                                                            hidden_rows: hidden_rows_at(u.row),
                                                             code_language: ctx.code_language[u.side as usize],
                                                             trace: None,
                                                         },
@@ -851,12 +857,9 @@ impl FileDiffPane {
                                                         );
                                                         paint_pin_marker(&cell_ui);
                                                     }
-                                                    let block = ctx.diff_ctx.and_then(|d| {
-                                                        d.row_blocks
-                                                            .binary_search_by_key(&u.row, |b| b.rows.start)
-                                                            .ok()
-                                                            .map(|i| &d.row_blocks[i])
-                                                    });
+                                                    let block = ctx
+                                                        .diff_ctx
+                                                        .and_then(|d| block_with_buttons_at(&d.row_blocks, u.row));
                                                     if let Some(block) = block
                                                         && matches!(u.kind, UnifiedKind::Context | UnifiedKind::Collapsed)
                                                     {
@@ -865,13 +868,14 @@ impl FileDiffPane {
                                                             egui::pos2(cell.right() - center.width(), cell.top()),
                                                             egui::vec2(center.width(), cell.height()),
                                                         );
-                                                        let [expand_slot, toggle_slot, ..] =
-                                                            center.slots(strip, ui.spacing().interact_size.y);
+                                                        let slots =
+                                                            center.block_slots(strip, ui.spacing().interact_size.y);
                                                         let mut buttons = ui.new_child(UiBuilder::new().max_rect(cell));
                                                         block_toggle_buttons(
                                                             &mut buttons,
                                                             block,
-                                                            [expand_slot, toggle_slot],
+                                                            rows.len(),
+                                                            slots,
                                                             &mut *ctx.block_toggle_request,
                                                         );
                                                     }
@@ -941,6 +945,7 @@ impl FileDiffPane {
                                                                     content,
                                                                 ),
                                                                 selectable: active_side == side,
+                                                                hidden_rows: hidden_rows_at(row_index),
                                                                 code_language: ctx.code_language[side as usize],
                                                                 trace: overlay,
                                                             },
@@ -977,7 +982,7 @@ impl FileDiffPane {
 
                                                 SplitColumn::Center => {
                                                     ui.style_mut().wrap_mode = None;
-                                                    let [expand_slot, toggle_slot, left_slot, symbol_slot, right_slot] =
+                                                    let [_, _, left_slot, symbol_slot, right_slot] =
                                                         center.slots(ui.max_rect(), ui.spacing().interact_size.y);
                                                     let diff_ctx = ctx.diff_ctx;
                                                     let hunk = diff_ctx.filter(|_| center.reverts && !strings).and_then(|d| {
@@ -998,15 +1003,11 @@ impl FileDiffPane {
                                                             *ctx.revert_request = Some(RevertRequest { hunk, target });
                                                         }
                                                     };
-                                                    // A collapsed row, or the first row of an expanded block.
-                                                    let block = diff_ctx.and_then(|d| {
-                                                        d.row_blocks
-                                                            .binary_search_by_key(&row_index, |b| b.rows.start)
-                                                            .ok()
-                                                            .map(|i| &d.row_blocks[i])
-                                                    });
-                                                    if let Some(block) = block {
-                                                        block_toggle_buttons(ui, block, [expand_slot, toggle_slot], &mut *ctx.block_toggle_request);
+                                                    if let Some(d) = diff_ctx
+                                                        && let Some(block) = block_with_buttons_at(&d.row_blocks, row_index)
+                                                    {
+                                                        let slots = center.block_slots(ui.max_rect(), ui.spacing().interact_size.y);
+                                                        block_toggle_buttons(ui, block, d.diff_rows.len(), slots, &mut *ctx.block_toggle_request);
                                                     }
                                                     let [left_target, right_target] =
                                                         shown.map(|side| [RevertTarget::Left, RevertTarget::Right][side]);
@@ -1228,6 +1229,7 @@ impl FileDiffPane {
                                             accent_line_num: lit,
                                             find,
                                             selectable: true,
+                                            hidden_rows: None,
                                             code_language,
                                             trace: None,
                                         },

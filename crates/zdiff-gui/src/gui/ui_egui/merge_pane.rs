@@ -593,6 +593,7 @@ fn draw_line(
             accent_line_num: false,
             find: RowFind::default(),
             selectable: false,
+            hidden_rows: None,
             code_language,
             trace: None,
         },
