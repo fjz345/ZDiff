@@ -404,15 +404,17 @@ pub enum GradientPreset {
     Inferno,
     Grayscale,
     Solid,
+    Rainbow,
 }
 
 impl GradientPreset {
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
         Self::Heat,
         Self::Viridis,
         Self::Inferno,
         Self::Grayscale,
         Self::Solid,
+        Self::Rainbow,
     ];
 
     pub fn label(self) -> &'static str {
@@ -422,19 +424,14 @@ impl GradientPreset {
             Self::Inferno => "Inferno",
             Self::Grayscale => "Grayscale",
             Self::Solid => "Solid",
+            Self::Rainbow => "Rainbow",
         }
     }
 
     // Viridis and Inferno: matplotlib's maps at nine even steps.
     fn stops(self) -> &'static [[u8; 3]] {
         match self {
-            Self::Heat => &[
-                [0, 0, 255],
-                [0, 255, 255],
-                [0, 255, 0],
-                [255, 255, 0],
-                [255, 0, 0],
-            ],
+            Self::Heat => &[[0, 255, 0], [255, 255, 0], [255, 0, 0]],
             Self::Viridis => &[
                 [68, 1, 84],
                 [72, 40, 120],
@@ -459,6 +456,13 @@ impl GradientPreset {
             ],
             Self::Grayscale => &[[0, 0, 0], [255, 255, 255]],
             Self::Solid => &[[255, 0, 255]],
+            Self::Rainbow => &[
+                [0, 0, 255],
+                [0, 255, 255],
+                [0, 255, 0],
+                [255, 255, 0],
+                [255, 0, 0],
+            ],
         }
     }
 
@@ -784,14 +788,25 @@ mod tests {
     }
 
     #[test]
-    fn the_heat_gradient_is_the_heatmap_ramp() {
+    fn the_heat_gradient_runs_green_yellow_red() {
         let heat = GradientPreset::Heat;
-        assert_eq!(heat.magnitude_color(1), rgb(0, 0, 255));
-        assert_eq!(heat.magnitude_color(64), rgb(0, 253, 255));
-        assert_eq!(heat.magnitude_color(128), rgb(0, 255, 0));
-        assert_eq!(heat.magnitude_color(200), rgb(255, 221, 0));
+        assert_eq!(heat.magnitude_color(1), rgb(0, 255, 0));
+        assert_eq!(heat.magnitude_color(64), rgb(126, 255, 0));
+        assert_eq!(heat.magnitude_color(128), rgb(255, 255, 0));
+        assert_eq!(heat.magnitude_color(200), rgb(255, 110, 0));
         assert_eq!(heat.magnitude_color(255), rgb(255, 0, 0));
         assert_eq!(heat.magnitude_color(0), heat.magnitude_color(1));
+    }
+
+    #[test]
+    fn the_rainbow_gradient_runs_blue_cyan_green_yellow_red() {
+        let rainbow = GradientPreset::Rainbow;
+        assert_eq!(rainbow.magnitude_color(1), rgb(0, 0, 255));
+        assert_eq!(rainbow.magnitude_color(64), rgb(0, 253, 255));
+        assert_eq!(rainbow.magnitude_color(128), rgb(0, 255, 0));
+        assert_eq!(rainbow.magnitude_color(200), rgb(255, 221, 0));
+        assert_eq!(rainbow.magnitude_color(255), rgb(255, 0, 0));
+        assert_eq!(rainbow.magnitude_color(0), rainbow.magnitude_color(1));
     }
 
     #[test]

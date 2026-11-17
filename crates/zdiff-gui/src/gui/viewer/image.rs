@@ -2381,11 +2381,10 @@ mod tests {
     }
 
     #[test]
-    fn the_heat_ramp_runs_from_blue_to_red() {
-        assert_eq!(heat_ramp(1), Color32::from_rgb(0, 0, 255));
+    fn the_heat_ramp_runs_from_green_through_yellow_to_red() {
+        assert_eq!(heat_ramp(1), Color32::from_rgb(0, 255, 0));
+        assert_eq!(heat_ramp(128), Color32::from_rgb(255, 255, 0));
         assert_eq!(heat_ramp(255), Color32::from_rgb(255, 0, 0));
-        let mid = heat_ramp(128);
-        assert!(mid.g() > 200 && mid.r() < 128 && mid.b() < 128, "{mid:?}");
         for magnitude in 1..=255 {
             assert_eq!(heat_ramp(magnitude).a(), 255);
         }
