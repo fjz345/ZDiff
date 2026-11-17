@@ -42,6 +42,7 @@ pub(super) struct MenuCtx<'a> {
     pub h_scroll_linked: &'a mut bool,
     pub center_jumps: &'a mut bool,
     pub scope_breadcrumb: &'a mut bool,
+    pub scope_block_headers: &'a mut bool,
     pub revert_buttons: &'a mut bool,
     pub text_diff_shown: bool,
 }
@@ -69,6 +70,7 @@ impl ZApp {
             h_scroll_linked,
             center_jumps,
             scope_breadcrumb,
+            scope_block_headers,
             revert_buttons,
             text_diff_shown,
         } = menu_ctx;
@@ -239,6 +241,11 @@ impl ZApp {
                             .on_hover_text(
                                 "The scopes the top line is in show as one row of names; off shows \
                              each scope's first line as its own row",
+                            );
+                        ui.checkbox(scope_block_headers, "Scope Header per Collapsed Block")
+                            .on_hover_text(
+                                "In diff only, each collapsed block names the scopes its next change \
+                             is in; clicking a name scrolls to that scope's first line",
                             );
                         ui.checkbox(revert_buttons, "Revert Buttons in Center Column")
                             .on_hover_text(

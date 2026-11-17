@@ -355,8 +355,6 @@ impl FileDiffPane {
                     highlight,
                 );
 
-                let label = hidden_rows
-                    .map_or_else(|| "Collapsed context".to_owned(), hidden_lines_label);
                 ui.scope_builder(UiBuilder::new().max_rect(rect), |ui| {
                     ui.horizontal_centered(|ui| {
                         ui.spacing_mut().item_spacing.x = 0.0;
@@ -372,14 +370,7 @@ impl FileDiffPane {
 
                         ui.add_space(GUTTER_GAP);
 
-                        ui.add(
-                            egui::Label::new(
-                                egui::RichText::new(label)
-                                    .color(egui::Color32::from_gray(130))
-                                    .size(11.0),
-                            )
-                            .selectable(false),
-                        );
+                        ui.add(egui::Label::new(collapsed_label(hidden_rows)).selectable(false));
 
                         if selectable {
                             let galley = copy_marker_galley(ui, COPY_MARKER_NO_LINE);
@@ -400,6 +391,28 @@ impl FileDiffPane {
         }
         code_hit
     }
+}
+
+fn collapsed_label(hidden_rows: Option<usize>) -> egui::RichText {
+    let label = hidden_rows.map_or_else(|| "Collapsed context".to_owned(), hidden_lines_label);
+    egui::RichText::new(label)
+        .color(egui::Color32::from_gray(130))
+        .size(11.0)
+}
+
+pub(super) fn collapsed_label_right(
+    ui: &egui::Ui,
+    row_left: f32,
+    gutter: Gutter,
+    hidden_rows: Option<usize>,
+) -> f32 {
+    let label = egui::WidgetText::from(collapsed_label(hidden_rows)).into_galley(
+        ui,
+        None,
+        f32::INFINITY,
+        egui::FontSelection::Default,
+    );
+    row_left + gutter.width() + GUTTER_GAP + label.size().x
 }
 
 pub(super) const STRIPE_SPACING: f32 = 8.0;

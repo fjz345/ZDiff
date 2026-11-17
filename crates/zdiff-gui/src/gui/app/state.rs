@@ -125,6 +125,8 @@ pub struct AppStateCtx {
     pub word_wrap: bool,
     #[cfg_attr(feature = "serde", serde(default))]
     pub scope_breadcrumb: bool,
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub scope_block_headers: bool,
     #[cfg_attr(feature = "serde", serde(default = "default_revert_buttons"))]
     pub revert_buttons: bool,
     #[cfg_attr(feature = "serde", serde(default))]
@@ -199,6 +201,7 @@ impl Default for AppStateCtx {
             center_jumps: default_center_jumps(),
             word_wrap: false,
             scope_breadcrumb: false,
+            scope_block_headers: false,
             revert_buttons: default_revert_buttons(),
             text_mode: Default::default(),
             text_likeness: Default::default(),
@@ -573,6 +576,26 @@ mod tests {
             .unwrap();
         let restored: AppStateCtx = serde_json::from_value(json).unwrap();
         assert!(restored.center_jumps);
+    }
+
+    #[test]
+    fn scope_block_headers_default_off_and_survive_a_restart() {
+        assert!(!AppStateCtx::default().scope_block_headers);
+
+        let ctx = AppStateCtx {
+            scope_block_headers: true,
+            ..Default::default()
+        };
+        let mut json = serde_json::to_value(&ctx).unwrap();
+        let restored: AppStateCtx = serde_json::from_value(json.clone()).unwrap();
+        assert!(restored.scope_block_headers);
+
+        json.as_object_mut()
+            .unwrap()
+            .remove("scope_block_headers")
+            .unwrap();
+        let restored: AppStateCtx = serde_json::from_value(json).unwrap();
+        assert!(!restored.scope_block_headers);
     }
 
     #[test]

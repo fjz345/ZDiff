@@ -1,4 +1,5 @@
 use super::*;
+use crate::diff_ctx::DiffSpan;
 use zcommon::hash::Blake3Hash;
 use zdiff::{
     lexer::RawToken,
@@ -104,6 +105,30 @@ pub(super) fn bar_scopes(
     chain
 }
 
+pub(super) fn block_scopes<'a>(
+    scopes: &'a [NestedScope],
+    rows: &[DiffRow],
+    changes: &[DiffSpan],
+    block_end: usize,
+    side: usize,
+) -> Vec<&'a NestedScope> {
+    let below = changes.partition_point(|change| *change.rows().end() < block_end);
+    let Some(change) = changes.get(below) else {
+        return Vec::new();
+    };
+    let row = (*change.rows().start()).max(block_end);
+    let Some(line) = line_near(rows, side, row) else {
+        return Vec::new();
+    };
+    let held = nesting::enclosing(scopes, line);
+    if line == 0 || side_line(&rows[row], side).is_some() {
+        return held;
+    }
+    // This side has no line in the change: it lands between two lines, in the deeper scope.
+    let above = nesting::enclosing(scopes, line - 1);
+    if above.len() > held.len() { above } else { held }
+}
+
 pub(super) fn shown_row(
     rows: &[DiffRow],
     line_rows: &[usize],
@@ -146,6 +171,81 @@ pub(super) struct BarLook {
     pub(super) font: egui::FontId,
 }
 
+fn crumb_clicked(
+    ui: &egui::Ui,
+    painter: &egui::Painter,
+    rect: egui::Rect,
+    id: egui::Id,
+    scope: &NestedScope,
+) -> bool {
+    let response = ui
+        .interact(rect, id, egui::Sense::click())
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
+        .on_hover_text(format!("Go to line {}", scope.header + 1));
+    if response.hovered() {
+        painter.rect_filled(rect, 0.0, ui.visuals().widgets.hovered.weak_bg_fill);
+    }
+    response.clicked()
+}
+
+pub(super) fn show_crumbs(
+    ui: &egui::Ui,
+    painter: &egui::Painter,
+    id: egui::Id,
+    row: egui::Rect,
+    chain: &[&NestedScope],
+    text: &str,
+    font: &egui::FontId,
+) -> Option<usize> {
+    let visuals = ui.visuals();
+    let (text_color, weak_color) = (visuals.text_color(), visuals.weak_text_color());
+    let mut clicked = None;
+    let mut x = row.left();
+    for (index, scope) in chain.iter().enumerate() {
+        if index > 0 {
+            let separator = painter.text(
+                egui::pos2(x, row.center().y),
+                egui::Align2::LEFT_CENTER,
+                CRUMB_SEPARATOR,
+                font.clone(),
+                weak_color,
+            );
+            x = separator.right();
+        }
+        let crumb = crumb_text(&text[scope.header_text.clone()]);
+        let galley = painter.layout_no_wrap(crumb, font.clone(), text_color);
+        let crumb_rect = egui::Rect::from_min_size(
+            egui::pos2(x, row.top()),
+            egui::vec2(galley.size().x, row.height()),
+        );
+        if crumb_clicked(ui, painter, crumb_rect, id.with(index), scope) {
+            clicked = Some(scope.header);
+        }
+        let top = row.center().y - galley.size().y / 2.0;
+        painter.galley(egui::pos2(x, top), galley, text_color);
+        x = crumb_rect.right();
+    }
+    clicked
+}
+
+pub(super) fn request_jump(
+    ui: &egui::Ui,
+    jump_id: egui::Id,
+    diff_ctx: &MinimalDiffCtx,
+    side: usize,
+    line: usize,
+    reveal_line_request: &mut Option<(ActiveSide, usize)>,
+) {
+    let file_rows = &diff_ctx.precomputed_file_rows;
+    let line_rows = [&file_rows.0, &file_rows.1][side];
+    if shown_row(&diff_ctx.diff_rows, line_rows, side, line).is_none() {
+        let active = [ActiveSide::Left, ActiveSide::Right][side];
+        *reveal_line_request = Some((active, line));
+    }
+    ui.data_mut(|d| d.insert_temp(jump_id, (side, line)));
+    ui.ctx().request_repaint();
+}
+
 pub(super) fn show(
     ui: &mut egui::Ui,
     id: egui::Id,
@@ -169,22 +269,9 @@ pub(super) fn show(
     let visuals = ui.visuals();
     painter.rect_filled(bar, 0.0, visuals.window_fill);
     let (text_color, weak_color) = (visuals.text_color(), visuals.weak_text_color());
-    let hover_fill = visuals.widgets.hovered.weak_bg_fill;
     let border = visuals.widgets.noninteractive.bg_stroke;
     let pad = ui.spacing().item_spacing.x;
     let mut clicked = None;
-    let mut clickable = |rect: egui::Rect, index: usize, scope: &NestedScope| {
-        let response = ui
-            .interact(rect, id.with(index), egui::Sense::click())
-            .on_hover_cursor(egui::CursorIcon::PointingHand)
-            .on_hover_text(format!("Go to line {}", scope.header + 1));
-        if response.hovered() {
-            painter.rect_filled(rect, 0.0, hover_fill);
-        }
-        if response.clicked() {
-            clicked = Some(scope.header);
-        }
-    };
     match layout {
         BarLayout::Sticky => {
             let digits = chain
@@ -199,7 +286,9 @@ pub(super) fn show(
                     bar.min + egui::vec2(0.0, index as f32 * look.row_height),
                     egui::vec2(bar.width(), look.row_height),
                 );
-                clickable(row, index, scope);
+                if crumb_clicked(ui, &painter, row, id.with(index), scope) {
+                    clicked = Some(scope.header);
+                }
                 let number = format!("{:>digits$}  ", scope.header + 1);
                 let left = egui::pos2(row.left() + pad, row.center().y);
                 let number_rect = painter.text(
@@ -220,31 +309,89 @@ pub(super) fn show(
             }
         }
         BarLayout::Breadcrumb => {
-            let mut x = bar.left() + pad;
-            for (index, scope) in chain.iter().enumerate() {
-                if index > 0 {
-                    let separator = painter.text(
-                        egui::pos2(x, bar.center().y),
-                        egui::Align2::LEFT_CENTER,
-                        CRUMB_SEPARATOR,
-                        look.font.clone(),
-                        weak_color,
-                    );
-                    x = separator.right();
-                }
-                let crumb = crumb_text(&text[scope.header_text.clone()]);
-                let galley = painter.layout_no_wrap(crumb, look.font.clone(), text_color);
-                let crumb_rect = egui::Rect::from_min_size(
-                    egui::pos2(x, bar.top()),
-                    egui::vec2(galley.size().x, look.row_height),
-                );
-                clickable(crumb_rect, index, scope);
-                let top = bar.center().y - galley.size().y / 2.0;
-                painter.galley(egui::pos2(x, top), galley, text_color);
-                x = crumb_rect.right();
-            }
+            let row = bar.with_min_x(bar.left() + pad);
+            clicked = show_crumbs(ui, &painter, id, row, chain, text, &look.font);
         }
     }
     painter.hline(bar.x_range(), bar.bottom() - 0.5, border);
     clicked
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::diff_ctx::finalize_diff_rows;
+    use crate::ui_egui::copy_harness::CopyHarness;
+    use zdiff::diff_builder::DiffBuilderOptions;
+
+    const TWO_SCOPES: &str = "fn first() {\n    a1\n    a2\n    a3\n    a4\n    a5\n    keep_first\n    a7\n}\nfn second() {\n    if cond {\n        b1\n        b2\n        b3\n        b4\n        keep_second\n    }\n}\ntail1\ntail2\ntail3\ntail4\n";
+
+    fn block_chains(source: &str, target: &str) -> Vec<[Vec<usize>; 2]> {
+        let options = DiffBuilderOptions {
+            diff_only_with_extra_rows: Some(1),
+            ..Default::default()
+        };
+        let harness = CopyHarness::new(source, target, &options);
+        let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (rows, changes, _) =
+            finalize_diff_rows(harness.rows().to_vec(), &options, &cancel).unwrap();
+        let scopes = harness
+            .files()
+            .map(|file| nesting::nested_scopes(&file.tokens, &file.contents));
+        (0..rows.len())
+            .filter(|&row| matches!(rows[row].left, LineContent::Collapsed))
+            .map(|row| {
+                [0, 1].map(|side| {
+                    block_scopes(&scopes[side], &rows, &changes, row + 1, side)
+                        .iter()
+                        .map(|scope| scope.header)
+                        .collect()
+                })
+            })
+            .collect()
+    }
+
+    #[test]
+    fn two_changes_in_different_scopes_give_two_different_chains() {
+        let target = TWO_SCOPES
+            .replace("keep_first", "edit_first")
+            .replace("keep_second", "edit_second");
+
+        let chains = block_chains(TWO_SCOPES, &target);
+
+        assert_eq!(chains[0], [vec![0], vec![0]]);
+        assert_eq!(chains[1], [vec![9, 10], vec![9, 10]]);
+    }
+
+    #[test]
+    fn a_block_with_no_change_below_has_no_chain() {
+        let target = TWO_SCOPES.replace("keep_second", "edit_second");
+
+        let chains = block_chains(TWO_SCOPES, &target);
+
+        assert_eq!(chains.len(), 2);
+        assert!(chains[1].iter().all(Vec::is_empty));
+    }
+
+    #[test]
+    fn a_change_outside_every_scope_has_no_chain() {
+        let source = "top1\ntop2\ntop3\ntop4\ntop5\nkeep\nfn later() {\n    body\n}\n";
+        let target = source.replace("keep", "edit");
+
+        let chains = block_chains(source, &target);
+
+        assert!(chains[0].iter().all(Vec::is_empty));
+    }
+
+    #[test]
+    fn the_side_an_insertion_leaves_empty_gets_the_scope_it_lands_in() {
+        let appended = TWO_SCOPES.replace("    a7\n", "    a7\n    added\n");
+        let prepended = TWO_SCOPES.replace("    if cond {\n", "    if cond {\n        added\n");
+
+        assert_eq!(block_chains(TWO_SCOPES, &appended)[0], [vec![0], vec![0]]);
+        assert_eq!(
+            block_chains(TWO_SCOPES, &prepended)[0],
+            [vec![9, 10], vec![9, 10]]
+        );
+    }
 }

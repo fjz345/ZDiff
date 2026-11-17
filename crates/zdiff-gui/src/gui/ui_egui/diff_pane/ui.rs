@@ -776,6 +776,15 @@ impl FileDiffPane {
                                             .and_then(|d| block_with_buttons_at(&d.row_blocks, row))
                                             .map(|block| block.hidden)
                                     };
+                                    let block_header_scopes = scope_diff
+                                        .filter(|_| ctx.scope_block_headers)
+                                        .map(|d| {
+                                            let files = [&d.input.file_1, &d.input.file_2];
+                                            let scopes = std::array::from_fn::<_, 2, _>(|side| {
+                                                files[side].as_ref().map(|file| scope_cache.scopes(side, file))
+                                            });
+                                            (d, scopes)
+                                        });
                                     let cell = |row_index: usize, column: SplitColumn, ui: &mut egui::Ui| {
                                             let column = if unified.is_some() { column } else { data_column(column) };
                                             if let Some(hex_view) = &ctx.hex_view {
@@ -920,6 +929,7 @@ impl FileDiffPane {
                                                         (true, _) => Gutter::Offset(None),
                                                         (false, _) => Gutter::Single { number_width },
                                                     };
+                                                    let row_rect = egui::Rect::from_min_max(ui.cursor().min, ui.max_rect().max);
                                                         let hit = Self::render_row(
                                                             ui,
                                                             RowCtx {
@@ -952,6 +962,22 @@ impl FileDiffPane {
                                                             gutter,
                                                             row_marks(side, content),
                                                         );
+                                                    let side_index = side as usize;
+                                                    if let Some((d, scopes)) = &block_header_scopes
+                                                        && let Some(scopes) = &scopes[side_index]
+                                                        && let Some(file) = [&d.input.file_1, &d.input.file_2][side_index]
+                                                        && let Some(block) = block_with_buttons_at(&d.row_blocks, row_index)
+                                                        && !block.expanded()
+                                                    {
+                                                        let chain = block_scopes(scopes, &d.diff_rows, &d.precomputed_diffs, block.rows.end, side_index);
+                                                        let label_right = collapsed_label_right(ui, row_rect.left(), gutter, Some(block.hidden));
+                                                        let crumbs = row_rect.with_min_x(label_right + 2.0 * ui.spacing().item_spacing.x);
+                                                        let id = scope_bar_id.with(("block", side_index, block.key));
+                                                        let clicked = show_crumbs(ui, ui.painter(), id, crumbs, &chain, &file.contents, &mono_font);
+                                                        if let Some(line) = clicked {
+                                                            request_jump(ui, scope_bar_id, d, side_index, line, &mut *ctx.reveal_line_request);
+                                                        }
+                                                    }
                                                     if let (Some(hit), Some(diff_ctx), Some(at)) =
                                                         (hit, text_diff, MenuLine::of(side, content, row_index))
                                                     {
@@ -1068,14 +1094,7 @@ impl FileDiffPane {
                                     let id = scope_bar_id.with(side);
                                     let clicked = scope_bar::show(ui, id, rect, &chain, &file.contents, bar_layout, &look);
                                     if let Some(line) = clicked {
-                                        let file_rows = &diff_ctx.precomputed_file_rows;
-                                        let line_rows = [&file_rows.0, &file_rows.1][side];
-                                        if shown_row(&diff_ctx.diff_rows, line_rows, side, line).is_none() {
-                                            let active = [ActiveSide::Left, ActiveSide::Right][side];
-                                            *ctx.reveal_line_request = Some((active, line));
-                                        }
-                                        ui.data_mut(|d| d.insert_temp(scope_bar_id, (side, line)));
-                                        ui.ctx().request_repaint();
+                                        request_jump(ui, scope_bar_id, diff_ctx, side, line, &mut *ctx.reveal_line_request);
                                     }
                                 }
                             }
