@@ -1,3 +1,5 @@
+use std::{ffi::OsString, path::Path};
+
 use zdiff::universal_path::UniversalPath;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -51,10 +53,6 @@ pub enum LaunchError {
     MissingValue(String),
     PositionalCount(usize),
     MissingPath(Role),
-    Folders {
-        left: String,
-        right: String,
-    },
 }
 
 impl std::fmt::Display for Role {
@@ -92,10 +90,6 @@ impl std::fmt::Display for LaunchError {
                 "expected 2 files to diff or 4 to merge (base, left, right, output), got {n}"
             ),
             LaunchError::MissingPath(role) => write!(f, "no {role} file given"),
-            LaunchError::Folders { left, right } => write!(
-                f,
-                "`{left}` and `{right}` are folders; zdiff-gui compares files, use zdiff-folder-gui for folders"
-            ),
         }
     }
 }
@@ -104,6 +98,8 @@ pub const HELP: &str = "\
 Usage:
   zdiff-gui LEFT RIGHT                  diff two files
   zdiff-gui BASE LEFT RIGHT OUTPUT      merge (opens LEFT and RIGHT as a diff for now)
+  zdiff-gui LEFT RIGHT                  folder diff, when both are existing folders
+  zdiff-gui --folder [LEFT [RIGHT]]     folder diff; without folders the last ones are reopened
 
 Files can be local paths or depot paths (//depot/a.cpp#3).
 
@@ -344,20 +340,38 @@ where
 
     let left = slots.side(Role::Left)?;
     let right = slots.side(Role::Right)?;
-    if let (Some(l), Some(r)) = (left.path.as_path(), right.path.as_path())
-        && l.is_dir()
-        && r.is_dir()
-    {
-        return Err(LaunchError::Folders {
-            left: left.path.to_string(),
-            right: right.path.to_string(),
-        });
-    }
 
     Ok(Launch {
         request: LaunchRequest::Diff { left, right },
         warnings,
     })
+}
+
+const FOLDER_FLAG: &str = "--folder";
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum LaunchMode {
+    Files,
+    Folders(Vec<OsString>),
+}
+
+pub fn launch_mode(args: &[OsString], is_dir: impl Fn(&Path) -> bool) -> LaunchMode {
+    if args.iter().any(|arg| arg == FOLDER_FLAG) {
+        let folder_args = args.iter().filter(|arg| *arg != FOLDER_FLAG);
+        return LaunchMode::Folders(folder_args.cloned().collect());
+    }
+    let parsed = parse_launch_args(args.iter().map(|arg| arg.to_string_lossy().into_owned()));
+    if let Ok(Launch {
+        request: LaunchRequest::Diff { left, right },
+        ..
+    }) = parsed
+        && let (Some(left), Some(right)) = (left.path.as_path(), right.path.as_path())
+        && is_dir(left)
+        && is_dir(right)
+    {
+        return LaunchMode::Folders(vec![left.into(), right.into()]);
+    }
+    LaunchMode::Files
 }
 
 #[cfg(test)]
@@ -637,22 +651,78 @@ mod tests {
         );
     }
 
-    #[test]
-    fn two_folders_are_an_error_pointing_to_the_folder_app() {
-        let left = tempfile::tempdir().unwrap();
-        let right = tempfile::tempdir().unwrap();
-        let l = left.path().to_str().unwrap();
-        let r = right.path().to_str().unwrap();
-        let err = parse(&[l, r]).unwrap_err();
-        assert!(matches!(err, LaunchError::Folders { .. }), "{err:?}");
-        assert!(err.to_string().contains("zdiff-folder-gui"), "{err}");
+    fn mode(args: &[&str]) -> LaunchMode {
+        let args: Vec<OsString> = args.iter().map(OsString::from).collect();
+        launch_mode(&args, |path| {
+            path.to_str().is_some_and(|path| path.ends_with("_dir"))
+        })
+    }
+
+    fn folders(folder_args: &[&str]) -> LaunchMode {
+        LaunchMode::Folders(folder_args.iter().map(OsString::from).collect())
     }
 
     #[test]
-    fn one_folder_is_not_the_folder_error() {
+    fn two_existing_folders_are_the_folder_mode() {
+        assert_eq!(
+            mode(&["old_dir", "new_dir"]),
+            folders(&["old_dir", "new_dir"])
+        );
+    }
+
+    #[test]
+    fn anything_but_two_folders_is_the_file_mode() {
+        for args in [
+            &[][..],
+            &["a.txt", "b.txt"],
+            &["old_dir", "b.txt"],
+            &["a.txt", "new_dir"],
+            &["old_dir"],
+            &["old_dir", "new_dir", "third_dir"],
+            &["base_dir", "old_dir", "new_dir", "out_dir"],
+            &["//depot/old_dir", "//depot/new_dir"],
+            &["--help", "old_dir", "new_dir"],
+        ] {
+            assert_eq!(mode(args), LaunchMode::Files, "{args:?}");
+        }
+    }
+
+    #[test]
+    fn flag_values_are_not_the_compared_paths() {
+        assert_eq!(
+            mode(&["-nl", "old_dir", "-nr", "new_dir", "a.txt", "b.txt"]),
+            LaunchMode::Files
+        );
+        assert_eq!(
+            mode(&["-nl", "old", "old_dir", "--right-label=new", "new_dir"]),
+            folders(&["old_dir", "new_dir"])
+        );
+    }
+
+    #[test]
+    fn tortoise_two_folder_form_is_the_folder_mode() {
+        assert_eq!(
+            mode(&["/base:old_dir", "/mine:new_dir"]),
+            folders(&["old_dir", "new_dir"])
+        );
+    }
+
+    #[test]
+    fn folder_flag_is_the_folder_mode_with_the_other_args_in_order() {
+        assert_eq!(mode(&["--folder"]), folders(&[]));
+        assert_eq!(mode(&["--folder", "missing"]), folders(&["missing"]));
+        assert_eq!(mode(&["a.txt", "--folder", "b"]), folders(&["a.txt", "b"]));
+        assert_eq!(
+            mode(&["--folder", "a", "b", "c"]),
+            folders(&["a", "b", "c"])
+        );
+    }
+
+    #[test]
+    fn two_folders_parse_as_a_diff() {
         let dir = tempfile::tempdir().unwrap();
         let d = dir.path().to_str().unwrap();
-        assert!(parse(&[d, "missing.txt"]).is_ok());
+        assert_eq!(ok(&[d, d]).request, diff(side(d, None), side(d, None)));
     }
 
     #[test]

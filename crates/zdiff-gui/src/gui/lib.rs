@@ -1,6 +1,7 @@
 #![cfg(feature = "gui")]
 
 use std::{
+    path::Path,
     process::ExitCode,
     sync::{
         Arc,
@@ -8,7 +9,7 @@ use std::{
     },
 };
 
-use crate::app::ZApp;
+use crate::{app::ZApp, cli::LaunchMode};
 
 mod app;
 mod browser;
@@ -41,6 +42,14 @@ pub static STATS_ALLOC: &StatsAlloc<System> = &INSTRUMENTED_SYSTEM;
 const APP_ID: &str = "ZDiff";
 
 pub fn run() -> ExitCode {
+    let (_, args) = zcommon::console::take_log_flag(std::env::args_os().skip(1));
+    match cli::launch_mode(&args, Path::is_dir) {
+        LaunchMode::Folders(folder_args) => zdiff_folder_gui::run(folder_args),
+        LaunchMode::Files => run_file_diff(),
+    }
+}
+
+fn run_file_diff() -> ExitCode {
     let _ = zcommon_ui::app::start_logging(APP_ID, || {
         #[cfg(feature = "pretty-backtrace")]
         color_backtrace::install();

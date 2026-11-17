@@ -5227,6 +5227,7 @@ dependencies = [
  "zcommon",
  "zcommon-ui",
  "zdiff",
+ "zdiff-folder-gui",
 ]
 
 [[package]]

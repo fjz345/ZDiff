@@ -15,8 +15,8 @@ required-features = ["gui"]
 [features]
 default = ["pretty-backtrace", "serde", "gui"]
 serde = ["zdiff/serde", "zcommon/serde", "dep:serde", "dep:serde_json"]
-gui = ["serde", "dep:zcommon-ui", "dep:eframe", "dep:egui_tiles"]
-pretty-backtrace = ["dep:color-backtrace"]
+gui = ["serde", "dep:zcommon-ui", "dep:eframe", "dep:egui_tiles", "dep:zdiff-folder-gui"]
+pretty-backtrace = ["dep:color-backtrace", "zdiff-folder-gui?/pretty-backtrace"]
 accesskit = []
 debug_alloc = ["dep:stats_alloc"]
 
@@ -27,6 +27,7 @@ eframe = { version = "0.33.3", features = ["wayland", "x11"], optional = true }
 zcommon = { path = "../zcommon" }
 zcommon-ui = { path = "../zcommon-ui", optional = true }
 zdiff = { path = "../zdiff" }
+zdiff-folder-gui = { path = "../zdiff-folder-gui", optional = true }
 eframe = { version = "0.33.3", default-features = false, features = [
     "default_fonts",
     "accesskit",

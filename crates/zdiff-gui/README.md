@@ -122,7 +122,7 @@ In `~/.gitconfig` (inside the quotes, use forward slashes in the path):
     cmd = \"C:/Tools/zdiff-gui.exe\" \"$BASE\" \"$LOCAL\" \"$REMOTE\" \"$MERGED\"
     trustExitCode = true
 ```
-`git difftool -d` passes folders, which zdiff-gui rejects (use zdiff-folder-gui).
+`git difftool -d` passes two folders, which open in the folder diff (as does `zdiff-gui --folder [LEFT [RIGHT]]`; see zdiff-folder-gui).
 
 ### TortoiseSVN / TortoiseGit
 Settings > External Programs (TortoiseSVN) or Settings > Diff Viewer / Merge Tool (TortoiseGit), choose External.

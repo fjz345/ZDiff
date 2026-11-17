@@ -16,13 +16,7 @@ pub fn resolve_tool_exe(exe_path: &Path) -> Result<PathBuf, ExeNotFound> {
     let app_dir = env::current_exe()
         .ok()
         .and_then(|exe| exe.parent().map(Path::to_path_buf));
-    resolve_exe(
-        exe_path,
-        app_dir.as_deref(),
-        Some(Path::new(env!("ZDIFF_BIN_PATH"))),
-        Path::is_file,
-        find_on_path,
-    )
+    resolve_exe(exe_path, app_dir.as_deref(), Path::is_file, find_on_path)
 }
 
 fn write_test_files(dir: &Path) -> io::Result<(PathBuf, PathBuf)> {

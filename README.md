@@ -28,10 +28,11 @@ Good reference & aim for this project: https://www.scootersoftware.com/
 # Build
 ```
 cargo build --workspace
-cargo run -p zdiff-gui
-cargo run -p zdiff-folder-gui
+cargo run -p zdiff-gui                          # file diff
+cargo run -p zdiff-gui -- <folder> <folder>     # folder diff; --folder alone reopens the last folders
+cargo run -p zdiff-folder-gui                   # folder diff alone, for development
 ```
-Build `zdiff-gui` before `zdiff-folder-gui`: zdiff-folder-gui's build script bakes in the path to `zdiff-gui.exe` as the default external diff tool. The audio and video viewers need ffmpeg (`cargo xtask fetch-ffmpeg`).
+`zdiff-gui.exe` is the one shipped executable: two existing folders or `--folder` open the folder diff, anything else the file diff. The folder diff opens a file diff in a new process of the `zdiff-gui.exe` next to the running exe, so the development `zdiff-folder-gui` needs `zdiff-gui` built too. The audio and video viewers need ffmpeg (`cargo xtask fetch-ffmpeg`).
 
 # Todo
 

@@ -573,7 +573,6 @@ impl std::error::Error for ExeNotFound {}
 pub fn resolve_exe(
     exe: &Path,
     app_dir: Option<&Path>,
-    build_time_zdiff: Option<&Path>,
     is_file: impl Fn(&Path) -> bool,
     on_path: impl Fn(&Path) -> Option<PathBuf>,
 ) -> Result<PathBuf, ExeNotFound> {
@@ -586,21 +585,12 @@ pub fn resolve_exe(
         return Ok(exe.to_path_buf());
     }
 
-    let is_zdiff = |build_path: &&Path| {
-        build_path
-            .file_name()
-            .is_some_and(|name| name.eq_ignore_ascii_case(exe))
-    };
-    let candidates = app_dir
-        .map(|dir| dir.join(exe))
-        .into_iter()
-        .chain(build_time_zdiff.filter(is_zdiff).map(Path::to_path_buf));
     let mut searched = Vec::new();
-    for candidate in candidates {
-        if is_file(&candidate) {
-            return Ok(candidate);
+    if let Some(next_to_app) = app_dir.map(|dir| dir.join(exe)) {
+        if is_file(&next_to_app) {
+            return Ok(next_to_app);
         }
-        searched.push(candidate.display().to_string());
+        searched.push(next_to_app.display().to_string());
     }
     if let Some(found) = on_path(exe) {
         return Ok(found);
@@ -975,7 +965,6 @@ mod tests {
         let resolved = resolve_exe(
             &tool.exe_path,
             None,
-            None,
             |_| false,
             |name| Some(Path::new(r"D:\Tools").join(name)),
         );
@@ -1098,14 +1087,12 @@ mod tests {
         use super::*;
 
         const APP_DIR: &str = r"C:\apps\zdiff-folder";
-        const BUILD_ZDIFF: &str = r"E:\repo\target\debug\zdiff-gui.exe";
         const ON_PATH_DIR: &str = r"C:\tools";
 
         fn resolve(exe: &str, files: &[&str], path_files: &[&str]) -> Result<PathBuf, ExeNotFound> {
             resolve_exe(
                 Path::new(exe),
                 Some(Path::new(APP_DIR)),
-                Some(Path::new(BUILD_ZDIFF)),
                 |path| files.iter().any(|file| Path::new(file) == path),
                 |name| {
                     path_files
@@ -1120,20 +1107,8 @@ mod tests {
         fn bare_name_resolves_next_to_the_app_first() {
             let next_to_app = r"C:\apps\zdiff-folder\zdiff-gui.exe";
             assert_eq!(
-                resolve(
-                    "zdiff-gui.exe",
-                    &[next_to_app, BUILD_ZDIFF],
-                    &["zdiff-gui.exe"]
-                ),
+                resolve("zdiff-gui.exe", &[next_to_app], &["zdiff-gui.exe"]),
                 Ok(PathBuf::from(next_to_app))
-            );
-        }
-
-        #[test]
-        fn bare_zdiff_name_resolves_at_the_build_time_path() {
-            assert_eq!(
-                resolve("ZDiff-GUI.exe", &[BUILD_ZDIFF], &["ZDiff-GUI.exe"]),
-                Ok(PathBuf::from(BUILD_ZDIFF))
             );
         }
 
@@ -1146,12 +1121,11 @@ mod tests {
         }
 
         #[test]
-        fn other_bare_names_skip_the_build_time_path() {
+        fn any_bare_name_is_looked_up_next_to_the_app_then_on_path() {
             let resolve_other = |path_files: &[&str]| {
                 resolve_exe(
                     Path::new("TortoiseProc.exe"),
                     Some(Path::new(APP_DIR)),
-                    Some(Path::new(BUILD_ZDIFF)),
                     |_| false,
                     |name| {
                         path_files
@@ -1191,18 +1165,18 @@ mod tests {
             let err = resolve("zdiff-gui.exe", &[], &[]).unwrap_err();
             assert_eq!(
                 err.searched,
-                [r"C:\apps\zdiff-folder\zdiff-gui.exe", BUILD_ZDIFF, "PATH"]
+                [r"C:\apps\zdiff-folder\zdiff-gui.exe", "PATH"]
             );
             assert_eq!(
                 err.to_string(),
-                r"zdiff-gui.exe not found, searched: C:\apps\zdiff-folder\zdiff-gui.exe, E:\repo\target\debug\zdiff-gui.exe, PATH"
+                r"zdiff-gui.exe not found, searched: C:\apps\zdiff-folder\zdiff-gui.exe, PATH"
             );
         }
 
         #[test]
-        fn missing_app_dir_and_build_path_go_straight_to_path() {
-            let err = resolve_exe(Path::new("zdiff-gui.exe"), None, None, |_| true, |_| None)
-                .unwrap_err();
+        fn missing_app_dir_goes_straight_to_path() {
+            let err =
+                resolve_exe(Path::new("zdiff-gui.exe"), None, |_| true, |_| None).unwrap_err();
             assert_eq!(err.searched, ["PATH"]);
         }
     }
