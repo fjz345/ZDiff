@@ -70,7 +70,7 @@ impl ZApp {
 
     /// Undoes or redoes the latest revert in this diff. Both sides reload after a write, and
     /// after a refusal for a file that changed on disk.
-    pub(super) fn step_revert_history(app_ctx: &mut AppStateCtx, step: HistoryStep) {
+    pub(super) fn step_revert_history(app_ctx: &mut AppStateCtx, step: HistoryStep) -> bool {
         let (name, since) = match step {
             HistoryStep::Undo => ("Undo", "the revert"),
             HistoryStep::Redo => ("Redo", "the undo"),
@@ -78,6 +78,7 @@ impl ZApp {
         let stepped = app_ctx
             .revert_history
             .step(step, revert::write_history_step(&std::env::temp_dir()));
+        let written = matches!(stepped, Some((_, Ok(()))));
         let reload = match stepped {
             None => {
                 log::info!("{name}: no revert to {}", name.to_lowercase());
@@ -105,5 +106,6 @@ impl ZApp {
             app_ctx.diff_processor.reset_ctx();
             Self::refresh_file_contents(&mut app_ctx.file_1, &mut app_ctx.file_2);
         }
+        written
     }
 }

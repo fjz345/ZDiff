@@ -11,7 +11,80 @@ pub struct NavSnapshot {
     browser_folders: [Option<String>; 2],
 }
 
-pub type NavHistory = SnapshotHistory<NavSnapshot>;
+#[derive(Debug, Clone, Copy)]
+enum Action {
+    Navigation,
+    Revert,
+}
+
+enum Stepped {
+    Navigation(Box<NavSnapshot>),
+    Revert,
+}
+
+#[derive(Debug, Default)]
+pub struct NavHistory {
+    snapshots: SnapshotHistory<NavSnapshot>,
+    undo_order: Vec<Action>,
+    redo_order: Vec<Action>,
+}
+
+impl NavHistory {
+    fn observe(&mut self, now: &NavSnapshot) {
+        let changed = self
+            .snapshots
+            .newest_first()
+            .next()
+            .is_some_and(|current| current != now);
+        self.snapshots.observe(now);
+        if changed {
+            self.record(Action::Navigation);
+        }
+    }
+
+    pub fn revert_recorded(&mut self) {
+        self.snapshots.clear_redo();
+        self.record(Action::Revert);
+    }
+
+    fn record(&mut self, action: Action) {
+        self.undo_order.push(action);
+        self.redo_order.clear();
+    }
+
+    fn order(&mut self, step: HistoryStep) -> (&mut Vec<Action>, &mut Vec<Action>) {
+        match step {
+            HistoryStep::Undo => (&mut self.undo_order, &mut self.redo_order),
+            HistoryStep::Redo => (&mut self.redo_order, &mut self.undo_order),
+        }
+    }
+
+    fn step(&mut self, step: HistoryStep, revert_can_step: bool) -> Option<Stepped> {
+        loop {
+            let latest = *self.order(step).0.last()?;
+            let stepped = match latest {
+                Action::Revert if revert_can_step => return Some(Stepped::Revert),
+                // Its pair is no longer shown, or its file changed on disk.
+                Action::Revert => None,
+                Action::Navigation => self
+                    .snapshots
+                    .step(step)
+                    .map(|snapshot| Stepped::Navigation(Box::new(snapshot))),
+            };
+            let (from, to) = self.order(step);
+            let action = from.pop();
+            if stepped.is_some() {
+                to.extend(action);
+                return stepped;
+            }
+        }
+    }
+
+    fn revert_stepped(&mut self, step: HistoryStep) {
+        let (from, to) = self.order(step);
+        to.extend(from.pop());
+    }
+}
 
 fn read_side(file: &mut FileProcessor) -> (UniversalPath, Option<String>) {
     (file.get_full_path(), file.label().map(str::to_owned))
@@ -56,6 +129,7 @@ fn previous_side<'a>(
     current: &UniversalPath,
 ) -> Option<&'a (UniversalPath, Option<String>)> {
     history
+        .snapshots
         .newest_first()
         .map(|snapshot| &snapshot.sides[side])
         .find(|(path, _)| path != current)
@@ -86,19 +160,20 @@ fn file_name(path: &UniversalPath) -> String {
 impl ZApp {
     pub(super) fn step_history(app_ctx: &mut AppStateCtx, step: HistoryStep) {
         app_ctx.observe_history();
-        // Reverts are the latest actions on the shown pair: its history is cleared on a change.
-        if app_ctx.revert_history.can_step(step) {
-            Self::step_revert_history(app_ctx, step);
-            return;
-        }
-        match app_ctx.nav_history.step(step) {
-            Some(snapshot) => {
+        let revert_can_step = app_ctx.revert_history.can_step(step);
+        match app_ctx.nav_history.step(step, revert_can_step) {
+            Some(Stepped::Revert) => {
+                if Self::step_revert_history(app_ctx, step) {
+                    app_ctx.nav_history.revert_stepped(step);
+                }
+            }
+            Some(Stepped::Navigation(snapshot)) => {
                 log::info!(
                     "{step:?}: {} | {}",
                     snapshot.sides[0].0,
                     snapshot.sides[1].0
                 );
-                app_ctx.apply_nav(snapshot);
+                app_ctx.apply_nav(*snapshot);
             }
             None => log::info!("{step:?}: nothing to step"),
         }
@@ -107,7 +182,7 @@ impl ZApp {
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
 
     use super::*;
     use crate::revert::RevertRecord;
@@ -149,6 +224,7 @@ mod tests {
             before: b"before".to_vec(),
             after: b"after".to_vec(),
         });
+        ctx.nav_history.revert_recorded();
 
         ZApp::step_history(&mut ctx, Undo);
         assert!(!ctx.revert_history.can_step(Undo));
@@ -242,6 +318,109 @@ mod tests {
         ZApp::step_history(&mut ctx, Redo);
         assert_eq!(browsers(&ctx), [None, None]);
         assert_eq!(paths(&mut ctx)[0], picked);
+    }
+
+    fn diff_of_a_writable_file() -> (tempfile::TempDir, AppStateCtx, PathBuf) {
+        let outside_the_os_temp_dir = std::env::current_exe().unwrap();
+        let dir = tempfile::tempdir_in(outside_the_os_temp_dir.parent().unwrap()).unwrap();
+        let file = dir.path().join("a.rs");
+        std::fs::write(&file, "before").unwrap();
+        let mut ctx = AppStateCtx::default();
+        ctx.file_1.set_path(UniversalPath::from(file.clone()));
+        ctx.file_2.set_path(UniversalPath::from(r"C:\ws\src\b.rs"));
+        ctx.observe_history();
+        (dir, ctx, file)
+    }
+
+    fn revert(ctx: &mut AppStateCtx, file: &Path) {
+        std::fs::write(file, "after").unwrap();
+        ctx.revert_history.record(RevertRecord {
+            path: file.to_owned(),
+            before: b"before".to_vec(),
+            after: b"after".to_vec(),
+        });
+        ctx.nav_history.revert_recorded();
+    }
+
+    fn contents(file: &Path) -> String {
+        std::fs::read_to_string(file).unwrap()
+    }
+
+    #[test]
+    fn back_closes_a_folder_view_opened_after_a_revert_before_undoing_the_revert() {
+        let (_dir, mut ctx, file) = diff_of_a_writable_file();
+        revert(&mut ctx, &file);
+        ctx.browser_folders[0] = Some(r"C:\ws".to_owned());
+        ctx.observe_history();
+        ctx.browser_folders[0] = Some(r"C:\".to_owned());
+        ctx.observe_history();
+
+        ZApp::step_history(&mut ctx, Undo);
+        assert_eq!(browsers(&ctx), [Some(r"C:\ws"), None]);
+        ZApp::step_history(&mut ctx, Undo);
+        assert_eq!(browsers(&ctx), [None, None]);
+        assert_eq!(contents(&file), "after");
+        ZApp::step_history(&mut ctx, Undo);
+        assert_eq!(contents(&file), "before");
+
+        ZApp::step_history(&mut ctx, Redo);
+        assert_eq!(contents(&file), "after");
+        assert_eq!(browsers(&ctx), [None, None]);
+        ZApp::step_history(&mut ctx, Redo);
+        assert_eq!(browsers(&ctx), [Some(r"C:\ws"), None]);
+        ZApp::step_history(&mut ctx, Redo);
+        assert_eq!(browsers(&ctx), [Some(r"C:\"), None]);
+    }
+
+    #[test]
+    fn a_revert_made_after_a_folder_view_was_closed_is_undone_before_the_view_reopens() {
+        let (_dir, mut ctx, file) = diff_of_a_writable_file();
+        ctx.browser_folders[1] = Some(r"C:\ws".to_owned());
+        ctx.observe_history();
+        ctx.browser_folders[1] = None;
+        ctx.observe_history();
+        revert(&mut ctx, &file);
+        ctx.sides_swapped = true;
+
+        ZApp::step_history(&mut ctx, Undo);
+        assert!(!ctx.sides_swapped);
+        assert_eq!(contents(&file), "after");
+        ZApp::step_history(&mut ctx, Undo);
+        assert_eq!(contents(&file), "before");
+        assert_eq!(browsers(&ctx), [None, None]);
+        ZApp::step_history(&mut ctx, Undo);
+        assert_eq!(browsers(&ctx), [None, Some(r"C:\ws")]);
+
+        ZApp::step_history(&mut ctx, Redo);
+        assert_eq!(browsers(&ctx), [None, None]);
+        assert_eq!(contents(&file), "before");
+        ZApp::step_history(&mut ctx, Redo);
+        assert_eq!(contents(&file), "after");
+        assert!(!ctx.sides_swapped);
+        ZApp::step_history(&mut ctx, Redo);
+        assert!(ctx.sides_swapped);
+    }
+
+    #[test]
+    fn a_revert_of_a_pair_navigated_away_from_does_not_swallow_a_back() {
+        let (_dir, mut ctx, file) = diff_of_a_writable_file();
+        let pair = paths(&mut ctx);
+        revert(&mut ctx, &file);
+        ctx.file_2.set_path(UniversalPath::from(r"C:\ws\src\c.rs"));
+        ctx.observe_history();
+        ctx.browser_folders[0] = Some(r"C:\ws".to_owned());
+        ctx.observe_history();
+
+        ZApp::step_history(&mut ctx, Undo);
+        assert_eq!(browsers(&ctx), [None, None]);
+        ZApp::step_history(&mut ctx, Undo);
+        assert_eq!(paths(&mut ctx), pair);
+        ZApp::step_history(&mut ctx, Undo);
+        assert_eq!(paths(&mut ctx), pair);
+        assert_eq!(contents(&file), "after");
+
+        ZApp::step_history(&mut ctx, Redo);
+        assert_eq!(paths(&mut ctx)[1], UniversalPath::from(r"C:\ws\src\c.rs"));
     }
 
     #[test]

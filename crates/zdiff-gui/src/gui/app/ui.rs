@@ -488,7 +488,7 @@ impl ZApp {
                         };
                         if let Some(result) = result {
                             if result.is_ok() {
-                                nav_history.clear_redo();
+                                nav_history.revert_recorded();
                             }
                             Self::finish_revert_write(
                                 result,
@@ -541,7 +541,7 @@ impl ZApp {
                         let p4 = P4Command::new(false).for_file(UniversalPath::Local(path.clone()));
                         let result = pending.confirm(&std::env::temp_dir(), &p4);
                         if result.is_ok() {
-                            nav_history.clear_redo();
+                            nav_history.revert_recorded();
                         }
                         Self::finish_revert_write(
                             result,
