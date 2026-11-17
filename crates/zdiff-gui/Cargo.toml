@@ -3,6 +3,10 @@ name = "zdiff-gui"
 version = "2.1.0"
 edition = "2024"
 
+[lib]
+path = "src/gui/lib.rs"
+doctest = false
+
 [[bin]]
 name = "zdiff-gui"
 path = "src/gui/main.rs"
