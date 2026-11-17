@@ -239,6 +239,28 @@ pub(super) fn browser_pick(
     requests
 }
 
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum BrowserChange {
+    Open(String),
+    Close,
+}
+
+pub(super) fn browser_change(
+    clicked_folder: Option<String>,
+    history_folder: Option<&str>,
+    shown_folder: Option<&str>,
+) -> Option<BrowserChange> {
+    if let Some(folder) = clicked_folder {
+        return Some(BrowserChange::Open(folder));
+    }
+    if history_folder == shown_folder {
+        return None;
+    }
+    Some(history_folder.map_or(BrowserChange::Close, |folder| {
+        BrowserChange::Open(folder.to_owned())
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     mod path_bar {
@@ -461,6 +483,33 @@ mod tests {
                     [Some(&root), None]
                 ),
                 [file_path_request(picked, &left, Some(&root)), None]
+            );
+        }
+
+        #[test]
+        fn a_browser_follows_a_click_then_the_history_and_else_stays() {
+            use super::super::{BrowserChange, browser_change};
+
+            let open = |folder: &str| Some(BrowserChange::Open(folder.to_owned()));
+            assert_eq!(
+                browser_change(Some(r"C:\ws".to_owned()), None, None),
+                open(r"C:\ws")
+            );
+            assert_eq!(
+                browser_change(Some(r"C:\ws".to_owned()), Some(r"C:\ws"), Some(r"C:\ws")),
+                open(r"C:\ws"),
+                "anew: the side may have switched local <-> depot"
+            );
+            assert_eq!(browser_change(None, None, None), None);
+            assert_eq!(browser_change(None, Some(r"C:\ws"), Some(r"C:\ws")), None);
+            assert_eq!(browser_change(None, Some(r"C:\ws"), None), open(r"C:\ws"));
+            assert_eq!(
+                browser_change(None, Some(r"C:\ws"), Some(r"C:\ws\src")),
+                open(r"C:\ws")
+            );
+            assert_eq!(
+                browser_change(None, None, Some(r"C:\ws")),
+                Some(BrowserChange::Close)
             );
         }
 

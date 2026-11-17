@@ -88,6 +88,8 @@ pub struct AppStateCtx {
     #[cfg_attr(feature = "serde", serde(skip), serde(default))]
     pub nav_history: NavHistory,
     #[cfg_attr(feature = "serde", serde(skip), serde(default))]
+    pub browser_folders: [Option<String>; 2],
+    #[cfg_attr(feature = "serde", serde(skip), serde(default))]
     pub toggle_all: ToggleAll,
 
     pub diff_options: DiffBuilderOptions,
@@ -193,6 +195,7 @@ impl Default for AppStateCtx {
             pdb_options: Default::default(),
             revert_history: Default::default(),
             nav_history: Default::default(),
+            browser_folders: [None, None],
             toggle_all: Default::default(),
             scroll_left: Default::default(),
             scroll_right: Default::default(),

@@ -117,6 +117,10 @@ impl FolderBrowser {
         browser
     }
 
+    pub fn folder(&self) -> &str {
+        &self.folder
+    }
+
     pub fn navigate(&mut self, _ctx: &egui::Context, folder: String) {
         self.navigate_to(folder);
     }

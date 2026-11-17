@@ -8,6 +8,7 @@ use crate::file::FileProcessor;
 pub struct NavSnapshot {
     sides: [(UniversalPath, Option<String>); 2],
     sides_swapped: bool,
+    browser_folders: [Option<String>; 2],
 }
 
 pub type NavHistory = SnapshotHistory<NavSnapshot>;
@@ -21,6 +22,7 @@ impl AppStateCtx {
         NavSnapshot {
             sides: [read_side(&mut self.file_1), read_side(&mut self.file_2)],
             sides_swapped: self.sides_swapped,
+            browser_folders: self.browser_folders.clone(),
         }
     }
 
@@ -36,6 +38,7 @@ impl AppStateCtx {
         self.file_1.restore_path(path_1, label_1);
         self.file_2.restore_path(path_2, label_2);
         self.sides_swapped = snapshot.sides_swapped;
+        self.browser_folders = snapshot.browser_folders;
     }
 }
 
@@ -173,6 +176,72 @@ mod tests {
             UniversalPath::from("//depot/main/a.rs#3")
         );
         assert_eq!(ctx.file_1.label(), Some("Shelf base"));
+    }
+
+    fn browsers(ctx: &AppStateCtx) -> [Option<&str>; 2] {
+        ctx.browser_folders.each_ref().map(Option::as_deref)
+    }
+
+    fn diff_of_two_files() -> AppStateCtx {
+        let mut ctx = AppStateCtx::default();
+        ctx.file_1.set_path(UniversalPath::from(r"C:\ws\src\a.rs"));
+        ctx.file_2.set_path(UniversalPath::from(r"C:\ws\src\b.rs"));
+        ctx.observe_history();
+        ctx
+    }
+
+    #[test]
+    fn back_closes_the_parent_folder_view_and_forward_opens_it_again() {
+        let mut ctx = diff_of_two_files();
+        let diff = paths(&mut ctx);
+        ctx.browser_folders[0] = Some(r"C:\ws\src".to_owned());
+        ctx.observe_history();
+
+        ZApp::step_history(&mut ctx, Undo);
+        assert_eq!(browsers(&ctx), [None, None]);
+        assert_eq!(paths(&mut ctx), diff);
+        ZApp::step_history(&mut ctx, Redo);
+        assert_eq!(browsers(&ctx), [Some(r"C:\ws\src"), None]);
+        assert_eq!(paths(&mut ctx), diff);
+    }
+
+    #[test]
+    fn back_from_the_parents_parent_shows_the_parent_folder_again() {
+        let mut ctx = diff_of_two_files();
+        ctx.browser_folders[1] = Some(r"C:\ws\src".to_owned());
+        ctx.observe_history();
+        ctx.browser_folders[1] = Some(r"C:\ws".to_owned());
+        ctx.observe_history();
+
+        ZApp::step_history(&mut ctx, Undo);
+        assert_eq!(browsers(&ctx), [None, Some(r"C:\ws\src")]);
+        ZApp::step_history(&mut ctx, Redo);
+        assert_eq!(browsers(&ctx), [None, Some(r"C:\ws")]);
+    }
+
+    #[test]
+    fn back_from_a_picked_file_reopens_its_folder_then_the_diff_before() {
+        let mut ctx = diff_of_two_files();
+        let diff = paths(&mut ctx);
+        ctx.browser_folders[0] = Some(r"C:\ws".to_owned());
+        ctx.observe_history();
+        let picked = UniversalPath::from(r"C:\ws\c.rs");
+        ctx.file_1.set_path(picked.clone());
+        ctx.browser_folders[0] = None;
+        ctx.observe_history();
+
+        ZApp::step_history(&mut ctx, Undo);
+        assert_eq!(browsers(&ctx), [Some(r"C:\ws"), None]);
+        assert_eq!(paths(&mut ctx), diff);
+        ZApp::step_history(&mut ctx, Undo);
+        assert_eq!(browsers(&ctx), [None, None]);
+        assert_eq!(paths(&mut ctx), diff);
+
+        ZApp::step_history(&mut ctx, Redo);
+        assert_eq!(browsers(&ctx), [Some(r"C:\ws"), None]);
+        ZApp::step_history(&mut ctx, Redo);
+        assert_eq!(browsers(&ctx), [None, None]);
+        assert_eq!(paths(&mut ctx)[0], picked);
     }
 
     #[test]

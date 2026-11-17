@@ -230,6 +230,45 @@ fn the_fps_label_turning_idle_costs_one_frame() {
     assert!(!ctx.has_requested_repaint());
 }
 
+fn mouse_button_click(button: egui::PointerButton) -> Vec<egui::Event> {
+    [true, false]
+        .map(|pressed| egui::Event::PointerButton {
+            pos: egui::Pos2::ZERO,
+            button,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        })
+        .to_vec()
+}
+
+#[test]
+fn the_mouse_back_and_forward_buttons_close_and_reopen_a_folder_view() {
+    let dir = tempdir().unwrap();
+    let pair = write_pair(dir.path(), "txt", b"a\nb\n", b"a\nc\n");
+    let (ctx, mut app) = loaded_app(&pair, |_| {});
+    let folder = dir.path().to_string_lossy().into_owned();
+    let shown_after =|app: &mut ZApp, events: Vec<egui::Event>| {
+        run_frame(&ctx, app, SCREEN.x, events);
+        run_frame(&ctx, app, SCREEN.x, Vec::new());
+        let state = app.state.as_mut().unwrap().ctx_mut();
+        state.browser_folders.clone()
+    };
+
+    app.state.as_mut().unwrap().ctx_mut().browser_folders[0] = Some(folder.clone());
+    assert_eq!(
+        shown_after(&mut app, Vec::new()),
+        [Some(folder.clone()), None]
+    );
+    assert_eq!(
+        shown_after(&mut app, mouse_button_click(egui::PointerButton::Extra1)),
+        [None, None]
+    );
+    assert_eq!(
+        shown_after(&mut app, mouse_button_click(egui::PointerButton::Extra2)),
+        [Some(folder), None]
+    );
+}
+
 #[test]
 fn an_idle_text_diff_stops_repainting_after_pointer_motion() {
     let dir = tempdir().unwrap();

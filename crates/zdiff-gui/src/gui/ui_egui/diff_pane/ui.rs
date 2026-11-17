@@ -1321,15 +1321,20 @@ impl FileDiffPane {
             if back[i] {
                 *ctx.back_to_previous_request = Some(side);
             }
-            if let Some(folder) = browse[i].take() {
-                // Opened anew even when one is open: the side may have switched local <-> depot.
-                let source: Arc<dyn FolderSource> =
-                    if UniversalPath::from(folder.as_str()).is_depot() {
-                        Arc::new(DepotFolder)
-                    } else {
-                        Arc::new(LocalFolder)
-                    };
-                self.browsers[i] = Some(FolderBrowser::open(&egui_ctx, folder, source));
+            let shown = self.browsers[i].as_ref().map(FolderBrowser::folder);
+            match browser_change(browse[i].take(), ctx.browser_folders[i].as_deref(), shown) {
+                Some(BrowserChange::Open(folder)) => {
+                    // Opened anew even when one is open: the side may have switched local <-> depot.
+                    let source: Arc<dyn FolderSource> =
+                        if UniversalPath::from(folder.as_str()).is_depot() {
+                            Arc::new(DepotFolder)
+                        } else {
+                            Arc::new(LocalFolder)
+                        };
+                    self.browsers[i] = Some(FolderBrowser::open(&egui_ctx, folder, source));
+                }
+                Some(BrowserChange::Close) => self.browsers[i] = None,
+                None => {}
             }
             let Some(browser) = self.browsers[i]
                 .as_mut()
@@ -1382,6 +1387,10 @@ impl FileDiffPane {
         {
             self.browsers = [None, None];
         }
+        *ctx.browser_folders = self
+            .browsers
+            .each_ref()
+            .map(|browser| browser.as_ref().map(|browser| browser.folder().to_owned()));
 
         let active_rect = side_rects[h_scroll::side_index(active_side)];
         if active_rect.is_positive() && !welcome {
