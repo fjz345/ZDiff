@@ -307,8 +307,7 @@ pub type CollapsedBlocks = Vec<CollapsedBlock>;
 pub struct RowBlock {
     /// `CollapsedBlock::row` of the block.
     pub key: usize,
-    /// The rows revealed at the block's top, its `Collapsed` row while any row is hidden, the rows
-    /// revealed at its bottom.
+    /// Revealed top rows, the `Collapsed` row while any row is hidden, revealed bottom rows.
     pub rows: Range<usize>,
     /// 0 once every row is revealed.
     pub top: usize,
@@ -2260,8 +2259,7 @@ fn remap_row(from: &[RowBlock], to: &[RowBlock], row: usize) -> usize {
     // Shown rows minus unexpanded rows, after a block.
     let shift = |block: &RowBlock| block.rows.end - (block.key + 1);
 
-    // A row inside a block is identified by its index among the block's hidden rows; a Collapsed
-    // row by the first row it hides. `None` for rows outside blocks.
+    // In a block: the index among its hidden rows (a Collapsed row is the first row it hides).
     let mut unexpanded = (row, None);
     for block in from {
         if row < block.rows.start {

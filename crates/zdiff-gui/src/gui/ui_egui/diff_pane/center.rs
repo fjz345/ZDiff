@@ -43,8 +43,7 @@ pub(super) fn block_toggle_buttons(
 /// The action of each of `CenterLayout::block_slots`.
 fn block_buttons(block: &RowBlock, shown_rows: usize) -> [Option<BlockToggle>; 4] {
     let [down, up] = block.steps(shown_rows);
-    // Scope only on a fully collapsed block: once rows are revealed, the scope expansion has been
-    // done or wouldn't add anything.
+    // Once rows are revealed, expanding to scope is done or adds nothing.
     let fully_collapsed = !block.expanded() && block.rows.len() == 1;
     [
         (!block.expanded()).then_some(BlockToggle::Expand),
