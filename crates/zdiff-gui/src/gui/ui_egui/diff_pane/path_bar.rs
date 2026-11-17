@@ -3,6 +3,7 @@ use super::*;
 const DROP_ZONE_INSET: f32 = 8.0;
 const DROP_ZONE_DASH: f32 = 6.0;
 const DROP_ZONE_GAP: f32 = 4.0;
+const MIN_STATE_WIDTH: f32 = 120.0;
 
 pub(super) fn handle_drops(
     ui: &egui::Ui,
@@ -134,6 +135,60 @@ pub(super) fn no_diff_state(error: Option<String>, loading: bool, any_path: bool
         // A load can finish after this frame's diff request was decided; the diff starts next.
         None if any_path => NoDiffState::Loading("Comparing files..."),
         None => NoDiffState::Welcome,
+    }
+}
+
+pub(super) fn uncovered_state_rect(
+    area: egui::Rect,
+    browsers: [Option<egui::Rangef>; 2],
+) -> Option<egui::Rect> {
+    let mut uncovered = vec![area.x_range()];
+    for browser in browsers.into_iter().flatten() {
+        uncovered = uncovered
+            .into_iter()
+            .flat_map(|span| {
+                [
+                    egui::Rangef::new(span.min, span.max.min(browser.min)),
+                    egui::Rangef::new(span.min.max(browser.max), span.max),
+                ]
+            })
+            .filter(|span| span.span() > 0.0)
+            .collect();
+    }
+    uncovered
+        .into_iter()
+        .max_by(|a, b| a.span().total_cmp(&b.span()))
+        .filter(|widest| widest.span() >= MIN_STATE_WIDTH)
+        .map(|widest| egui::Rect::from_x_y_ranges(widest, area.y_range()))
+}
+
+pub(super) fn compared_names(paths: [&UniversalPath; 2], labels: [Option<&str>; 2]) -> String {
+    let [left, right] = [0, 1].map(|side| {
+        file_path_segments(paths[side], labels[side])
+            .pop()
+            .map(|file| file.name)
+            .filter(|name| !name.is_empty())
+    });
+    match (left, right) {
+        (Some(left), Some(right)) if left != right => format!("{left}  vs  {right}"),
+        (left, right) => left.or(right).unwrap_or_default(),
+    }
+}
+
+pub(super) fn pane_state_beside_browsers(
+    ui: &mut egui::Ui,
+    browsers: [Option<egui::Rangef>; 2],
+    add_state: impl FnOnce(&mut egui::Ui),
+) {
+    let rest = ui.available_rect_before_wrap();
+    match uncovered_state_rect(rest, browsers) {
+        Some(rect) => {
+            ui.scope_builder(UiBuilder::new().max_rect(rect), add_state);
+        }
+        // Still allocated: the browsers reach down to the bottom of the pane's content.
+        None => {
+            ui.allocate_rect(rest, egui::Sense::hover());
+        }
     }
 }
 
@@ -499,6 +554,54 @@ mod tests {
                 no_diff_state(Some("Left: gone".to_owned()), true, true),
                 NoDiffState::Error("Left: gone".to_owned())
             );
+        }
+
+        #[test]
+        fn a_pane_state_is_laid_out_beside_an_open_folder_browser() {
+            use super::super::uncovered_state_rect;
+            use eframe::egui::{Rangef, Rect, pos2};
+
+            let area = Rect::from_min_max(pos2(0.0, 40.0), pos2(1000.0, 600.0));
+            let (left, right) = (Rangef::new(0.0, 490.0), Rangef::new(510.0, 1000.0));
+            let beside = |x_min: f32, x_max: f32| {
+                Some(Rect::from_min_max(pos2(x_min, 40.0), pos2(x_max, 600.0)))
+            };
+
+            assert_eq!(uncovered_state_rect(area, [None, None]), Some(area));
+            assert_eq!(
+                uncovered_state_rect(area, [Some(left), None]),
+                beside(490.0, 1000.0)
+            );
+            assert_eq!(
+                uncovered_state_rect(area, [None, Some(right)]),
+                beside(0.0, 510.0)
+            );
+            assert_eq!(uncovered_state_rect(area, [Some(left), Some(right)]), None);
+            assert_eq!(
+                uncovered_state_rect(area, [Some(Rangef::new(0.0, 1000.0)), None]),
+                None
+            );
+        }
+
+        #[test]
+        fn a_waiting_pane_names_the_files_it_compares() {
+            use super::super::compared_names;
+
+            let left = UniversalPath::from(r"C:\ws\old\a.rs");
+            let right = UniversalPath::from("//depot/main/b.rs");
+            let none = UniversalPath::from("");
+
+            assert_eq!(
+                compared_names([&left, &right], [None, None]),
+                "a.rs  vs  b.rs"
+            );
+            assert_eq!(
+                compared_names([&left, &right], [None, Some("b.rs#3")]),
+                "a.rs  vs  b.rs#3"
+            );
+            assert_eq!(compared_names([&left, &left], [None, None]), "a.rs");
+            assert_eq!(compared_names([&none, &right], [None, None]), "b.rs");
+            assert_eq!(compared_names([&none, &none], [None, None]), "");
         }
 
         #[test]

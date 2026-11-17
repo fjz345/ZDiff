@@ -97,7 +97,7 @@ use zcommon_ui::{
     h_scroll,
     keymap::{Action, Keymap},
     pane::{
-        ZAppPane, empty_state, error_state, loading_state, options_menu_button, toolbar,
+        ZAppPane, empty_state, error_state, options_menu_button, titled_loading_state, toolbar,
         toolbar_end, toolbar_group,
     },
     pathbar::{PathBarAction, paint_busy, path_bar},

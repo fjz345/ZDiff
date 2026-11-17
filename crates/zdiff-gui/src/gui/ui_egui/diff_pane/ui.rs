@@ -403,6 +403,7 @@ impl FileDiffPane {
         let mut header_rects = [egui::Rect::NOTHING; 2];
         let mut browse: [Option<String>; 2] = [None, None];
         let mut back = [false; 2];
+        let browser_open = self.browsers.each_ref().map(Option::is_some);
         let content_rect = ui.vertical(|ui| {
             ui.set_min_width(available_width);
 
@@ -1236,15 +1237,33 @@ impl FileDiffPane {
                 });
             }
 
-            if waiting_for_diff {
-                loading_state(ui, "Comparing files...");
-            } else if let Some(state) = no_diff {
+            let no_diff = if waiting_for_diff {
+                Some(NoDiffState::Loading("Comparing files..."))
+            } else {
+                no_diff
+            };
+            if let Some(state) = no_diff {
+                let browsers = [0, 1].map(|side| {
+                    (browser_open[side] && header_rects[side].is_positive())
+                        .then(|| header_rects[side].x_range())
+                });
                 match state {
                     NoDiffState::Error(error) => {
-                        error_state(ui, &error);
+                        pane_state_beside_browsers(ui, browsers, |ui| {
+                            error_state(ui, &error);
+                        });
                     }
                     NoDiffState::Loading(text) => {
-                        loading_state(ui, text);
+                        let names = compared_names(
+                            [&ctx.file_source_path, &ctx.file_target_path],
+                            [
+                                ctx.file_source_label.as_deref(),
+                                ctx.file_target_label.as_deref(),
+                            ],
+                        );
+                        pane_state_beside_browsers(ui, browsers, |ui| {
+                            titled_loading_state(ui, text, &names);
+                        });
                     }
                     NoDiffState::Welcome => {
                         let body = side_rects[0].union(side_rects[1]);

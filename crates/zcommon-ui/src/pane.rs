@@ -154,6 +154,18 @@ pub fn loading_state(ui: &mut egui::Ui, label: &str) -> egui::Response {
     .response
 }
 
+pub fn titled_loading_state(ui: &mut egui::Ui, title: &str, detail: &str) -> egui::Response {
+    pane_state(ui, |ui| {
+        ui.label(egui::RichText::new(title).heading().strong());
+        if !detail.is_empty() {
+            ui.label(detail);
+        }
+        ui.add_space(STATE_GAP);
+        ui.add(egui::Spinner::new().size(LOADING_SPINNER_SIZE));
+    })
+    .response
+}
+
 pub fn error_state(ui: &mut egui::Ui, error: &str) -> egui::Response {
     pane_state(ui, |ui| {
         ui.colored_label(ui.visuals().error_fg_color, error);
