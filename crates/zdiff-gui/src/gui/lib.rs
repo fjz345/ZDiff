@@ -13,7 +13,7 @@ use std::{
 use crate::{
     app::ZApp,
     cli::LaunchMode,
-    folder::{roots::parse_launch_args, view::ZApp as FolderZApp},
+    folder::{ZApp as FolderZApp, roots::parse_launch_args},
 };
 
 mod app;
@@ -82,7 +82,7 @@ fn run_file_diff() -> ExitCode {
 }
 
 fn run_folder_diff(folder_args: Vec<OsString>) -> ExitCode {
-    let (_, log_buffer) = zcommon_ui::app::start_logging(FOLDER_APP_ID, || {
+    zcommon_ui::app::start_logging(FOLDER_APP_ID, || {
         #[cfg(feature = "pretty-backtrace")]
         color_backtrace::install();
     });
@@ -91,7 +91,7 @@ fn run_folder_diff(folder_args: Vec<OsString>) -> ExitCode {
     let result = zcommon_ui::app::run(
         FOLDER_APP_ID,
         include_bytes!("../../img/icon.png"),
-        move || FolderZApp::new(log_buffer),
+        FolderZApp::new,
         move |app, cc| {
             app.remember_window_from(cc.storage);
             app.request_init();

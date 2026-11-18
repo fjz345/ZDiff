@@ -22,13 +22,10 @@ use zcommon::{
     vcs::{git::GitCommand, p4::P4Command},
 };
 use zcommon_ui::{
-    app::{default_zoom, deserialize_zoom, sync_zoom},
     find_popup::{FindPopupEvent, find_popup},
     frame_stats::{self, FrameStats},
     keymap::{Keymap, menu_item},
-    shared_keymap::load_shared,
     style_window::StyleWindow,
-    window_memory::WindowMemory,
 };
 use zdiff_folder::{
     external_diff_tool::DiffToolConfig, filter::PathFilter, fs::FileSystemModel, scan::ScanOutput,
@@ -837,25 +834,20 @@ pub(crate) fn finish_side_scan(
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-enum AppState {
-    Startup(FolderState),
-    Idle(FolderState),
-    Exit(),
+pub struct FolderShell<'a> {
+    pub frame_stats: &'a mut FrameStats,
+    pub show_frame_breakdown: &'a mut bool,
+    pub style_window: &'a mut StyleWindow,
 }
 
-impl Default for AppState {
-    fn default() -> Self {
-        AppState::Startup(FolderState::default())
-    }
+#[derive(Default, Serialize, Deserialize)]
+pub struct FolderView {
+    state: FolderState,
+    panes: FolderPanes,
 }
 
 #[derive(Serialize, Deserialize)]
-pub struct ZApp {
-    #[serde(default = "default_zoom", deserialize_with = "deserialize_zoom")]
-    zoom: f32,
-    // Option > Hack to avoid cloning state when matching &mut self.state in update loop
-    state: Option<AppState>,
+struct FolderPanes {
     tree: egui_tiles::Tree<Pane>,
     #[serde(skip, default = "restored_log_buffer")]
     log_buffer: LogBuffer,
@@ -870,21 +862,11 @@ pub struct ZApp {
     #[serde(skip)]
     keybindings_window: KeybindingsWindow,
     #[serde(skip)]
-    style_window: StyleWindow,
-    #[serde(skip)]
     find_open: bool,
     #[serde(skip)]
     export_requested: bool,
     #[serde(skip)]
-    title: String,
-    #[serde(skip)]
-    window_memory: WindowMemory,
-    #[serde(skip)]
-    frame_stats: FrameStats,
-    #[serde(skip)]
     last_discard_frame: Option<u64>,
-    #[serde(default)]
-    show_frame_breakdown: bool,
 }
 
 const LONG_FRAME: Duration = Duration::from_millis(200);
@@ -919,67 +901,51 @@ fn restored_log_buffer() -> LogBuffer {
     logger::global_log_buffer().unwrap_or_default()
 }
 
-impl ZApp {
-    pub fn remember_window_from(&mut self, storage: Option<&dyn eframe::Storage>) {
-        self.window_memory = WindowMemory::load(storage);
+pub fn on_exit() {
+    revision_open::remove_all();
+}
+
+impl FolderView {
+    pub fn frame(&mut self, ctx: &egui::Context, mut shell: FolderShell<'_>) {
+        let Self { state, panes } = self;
+        panes.frame(ctx, state, &mut shell);
     }
 
-    pub fn request_init(&mut self) {
-        // if self.state.ctx().hash_service.is_none() {
-        // self.state.ctx().hash_service = HashService::default();
-        // }
-        self.state = self.state.take().map(|state| match state {
-            AppState::Idle(ctx) => AppState::Startup(ctx),
-            state => state,
-        });
+    pub fn title(&self) -> String {
+        window_title(&self.state)
+    }
+
+    pub fn keymap_mut(&mut self) -> &mut Keymap<FolderAction> {
+        &mut self.state.keymap
     }
 
     pub fn apply_launch_args(&mut self, args: &LaunchArgs) {
-        match self.state.as_mut().expect("state is set outside update()") {
-            AppState::Startup(ctx) | AppState::Idle(ctx) => {
-                ctx.tool_message = apply_launch_args(
-                    args,
-                    &mut ctx.file_system_1_root_path,
-                    &mut ctx.file_system_2_root_path,
-                );
-            }
-            AppState::Exit() => log::warn!("Command-line folders ignored: the app is exiting"),
-        }
+        self.state.tool_message = apply_launch_args(
+            args,
+            &mut self.state.file_system_1_root_path,
+            &mut self.state.file_system_2_root_path,
+        );
     }
+}
 
-    pub fn new(log_buffer: LogBuffer) -> Self {
+impl Default for FolderPanes {
+    fn default() -> Self {
         Self {
-            zoom: default_zoom(),
-            state: Some(AppState::default()),
             tree: Self::create_tree(),
-            log_buffer,
+            log_buffer: restored_log_buffer(),
             open_dir_window_1: false,
             open_dir_window_2: false,
             diff_mode_path_diff: true,
             tools_window: ToolsWindow::default(),
             keybindings_window: KeybindingsWindow::default(),
-            style_window: StyleWindow::default(),
             find_open: false,
             export_requested: false,
-            title: String::new(),
-            window_memory: WindowMemory::default(),
-            frame_stats: FrameStats::default(),
             last_discard_frame: None,
-            show_frame_breakdown: false,
         }
     }
+}
 
-    fn startup(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        self.style_window.load(ctx);
-        log::debug!("pixels_per_point {}", ctx.pixels_per_point());
-        log::debug!(
-            "native_pixels_per_point {:?}",
-            ctx.native_pixels_per_point()
-        );
-        ctx.set_zoom_factor(self.zoom);
-        // ctx.set_debug_on_hover(true);
-    }
-
+impl FolderPanes {
     fn create_tree() -> egui_tiles::Tree<Pane> {
         let mut tiles = egui_tiles::Tiles::default();
 
@@ -1008,7 +974,12 @@ impl ZApp {
         egui_tiles::Tree::new("my_tree", root, tiles)
     }
 
-    fn show_menu(&mut self, ui: &mut egui::Ui, app_ctx: &mut FolderState) {
+    fn show_menu(
+        &mut self,
+        ui: &mut egui::Ui,
+        app_ctx: &mut FolderState,
+        shell: &mut FolderShell<'_>,
+    ) {
         ui.horizontal(|ui| {
             egui::MenuBar::new()
                 .config(
@@ -1101,7 +1072,7 @@ impl ZApp {
                         if menu_item(ui, "Style", &app_ctx.keymap, FolderAction::OpenStyle)
                             .clicked()
                         {
-                            self.style_window.open(ui.ctx());
+                            shell.style_window.open(ui.ctx());
                         }
                         ui.add_enabled_ui(self.diff_mode_path_diff, |ui| {
                             ui.checkbox(&mut app_ctx.h_scroll_link.0, "Link Horizontal Scrolling")
@@ -1109,7 +1080,7 @@ impl ZApp {
                                     "Scroll the left and right folder sides sideways together",
                                 );
                         });
-                        ui.checkbox(&mut self.show_frame_breakdown, "Frame Time Breakdown");
+                        ui.checkbox(shell.show_frame_breakdown, "Frame Time Breakdown");
                     });
 
                     #[cfg(debug_assertions)]
@@ -1155,15 +1126,11 @@ impl ZApp {
                             }
                         }
                     });
-                    frame_stats::fps_label(ui, &self.frame_stats, &mut self.show_frame_breakdown);
+                    frame_stats::fps_label(ui, shell.frame_stats, shell.show_frame_breakdown);
                 });
         });
-        if self.show_frame_breakdown {
-            frame_stats::breakdown_window(
-                ui.ctx(),
-                &self.frame_stats,
-                &mut self.show_frame_breakdown,
-            );
+        if *shell.show_frame_breakdown {
+            frame_stats::breakdown_window(ui.ctx(), shell.frame_stats, shell.show_frame_breakdown);
         }
         if self.tools_window.open {
             self.tools_window.show(ui.ctx(), &mut app_ctx.diff_config);
@@ -1171,10 +1138,10 @@ impl ZApp {
         if self.keybindings_window.open {
             self.keybindings_window.show(ui.ctx(), &mut app_ctx.keymap);
         }
-        self.style_window.show::<FolderRole>(ui.ctx(), "Folder");
+        shell.style_window.show::<FolderRole>(ui.ctx(), "Folder");
     }
 
-    fn ui(&mut self, ctx: &egui::Context, app_ctx: &mut FolderState) {
+    fn ui(&mut self, ctx: &egui::Context, app_ctx: &mut FolderState, shell: &mut FolderShell<'_>) {
         // Read before any widget runs: a single-line TextEdit gives up focus on Enter without
         // consuming the key, so a later check would hand that Enter to the tree cursor.
         let capturing = self.keybindings_window.is_capturing();
@@ -1231,7 +1198,7 @@ impl ZApp {
             app_ctx.clear_roots();
         }
         if actions.contains(&FolderAction::OpenStyle) {
-            self.style_window.open(ctx);
+            shell.style_window.open(ctx);
         }
         if actions.contains(&FolderAction::OpenDiffTools) {
             self.tools_window.open = true;
@@ -1305,10 +1272,10 @@ impl ZApp {
             });
         }
         drop(timed);
-        self.frame_stats.mark("Shortcuts, find and status line");
+        shell.frame_stats.mark("Shortcuts, find and status line");
         egui::CentralPanel::default().show(ctx, |ui| {
-            self.show_menu(ui, app_ctx);
-            self.frame_stats.mark("Menu bar and windows");
+            self.show_menu(ui, app_ctx, shell);
+            shell.frame_stats.mark("Menu bar and windows");
 
             ui.separator();
 
@@ -1369,15 +1336,7 @@ impl ZApp {
                     self.apply_view_choice(choice);
                     ui.ctx().request_repaint();
                 }
-                self.frame_stats.mark("Pane drawing");
-
-                let new_title = window_title(app_ctx);
-                // Every viewport command requests a repaint, so an unchanged title
-                // would keep the app redrawing while idle.
-                if new_title != self.title {
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Title(new_title.clone()));
-                    self.title = new_title;
-                }
+                shell.frame_stats.mark("Pane drawing");
 
                 match chip_event {
                     Some(FindChipEvent::Reopen) => self.find_open = true,
@@ -1392,7 +1351,7 @@ impl ZApp {
                     ctx.request_repaint();
                 }
             });
-            self.frame_stats.mark("Window title and find chip");
+            shell.frame_stats.mark("Window title and find chip");
         });
     }
 
@@ -1428,39 +1387,6 @@ impl ZApp {
                 ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
             }
             None => {}
-        }
-    }
-
-    fn request_shutdown(&mut self) {
-        self.state = Some(AppState::Exit());
-    }
-
-    fn process_ctx_inputs(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        let mut user_quit: bool = false;
-        {
-            ctx.input(|r| {
-                // Esc, unless a widget consumed it (the path bar's cancel)
-                if r.key_pressed(egui::Key::Escape) {
-                    user_quit = true;
-                }
-
-                // DoubleLeftClick
-                if r.pointer.button_double_clicked(PointerButton::Primary)
-                    && let Some(mouse_pos) = r.pointer.interact_pos()
-                {
-                    log::info!("double click @({},{})", mouse_pos.x, mouse_pos.y);
-                }
-
-                if r.pointer.button_clicked(PointerButton::Middle)
-                    && let Some(mouse_pos) = r.pointer.interact_pos()
-                {
-                    log::info!("middle click @({},{})", mouse_pos.x, mouse_pos.y);
-                }
-            });
-        }
-
-        if user_quit {
-            self.request_shutdown();
         }
     }
 
@@ -1521,7 +1447,7 @@ impl ZApp {
         }
     }
 
-    fn idle_frame(&mut self, ctx: &egui::Context, state: &mut FolderState) {
+    fn frame(&mut self, ctx: &egui::Context, state: &mut FolderState, shell: &mut FolderShell<'_>) {
         let frame_start = Instant::now();
         if self.is_path_diff() != self.diff_mode_path_diff {
             if self.is_path_diff() {
@@ -1558,9 +1484,9 @@ impl ZApp {
         state.update_scans(ctx);
         state.tree_compare.set_repaint(ctx);
         state.update_compare(Instant::now());
-        self.frame_stats.mark("Scan and compare polling");
+        shell.frame_stats.mark("Scan and compare polling");
         state.build_two_folder_diff_rows_if_stale();
-        self.frame_stats.mark("Row rebuild");
+        shell.frame_stats.mark("Row rebuild");
         if state.file_system_1_scan.is_scanning()
             || state.file_system_2_scan.is_scanning()
             || state.tree_compare.is_comparing()
@@ -1577,9 +1503,9 @@ impl ZApp {
         if fetching {
             ctx.request_repaint_after(Duration::from_millis(100));
         }
-        self.frame_stats.mark("Blueprint and revision polling");
+        shell.frame_stats.mark("Blueprint and revision polling");
 
-        self.ui(ctx, state);
+        self.ui(ctx, state, shell);
         // The panes drew the old rows under the new flags; the next pass rebuilds
         // them before drawing, and only that pass is painted.
         if discard_stale_rows(
@@ -1596,70 +1522,11 @@ impl ZApp {
     }
 }
 
-impl eframe::App for ZApp {
-    fn save(&mut self, storage: &mut dyn eframe::Storage) {
-        self.window_memory.keep_restorable(storage);
-        #[cfg(feature = "serde")]
-        if let Ok(json) = serde_json::to_string(self) {
-            storage.set_string(eframe::APP_KEY, json);
-            log::debug!("App state saved");
-        }
-    }
-
-    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
-        revision_open::remove_all();
-    }
-
-    fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
-        self.frame_stats.begin_frame(ctx, frame);
-        let mut app_state = self
-            .state
-            .take()
-            .expect("state should be valid before and after update()");
-        app_state = match app_state {
-            AppState::Startup(mut state_ctx) => {
-                self.startup(ctx, frame);
-                load_shared(&mut state_ctx.keymap);
-                log::info!("STARTUP COMPLETE, TRANSITIONING TO IDLE");
-                egui::CentralPanel::default().show(ctx, |ui| {
-                    ui.centered_and_justified(|ui| {
-                        ui.label("Loading...");
-                    });
-                });
-                ctx.request_repaint();
-                AppState::Idle(state_ctx)
-            }
-            AppState::Idle(mut state) => {
-                self.zoom = sync_zoom(ctx);
-                if ctx.input(|i| i.events.contains(&egui::Event::WindowFocused(true))) {
-                    load_shared(&mut state.keymap);
-                }
-                self.idle_frame(ctx, &mut state);
-                self.process_ctx_inputs(ctx, frame);
-                self.frame_stats.mark("Esc and click handling");
-                AppState::Idle(state)
-            }
-            AppState::Exit() => {
-                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                log::trace!("send_viewport_cmd sent");
-
-                egui::CentralPanel::default().show(ctx, |ui| {
-                    ui.centered_and_justified(|ui| {
-                        ui.label("Exiting...");
-                    });
-                });
-                AppState::Exit()
-            }
-        };
-        self.state = Some(app_state);
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::{
-        AppState, FolderState, ScanAction, ZApp, cancel_scan, discard_stale_rows, finish_side_scan,
-        scan_action, scan_progress_text, update_side_scan,
+        FolderPanes, FolderState, FolderView, ScanAction, cancel_scan, discard_stale_rows,
+        finish_side_scan, scan_action, scan_progress_text, update_side_scan,
     };
     use crate::folder::folder_keymap::FolderAction;
     use crate::folder::fs_tree::{DiffState, FileSystemView, HScrollLink};
@@ -1672,6 +1539,7 @@ mod tests {
     use crate::folder::tree_likeness::FolderLikeness;
     use crate::folder::tree_sort::{SortKey, TreeSort};
     use crate::folder::tree_tolerance::{SizeDelta, Tolerance};
+    use crate::folder::{Phase, ZApp};
     use eframe::egui;
     use std::{
         fs,
@@ -1684,7 +1552,7 @@ mod tests {
     };
     use tempfile::{TempDir, tempdir};
     use zcommon::hash::HashService;
-    use zcommon::logger::{LogBuffer, LogCollector};
+    use zcommon::logger::LogCollector;
     use zcommon_ui::keymap::{Action, Keymap, Shortcut};
     use zdiff_folder::likeness::{Likeness, Measure};
     use zdiff_folder::{
@@ -2008,78 +1876,11 @@ mod tests {
     }
 
     #[test]
-    fn zoom_survives_a_restart() {
-        let mut app = ZApp::new(LogBuffer::default());
-        app.zoom = 1.7;
-        let json = serde_json::to_string(&app).unwrap();
-        let restored: ZApp = serde_json::from_str(&json).unwrap();
-        assert_eq!(restored.zoom, 1.7);
-    }
-
-    #[test]
-    fn a_saved_zoom_out_of_range_loads_clamped() {
-        let mut json = serde_json::to_value(ZApp::new(LogBuffer::default())).unwrap();
-        json["zoom"] = 10.0.into();
-        assert_eq!(
-            serde_json::from_value::<ZApp>(json.clone()).unwrap().zoom,
-            3.0
-        );
-        json["zoom"] = 0.1.into();
-        assert_eq!(serde_json::from_value::<ZApp>(json).unwrap().zoom, 0.5);
-    }
-
-    #[test]
-    fn a_save_without_a_zoom_loads_at_100_percent() {
-        let mut json = serde_json::to_value(ZApp::new(LogBuffer::default())).unwrap();
-        json.as_object_mut().unwrap().remove("zoom").unwrap();
-        let restored: ZApp = serde_json::from_value(json).unwrap();
-        assert_eq!(restored.zoom, 1.0);
-    }
-
-    #[derive(Default)]
-    struct MemoryStorage(std::collections::HashMap<String, String>);
-
-    impl eframe::Storage for MemoryStorage {
-        fn get_string(&self, key: &str) -> Option<String> {
-            self.0.get(key).cloned()
-        }
-
-        fn set_string(&mut self, key: &str, value: String) {
-            self.0.insert(key.to_owned(), value);
-        }
-
-        fn flush(&mut self) {}
-    }
-
-    #[test]
-    fn a_window_minimized_at_exit_is_saved_as_it_was_at_startup() {
-        const RESTORED: &str = "(inner_position_pixels:Some((x:169.0,y:262.0)),outer_position_pixels:Some((x:160.0,y:224.0)),fullscreen:false,maximized:false,inner_size_points:Some((x:1508.8,y:704.8)))";
-        const MINIMIZED: &str = "(inner_position_pixels:Some((x:-32000.0,y:-32000.0)),outer_position_pixels:Some((x:-32000.0,y:-32000.0)),fullscreen:false,maximized:false,inner_size_points:Some((x:0.0,y:0.0)))";
-        let mut storage = MemoryStorage::default();
-        storage.0.insert("window".to_owned(), RESTORED.to_owned());
-        let mut app = ZApp::new(LogBuffer::default());
-        app.remember_window_from(Some(&storage));
-
-        storage.0.insert("window".to_owned(), MINIMIZED.to_owned());
-        eframe::App::save(&mut app, &mut storage);
-
-        assert_eq!(storage.0["window"], RESTORED);
-    }
-
-    #[test]
     fn a_restored_app_shows_the_global_log_buffer() {
         let global = LogCollector::init().expect("no other logger in the test binary");
-        let json = serde_json::to_string(&ZApp::new(global.clone())).unwrap();
-        let restored: ZApp = serde_json::from_str(&json).unwrap();
-        assert!(Arc::ptr_eq(&restored.log_buffer, &global));
-    }
-
-    #[test]
-    fn a_restored_idle_app_runs_startup_again() {
-        let mut app = ZApp::new(LogBuffer::default());
-        app.state = Some(AppState::Idle(FolderState::default()));
-        app.request_init();
-        assert!(matches!(app.state, Some(AppState::Startup(_))));
+        let json = serde_json::to_string(&FolderView::default()).unwrap();
+        let restored: FolderView = serde_json::from_str(&json).unwrap();
+        assert!(Arc::ptr_eq(&restored.panes.log_buffer, &global));
     }
 
     #[test]
@@ -3578,16 +3379,17 @@ mod tests {
     }
 
     fn idle_app(state: FolderState) -> ZApp {
-        let mut app = ZApp::new(LogBuffer::default());
-        app.state = Some(AppState::Idle(state));
+        let mut app = ZApp::new();
+        app.folder = FolderView {
+            state,
+            panes: FolderPanes::default(),
+        };
+        app.phase = Phase::Idle;
         app
     }
 
     fn folder_state(app: &ZApp) -> &FolderState {
-        match &app.state {
-            Some(AppState::Idle(state)) => state,
-            _ => unreachable!("the app is idle"),
-        }
+        &app.folder.state
     }
 
     fn settled_frame(ctx: &egui::Context, app: &mut ZApp) -> PaintedFrame {
@@ -3723,7 +3525,7 @@ mod tests {
         let (_left, _right, mut state) = nested_folder_diff(TreeSort::default());
         state.hash_service = HashService::new(0);
         let mut app = idle_app(state);
-        app.diff_mode_path_diff = false;
+        app.folder.panes.diff_mode_path_diff = false;
 
         let [before, click, next] = click_frame_and_next(&mut app, "F");
 
@@ -3849,7 +3651,7 @@ mod tests {
     #[test]
     fn a_queued_hash_keeps_the_duplicate_tab_polling() {
         let (_left, _right, mut app) = shown_app(HashService::new(0));
-        app.diff_mode_path_diff = false;
+        app.folder.panes.diff_mode_path_diff = false;
 
         assert!(settled_repaint_delay(&mut app) <= Duration::from_millis(100));
     }
@@ -3859,12 +3661,12 @@ mod tests {
         let (_left, _right, mut app) = shown_app(HashService::new(0));
         let ctx = egui::Context::default();
         let choose = |app: &mut ZApp, choice: ViewChoice| {
-            app.apply_view_choice(choice);
+            app.folder.panes.apply_view_choice(choice);
             repaint_delay(&ctx, app);
             (
-                app.diff_mode_path_diff,
-                app.is_path_diff(),
-                app.path_diff_pane_mut().view,
+                app.folder.panes.diff_mode_path_diff,
+                app.folder.panes.is_path_diff(),
+                app.folder.panes.path_diff_pane_mut().view,
             )
         };
 
@@ -3893,7 +3695,7 @@ mod tests {
     #[test]
     fn an_idle_duplicate_tab_stops_repainting() {
         let (_left, _right, mut app) = shown_app(HashService::new(1));
-        app.diff_mode_path_diff = false;
+        app.folder.panes.diff_mode_path_diff = false;
         let ctx = egui::Context::default();
         let deadline = Instant::now() + Duration::from_secs(10);
         while repaint_delay(&ctx, &mut app) != Duration::MAX {
