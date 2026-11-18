@@ -13,7 +13,7 @@ use std::{
 use zcommon::{
     find::{FindError, Matcher},
     hash::HashService,
-    history::{HistoryStep, SnapshotHistory},
+    history::SnapshotHistory,
     job::Job,
     kinds::KindTable,
     logger::{self, LogBuffer},
@@ -43,7 +43,7 @@ use crate::folder::{
     panes::{Pane, PathDiffView, TreeBehavior, ViewChoice},
     path_diff_pane::{FilterPresets, PathDiffPane},
     revision_open,
-    roots::{LaunchArgs, Side, apply_launch_args, clear_root, set_root, set_root_or_report},
+    roots::{Side, clear_root, set_root, set_root_or_report},
     side_revision::split_side,
     status_line::{
         RowCounts, ScanSummary, ToolMessage, count_rows, counts_text, ui_status_summary,
@@ -53,7 +53,6 @@ use crate::folder::{
     tree_compare::{CompareUpdate, PairLikeness, TreeCompare, patch_row_states},
     tree_filter::{DiffFilter, DuplicatesFilter, arrange_two_folder_rows},
     tree_find::{FindChipEvent, FolderFind, TreeFindView, find_mask},
-    tree_map,
     tree_sort::TreeSort,
     tree_tolerance::Tolerance,
 };
@@ -215,22 +214,6 @@ impl FolderState {
             sides_swapped: self.sides_swapped,
         };
         self.nav_history.observe(&now);
-    }
-
-    fn step_nav(&mut self, step: HistoryStep) {
-        self.observe_nav();
-        let Some(FolderNav {
-            roots: [root_1, root_2],
-            sides_swapped,
-        }) = self.nav_history.step(step)
-        else {
-            log::info!("{step:?}: nothing to step");
-            return;
-        };
-        log::info!("{step:?}: {root_1:?} | {root_2:?}");
-        self.file_system_1_root_path = root_1;
-        self.file_system_2_root_path = root_2;
-        self.sides_swapped = sides_swapped;
     }
 
     fn previous_roots(&self) -> [Option<PathBuf>; 2] {
@@ -838,6 +821,15 @@ pub struct FolderShell<'a> {
     pub frame_stats: &'a mut FrameStats,
     pub show_frame_breakdown: &'a mut bool,
     pub style_window: &'a mut StyleWindow,
+    pub map_claims_back: bool,
+}
+
+pub fn root_of_side(side: &UniversalPath) -> Option<PathBuf> {
+    match side {
+        side if side.is_empty() => None,
+        UniversalPath::Local(folder) => Some(folder.clone()),
+        side => Some(PathBuf::from(side.to_string())),
+    }
 }
 
 #[derive(Default, Serialize, Deserialize)]
@@ -914,16 +906,25 @@ impl FolderView {
         &mut self.state.keymap
     }
 
-    pub fn apply_launch_args(&mut self, args: &LaunchArgs) {
-        self.state.tool_message = apply_launch_args(
-            args,
+    pub fn set_roots(&mut self, roots: [Option<PathBuf>; 2]) {
+        let stored = [
             &mut self.state.file_system_1_root_path,
             &mut self.state.file_system_2_root_path,
-        );
+        ];
+        for (stored, root) in stored.into_iter().zip(roots) {
+            let universal = |root: &Option<PathBuf>| root.as_deref().map(UniversalPath::from);
+            if *stored != root && universal(stored) != universal(&root) {
+                *stored = root;
+            }
+        }
     }
 
     #[cfg(test)]
-    pub(crate) fn roots(&self) -> [Option<PathBuf>; 2] {
+    pub(crate) fn find_open(&self) -> bool {
+        self.panes.find_open
+    }
+
+    pub fn roots(&self) -> [Option<PathBuf>; 2] {
         [
             self.state.file_system_1_root_path.clone(),
             self.state.file_system_2_root_path.clone(),
@@ -1149,7 +1150,7 @@ impl FolderPanes {
         // consuming the key, so a later check would hand that Enter to the tree cursor.
         let capturing = self.keybindings_window.is_capturing();
         let keyboard_taken = ctx.wants_keyboard_input() || capturing;
-        let map_claims_back = tree_map::take_mouse_back_claim(ctx);
+        let map_claims_back = shell.map_claims_back;
         let mut actions = if capturing {
             Vec::new()
         } else {
@@ -1174,13 +1175,6 @@ impl FolderPanes {
             actions.push(FolderAction::Export);
         }
         app_ctx.observe_nav();
-        for action in &actions {
-            match action {
-                FolderAction::Undo => app_ctx.step_nav(HistoryStep::Undo),
-                FolderAction::Redo => app_ctx.step_nav(HistoryStep::Redo),
-                _ => {}
-            }
-        }
         if actions.contains(&FolderAction::OpenFolder1) {
             self.open_dir_window_1 = true;
         }
@@ -1528,8 +1522,9 @@ impl FolderPanes {
 #[cfg(test)]
 mod tests {
     use super::{
-        FolderPanes, FolderState, FolderView, ScanAction, cancel_scan, discard_stale_rows,
-        finish_side_scan, scan_action, scan_progress_text, update_side_scan,
+        FolderPanes, FolderShell, FolderState, FolderView, FrameStats, ScanAction, StyleWindow,
+        cancel_scan, discard_stale_rows, finish_side_scan, scan_action, scan_progress_text,
+        update_side_scan,
     };
     use crate::app::ZApp;
     use crate::folder::folder_keymap::FolderAction;
@@ -2857,36 +2852,6 @@ mod tests {
     }
 
     #[test]
-    fn undo_and_redo_step_through_root_changes_and_swaps() {
-        use zcommon::history::HistoryStep::{Redo, Undo};
-        let (a, b) = (PathBuf::from(r"C:\a"), PathBuf::from(r"C:\b"));
-        let branch = PathBuf::from(r"C:\a@git:main");
-        let mut state = FolderState {
-            file_system_1_root_path: Some(a.clone()),
-            file_system_2_root_path: Some(b.clone()),
-            ..Default::default()
-        };
-        state.observe_nav();
-        state.file_system_1_root_path = Some(branch.clone());
-        state.observe_nav();
-        state.sides_swapped = true;
-
-        state.step_nav(Undo);
-        assert!(!state.sides_swapped);
-        assert_eq!(state.file_system_1_root_path.as_ref(), Some(&branch));
-        state.step_nav(Undo);
-        assert_eq!(state.file_system_1_root_path.as_ref(), Some(&a));
-        assert_eq!(state.file_system_2_root_path.as_ref(), Some(&b));
-        state.step_nav(Undo);
-        assert_eq!(state.file_system_1_root_path.as_ref(), Some(&a));
-
-        state.step_nav(Redo);
-        state.step_nav(Redo);
-        assert_eq!(state.file_system_1_root_path.as_ref(), Some(&branch));
-        assert!(state.sides_swapped);
-    }
-
-    #[test]
     fn the_previous_root_is_the_same_folder_before_its_latest_change() {
         let local = PathBuf::from(r"C:\ws\src");
         let branch = PathBuf::from(r"C:\ws\src@git:main");
@@ -2910,9 +2875,6 @@ mod tests {
         state.file_system_1_root_path = Some(PathBuf::from(r"C:\ws\docs"));
         state.observe_nav();
         assert_eq!(state.previous_roots()[0], None, "another folder");
-
-        state.step_nav(zcommon::history::HistoryStep::Undo);
-        assert_eq!(state.previous_roots()[0], Some(branch));
     }
 
     #[test]
@@ -3564,11 +3526,65 @@ mod tests {
         let mut state = FolderState::default();
         state.tree_sort.flat = true;
         state.diff_filter.states = StateFilter::Diff;
-        let mut app = idle_app(state);
+        let mut view = FolderView {
+            state,
+            panes: FolderPanes::default(),
+        };
+        let (mut frame_stats, mut style_window) = (FrameStats::default(), StyleWindow::default());
+        let mut eframe_frame = eframe::Frame::_new_kittest();
+        let ctx = egui::Context::default();
+        let mut frame = || {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, SCREEN)),
+                ..Default::default()
+            };
+            ctx.run(input, |ctx| {
+                frame_stats.begin_frame(ctx, &mut eframe_frame);
+                view.frame(
+                    ctx,
+                    FolderShell {
+                        frame_stats: &mut frame_stats,
+                        show_frame_breakdown: &mut false,
+                        style_window: &mut style_window,
+                        map_claims_back: false,
+                    },
+                )
+            })
+        };
+        for _ in 0..5 {
+            frame();
+        }
+        let settled = frame();
 
-        assert!(!folder_state(&app).rows_are_stale());
-        assert_eq!(settled_frame(&egui::Context::default(), &mut app).passes, 1);
-        assert_eq!(settled_repaint_delay(&mut app), Duration::MAX);
+        assert_eq!(settled.platform_output.num_completed_passes, 1);
+        assert_eq!(
+            settled.viewport_output[&egui::ViewportId::ROOT].repaint_delay,
+            Duration::MAX
+        );
+        assert!(!view.state.rows_are_stale());
+    }
+
+    #[test]
+    fn a_root_spelled_differently_from_the_side_is_not_rescanned() {
+        let dir = tempdir().unwrap();
+        let spelled = dir.path().join("missing").join("..");
+        let state = FolderState {
+            file_system_1_root_path: Some(spelled.clone()),
+            file_system_model_1_view: Some(in_memory_view(&spelled, nested_files(1))),
+            ..Default::default()
+        };
+        let model = |app: &ZApp| {
+            let view = folder_state(app).file_system_model_1_view.as_ref();
+            view.expect("the side is shown").file_system.clone()
+        };
+        let mut app = idle_app(state);
+        let shown = model(&app);
+
+        settled_frame(&egui::Context::default(), &mut app);
+
+        assert!(Arc::ptr_eq(&model(&app), &shown));
+        assert!(!folder_state(&app).file_system_1_scan.is_scanning());
+        assert_eq!(app.folder.roots(), [Some(spelled), None]);
     }
 
     fn repaint_delay(ctx: &egui::Context, app: &mut ZApp) -> Duration {

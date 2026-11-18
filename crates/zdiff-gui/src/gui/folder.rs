@@ -20,12 +20,3 @@ pub mod tree_menu;
 pub mod tree_sort;
 pub mod tree_tolerance;
 pub mod view;
-
-use serde::{Deserialize, Serialize};
-
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum Mode {
-    #[default]
-    File,
-    Folder,
-}

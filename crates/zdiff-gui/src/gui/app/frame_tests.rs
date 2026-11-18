@@ -4,11 +4,17 @@ use std::{
 };
 
 use eframe::egui;
-use tempfile::tempdir;
+use tempfile::{TempDir, tempdir};
 use zdiff::universal_path::UniversalPath;
 
-use super::{ZApp, state::AppStateCtx};
-use crate::{ui_egui::text_mode::TextMode, viewer::hex_strings::HexMode};
+use super::{
+    ZApp, folder_mode,
+    state::{AppState, AppStateCtx},
+};
+use crate::{
+    ui_egui::text_mode::TextMode,
+    viewer::{ViewerKind, Viewers, hex_strings::HexMode},
+};
 
 const FRAME_AT_60_HZ: Duration = Duration::from_micros(16_667);
 const SCREEN: egui::Vec2 = egui::vec2(1600.0, 1000.0);
@@ -287,4 +293,270 @@ fn an_idle_text_diff_stops_repainting_after_pointer_motion() {
             "kept repainting with the pointer over the {place}"
         );
     }
+}
+
+fn frame_texts(ctx: &egui::Context, app: &mut ZApp, events: Vec<egui::Event>) -> Vec<String> {
+    fn shape_texts(shape: &egui::Shape, texts: &mut Vec<String>) {
+        match shape {
+            egui::Shape::Text(text) => texts.push(text.galley.text().to_owned()),
+            egui::Shape::Vec(shapes) => shapes.iter().for_each(|s| shape_texts(s, texts)),
+            _ => {}
+        }
+    }
+    let mut frame = eframe::Frame::_new_kittest();
+    let input = egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, SCREEN)),
+        events,
+        ..Default::default()
+    };
+    let output = ctx.run(input, |ctx| eframe::App::update(app, ctx, &mut frame));
+    let mut texts = Vec::new();
+    for clipped in &output.shapes {
+        shape_texts(&clipped.shape, &mut texts);
+    }
+    texts
+}
+
+const FOLDER_NAMES: [&str; 2] = ["only_left.txt", "only_right.txt"];
+
+fn folder_dirs() -> [TempDir; 2] {
+    let dirs = [tempdir().unwrap(), tempdir().unwrap()];
+    for (dir, name) in dirs.iter().zip(FOLDER_NAMES) {
+        std::fs::write(dir.path().join(name), name).unwrap();
+    }
+    dirs
+}
+
+fn set_sides(app: &mut ZApp, sides: [&Path; 2]) {
+    let state = app.state.as_mut().unwrap().ctx_mut();
+    for (file, side) in [&mut state.file_1, &mut state.file_2]
+        .into_iter()
+        .zip(sides)
+    {
+        file.restore_path(UniversalPath::from(side), None);
+    }
+}
+
+fn sides(app: &mut ZApp) -> [UniversalPath; 2] {
+    let state = app.state.as_mut().unwrap().ctx_mut();
+    [state.file_1.get_full_path(), state.file_2.get_full_path()]
+}
+
+fn viewers(app: &mut ZApp) -> Option<Viewers> {
+    app.state.as_mut().unwrap().ctx_mut().viewers
+}
+
+fn paints_folder_names(texts: &[String]) -> bool {
+    FOLDER_NAMES
+        .iter()
+        .all(|name| texts.iter().any(|text| text.contains(name)))
+}
+
+fn frames_until(
+    ctx: &egui::Context,
+    app: &mut ZApp,
+    what: &str,
+    done: impl Fn(&mut ZApp, &[String]) -> bool,
+) {
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        let texts = frame_texts(ctx, app, Vec::new());
+        if done(app, &texts) {
+            return;
+        }
+        assert!(Instant::now() < deadline, "never {what}: {texts:?}");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+fn frames_until_the_folder_tree_shows(ctx: &egui::Context, app: &mut ZApp) {
+    frames_until(ctx, app, "showed the folder tree", |_, texts| {
+        paints_folder_names(texts)
+    });
+}
+
+fn frames_until_the_text_diff_shows(ctx: &egui::Context, app: &mut ZApp) {
+    frames_until(ctx, app, "showed the text diff", |app, _| {
+        let state = app.state.as_mut().unwrap().ctx_mut();
+        state.viewers == Some(Viewers::Pair(ViewerKind::Text))
+            && state.diff_processor.get_minimal_diff_ctx().is_some()
+    });
+}
+
+fn shown_folder_app(dirs: &[TempDir; 2]) -> (egui::Context, ZApp) {
+    let mut app = ZApp::new();
+    set_sides(&mut app, [dirs[0].path(), dirs[1].path()]);
+    let ctx = egui::Context::default();
+    frames_until_the_folder_tree_shows(&ctx, &mut app);
+    (ctx, app)
+}
+
+fn key_press(key: egui::Key, modifiers: egui::Modifiers) -> Vec<egui::Event> {
+    vec![egui::Event::Key {
+        key,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers,
+    }]
+}
+
+fn ctrl_f() -> Vec<egui::Event> {
+    let ctrl = egui::Modifiers {
+        ctrl: true,
+        command: true,
+        ..egui::Modifiers::NONE
+    };
+    key_press(egui::Key::F, ctrl)
+}
+
+fn is_idle(app: &ZApp) -> bool {
+    matches!(app.state, Some(AppState::Idle(_)))
+}
+
+#[test]
+fn two_folders_on_the_command_line_show_the_folder_tree() {
+    let dirs = folder_dirs();
+    let mut app = ZApp::new();
+    app.launch(vec![dirs[0].path().into(), dirs[1].path().into()]);
+
+    let ctx = egui::Context::default();
+    frames_until_the_folder_tree_shows(&ctx, &mut app);
+
+    assert_eq!(viewers(&mut app), Some(Viewers::Folders));
+    assert_eq!(
+        sides(&mut app),
+        [dirs[0].path(), dirs[1].path()].map(UniversalPath::from)
+    );
+    let title = app.window_title.as_deref().unwrap();
+    assert!(title.starts_with("zdiff ["), "{title}");
+}
+
+#[test]
+fn setting_both_sides_to_folders_shows_the_folder_viewer_and_files_show_the_file_diff_again() {
+    let dir = tempdir().unwrap();
+    let pair = write_pair(dir.path(), "txt", b"a\nb\n", b"a\nc\n");
+    let files = [&pair[0], &pair[1]].map(|path| UniversalPath::from(path.clone()));
+    let dirs = folder_dirs();
+    let (ctx, mut app) = loaded_app(&pair, |_| {});
+    assert_eq!(viewers(&mut app), Some(Viewers::Pair(ViewerKind::Text)));
+
+    set_sides(&mut app, [dirs[0].path(), dirs[1].path()]);
+    frames_until_the_folder_tree_shows(&ctx, &mut app);
+    assert_eq!(viewers(&mut app), Some(Viewers::Folders));
+
+    frame_texts(
+        &ctx,
+        &mut app,
+        mouse_button_click(egui::PointerButton::Extra1),
+    );
+    assert_eq!(sides(&mut app), files);
+    frames_until_the_text_diff_shows(&ctx, &mut app);
+    assert!(!paints_folder_names(&frame_texts(
+        &ctx,
+        &mut app,
+        Vec::new()
+    )));
+
+    frame_texts(
+        &ctx,
+        &mut app,
+        mouse_button_click(egui::PointerButton::Extra2),
+    );
+    frames_until_the_folder_tree_shows(&ctx, &mut app);
+    assert_eq!(viewers(&mut app), Some(Viewers::Folders));
+}
+
+#[test]
+fn a_folder_against_a_file_reports_the_folder_side_as_an_error() {
+    let dir = tempdir().unwrap();
+    let pair = write_pair(dir.path(), "txt", b"a\nb\n", b"a\nc\n");
+    let mut app = ZApp::new();
+    set_sides(&mut app, [dir.path(), &pair[1]]);
+    let ctx = egui::Context::default();
+    frames_until_the_text_diff_shows(&ctx, &mut app);
+
+    let state = app.state.as_mut().unwrap().ctx_mut();
+    let [folder_error, file_error] = folder_mode::load_errors(&mut state.file_1, &mut state.file_2);
+    let folder_error = folder_error.expect("the folder side reports an error");
+    assert!(folder_error.contains("is a folder"), "{folder_error}");
+    assert_eq!(file_error, None);
+    assert_eq!(state.file_1.load_error(), None);
+    assert_eq!(state.file_1.get_loading_path(), None);
+    assert!(state.file_1.get_loaded_file().is_none());
+    assert!(!state.file_1.path_valid());
+}
+
+#[test]
+fn esc_does_not_close_the_window() {
+    let escape = || key_press(egui::Key::Escape, egui::Modifiers::NONE);
+    let dirs = folder_dirs();
+    let (ctx, mut app) = shown_folder_app(&dirs);
+    frame_texts(&ctx, &mut app, escape());
+    assert!(is_idle(&app));
+    assert_eq!(viewers(&mut app), Some(Viewers::Folders));
+
+    frame_texts(&ctx, &mut app, ctrl_f());
+    frame_texts(&ctx, &mut app, Vec::new());
+    assert!(app.folder.find_open());
+    frame_texts(&ctx, &mut app, escape());
+    assert!(!app.folder.find_open());
+    assert!(is_idle(&app));
+    frame_texts(&ctx, &mut app, escape());
+    assert!(is_idle(&app));
+
+    let dir = tempdir().unwrap();
+    let pair = write_pair(dir.path(), "txt", b"a\nb\n", b"a\nc\n");
+    let (ctx, mut app) = loaded_app(&pair, |_| {});
+    let folder = dir.path().to_string_lossy().into_owned();
+    app.state.as_mut().unwrap().ctx_mut().browser_folders[0] = Some(folder);
+    frame_texts(&ctx, &mut app, Vec::new());
+    frame_texts(&ctx, &mut app, escape());
+    assert!(is_idle(&app));
+    frame_texts(&ctx, &mut app, escape());
+    assert!(is_idle(&app));
+}
+
+#[test]
+fn tab_on_a_folder_pair_does_not_toggle_the_active_side() {
+    let dirs = folder_dirs();
+    let (ctx, mut app) = shown_folder_app(&dirs);
+
+    frame_texts(
+        &ctx,
+        &mut app,
+        key_press(egui::Key::Tab, egui::Modifiers::NONE),
+    );
+    assert!(!app.toggle_active_side);
+
+    frame_texts(&ctx, &mut app, ctrl_f());
+    assert!(!app.state.as_mut().unwrap().ctx_mut().find_open);
+    assert!(app.folder.find_open());
+}
+
+#[test]
+fn a_scan_running_while_a_file_pair_is_shown_completes_after_returning() {
+    let dir = tempdir().unwrap();
+    let pair = write_pair(dir.path(), "txt", b"a\nb\n", b"a\nc\n");
+    let dirs = folder_dirs();
+    let folders = [dirs[0].path(), dirs[1].path()];
+    let mut app = ZApp::new();
+    set_sides(&mut app, folders);
+    let ctx = egui::Context::default();
+    frame_texts(&ctx, &mut app, Vec::new());
+    frame_texts(&ctx, &mut app, Vec::new());
+    assert_eq!(viewers(&mut app), Some(Viewers::Folders));
+
+    set_sides(&mut app, [&pair[0], &pair[1]]);
+    frames_until_the_text_diff_shows(&ctx, &mut app);
+    std::thread::sleep(Duration::from_millis(500));
+    assert!(!paints_folder_names(&frame_texts(
+        &ctx,
+        &mut app,
+        Vec::new()
+    )));
+
+    set_sides(&mut app, folders);
+    let returned = frame_texts(&ctx, &mut app, Vec::new());
+    assert!(paints_folder_names(&returned), "{returned:?}");
 }

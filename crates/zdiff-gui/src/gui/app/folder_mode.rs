@@ -1,131 +1,107 @@
 use eframe::egui;
+use zdiff::universal_path::UniversalPath;
 
 use super::{ZApp, state::AppStateCtx, ui::send_title};
 use crate::{
-    folder::{Mode, view::FolderShell},
-    ui_egui::merge_pane::MergeView,
+    file::FileProcessor,
+    folder::view::{FolderShell, root_of_side},
+    viewer::{Viewers, folder_pair, folder_side_errors},
 };
 
-pub(super) fn shows_folder(state: &AppStateCtx, merge: &Option<MergeView>) -> bool {
-    state.mode == Mode::Folder && merge.is_none()
+pub(super) fn folder_key(path: &UniversalPath) -> String {
+    match path {
+        UniversalPath::Depot(folder, _) => folder.clone(),
+        UniversalPath::Local(folder) | UniversalPath::Git(folder, _) => {
+            folder.to_string_lossy().into_owned()
+        }
+    }
+}
+
+pub(super) fn load_errors(
+    file_1: &mut FileProcessor,
+    file_2: &mut FileProcessor,
+) -> [Option<String>; 2] {
+    let held = folder_side_errors([file_1.kind(), file_2.kind()], false);
+    [(file_1, held[0]), (file_2, held[1])].map(|(file, held)| {
+        if held {
+            let path = file.get_path_as_string();
+            Some(format!("{path} is a folder, the other side is a file"))
+        } else {
+            file.load_error().map(str::to_owned)
+        }
+    })
+}
+
+impl AppStateCtx {
+    pub(super) fn resolve_folder_pair(&mut self, merge_open: bool) -> bool {
+        let kinds = [self.file_1.kind(), self.file_2.kind()];
+        let keys = [self.file_1.get_full_path(), self.file_2.get_full_path()]
+            .map(|path| folder_key(&path));
+        let known = keys.each_ref().map(|key| self.known_folders.contains(key));
+        let folders = !merge_open && folder_pair(kinds, known);
+        let held = folder_side_errors(kinds, folders);
+        self.file_1.hold_load(folders || held[0]);
+        self.file_2.hold_load(folders || held[1]);
+        if folders {
+            let shown = keys.into_iter().filter(|key| !key.is_empty());
+            self.known_folders.extend(shown);
+        }
+        folders
+    }
 }
 
 impl ZApp {
-    pub(super) fn folder_frame(&mut self, ctx: &egui::Context, _state: &mut AppStateCtx) -> bool {
+    pub(super) fn folder_frame(
+        &mut self,
+        ctx: &egui::Context,
+        state: &mut AppStateCtx,
+        map_claims_back: bool,
+    ) {
+        state.observe_history();
+        state.viewers = Some(Viewers::Folders);
+        let sides = [state.file_1.get_full_path(), state.file_2.get_full_path()];
+        self.folder.set_roots(sides.each_ref().map(root_of_side));
+        let shown = self.folder.roots();
         self.folder.frame(
             ctx,
             FolderShell {
                 frame_stats: &mut self.frame_stats,
                 show_frame_breakdown: &mut self.show_frame_breakdown,
                 style_window: &mut self.style_window,
+                map_claims_back,
             },
         );
+        // Until U3 the folder still edits its own roots (bars, dialogs, drops, scan revert).
+        let files = [&mut state.file_1, &mut state.file_2];
+        let roots = shown.into_iter().zip(self.folder.roots());
+        for (file, (shown, root)) in files.into_iter().zip(roots) {
+            if shown != root {
+                file.restore_path(root.map(UniversalPath::from).unwrap_or_default(), None);
+            }
+        }
         send_title(ctx, &mut self.window_title, self.folder.title());
-        // Read after the frame: a widget that consumed Esc (find popup, path bar) wins.
-        ctx.input(|i| i.key_pressed(egui::Key::Escape))
     }
 
     #[cfg(test)]
     pub(crate) fn idle_showing_folder(folder: crate::folder::view::FolderView) -> ZApp {
         use super::state::AppState;
 
+        assert!(
+            folder.roots().iter().any(Option::is_some),
+            "without a root the sides are no folder pair"
+        );
+        let mut state = AppStateCtx::default();
+        for (file, root) in [&mut state.file_1, &mut state.file_2]
+            .into_iter()
+            .zip(folder.roots())
+        {
+            let side = root.map(UniversalPath::from).unwrap_or_default();
+            state.known_folders.insert(folder_key(&side));
+            file.restore_path(side, None);
+        }
         let mut app = ZApp::new();
         app.folder = folder;
-        app.state = Some(AppState::Idle(AppStateCtx {
-            mode: Mode::Folder,
-            ..Default::default()
-        }));
+        app.state = Some(AppState::Idle(state));
         app
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use std::time::{Duration, Instant};
-
-    use eframe::egui;
-    use tempfile::tempdir;
-
-    use super::super::{ZApp, state::AppState};
-    use crate::folder::{Mode, view::FolderView};
-
-    fn shape_texts(shape: &egui::Shape, texts: &mut Vec<String>) {
-        match shape {
-            egui::Shape::Text(text) => texts.push(text.galley.text().to_owned()),
-            egui::Shape::Vec(shapes) => shapes.iter().for_each(|s| shape_texts(s, texts)),
-            _ => {}
-        }
-    }
-
-    fn frame_texts(ctx: &egui::Context, app: &mut ZApp, events: Vec<egui::Event>) -> Vec<String> {
-        let mut frame = eframe::Frame::_new_kittest();
-        let input = egui::RawInput {
-            screen_rect: Some(egui::Rect::from_min_size(
-                egui::Pos2::ZERO,
-                egui::vec2(1600.0, 1000.0),
-            )),
-            events,
-            ..Default::default()
-        };
-        let output = ctx.run(input, |ctx| eframe::App::update(app, ctx, &mut frame));
-        let mut texts = Vec::new();
-        for clipped in &output.shapes {
-            shape_texts(&clipped.shape, &mut texts);
-        }
-        texts
-    }
-
-    fn mode(app: &mut ZApp) -> Mode {
-        app.state.as_mut().unwrap().ctx_mut().mode
-    }
-
-    #[test]
-    fn two_folders_on_the_command_line_show_the_folder_tree_in_the_same_app() {
-        let (left, right) = (tempdir().unwrap(), tempdir().unwrap());
-        std::fs::write(left.path().join("only_left.txt"), "left").unwrap();
-        std::fs::write(right.path().join("only_right.txt"), "right").unwrap();
-        let mut app = ZApp::new();
-        app.launch(vec![left.path().into(), right.path().into()]);
-
-        let ctx = egui::Context::default();
-        let deadline = Instant::now() + Duration::from_secs(60);
-        loop {
-            let texts = frame_texts(&ctx, &mut app, Vec::new());
-            let painted = |name: &str| texts.iter().any(|text| text.contains(name));
-            if painted("only_left.txt") && painted("only_right.txt") {
-                break;
-            }
-            assert!(
-                Instant::now() < deadline,
-                "the folder tree never showed: {texts:?}"
-            );
-            std::thread::sleep(Duration::from_millis(5));
-        }
-        assert_eq!(mode(&mut app), Mode::Folder);
-        let title = app.window_title.as_deref().unwrap();
-        assert!(title.starts_with("zdiff ["), "{title}");
-    }
-
-    #[test]
-    fn esc_closes_the_app_in_the_folder_mode_only() {
-        let escape = || {
-            vec![egui::Event::Key {
-                key: egui::Key::Escape,
-                physical_key: None,
-                pressed: true,
-                repeat: false,
-                modifiers: egui::Modifiers::NONE,
-            }]
-        };
-        let ctx = egui::Context::default();
-        let mut app = ZApp::idle_showing_folder(FolderView::default());
-        frame_texts(&ctx, &mut app, escape());
-        assert!(matches!(app.state, Some(AppState::Exit(_))));
-
-        let ctx = egui::Context::default();
-        let mut app = ZApp::idle_showing_folder(FolderView::default());
-        app.state.as_mut().unwrap().ctx_mut().mode = Mode::File;
-        frame_texts(&ctx, &mut app, escape());
-        assert!(matches!(app.state, Some(AppState::Idle(_))));
     }
 }

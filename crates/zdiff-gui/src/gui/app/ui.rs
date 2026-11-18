@@ -1,5 +1,5 @@
 use super::{
-    ZApp,
+    ZApp, folder_mode,
     launch::toggle_all_options,
     menu::MenuCtx,
     nav::{back_to_previous_revision, previous_revision},
@@ -52,7 +52,6 @@ impl ZApp {
                 text_mode,
                 text_likeness,
                 sides_swapped,
-                mode: _,
                 diff_options,
                 file_1,
                 file_2,
@@ -86,6 +85,7 @@ impl ZApp {
                 revert_history,
                 nav_history,
                 browser_folders,
+                known_folders: _,
                 toggle_all,
                 code_language_override,
                 syntax_filter,
@@ -268,6 +268,7 @@ impl ZApp {
                     .map(|s| s.as_ref().map_or(&[][..], |s| &s.offsets[..])),
                 None => [&[][..]; 2],
             };
+            let [source_load_error, target_load_error] = folder_mode::load_errors(file_1, file_2);
             let mut block_toggle_request = None;
             let mut reveal_line_request = None;
             let mut toggle_all_request = false;
@@ -312,9 +313,9 @@ impl ZApp {
                     file_target_root_valid: file_2.root_valid(),
                     file_source_path_valid: file_1.path_valid(),
                     file_target_path_valid: file_2.path_valid(),
-                    file_source_load_error: file_1.load_error().map(str::to_owned),
+                    file_source_load_error: source_load_error,
                     file_source_loading: file_1.get_loading_path().is_some(),
-                    file_target_load_error: file_2.load_error().map(str::to_owned),
+                    file_target_load_error: target_load_error,
                     file_target_loading: file_2.get_loading_path().is_some(),
                     active_highlights: &active_highlights,
                     highlight_side,

@@ -250,6 +250,31 @@ fn default_file_path() -> UniversalPath {
     UniversalPath::new("")
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SideKind {
+    Empty,
+    File,
+    Folder,
+    Missing,
+    Unknown,
+}
+
+fn side_kind(path: &UniversalPath) -> SideKind {
+    if path.is_empty() {
+        return SideKind::Empty;
+    }
+    match path {
+        UniversalPath::Local(p) => match std::fs::metadata(p) {
+            Ok(meta) if meta.is_dir() => SideKind::Folder,
+            Ok(_) => SideKind::File,
+            Err(_) => SideKind::Missing,
+        },
+        UniversalPath::Git(p, _) if p.is_dir() => SideKind::Folder,
+        UniversalPath::Git(p, _) if p.is_file() => SideKind::File,
+        UniversalPath::Git(..) | UniversalPath::Depot(..) => SideKind::Unknown,
+    }
+}
+
 #[derive(Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct FileProcessor {
@@ -282,6 +307,10 @@ pub struct FileProcessor {
     pdb_options: PdbDumpOptions,
     #[cfg_attr(feature = "serde", serde(skip, default = "default_load_cache"))]
     load_cache: LoadCache,
+    #[cfg_attr(feature = "serde", serde(skip))]
+    kind: Option<(UniversalPath, SideKind)>,
+    #[cfg_attr(feature = "serde", serde(skip))]
+    load_held: bool,
 }
 
 impl Default for FileProcessor {
@@ -299,6 +328,8 @@ impl Default for FileProcessor {
             load_error: None,
             pdb_options: PdbDumpOptions::default(),
             load_cache: default_load_cache(),
+            kind: None,
+            load_held: false,
         }
     }
 }
@@ -487,6 +518,27 @@ impl FileProcessor {
         log::debug!("Invalidating cache file for path: {}", self.file_path);
         lock_load_cache(&self.load_cache).retain(|key| key.path != self.file_path);
         self.forget_loaded_file();
+        self.kind = None;
+    }
+
+    pub fn kind(&mut self) -> SideKind {
+        self.poll_path_channel();
+        match &self.kind {
+            Some((path, kind)) if *path == self.file_path => *kind,
+            _ => {
+                let kind = side_kind(&self.file_path);
+                self.kind = Some((self.file_path.clone(), kind));
+                kind
+            }
+        }
+    }
+
+    pub fn hold_load(&mut self, held: bool) {
+        if self.load_held != held {
+            self.load_held = held;
+            self.forget_loaded_file();
+            self.loading_path = None;
+        }
     }
 
     fn forget_loaded_file(&mut self) {
@@ -531,11 +583,17 @@ impl FileProcessor {
 
     pub fn get_loaded_file(&mut self) -> Option<LoadedFile> {
         for loaded in self.load_job.as_mut().map(Job::poll).unwrap_or_default() {
+            self.loading_path = None;
+            if self.load_held {
+                continue;
+            }
             (self.loaded_file, self.load_error) = match loaded {
                 Ok(file) => (Some(file), None),
                 Err(e) => (None, Some(e)),
             };
-            self.loading_path = None;
+        }
+        if self.load_held {
+            return None;
         }
 
         let path = &self.get_full_path();
@@ -1134,6 +1192,58 @@ mod tests {
             assert!(std::time::Instant::now() < deadline, "load never finished");
             std::thread::yield_now();
         }
+    }
+
+    #[test]
+    fn a_held_side_starts_no_load_and_reloads_when_released() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.rs");
+        std::fs::write(&path, "fn a() {}\n").unwrap();
+        let mut file = FileProcessor::new();
+        file.set_path(UniversalPath::from(path));
+
+        file.hold_load(true);
+        assert!(file.get_loaded_file().is_none());
+        assert_eq!(file.get_loading_path(), None);
+        assert_eq!(file.load_error(), None);
+
+        file.hold_load(false);
+        assert_eq!(loaded(&mut file).bytes(), b"fn a() {}\n");
+
+        file.hold_load(true);
+        assert!(file.get_loaded_file().is_none());
+        file.hold_load(false);
+        assert_eq!(loaded(&mut file).bytes(), b"fn a() {}\n");
+    }
+
+    #[test]
+    fn a_local_folder_is_a_folder_side_and_a_missing_path_is_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("a.rs");
+        let later = dir.path().join("later");
+        std::fs::write(&file_path, "fn a() {}\n").unwrap();
+        let kind_of = |file: &mut FileProcessor, path: &Path| {
+            file.set_path(UniversalPath::from(path));
+            file.kind()
+        };
+        let mut file = FileProcessor::new();
+
+        assert_eq!(file.kind(), SideKind::Empty);
+        assert_eq!(kind_of(&mut file, dir.path()), SideKind::Folder);
+        assert_eq!(kind_of(&mut file, &file_path), SideKind::File);
+        assert_eq!(kind_of(&mut file, &later), SideKind::Missing);
+        file.set_path(UniversalPath::new("//depot/folder"));
+        assert_eq!(file.kind(), SideKind::Unknown);
+        file.set_path(UniversalPath::Git(dir.path().join("gone"), GitRev::Index));
+        assert_eq!(file.kind(), SideKind::Unknown);
+        file.set_path(UniversalPath::Git(dir.path().to_path_buf(), GitRev::Index));
+        assert_eq!(file.kind(), SideKind::Folder);
+
+        assert_eq!(kind_of(&mut file, &later), SideKind::Missing);
+        std::fs::create_dir(&later).unwrap();
+        assert_eq!(file.kind(), SideKind::Missing);
+        file.invalidate_cache_file();
+        assert_eq!(file.kind(), SideKind::Folder);
     }
 
     #[test]

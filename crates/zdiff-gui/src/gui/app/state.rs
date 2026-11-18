@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use zcommon::find::FindQuery;
 use zcommon::presets::UserPresets;
 use zcommon_ui::h_scroll::WheelModifier;
@@ -9,7 +9,6 @@ use super::nav::NavHistory;
 use crate::{
     diff_ctx::DiffProcessor,
     file::FileProcessor,
-    folder::Mode,
     keybindings::Keybindings,
     p4::P4Profiles,
     pdb_dump::PdbDumpOptions,
@@ -91,6 +90,8 @@ pub struct AppStateCtx {
     #[cfg_attr(feature = "serde", serde(skip), serde(default))]
     pub browser_folders: [Option<String>; 2],
     #[cfg_attr(feature = "serde", serde(skip), serde(default))]
+    pub known_folders: HashSet<String>,
+    #[cfg_attr(feature = "serde", serde(skip), serde(default))]
     pub toggle_all: ToggleAll,
 
     pub diff_options: DiffBuilderOptions,
@@ -138,8 +139,6 @@ pub struct AppStateCtx {
     pub text_likeness: TextMetric,
     #[cfg_attr(feature = "serde", serde(default))]
     pub sides_swapped: bool,
-    #[cfg_attr(feature = "serde", serde(default))]
-    pub mode: Mode,
 
     #[cfg_attr(feature = "serde", serde(skip))]
     pub goto_open: bool,
@@ -199,6 +198,7 @@ impl Default for AppStateCtx {
             revert_history: Default::default(),
             nav_history: Default::default(),
             browser_folders: [None, None],
+            known_folders: HashSet::new(),
             toggle_all: Default::default(),
             scroll_left: Default::default(),
             scroll_right: Default::default(),
@@ -212,7 +212,6 @@ impl Default for AppStateCtx {
             text_mode: Default::default(),
             text_likeness: Default::default(),
             sides_swapped: false,
-            mode: Mode::File,
             goto_open: Default::default(),
             find_open: Default::default(),
             goto_input: Default::default(),
@@ -992,7 +991,7 @@ mod tests {
         assert_ne!(restored.p4_profiles.add("new".into()), id);
     }
     #[test]
-    fn a_save_from_before_the_folder_mode_loads_in_file_mode() {
+    fn a_save_from_before_the_folder_diff_loads() {
         let mut app: ZApp =
             serde_json::from_str(include_str!("testdata/zdiff_state_before_folder_mode.json"))
                 .unwrap();
@@ -1000,23 +999,34 @@ mod tests {
         assert_eq!(app.folder.roots(), [None, None]);
         let state = app.state.as_mut().unwrap().ctx_mut();
         assert!(state.sides_swapped);
-        assert_eq!(state.mode, Mode::File);
     }
 
     #[test]
-    fn folder_roots_and_mode_survive_a_restart() {
+    fn folder_settings_survive_a_restart_and_roots_are_the_sides() {
         let (left, right) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
         let mut app = ZApp::new();
         app.launch(vec![left.path().into(), right.path().into()]);
-        let roots = app.folder.roots();
-        assert!(roots.iter().all(Option::is_some), "{roots:?}");
+        app.folder
+            .keymap_mut()
+            .shortcuts_mut(crate::folder::folder_keymap::FolderAction::Refresh)
+            .clear();
+        let keymap = app.folder.keymap_mut().clone();
+        let sides = |app: &mut ZApp| {
+            let state = app.state.as_mut().unwrap().ctx_mut();
+            [state.file_1.get_full_path(), state.file_2.get_full_path()]
+        };
+        assert_eq!(
+            sides(&mut app),
+            [left.path(), right.path()].map(UniversalPath::from)
+        );
+        assert_eq!(app.folder.roots(), [None, None]);
 
         let json = serde_json::to_string(&app).unwrap();
         let mut restored: ZApp = serde_json::from_str(&json).unwrap();
-        assert_eq!(restored.folder.roots(), roots);
+        assert_eq!(*restored.folder.keymap_mut(), keymap);
         assert_eq!(
-            restored.state.as_mut().unwrap().ctx_mut().mode,
-            Mode::Folder
+            sides(&mut restored),
+            [UniversalPath::default(), UniversalPath::default()]
         );
     }
 

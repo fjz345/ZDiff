@@ -36,7 +36,7 @@ use crate::{
     cli::{self},
     diff_ctx::UpdateDiffRowsInput,
     file::LoadedFile,
-    folder::{self, Mode, roots::parse_launch_args, view::FolderView},
+    folder::{self, view::FolderView},
     keybindings::FileAction,
     p4::update_p4_profiles,
     revert::{PendingP4Edit, RevertTarget},
@@ -135,6 +135,15 @@ impl ZApp {
         self.launch(args);
     }
 
+    fn resolve_folder_pair(&mut self) -> bool {
+        let merge_open = self.merge.is_some();
+        self.state
+            .as_mut()
+            .expect("State was not valid while resolving the viewer")
+            .ctx_mut()
+            .resolve_folder_pair(merge_open)
+    }
+
     pub(super) fn run_startup_again(&mut self) {
         self.state = self
             .state
@@ -154,21 +163,14 @@ impl ZApp {
         let outcome = apply_launch(
             &mut ctx.file_1,
             &mut ctx.file_2,
+            &mut ctx.known_folders,
             cli::parse_launch(&args, Path::is_dir),
         );
-        ctx.mode = match outcome {
-            LaunchOutcome::Folders(_) => Mode::Folder,
-            _ => Mode::File,
-        };
         match outcome {
             LaunchOutcome::Opened => {}
             LaunchOutcome::Merge(request, names) => {
                 self.merge =
                     Some(MergeView::new(*request, ctx.myers_diff_algorithm).with_names(names));
-            }
-            LaunchOutcome::Folders(folder_args) => {
-                self.folder
-                    .apply_launch_args(&parse_launch_args(folder_args));
             }
             LaunchOutcome::Help => self.open_help_window = true,
             LaunchOutcome::Error(message) => {
@@ -272,15 +274,8 @@ impl eframe::App for ZApp {
 
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         self.frame_stats.begin_frame(ctx, frame);
-        let shows_folder = folder_mode::shows_folder(
-            self.state
-                .as_mut()
-                .expect("State was not valid while processing inputs")
-                .ctx_mut(),
-            &self.merge,
-        );
         // Update conflict cursor before input processing
-        if !shows_folder {
+        {
             let _scope = frame_stats::scope("Conflict count");
             let app_ctx = self
                 .state
@@ -323,9 +318,10 @@ impl eframe::App for ZApp {
         }
 
         let timed = frame_stats::scope("Shortcut dispatch");
-        if !shows_folder {
-            self.process_ctx_inputs(ctx, frame);
-        }
+        let folders = self.resolve_folder_pair();
+        let map_claims_back = self.process_ctx_inputs(ctx, frame, folders);
+        // An Undo or a quick diff just changed the sides.
+        let folders = self.resolve_folder_pair();
         drop(timed);
         self.frame_stats.mark("Input and shortcuts");
 
@@ -348,13 +344,10 @@ impl eframe::App for ZApp {
                 AppState::Idle(state_ctx)
             }
 
-            AppState::Idle(mut state) if folder_mode::shows_folder(&state, &self.merge) => {
+            AppState::Idle(mut state) if folders => {
                 self.zoom = sync_zoom(ctx);
-                if self.folder_frame(ctx, &mut state) {
-                    AppState::Exit(state)
-                } else {
-                    AppState::Idle(state)
-                }
+                self.folder_frame(ctx, &mut state, map_claims_back);
+                AppState::Idle(state)
             }
 
             AppState::Idle(mut state) => {

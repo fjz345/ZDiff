@@ -11,6 +11,7 @@ use zcommon_ui::keymap::{Action, Shortcut};
 use zdiff::universal_path::UniversalPath;
 
 use crate::{
+    folder::tree_map,
     keybindings::FileAction,
     p4::{P4Command, set_p4_slot_profile},
     revert::HistoryStep,
@@ -27,7 +28,13 @@ impl ZApp {
         }
     }
 
-    pub(super) fn process_ctx_inputs(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    pub(super) fn process_ctx_inputs(
+        &mut self,
+        ctx: &egui::Context,
+        _frame: &mut eframe::Frame,
+        folders: bool,
+    ) -> bool {
+        let map_claims_back = tree_map::take_mouse_back_claim(ctx);
         // The editor takes the captured key press only later in this frame, when it is drawn.
         let capturing = self.keymap_editor.is_capturing();
         let app_state_ctx = self
@@ -66,11 +73,26 @@ impl ZApp {
                     log::info!("middle click @({},{})", mouse_pos.x, mouse_pos.y);
                 }
 
-                let actions = app_state_ctx
-                    .keybindings
-                    .keymap
-                    .dispatch(&r.events, text_focused);
+                let keymap = &app_state_ctx.keybindings.keymap;
+                let actions = if map_claims_back {
+                    let unclaimed = |e: &&egui::Event| {
+                        !matches!(
+                            e,
+                            egui::Event::PointerButton {
+                                button: PointerButton::Extra1,
+                                ..
+                            }
+                        )
+                    };
+                    let events: Vec<_> = r.events.iter().filter(unclaimed).cloned().collect();
+                    keymap.dispatch(&events, text_focused)
+                } else {
+                    keymap.dispatch(&r.events, text_focused)
+                };
                 for action in actions {
+                    if folders && !matches!(action, FileAction::Undo | FileAction::Redo) {
+                        continue;
+                    }
                     log::info!("Action triggered: {}", action.label());
                     match action {
                         FileAction::OpenFileSource => {
@@ -266,12 +288,13 @@ impl ZApp {
                 }
             });
         }
-        if tab_pressed && !text_focused {
+        if tab_pressed && !text_focused && !folders {
             // begin_pass already made Tab a focus move; cancel it before any widget takes it.
             ctx.memory_mut(|m| m.move_focus(egui::FocusDirection::None));
             self.toggle_active_side = true;
         }
         if esc_pressed
+            && !folders
             && !app_state_ctx.find_open
             && !app_state_ctx.goto_open
             && self.pending_p4_edit.is_none()
@@ -320,5 +343,6 @@ impl ZApp {
         if user_quit {
             self.request_shutdown();
         }
+        map_claims_back
     }
 }

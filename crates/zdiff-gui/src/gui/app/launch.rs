@@ -1,8 +1,8 @@
-use std::ffi::OsString;
+use std::{collections::HashSet, ffi::OsString, path::PathBuf};
 
-use super::state::AppStateCtx;
+use super::{folder_mode::folder_key, state::AppStateCtx};
 
-use zdiff::diff_builder::DiffBuilderOptions;
+use zdiff::{diff_builder::DiffBuilderOptions, universal_path::UniversalPath};
 
 use crate::{
     cli::{self, LaunchRequest},
@@ -16,14 +16,23 @@ use crate::{
 pub(super) enum LaunchOutcome {
     Opened,
     Merge(Box<MergeRequest>, MergeNames),
-    Folders(Vec<OsString>),
     Help,
     Error(String),
+}
+
+fn folder_side(arg: &OsString) -> UniversalPath {
+    let absolute = |folder: PathBuf| std::path::absolute(&folder).unwrap_or(folder);
+    match UniversalPath::new(arg) {
+        UniversalPath::Local(folder) => UniversalPath::from(absolute(folder)),
+        UniversalPath::Git(folder, rev) => UniversalPath::Git(absolute(folder), rev),
+        depot @ UniversalPath::Depot(..) => depot,
+    }
 }
 
 pub(super) fn apply_launch(
     file_1: &mut FileProcessor,
     file_2: &mut FileProcessor,
+    known_folders: &mut HashSet<String>,
     launch: Result<cli::Launch, cli::LaunchError>,
 ) -> LaunchOutcome {
     let launch = match launch {
@@ -62,7 +71,14 @@ pub(super) fn apply_launch(
             };
             return LaunchOutcome::Merge(Box::new(request), names);
         }
-        LaunchRequest::Folders(folder_args) => return LaunchOutcome::Folders(folder_args),
+        LaunchRequest::Folders(folder_args) => {
+            for (file, arg) in [file_1, file_2].into_iter().zip(&folder_args) {
+                let side = folder_side(arg);
+                known_folders.insert(folder_key(&side));
+                file.restore_path(side, None);
+            }
+            return LaunchOutcome::Opened;
+        }
         LaunchRequest::Help => return LaunchOutcome::Help,
     };
     // set_path clears the label, so the label goes second.
@@ -119,7 +135,7 @@ pub(super) fn toggle_option(ctx: &mut AppStateCtx, action: FileAction) {
 #[cfg(all(test, feature = "serde"))]
 mod tests {
     use super::*;
-    use zdiff::{ignore::IgnorePatterns, universal_path::UniversalPath};
+    use zdiff::ignore::IgnorePatterns;
 
     #[test]
     fn each_toggle_action_flips_its_option_and_back() {
@@ -203,6 +219,7 @@ mod tests {
             let outcome = apply_launch(
                 &mut left,
                 &mut right,
+                &mut HashSet::new(),
                 cli::parse_launch_args(args.iter().copied()),
             );
             (left, right, outcome)
@@ -280,17 +297,25 @@ mod tests {
         }
 
         #[test]
-        fn a_folders_launch_leaves_the_file_sides() {
+        fn a_folders_launch_sets_both_sides_and_marks_them_known() {
             let mut left = FileProcessor::new();
             let mut right = FileProcessor::new();
-            let args: [OsString; 3] = ["--folder".into(), "a".into(), "b".into()];
-            let outcome = apply_launch(&mut left, &mut right, cli::parse_launch(&args, |_| false));
-            assert_eq!(
-                outcome,
-                LaunchOutcome::Folders(vec!["a".into(), "b".into()])
+            let mut known = HashSet::new();
+            let args: [OsString; 3] = ["--folder".into(), "a".into(), "//depot/b@7".into()];
+            let outcome = apply_launch(
+                &mut left,
+                &mut right,
+                &mut known,
+                cli::parse_launch(&args, |_| false),
             );
-            assert_eq!(left.get_full_path(), UniversalPath::default());
-            assert_eq!(right.get_full_path(), UniversalPath::default());
+            let a = UniversalPath::from(std::path::absolute("a").unwrap());
+            assert_eq!(outcome, LaunchOutcome::Opened);
+            assert_eq!(left.get_full_path(), a);
+            assert_eq!(right.get_full_path(), UniversalPath::new("//depot/b@7"));
+            assert_eq!(
+                known,
+                HashSet::from([folder_key(&a), "//depot/b".to_owned()])
+            );
         }
     }
 }

@@ -1,5 +1,4 @@
 use std::{
-    ffi::OsString,
     fmt,
     path::{Path, PathBuf},
 };
@@ -83,50 +82,6 @@ pub fn clear_root(root: &mut Option<PathBuf>) {
     *root = None;
 }
 
-#[derive(Debug, Default, PartialEq, Eq)]
-pub struct LaunchArgs {
-    pub folders: Vec<PathBuf>,
-    pub ignored: Vec<OsString>,
-}
-
-/// `args` excludes the program name.
-pub fn parse_launch_args(args: impl IntoIterator<Item = OsString>) -> LaunchArgs {
-    let mut parsed = LaunchArgs::default();
-    for arg in args {
-        if parsed.folders.len() < 2 {
-            parsed.folders.push(arg.into());
-        } else {
-            parsed.ignored.push(arg);
-        }
-    }
-    parsed
-}
-
-/// Any folder argument overrides both remembered roots, so one argument opens only Folder 1.
-pub fn apply_launch_args(
-    args: &LaunchArgs,
-    root_1: &mut Option<PathBuf>,
-    root_2: &mut Option<PathBuf>,
-) -> Option<ToolMessage> {
-    if !args.ignored.is_empty() {
-        log::warn!("Ignoring extra command-line arguments: {:?}", args.ignored);
-    }
-    if args.folders.is_empty() {
-        return None;
-    }
-    let sides = [(root_1, Side::Folder1), (root_2, Side::Folder2)];
-    let mut errors = Vec::new();
-    for (i, (root, side)) in sides.into_iter().enumerate() {
-        clear_root(root);
-        if let Some(folder) = args.folders.get(i)
-            && let Err(e) = set_root(root, side, folder)
-        {
-            errors.push(format!("{side}: {e}"));
-        }
-    }
-    (!errors.is_empty()).then(|| error_message(errors.join("; ")))
-}
-
 pub fn set_root_or_report(
     root: &mut Option<PathBuf>,
     side: Side,
@@ -149,10 +104,6 @@ fn error_message(error: String) -> ToolMessage {
 mod tests {
     use super::*;
     use zcommon::universal_path::GitRev;
-
-    fn args(list: &[&Path]) -> LaunchArgs {
-        parse_launch_args(list.iter().map(|p| p.as_os_str().to_owned()))
-    }
 
     #[test]
     fn folder_is_accepted() {
@@ -250,90 +201,6 @@ mod tests {
     }
 
     #[test]
-    fn parse_zero_one_two_and_extra_arguments() {
-        let (a, b, c, d) = (
-            Path::new("a"),
-            Path::new("b"),
-            Path::new("c"),
-            Path::new("d"),
-        );
-        assert_eq!(args(&[]), LaunchArgs::default());
-        assert_eq!(args(&[a]).folders, vec![a.to_path_buf()]);
-        assert_eq!(
-            args(&[a, b]),
-            LaunchArgs {
-                folders: vec![a.to_path_buf(), b.to_path_buf()],
-                ignored: vec![],
-            }
-        );
-        assert_eq!(
-            args(&[a, b, c, d]),
-            LaunchArgs {
-                folders: vec![a.to_path_buf(), b.to_path_buf()],
-                ignored: vec![c.into(), d.into()],
-            }
-        );
-    }
-
-    #[test]
-    fn no_arguments_keep_remembered_roots() {
-        let (mut root_1, mut root_2) = (Some(PathBuf::from("r1")), Some(PathBuf::from("r2")));
-        apply_launch_args(&args(&[]), &mut root_1, &mut root_2);
-        assert_eq!(root_1, Some(PathBuf::from("r1")));
-        assert_eq!(root_2, Some(PathBuf::from("r2")));
-    }
-
-    #[test]
-    fn one_argument_opens_only_folder_1() {
-        let dir = tempfile::tempdir().unwrap();
-        let (mut root_1, mut root_2) = (Some(PathBuf::from("r1")), Some(PathBuf::from("r2")));
-        apply_launch_args(&args(&[dir.path()]), &mut root_1, &mut root_2);
-        assert_eq!(root_1.as_deref(), Some(dir.path()));
-        assert_eq!(root_2, None);
-    }
-
-    #[test]
-    fn two_arguments_override_both_roots() {
-        let (dir_1, dir_2) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
-        let (mut root_1, mut root_2) = (Some(PathBuf::from("r1")), Some(PathBuf::from("r2")));
-        apply_launch_args(
-            &args(&[dir_1.path(), dir_2.path()]),
-            &mut root_1,
-            &mut root_2,
-        );
-        assert_eq!(root_1.as_deref(), Some(dir_1.path()));
-        assert_eq!(root_2.as_deref(), Some(dir_2.path()));
-    }
-
-    #[test]
-    fn non_folder_argument_leaves_its_side_empty() {
-        let dir = tempfile::tempdir().unwrap();
-        let file = dir.path().join("a.txt");
-        std::fs::write(&file, "a").unwrap();
-        let (mut root_1, mut root_2) = (Some(PathBuf::from("r1")), Some(PathBuf::from("r2")));
-        apply_launch_args(&args(&[&file, dir.path()]), &mut root_1, &mut root_2);
-        assert_eq!(root_1, None);
-        assert_eq!(root_2.as_deref(), Some(dir.path()));
-    }
-
-    #[test]
-    fn rejected_arguments_are_reported_in_the_status_line() {
-        let dir = tempfile::tempdir().unwrap();
-        let (file, missing) = (dir.path().join("a.txt"), dir.path().join("missing"));
-        std::fs::write(&file, "a").unwrap();
-        let (mut root_1, mut root_2) = (None, None);
-        let message = apply_launch_args(&args(&[&file, &missing]), &mut root_1, &mut root_2);
-        let expected = format!(
-            "Left: {}; Right: {}",
-            InvalidRoot::NotAFolder(file),
-            InvalidRoot::Missing(missing)
-        );
-        assert_eq!(message.and_then(|m| m.error), Some(expected));
-        let accepted = apply_launch_args(&args(&[dir.path()]), &mut root_1, &mut root_2);
-        assert_eq!(accepted, None);
-    }
-
-    #[test]
     fn a_rejected_root_is_reported_until_a_root_is_accepted() {
         let dir = tempfile::tempdir().unwrap();
         let missing = dir.path().join("missing");
@@ -345,18 +212,5 @@ mod tests {
         assert_eq!(root.as_deref(), Some(dir.path()));
         set_root_or_report(&mut root, Side::Folder2, dir.path(), &mut message);
         assert_eq!(message, None);
-    }
-
-    #[test]
-    fn extra_arguments_are_ignored() {
-        let (dir_1, dir_2) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
-        let (mut root_1, mut root_2) = (None, None);
-        apply_launch_args(
-            &args(&[dir_1.path(), dir_2.path(), Path::new("extra")]),
-            &mut root_1,
-            &mut root_2,
-        );
-        assert_eq!(root_1.as_deref(), Some(dir_1.path()));
-        assert_eq!(root_2.as_deref(), Some(dir_2.path()));
     }
 }

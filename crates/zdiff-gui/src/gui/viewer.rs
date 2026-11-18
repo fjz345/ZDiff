@@ -11,6 +11,8 @@ use zcommon::kinds::{FileKind, KindTable, normalize_extension};
 use zcommon_ui::common::{confirm_button, icon_button, section_heading};
 use zdiff::universal_path::UniversalPath;
 
+use crate::file::SideKind;
+
 pub mod audio;
 pub mod audio_diff;
 pub mod audio_meta;
@@ -244,6 +246,7 @@ pub enum Viewers {
     Pair(ViewerKind),
     /// The sides resolve to different viewers: each side is shown on its own, not diffed.
     Sides([ViewerKind; 2]),
+    Folders,
 }
 
 impl Viewers {
@@ -258,7 +261,7 @@ impl Viewers {
     pub fn pair(self) -> Option<ViewerKind> {
         match self {
             Viewers::Pair(kind) => Some(kind),
-            Viewers::Sides(_) => None,
+            Viewers::Sides(_) | Viewers::Folders => None,
         }
     }
 
@@ -266,6 +269,7 @@ impl Viewers {
         match self {
             Viewers::Pair(shown) => shown == kind,
             Viewers::Sides(sides) => sides.contains(&kind),
+            Viewers::Folders => false,
         }
     }
 
@@ -273,6 +277,7 @@ impl Viewers {
         match self {
             Viewers::Pair(kind) => Viewers::Pair(f(kind)),
             Viewers::Sides(sides) => Viewers::from_sides(sides.map(f)),
+            Viewers::Folders => Viewers::Folders,
         }
     }
 
@@ -287,6 +292,19 @@ impl Viewers {
             _ => [None, None],
         }
     }
+}
+
+pub fn folder_pair(kinds: [SideKind; 2], known: [bool; 2]) -> bool {
+    let folderish = |side: usize| match kinds[side] {
+        SideKind::Folder => true,
+        SideKind::Unknown | SideKind::Missing => known[side],
+        SideKind::Empty | SideKind::File => false,
+    };
+    (folderish(0) || folderish(1)) && !kinds.contains(&SideKind::File)
+}
+
+pub fn folder_side_errors(kinds: [SideKind; 2], pair: bool) -> [bool; 2] {
+    kinds.map(|kind| !pair && kind == SideKind::Folder)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -585,7 +603,8 @@ pub fn conflict_count(viewers: Option<Viewers>, text: usize, hex: usize) -> usiz
         Some(Viewers::Pair(ViewerKind::Hex)) => hex,
         Some(
             Viewers::Pair(ViewerKind::Image | ViewerKind::Audio | ViewerKind::Video)
-            | Viewers::Sides(_),
+            | Viewers::Sides(_)
+            | Viewers::Folders,
         ) => 0,
         Some(Viewers::Pair(ViewerKind::Text)) | None => text,
     }
@@ -606,6 +625,40 @@ mod tests {
         assert_eq!(conflict_count(pair(ViewerKind::Hex), 7, 3), 3);
         assert_eq!(conflict_count(None, 7, 3), 7);
         assert_eq!(conflict_count(pair(ViewerKind::Image), 7, 3), 0);
+    }
+
+    #[test]
+    fn a_folder_with_a_folder_nothing_a_missing_or_a_known_path_is_the_folder_diff_and_a_folder_with_a_file_is_not()
+     {
+        use SideKind::{Empty, File, Folder, Missing, Unknown};
+        let unknown = [false, false];
+        let cases = [
+            ([Folder, Folder], unknown, true),
+            ([Folder, Empty], unknown, true),
+            ([Empty, Folder], unknown, true),
+            ([Folder, Missing], unknown, true),
+            ([Unknown, Folder], unknown, true),
+            ([Folder, File], unknown, false),
+            ([File, Folder], [true, true], false),
+            ([File, File], unknown, false),
+            ([Empty, Empty], unknown, false),
+            ([Missing, Missing], unknown, false),
+            ([Missing, Empty], unknown, false),
+            ([Unknown, Unknown], unknown, false),
+            ([Missing, Empty], [true, false], true),
+            ([Missing, Empty], [false, true], false),
+            ([Unknown, Unknown], [false, true], true),
+            ([Unknown, Missing], [true, false], true),
+            ([Unknown, File], [true, false], false),
+        ];
+        for (kinds, known, pair) in cases {
+            assert_eq!(folder_pair(kinds, known), pair, "{kinds:?} {known:?}");
+        }
+        assert_eq!(conflict_count(Some(Viewers::Folders), 7, 3), 0);
+        assert_eq!(folder_side_errors([Folder, File], false), [true, false]);
+        assert_eq!(folder_side_errors([Folder, Folder], true), [false; 2]);
+        assert_eq!(folder_side_errors([Folder, Folder], false), [true; 2]);
+        assert_eq!(folder_side_errors([Missing, File], false), [false; 2]);
     }
 
     #[test]
