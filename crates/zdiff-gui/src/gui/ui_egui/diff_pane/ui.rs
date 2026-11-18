@@ -7,10 +7,12 @@ impl FileDiffPane {
         self.occurrences.begin_frame(ui.ctx());
         let mut side_viewers = ctx.side_viewers.take();
 
+        let folder_pair = ctx.folder.is_some();
         let text_viewer = ctx.hex_view.is_none()
             && ctx.image_view.is_none()
             && ctx.media_view.is_none()
-            && side_viewers.is_none();
+            && side_viewers.is_none()
+            && !folder_pair;
         let strings = ctx
             .hex_mode
             .as_ref()
@@ -104,208 +106,210 @@ impl FileDiffPane {
         let hint = |action: FileAction, text: &str| keymap.with_shortcut(action, text);
         let action_hint = |action: FileAction| hint(action, action.label());
 
-        toolbar(ui, |ui| {
-            toolbar_group(ui, |ui| {
-                viewer_override_combo(ui, ctx.viewer_override, ctx.viewer_fallback);
-                if let Some(settings) = ctx.hex_mode.as_deref_mut() {
-                    hex_mode_ui(ui, settings);
-                }
-                if text_viewer && !strings {
-                    text_mode_combo(ui, ctx.text_mode);
-                }
-                if let Some(options) = ctx.pdb_options.as_deref_mut() {
-                    pdb_options_menu(ui, options);
-                }
-            });
-            ui.separator();
-
-            toolbar_group(ui, |ui| {
-                let mut held = ctx.toggle_all_held;
-                if toggle_button(
-                    ui,
-                    &mut held,
-                    egui::RichText::new("All").strong(),
-                    &hint(FileAction::ToggleAllOptions, "Toggle All Options"),
-                ) {
-                    *ctx.toggle_all_request = true;
-                }
-                toggle_button(
-                    ui,
-                    &mut ctx.diff_options.ignore.whitespace,
-                    egui::RichText::new("WS").strong(),
-                    &hint(FileAction::IgnoreWhitespace, "Ignore Whitespace"),
-                );
-                toggle_button(
-                    ui,
-                    &mut ctx.diff_options.ignore.comments,
-                    egui::RichText::new("//").monospace().strong(),
-                    &hint(FileAction::IgnoreComments, "Ignore Comments"),
-                );
-                marker_toggle_button(
-                    ui,
-                    &mut ctx.diff_options.ignore.line_endings,
-                    "EOL",
-                    &hint(
-                        FileAction::IgnoreLineEndings,
-                        "Ignore Line Endings: CRLF, LF and CR are equal",
-                    ),
-                );
-                marker_toggle_button(
-                    ui,
-                    &mut ctx.diff_options.ignore.file_markers,
-                    "BOM",
-                    &hint(
-                        FileAction::IgnoreFileMarkers,
-                        "Ignore File Markers: a BOM at the start and the line break at the end of the file",
-                    ),
-                );
-                ignore_patterns_btn(
-                    ui,
-                    TOGGLE_BUTTON_SIZE,
-                    &mut ctx.diff_options.ignore.patterns,
-                    ctx.diff_options.ignore.regex_enabled,
-                    ctx.regex_ignore_presets,
-                    &hint(
-                        FileAction::IgnoreRegex,
-                        "Ignore Regex: text matching these patterns is ignored and dimmed",
-                    ),
-                );
-                toggle_button(
-                    ui,
-                    &mut ctx.diff_options.highlight_rows,
-                    egui::RichText::new("HL").strong(),
-                    &hint(FileAction::HighlightRows, "Highlight Rows"),
-                );
-                options_menu_button(ui, "Diff marks", |ui| {
-                    diff_marks_checkboxes(ui, ctx.diff_options)
+        if !folder_pair {
+            toolbar(ui, |ui| {
+                toolbar_group(ui, |ui| {
+                    viewer_override_combo(ui, ctx.viewer_override, ctx.viewer_fallback);
+                    if let Some(settings) = ctx.hex_mode.as_deref_mut() {
+                        hex_mode_ui(ui, settings);
+                    }
+                    if text_viewer && !strings {
+                        text_mode_combo(ui, ctx.text_mode);
+                    }
+                    if let Some(options) = ctx.pdb_options.as_deref_mut() {
+                        pdb_options_menu(ui, options);
+                    }
                 });
-                toggle_button(
-                    ui,
-                    &mut ctx.diff_options.ghost_rows,
-                    egui::RichText::new("👻").strong(),
-                    &hint(FileAction::GhostRows, "Ghost Rows"),
-                );
-                toggle_button(
-                    ui,
-                    ctx.word_wrap,
-                    egui::RichText::new("↩").strong(),
-                    &hint(FileAction::WordWrap, "Word Wrap"),
-                );
+                ui.separator();
 
-                let mut active = ctx.diff_options.diff_only_with_extra_rows.is_some();
-                if toggle_button(
-                    ui,
-                    &mut active,
-                    egui::RichText::new("±").strong(),
-                    &hint(FileAction::DiffOnly, "Diff Only"),
-                ) {
-                    ctx.diff_options.diff_only_with_extra_rows =
-                        active.then_some(DEFAULT_CONTEXT_ROWS);
-                }
-                if let Some(diff_rows_num) = &mut ctx.diff_options.diff_only_with_extra_rows {
+                toolbar_group(ui, |ui| {
+                    let mut held = ctx.toggle_all_held;
+                    if toggle_button(
+                        ui,
+                        &mut held,
+                        egui::RichText::new("All").strong(),
+                        &hint(FileAction::ToggleAllOptions, "Toggle All Options"),
+                    ) {
+                        *ctx.toggle_all_request = true;
+                    }
+                    toggle_button(
+                        ui,
+                        &mut ctx.diff_options.ignore.whitespace,
+                        egui::RichText::new("WS").strong(),
+                        &hint(FileAction::IgnoreWhitespace, "Ignore Whitespace"),
+                    );
+                    toggle_button(
+                        ui,
+                        &mut ctx.diff_options.ignore.comments,
+                        egui::RichText::new("//").monospace().strong(),
+                        &hint(FileAction::IgnoreComments, "Ignore Comments"),
+                    );
+                    marker_toggle_button(
+                        ui,
+                        &mut ctx.diff_options.ignore.line_endings,
+                        "EOL",
+                        &hint(
+                            FileAction::IgnoreLineEndings,
+                            "Ignore Line Endings: CRLF, LF and CR are equal",
+                        ),
+                    );
+                    marker_toggle_button(
+                        ui,
+                        &mut ctx.diff_options.ignore.file_markers,
+                        "BOM",
+                        &hint(
+                            FileAction::IgnoreFileMarkers,
+                            "Ignore File Markers: a BOM at the start and the line break at the end of the file",
+                        ),
+                    );
+                    ignore_patterns_btn(
+                        ui,
+                        TOGGLE_BUTTON_SIZE,
+                        &mut ctx.diff_options.ignore.patterns,
+                        ctx.diff_options.ignore.regex_enabled,
+                        ctx.regex_ignore_presets,
+                        &hint(
+                            FileAction::IgnoreRegex,
+                            "Ignore Regex: text matching these patterns is ignored and dimmed",
+                        ),
+                    );
+                    toggle_button(
+                        ui,
+                        &mut ctx.diff_options.highlight_rows,
+                        egui::RichText::new("HL").strong(),
+                        &hint(FileAction::HighlightRows, "Highlight Rows"),
+                    );
+                    options_menu_button(ui, "Diff marks", |ui| {
+                        diff_marks_checkboxes(ui, ctx.diff_options)
+                    });
+                    toggle_button(
+                        ui,
+                        &mut ctx.diff_options.ghost_rows,
+                        egui::RichText::new("👻").strong(),
+                        &hint(FileAction::GhostRows, "Ghost Rows"),
+                    );
+                    toggle_button(
+                        ui,
+                        ctx.word_wrap,
+                        egui::RichText::new("↩").strong(),
+                        &hint(FileAction::WordWrap, "Word Wrap"),
+                    );
+
+                    let mut active = ctx.diff_options.diff_only_with_extra_rows.is_some();
+                    if toggle_button(
+                        ui,
+                        &mut active,
+                        egui::RichText::new("±").strong(),
+                        &hint(FileAction::DiffOnly, "Diff Only"),
+                    ) {
+                        ctx.diff_options.diff_only_with_extra_rows =
+                            active.then_some(DEFAULT_CONTEXT_ROWS);
+                    }
+                    if let Some(diff_rows_num) = &mut ctx.diff_options.diff_only_with_extra_rows {
+                        match stepper(
+                            ui,
+                            *diff_rows_num,
+                            0..=MAX_CONTEXT_ROWS,
+                            |rows| rows.to_string(),
+                            &action_hint(FileAction::FewerContextRows),
+                            &action_hint(FileAction::MoreContextRows),
+                            &format!("Reset to {DEFAULT_CONTEXT_ROWS} context rows"),
+                        ) {
+                            Some(Step::Dec) => *diff_rows_num = diff_rows_num.saturating_sub(1),
+                            Some(Step::Inc) => {
+                                *diff_rows_num = (*diff_rows_num + 1).min(MAX_CONTEXT_ROWS)
+                            }
+                            Some(Step::Reset) => *diff_rows_num = DEFAULT_CONTEXT_ROWS,
+                            Some(Step::Set(rows)) => *diff_rows_num = rows,
+                            None => {}
+                        }
+                    }
+                });
+                ui.separator();
+
+                toolbar_group(ui, |ui| {
+                    let conflict_max = ctx.conflict_cursor.get_max();
                     match stepper(
                         ui,
-                        *diff_rows_num,
-                        0..=MAX_CONTEXT_ROWS,
-                        |rows| rows.to_string(),
-                        &action_hint(FileAction::FewerContextRows),
-                        &action_hint(FileAction::MoreContextRows),
-                        &format!("Reset to {DEFAULT_CONTEXT_ROWS} context rows"),
+                        ctx.conflict_cursor.get(),
+                        0..=conflict_max,
+                        |cursor| format!("{cursor}/{conflict_max}"),
+                        &action_hint(FileAction::PrevConflict),
+                        &action_hint(FileAction::NextConflict),
+                        "Clear conflict selection",
                     ) {
-                        Some(Step::Dec) => *diff_rows_num = diff_rows_num.saturating_sub(1),
-                        Some(Step::Inc) => {
-                            *diff_rows_num = (*diff_rows_num + 1).min(MAX_CONTEXT_ROWS)
-                        }
-                        Some(Step::Reset) => *diff_rows_num = DEFAULT_CONTEXT_ROWS,
-                        Some(Step::Set(rows)) => *diff_rows_num = rows,
+                        Some(Step::Dec) => ctx.conflict_cursor.dec(),
+                        Some(Step::Inc) => ctx.conflict_cursor.inc(),
+                        Some(Step::Reset) => ctx.conflict_cursor.set(0),
+                        Some(Step::Set(cursor)) => ctx.conflict_cursor.set(cursor),
                         None => {}
                     }
-                }
-            });
-            ui.separator();
-
-            toolbar_group(ui, |ui| {
-                let conflict_max = ctx.conflict_cursor.get_max();
-                match stepper(
-                    ui,
-                    ctx.conflict_cursor.get(),
-                    0..=conflict_max,
-                    |cursor| format!("{cursor}/{conflict_max}"),
-                    &action_hint(FileAction::PrevConflict),
-                    &action_hint(FileAction::NextConflict),
-                    "Clear conflict selection",
-                ) {
-                    Some(Step::Dec) => ctx.conflict_cursor.dec(),
-                    Some(Step::Inc) => ctx.conflict_cursor.inc(),
-                    Some(Step::Reset) => ctx.conflict_cursor.set(0),
-                    Some(Step::Set(cursor)) => ctx.conflict_cursor.set(cursor),
-                    None => {}
-                }
-            });
-            toolbar_group(ui, |ui| {
-                let find_count = ctx.find_count;
-                match stepper(
-                    ui,
-                    ctx.find_cursor.get(),
-                    0..=find_count.saturating_sub(1),
-                    |cursor| {
-                        let find_k = if find_count == 0 { 0 } else { cursor + 1 };
-                        format!("{find_k}/{find_count}")
-                    },
-                    &action_hint(FileAction::PrevFind),
-                    &action_hint(FileAction::NextFind),
-                    "Go to first match",
-                ) {
-                    Some(Step::Dec) => ctx.find_cursor.dec(),
-                    Some(Step::Inc) => ctx.find_cursor.inc(),
-                    Some(Step::Reset) => ctx.find_cursor.set(0),
-                    Some(Step::Set(cursor)) => ctx.find_cursor.set(cursor),
-                    None => {}
-                }
-            });
-            toolbar_group(ui, |ui| {
-                pins_ui(ui, pin_input, ctx.pins, ctx.pins_request, ctx.diff_ctx);
-            });
-            toolbar_end(ui, |ui| {
-                if side_viewers.is_none() {
-                    likeness_ui(ui, ctx, text_viewer);
-                }
-                if ctx.diff_loading && ctx.diff_ctx.is_some() {
-                    ui.add(egui::Label::new(UPDATING_TEXT).selectable(false));
-                } else if let Some(diff_ctx) = ctx.diff_ctx {
-                    let (label, tooltip) = diff_status_text(
-                        diff_ctx.num_add_deletes,
-                        diff_ctx.change_unit,
-                        &diff_ctx.stage_times,
-                    );
-                    let label = diff_status_job(
-                        &label,
-                        diff_ctx.num_add_deletes,
-                        &egui::TextStyle::Body.resolve(ui.style()),
-                        [
-                            role_color(ui.ctx(), SharedRole::InsertText),
-                            role_color(ui.ctx(), SharedRole::DeleteText),
-                        ],
-                    );
-                    // Not selectable, so a drag-copy over the rows can't pick it up.
-                    ui.add(egui::Label::new(label).selectable(false))
-                        .on_hover_text(tooltip);
-                } else if let Some(sides) = &side_viewers {
-                    let text = side_viewers::status_text(sides.kinds);
-                    let text = egui::RichText::new(text).color(ui.visuals().warn_fg_color);
-                    ui.add(egui::Label::new(text).selectable(false));
-                } else if let Some(hex_view) = &ctx.hex_view {
-                    ui.add(egui::Label::new(hex_view.status_text()).selectable(false));
-                } else if let Some(image_view) = &ctx.image_view {
-                    let (text, size_mismatch) = image_view.status_text();
-                    let mut text = egui::RichText::new(text);
-                    if size_mismatch {
-                        text = text.color(ui.visuals().warn_fg_color);
+                });
+                toolbar_group(ui, |ui| {
+                    let find_count = ctx.find_count;
+                    match stepper(
+                        ui,
+                        ctx.find_cursor.get(),
+                        0..=find_count.saturating_sub(1),
+                        |cursor| {
+                            let find_k = if find_count == 0 { 0 } else { cursor + 1 };
+                            format!("{find_k}/{find_count}")
+                        },
+                        &action_hint(FileAction::PrevFind),
+                        &action_hint(FileAction::NextFind),
+                        "Go to first match",
+                    ) {
+                        Some(Step::Dec) => ctx.find_cursor.dec(),
+                        Some(Step::Inc) => ctx.find_cursor.inc(),
+                        Some(Step::Reset) => ctx.find_cursor.set(0),
+                        Some(Step::Set(cursor)) => ctx.find_cursor.set(cursor),
+                        None => {}
                     }
-                    ui.add(egui::Label::new(text).selectable(false));
-                }
+                });
+                toolbar_group(ui, |ui| {
+                    pins_ui(ui, pin_input, ctx.pins, ctx.pins_request, ctx.diff_ctx);
+                });
+                toolbar_end(ui, |ui| {
+                    if side_viewers.is_none() {
+                        likeness_ui(ui, ctx, text_viewer);
+                    }
+                    if ctx.diff_loading && ctx.diff_ctx.is_some() {
+                        ui.add(egui::Label::new(UPDATING_TEXT).selectable(false));
+                    } else if let Some(diff_ctx) = ctx.diff_ctx {
+                        let (label, tooltip) = diff_status_text(
+                            diff_ctx.num_add_deletes,
+                            diff_ctx.change_unit,
+                            &diff_ctx.stage_times,
+                        );
+                        let label = diff_status_job(
+                            &label,
+                            diff_ctx.num_add_deletes,
+                            &egui::TextStyle::Body.resolve(ui.style()),
+                            [
+                                role_color(ui.ctx(), SharedRole::InsertText),
+                                role_color(ui.ctx(), SharedRole::DeleteText),
+                            ],
+                        );
+                        // Not selectable, so a drag-copy over the rows can't pick it up.
+                        ui.add(egui::Label::new(label).selectable(false))
+                            .on_hover_text(tooltip);
+                    } else if let Some(sides) = &side_viewers {
+                        let text = side_viewers::status_text(sides.kinds);
+                        let text = egui::RichText::new(text).color(ui.visuals().warn_fg_color);
+                        ui.add(egui::Label::new(text).selectable(false));
+                    } else if let Some(hex_view) = &ctx.hex_view {
+                        ui.add(egui::Label::new(hex_view.status_text()).selectable(false));
+                    } else if let Some(image_view) = &ctx.image_view {
+                        let (text, size_mismatch) = image_view.status_text();
+                        let mut text = egui::RichText::new(text);
+                        if size_mismatch {
+                            text = text.color(ui.visuals().warn_fg_color);
+                        }
+                        ui.add(egui::Label::new(text).selectable(false));
+                    }
+                });
             });
-        });
+        }
 
         if let Some(reason) = ctx.viewer_fallback {
             ui.colored_label(ui.visuals().warn_fg_color, format!("⚠ {reason}"));
@@ -359,7 +363,8 @@ impl FileDiffPane {
         let other_viewer = ctx.hex_view.is_some()
             || ctx.image_view.is_some()
             || ctx.media_view.is_some()
-            || side_viewers.is_some();
+            || side_viewers.is_some()
+            || folder_pair;
         if other_viewer {
             waiting_for_diff = false;
             do_not_render_diff = false;
@@ -634,6 +639,7 @@ impl FileDiffPane {
                             let header_only = ctx.image_view.is_some()
                                 || ctx.media_view.is_some()
                                 || side_viewers.is_some()
+                                || folder_pair
                                 || patch
                                 || do_not_render_diff;
                             let scope_diff = ctx.diff_ctx.filter(|_| {
@@ -1206,6 +1212,13 @@ impl FileDiffPane {
                             }
                             if let Some(processor) = ctx.audio_meta.as_deref_mut() {
                                 audio_meta::show(ui, processor);
+                            }
+                            if let Some(folder) = ctx.folder.as_deref_mut() {
+                                ui.scope(|ui| {
+                                    // The pane's monospace and zero row spacing are for text rows.
+                                    ui.reset_style();
+                                    folder.ui(ui);
+                                });
                             }
                             if let Some(sides) = side_viewers.as_mut() {
                                 let text = sides.text;

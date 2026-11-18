@@ -1,11 +1,13 @@
+use std::path::PathBuf;
+
 use eframe::egui;
 use zdiff::universal_path::UniversalPath;
 
-use super::{ZApp, state::AppStateCtx, ui::send_title};
+use super::{ZApp, state::AppStateCtx};
 use crate::{
     file::FileProcessor,
-    folder::view::{FolderShell, root_of_side},
-    viewer::{Viewers, folder_pair, folder_side_errors},
+    folder::view::root_of_side,
+    viewer::{folder_pair, folder_side_errors},
 };
 
 pub(super) fn folder_key(path: &UniversalPath) -> String {
@@ -51,27 +53,26 @@ impl AppStateCtx {
 }
 
 impl ZApp {
-    pub(super) fn folder_frame(
+    pub(super) fn poll_folder(
         &mut self,
         ctx: &egui::Context,
         state: &mut AppStateCtx,
         map_claims_back: bool,
-    ) {
-        state.observe_history();
-        state.viewers = Some(Viewers::Folders);
+    ) -> [Option<PathBuf>; 2] {
         let sides = [state.file_1.get_full_path(), state.file_2.get_full_path()];
         self.folder.set_roots(sides.each_ref().map(root_of_side));
         let shown = self.folder.roots();
-        self.folder.frame(
-            ctx,
-            FolderShell {
-                frame_stats: &mut self.frame_stats,
-                show_frame_breakdown: &mut self.show_frame_breakdown,
-                style_window: &mut self.style_window,
-                map_claims_back,
-            },
-        );
-        // Until U3 the folder still edits its own roots (bars, dialogs, drops, scan revert).
+        self.folder.poll(ctx, map_claims_back);
+        self.frame_stats.mark("Folder polling");
+        shown
+    }
+
+    // Until U3 the folder still edits its own roots (bars, dialogs, drops, scan revert).
+    pub(super) fn write_back_folder_roots(
+        &self,
+        state: &mut AppStateCtx,
+        shown: [Option<PathBuf>; 2],
+    ) {
         let files = [&mut state.file_1, &mut state.file_2];
         let roots = shown.into_iter().zip(self.folder.roots());
         for (file, (shown, root)) in files.into_iter().zip(roots) {
@@ -79,7 +80,6 @@ impl ZApp {
                 file.restore_path(root.map(UniversalPath::from).unwrap_or_default(), None);
             }
         }
-        send_title(ctx, &mut self.window_title, self.folder.title());
     }
 
     #[cfg(test)]

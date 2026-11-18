@@ -23,9 +23,8 @@ use zcommon::{
 };
 use zcommon_ui::{
     find_popup::{FindPopupEvent, find_popup},
-    frame_stats::{self, FrameStats},
+    frame_stats,
     keymap::{Keymap, menu_item},
-    style_window::StyleWindow,
 };
 use zdiff_folder::{
     external_diff_tool::DiffToolConfig, filter::PathFilter, fs::FileSystemModel, scan::ScanOutput,
@@ -37,8 +36,7 @@ use crate::folder::{
     export::{folder_diff_report, save_report},
     folder_keymap::{self, FolderAction, KeybindingsWindow},
     fs_tree::{
-        FileSystemView, FolderRole, HScrollLink, RowsId, VisibleRowTwoFolderDiff,
-        apply_blueprint_results,
+        FileSystemView, HScrollLink, RowsId, VisibleRowTwoFolderDiff, apply_blueprint_results,
     },
     panes::{Pane, PathDiffView, TreeBehavior, ViewChoice},
     path_diff_pane::{FilterPresets, PathDiffPane},
@@ -817,13 +815,6 @@ pub(crate) fn finish_side_scan(
     }
 }
 
-pub struct FolderShell<'a> {
-    pub frame_stats: &'a mut FrameStats,
-    pub show_frame_breakdown: &'a mut bool,
-    pub style_window: &'a mut StyleWindow,
-    pub map_claims_back: bool,
-}
-
 pub fn root_of_side(side: &UniversalPath) -> Option<PathBuf> {
     match side {
         side if side.is_empty() => None,
@@ -859,6 +850,14 @@ struct FolderPanes {
     export_requested: bool,
     #[serde(skip)]
     last_discard_frame: Option<u64>,
+    #[serde(skip)]
+    polled: PolledInput,
+}
+
+#[derive(Default)]
+struct PolledInput {
+    actions: Vec<FolderAction>,
+    keyboard_taken: bool,
 }
 
 const LONG_FRAME: Duration = Duration::from_millis(200);
@@ -874,16 +873,6 @@ fn discard_stale_rows(stale: bool, last_discard_frame: &mut Option<u64>, frame: 
     discard
 }
 
-fn window_title(state: &FolderState) -> String {
-    let rows = state
-        .two_folder_diff_visible_rows
-        .as_ref()
-        .map_or(0, |rows| rows.len());
-    let left = state.file_system_1_root_path.clone().unwrap_or_default();
-    let right = state.file_system_2_root_path.clone().unwrap_or_default();
-    format!("zdiff [{}] - {}, {}", rows, left.display(), right.display())
-}
-
 fn restored_log_buffer() -> LogBuffer {
     logger::global_log_buffer().unwrap_or_default()
 }
@@ -893,13 +882,33 @@ pub fn on_exit() {
 }
 
 impl FolderView {
-    pub fn frame(&mut self, ctx: &egui::Context, mut shell: FolderShell<'_>) {
+    pub fn poll(&mut self, ctx: &egui::Context, map_claims_back: bool) {
         let Self { state, panes } = self;
-        panes.frame(ctx, state, &mut shell);
+        panes.poll(ctx, state, map_claims_back);
     }
 
-    pub fn title(&self) -> String {
-        window_title(&self.state)
+    pub fn ui(&mut self, ui: &mut egui::Ui) {
+        let frame_start = Instant::now();
+        let Self { state, panes } = self;
+        panes.ui(ui, state);
+        // The panes drew the old rows under the new flags; the next pass rebuilds
+        // them before drawing, and only that pass is painted.
+        if discard_stale_rows(
+            state.rows_are_stale(),
+            &mut panes.last_discard_frame,
+            ui.ctx().cumulative_frame_nr(),
+        ) {
+            ui.ctx().request_discard("folder rows are stale");
+        }
+        let frame_time = frame_start.elapsed();
+        if frame_time > LONG_FRAME {
+            log::warn!("UI frame took {} ms", frame_time.as_millis());
+        }
+    }
+
+    pub fn title_counts(&self) -> String {
+        let rows = self.state.two_folder_diff_visible_rows.as_ref();
+        rows.map_or(0, |rows| rows.len()).to_string()
     }
 
     pub fn keymap_mut(&mut self) -> &mut Keymap<FolderAction> {
@@ -945,6 +954,7 @@ impl Default for FolderPanes {
             find_open: false,
             export_requested: false,
             last_discard_frame: None,
+            polled: PolledInput::default(),
         }
     }
 }
@@ -978,12 +988,7 @@ impl FolderPanes {
         egui_tiles::Tree::new("folder_tree", root, tiles)
     }
 
-    fn show_menu(
-        &mut self,
-        ui: &mut egui::Ui,
-        app_ctx: &mut FolderState,
-        shell: &mut FolderShell<'_>,
-    ) {
+    fn show_menu(&mut self, ui: &mut egui::Ui, app_ctx: &mut FolderState) {
         ui.horizontal(|ui| {
             egui::MenuBar::new()
                 .config(
@@ -1073,18 +1078,12 @@ impl FolderPanes {
                         {
                             self.keybindings_window.open = true;
                         }
-                        if menu_item(ui, "Style", &app_ctx.keymap, FolderAction::OpenStyle)
-                            .clicked()
-                        {
-                            shell.style_window.open(ui.ctx());
-                        }
                         ui.add_enabled_ui(self.diff_mode_path_diff, |ui| {
                             ui.checkbox(&mut app_ctx.h_scroll_link.0, "Link Horizontal Scrolling")
                                 .on_hover_text(
                                     "Scroll the left and right folder sides sideways together",
                                 );
                         });
-                        ui.checkbox(shell.show_frame_breakdown, "Frame Time Breakdown");
                     });
 
                     #[cfg(debug_assertions)]
@@ -1130,31 +1129,30 @@ impl FolderPanes {
                             }
                         }
                     });
-                    frame_stats::fps_label(ui, shell.frame_stats, shell.show_frame_breakdown);
                 });
         });
-        if *shell.show_frame_breakdown {
-            frame_stats::breakdown_window(ui.ctx(), shell.frame_stats, shell.show_frame_breakdown);
-        }
         if self.tools_window.open {
             self.tools_window.show(ui.ctx(), &mut app_ctx.diff_config);
         }
         if self.keybindings_window.open {
             self.keybindings_window.show(ui.ctx(), &mut app_ctx.keymap);
         }
-        shell.style_window.show::<FolderRole>(ui.ctx(), "Folder");
     }
 
-    fn ui(&mut self, ctx: &egui::Context, app_ctx: &mut FolderState, shell: &mut FolderShell<'_>) {
+    fn dispatch(
+        &mut self,
+        ctx: &egui::Context,
+        keymap: &Keymap<FolderAction>,
+        map_claims_back: bool,
+    ) {
         // Read before any widget runs: a single-line TextEdit gives up focus on Enter without
         // consuming the key, so a later check would hand that Enter to the tree cursor.
         let capturing = self.keybindings_window.is_capturing();
         let keyboard_taken = ctx.wants_keyboard_input() || capturing;
-        let map_claims_back = shell.map_claims_back;
-        let mut actions = if capturing {
+        let actions = if capturing {
             Vec::new()
         } else {
-            let _scope = frame_stats::scope("Shortcut dispatch");
+            let _scope = frame_stats::scope("Folder shortcut dispatch");
             ctx.input(|i| {
                 let claimed = |e: &egui::Event| {
                     map_claims_back
@@ -1167,9 +1165,21 @@ impl FolderPanes {
                         )
                 };
                 let events: Vec<_> = i.events.iter().filter(|e| !claimed(e)).cloned().collect();
-                app_ctx.keymap.dispatch(&events, keyboard_taken)
+                keymap.dispatch(&events, keyboard_taken)
             })
         };
+        self.polled = PolledInput {
+            actions,
+            keyboard_taken,
+        };
+    }
+
+    fn ui(&mut self, ui: &mut egui::Ui, app_ctx: &mut FolderState) {
+        let ctx = &ui.ctx().clone();
+        let PolledInput {
+            mut actions,
+            keyboard_taken,
+        } = std::mem::take(&mut self.polled);
         // The menu draws after this frame's actions are taken, so its export runs next frame.
         if std::mem::take(&mut self.export_requested) {
             actions.push(FolderAction::Export);
@@ -1193,9 +1203,6 @@ impl FolderPanes {
         }
         if actions.contains(&FolderAction::ClearPaths) {
             app_ctx.clear_roots();
-        }
-        if actions.contains(&FolderAction::OpenStyle) {
-            shell.style_window.open(ctx);
         }
         if actions.contains(&FolderAction::OpenDiffTools) {
             self.tools_window.open = true;
@@ -1222,8 +1229,12 @@ impl FolderPanes {
             || app_ctx.tree_compare.is_comparing();
         let shown = app_ctx.file_system_model_1_view.is_some()
             || app_ctx.file_system_model_2_view.is_some();
+        // The shell's panel already has the side margins.
+        let status_frame = egui::Frame::side_top_panel(ui.style())
+            .inner_margin(egui::Margin::symmetric(0, 2));
+        let status_line = egui::TopBottomPanel::bottom("status_line").frame(status_frame);
         if working {
-            egui::TopBottomPanel::bottom("status_line").show(ctx, |ui| {
+            status_line.show_inside(ui, |ui| {
                 ui_scan_progress(
                     ui,
                     Side::Folder1,
@@ -1254,7 +1265,7 @@ impl FolderPanes {
                 .two_folder_diff_visible_rows
                 .as_ref()
                 .and(app_ctx.row_counts.as_ref().map(|(_, counts)| counts));
-            egui::TopBottomPanel::bottom("status_line").show(ctx, |ui| {
+            status_line.show_inside(ui, |ui| {
                 ui_status_summary(
                     ui,
                     row_counts,
@@ -1269,10 +1280,10 @@ impl FolderPanes {
             });
         }
         drop(timed);
-        shell.frame_stats.mark("Shortcuts, find and status line");
-        egui::CentralPanel::default().show(ctx, |ui| {
-            self.show_menu(ui, app_ctx, shell);
-            shell.frame_stats.mark("Menu bar and windows");
+        egui::CentralPanel::default().frame(egui::Frame::NONE).show_inside(ui, |ui| {
+            let timed = frame_stats::scope("Folder menu and windows");
+            self.show_menu(ui, app_ctx);
+            drop(timed);
 
             ui.separator();
 
@@ -1327,13 +1338,14 @@ impl FolderPanes {
                     view_request: &mut view_request,
                 };
 
+                let timed = frame_stats::scope("Folder panes");
                 self.tree.ui(&mut behavior, ui);
+                drop(timed);
                 let chip_event = behavior.find.chip_event;
                 if let Some(choice) = view_request {
                     self.apply_view_choice(choice);
                     ui.ctx().request_repaint();
                 }
-                shell.frame_stats.mark("Pane drawing");
 
                 match chip_event {
                     Some(FindChipEvent::Reopen) => self.find_open = true,
@@ -1348,7 +1360,6 @@ impl FolderPanes {
                     ctx.request_repaint();
                 }
             });
-            shell.frame_stats.mark("Window title and find chip");
         });
     }
 
@@ -1444,8 +1455,7 @@ impl FolderPanes {
         }
     }
 
-    fn frame(&mut self, ctx: &egui::Context, state: &mut FolderState, shell: &mut FolderShell<'_>) {
-        let frame_start = Instant::now();
+    fn poll(&mut self, ctx: &egui::Context, state: &mut FolderState, map_claims_back: bool) {
         if self.is_path_diff() != self.diff_mode_path_diff {
             if self.is_path_diff() {
                 self.set_path_diff_visible(false);
@@ -1481,9 +1491,7 @@ impl FolderPanes {
         state.update_scans(ctx);
         state.tree_compare.set_repaint(ctx);
         state.update_compare(Instant::now());
-        shell.frame_stats.mark("Scan and compare polling");
         state.build_two_folder_diff_rows_if_stale();
-        shell.frame_stats.mark("Row rebuild");
         if state.file_system_1_scan.is_scanning()
             || state.file_system_2_scan.is_scanning()
             || state.tree_compare.is_comparing()
@@ -1500,29 +1508,14 @@ impl FolderPanes {
         if fetching {
             ctx.request_repaint_after(Duration::from_millis(100));
         }
-        shell.frame_stats.mark("Blueprint and revision polling");
-
-        self.ui(ctx, state, shell);
-        // The panes drew the old rows under the new flags; the next pass rebuilds
-        // them before drawing, and only that pass is painted.
-        if discard_stale_rows(
-            state.rows_are_stale(),
-            &mut self.last_discard_frame,
-            ctx.cumulative_frame_nr(),
-        ) {
-            ctx.request_discard("folder rows are stale");
-        }
-        let frame_time = frame_start.elapsed();
-        if frame_time > LONG_FRAME {
-            log::warn!("UI frame took {} ms", frame_time.as_millis());
-        }
+        self.dispatch(ctx, &state.keymap, map_claims_back);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        FolderPanes, FolderShell, FolderState, FolderView, FrameStats, ScanAction, StyleWindow,
+        FolderPanes, FolderState, FolderView, ScanAction,
         cancel_scan, discard_stale_rows, finish_side_scan, scan_action, scan_progress_text,
         update_side_scan,
     };
@@ -3530,8 +3523,6 @@ mod tests {
             state,
             panes: FolderPanes::default(),
         };
-        let (mut frame_stats, mut style_window) = (FrameStats::default(), StyleWindow::default());
-        let mut eframe_frame = eframe::Frame::_new_kittest();
         let ctx = egui::Context::default();
         let mut frame = || {
             let input = egui::RawInput {
@@ -3539,16 +3530,8 @@ mod tests {
                 ..Default::default()
             };
             ctx.run(input, |ctx| {
-                frame_stats.begin_frame(ctx, &mut eframe_frame);
-                view.frame(
-                    ctx,
-                    FolderShell {
-                        frame_stats: &mut frame_stats,
-                        show_frame_breakdown: &mut false,
-                        style_window: &mut style_window,
-                        map_claims_back: false,
-                    },
-                )
+                view.poll(ctx, false);
+                egui::CentralPanel::default().show(ctx, |ui| view.ui(ui));
             })
         };
         for _ in 0..5 {

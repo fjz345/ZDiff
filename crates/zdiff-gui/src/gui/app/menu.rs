@@ -15,6 +15,7 @@ use crate::{
     language_icon::{emoji_renders, language_icon, show_language_icon},
     p4::{P4Profiles, ui_p4_profiles, update_p4_profiles},
     phase_trace_window::ui_phase_trace,
+    folder::fs_tree::FolderRole,
     ui_egui::{export, file_role::FileRole, syntax},
     viewer::{FfmpegSetting, SharedKinds, ui_extension_map, ui_ffmpeg_setting},
 };
@@ -45,6 +46,7 @@ pub(super) struct MenuCtx<'a> {
     pub scope_block_headers: &'a mut bool,
     pub revert_buttons: &'a mut bool,
     pub text_diff_shown: bool,
+    pub folders: bool,
 }
 
 impl ZApp {
@@ -73,6 +75,7 @@ impl ZApp {
             scope_block_headers,
             revert_buttons,
             text_diff_shown,
+            folders,
         } = menu_ctx;
         let keymap = &keybindings.keymap;
         ui.horizontal(|ui| {
@@ -437,7 +440,11 @@ impl ZApp {
                 },
             );
         }
-        self.style_window.show::<FileRole>(ui.ctx(), "File diff");
+        if folders {
+            self.style_window.show::<FolderRole>(ui.ctx(), "Folder diff");
+        } else {
+            self.style_window.show::<FileRole>(ui.ctx(), "File diff");
+        }
         if self.open_help_window {
             show_custom_popup(
                 ui.ctx(),

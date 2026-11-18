@@ -90,7 +90,9 @@ impl ZApp {
                     keymap.dispatch(&r.events, text_focused)
                 };
                 for action in actions {
-                    if folders && !matches!(action, FileAction::Undo | FileAction::Redo) {
+                    let in_folders =
+                        matches!(action, FileAction::Undo | FileAction::Redo | FileAction::OpenStyle);
+                    if folders && !in_folders {
                         continue;
                     }
                     log::info!("Action triggered: {}", action.label());

@@ -296,9 +296,21 @@ fn an_idle_text_diff_stops_repainting_after_pointer_motion() {
 }
 
 fn frame_texts(ctx: &egui::Context, app: &mut ZApp, events: Vec<egui::Event>) -> Vec<String> {
-    fn shape_texts(shape: &egui::Shape, texts: &mut Vec<String>) {
+    let painted = painted_texts(ctx, app, events);
+    painted.into_iter().map(|(text, _)| text).collect()
+}
+
+fn painted_texts(
+    ctx: &egui::Context,
+    app: &mut ZApp,
+    events: Vec<egui::Event>,
+) -> Vec<(String, egui::Pos2)> {
+    fn shape_texts(shape: &egui::Shape, texts: &mut Vec<(String, egui::Pos2)>) {
         match shape {
-            egui::Shape::Text(text) => texts.push(text.galley.text().to_owned()),
+            egui::Shape::Text(text) => texts.push((
+                text.galley.text().to_owned(),
+                text.visual_bounding_rect().center(),
+            )),
             egui::Shape::Vec(shapes) => shapes.iter().for_each(|s| shape_texts(s, texts)),
             _ => {}
         }
@@ -415,13 +427,25 @@ fn is_idle(app: &ZApp) -> bool {
 }
 
 #[test]
-fn two_folders_on_the_command_line_show_the_folder_tree() {
+fn two_folders_on_the_command_line_show_the_folder_tree_under_the_shared_path_bars() {
     let dirs = folder_dirs();
     let mut app = ZApp::new();
     app.launch(vec![dirs[0].path().into(), dirs[1].path().into()]);
 
     let ctx = egui::Context::default();
     frames_until_the_folder_tree_shows(&ctx, &mut app);
+    let painted = painted_texts(&ctx, &mut app, Vec::new());
+    let top_of = |wanted: &dyn Fn(&str) -> bool| {
+        let tops = painted.iter().filter(|(text, _)| wanted(text));
+        tops.map(|(_, pos)| pos.y).min_by(f32::total_cmp).unwrap()
+    };
+    let tree_header = top_of(&|text| text.starts_with("Name"));
+
+    for (dir, file) in dirs.iter().zip(FOLDER_NAMES) {
+        let folder = dir.path().file_name().unwrap().to_str().unwrap();
+        assert!(top_of(&|text| text == folder) < tree_header);
+        assert!(top_of(&|text| text.contains(file)) > tree_header);
+    }
 
     assert_eq!(viewers(&mut app), Some(Viewers::Folders));
     assert_eq!(
@@ -430,6 +454,27 @@ fn two_folders_on_the_command_line_show_the_folder_tree() {
     );
     let title = app.window_title.as_deref().unwrap();
     assert!(title.starts_with("zdiff ["), "{title}");
+}
+
+#[test]
+fn a_folder_pair_keeps_the_file_pipeline_idle() {
+    let dir = tempdir().unwrap();
+    let pair = write_pair(dir.path(), "txt", b"shared_line\nleft\n", b"shared_line\nright\n");
+    let (ctx, mut app) = loaded_app(&pair, |_| {});
+    let dirs = folder_dirs();
+
+    set_sides(&mut app, [dirs[0].path(), dirs[1].path()]);
+    frames_until_the_folder_tree_shows(&ctx, &mut app);
+    let texts = frame_texts(&ctx, &mut app, Vec::new());
+
+    assert!(!texts.iter().any(|text| text.contains("shared_line")));
+    let state = app.state.as_mut().unwrap().ctx_mut();
+    for file in [&mut state.file_1, &mut state.file_2] {
+        assert_eq!(file.get_loading_path(), None);
+        assert!(file.get_loaded_file().is_none());
+    }
+    assert!(state.diff_processor.in_progress_input.is_none());
+    assert!(!state.diff_processor.is_in_progress());
 }
 
 #[test]

@@ -344,14 +344,10 @@ impl eframe::App for ZApp {
                 AppState::Idle(state_ctx)
             }
 
-            AppState::Idle(mut state) if folders => {
-                self.zoom = sync_zoom(ctx);
-                self.folder_frame(ctx, &mut state, map_claims_back);
-                AppState::Idle(state)
-            }
-
             AppState::Idle(mut state) => {
                 self.zoom = sync_zoom(ctx);
+                let shown_folder_roots =
+                    folders.then(|| self.poll_folder(ctx, &mut state, map_claims_back));
 
                 let timed = frame_stats::scope("Viewer resolution");
                 state.file_1.set_pdb_options(&state.pdb_options);
@@ -444,7 +440,11 @@ impl eframe::App for ZApp {
                     }
                     state.viewer_fallback = fallback;
                 }
-                state.viewers = resolution.as_ref().map(|r| r.viewers);
+                state.viewers = if folders {
+                    Some(Viewers::Folders)
+                } else {
+                    resolution.as_ref().map(|r| r.viewers)
+                };
                 // Metadata compares two files, so a mismatched pair has none.
                 let timed = frame_stats::scope("Media metadata");
                 let audio_pair = match (state.viewers, &loaded_1, &loaded_2) {
@@ -575,6 +575,9 @@ impl eframe::App for ZApp {
                 self.frame_stats.mark("Text diff pipeline");
 
                 self.ui(ctx, frame, &mut state);
+                if let Some(shown) = shown_folder_roots {
+                    self.write_back_folder_roots(&mut state, shown);
+                }
 
                 AppState::Idle(state)
             }

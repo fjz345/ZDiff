@@ -100,6 +100,7 @@ impl ZApp {
                 detected_languages[1].get(file_2.get_cached_file().as_deref()),
             ];
             drop(timed);
+            let folders = *viewers == Some(Viewers::Folders);
             let pair_kind = viewers.and_then(Viewers::pair);
             let sides = match *viewers {
                 Some(Viewers::Sides(sides)) => Some(sides),
@@ -146,6 +147,7 @@ impl ZApp {
                     scope_block_headers,
                     revert_buttons,
                     text_diff_shown,
+                    folders,
                 },
             );
             self.frame_stats.mark("Menu bar and windows");
@@ -251,7 +253,8 @@ impl ZApp {
             }
             // Rows of strings from before a changed minimum length would show without offsets.
             let strings_pending = strings_view && hex_strings.sides().is_none();
-            let diff_ctx = if hex_bytes || strings_pending || is_image || media_view.is_some() {
+            let other_viewer = hex_bytes || is_image || media_view.is_some() || folders;
+            let diff_ctx = if other_viewer || strings_pending {
                 None
             } else {
                 diff_processor
@@ -268,7 +271,12 @@ impl ZApp {
                     .map(|s| s.as_ref().map_or(&[][..], |s| &s.offsets[..])),
                 None => [&[][..]; 2],
             };
-            let [source_load_error, target_load_error] = folder_mode::load_errors(file_1, file_2);
+            // Until U3 a folder side's state is the folder's own scan message.
+            let [source_load_error, target_load_error] = if folders {
+                [None, None]
+            } else {
+                folder_mode::load_errors(file_1, file_2)
+            };
             let mut block_toggle_request = None;
             let mut reveal_line_request = None;
             let mut toggle_all_request = false;
@@ -311,12 +319,12 @@ impl ZApp {
                     file_target_root: file_2.get_root(),
                     file_source_root_valid: file_1.root_valid(),
                     file_target_root_valid: file_2.root_valid(),
-                    file_source_path_valid: file_1.path_valid(),
-                    file_target_path_valid: file_2.path_valid(),
+                    file_source_path_valid: folders || file_1.path_valid(),
+                    file_target_path_valid: folders || file_2.path_valid(),
                     file_source_load_error: source_load_error,
-                    file_source_loading: file_1.get_loading_path().is_some(),
+                    file_source_loading: !folders && file_1.get_loading_path().is_some(),
                     file_target_load_error: target_load_error,
-                    file_target_loading: file_2.get_loading_path().is_some(),
+                    file_target_loading: !folders && file_2.get_loading_path().is_some(),
                     active_highlights: &active_highlights,
                     highlight_side,
                     conflict_cursor: &mut conflict_cursor,
@@ -356,6 +364,7 @@ impl ZApp {
                     .then_some(video_frames),
                     video_meta: (media_view == Some(ViewerKind::Video)).then_some(video_meta),
                     side_viewers: None,
+                    folder: folders.then_some(&mut self.folder),
                     viewer_override: &mut viewer_override.kind,
                     viewer_fallback: viewer_fallback.as_deref(),
                     phase_overlay: self.phase_overlay,
@@ -611,7 +620,9 @@ impl ZApp {
                         .get_minimal_diff_ctx()
                         .and_then(|f| f.change_unit)
                         .map_or(String::new(), |unit| format!(" {}", unit.label()));
-                    let counts = if sides.is_some() {
+                    let counts = if folders {
+                        self.folder.title_counts()
+                    } else if sides.is_some() {
                         "types differ".to_string()
                     } else if is_hex {
                         "hex".to_string()

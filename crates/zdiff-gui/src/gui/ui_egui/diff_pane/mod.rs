@@ -56,6 +56,7 @@ use crate::{
     },
     diff_phases::{Marks, diff_marks_checkboxes, in_scopes},
     file::FileProcessor,
+    folder::view::FolderView,
     keybindings::FileAction,
     pdb_dump::PdbDumpOptions,
     revert::{self, RevertRequest, RevertTarget},
@@ -201,6 +202,7 @@ pub struct FileDiffPaneCtx<'a> {
     pub video_frames: Option<&'a mut VideoFrameProcessor>,
     pub video_meta: Option<&'a mut VideoMetaProcessor>,
     pub side_viewers: Option<SideViewers<'a>>,
+    pub folder: Option<&'a mut FolderView>,
     /// The toolbar's viewer switch for the current pair; `None` is Auto.
     pub viewer_override: &'a mut Option<ViewerKind>,
     /// Why the pair isn't in the viewer it asked for, if it isn't.
