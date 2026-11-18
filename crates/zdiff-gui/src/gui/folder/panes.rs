@@ -2,18 +2,15 @@ use std::{collections::HashMap, path::PathBuf};
 
 use eframe::egui::{self};
 use serde::{Deserialize, Serialize};
-use zcommon::{
-    hash::HashService,
-    logger::LogBuffer,
-};
-use zcommon_ui::pane::{ZAppPane, toolbar_group};
+use zcommon::hash::HashService;
+use zcommon_ui::pane::toolbar_group;
 use zdiff_folder::{external_diff_tool::DiffToolConfig, filter::PathFilter};
 
 use crate::folder::{
-    duplicate_files_pane::{DuplicateFilesPane, DuplicateFilesPaneCtx},
+    duplicate_files_pane::DuplicateFilesPaneCtx,
     folder_keymap::FolderAction,
-    fs_tree::{FileSystemView, HScrollLink, RowsId, VisibleRowTwoFolderDiff},
-    path_diff_pane::{FilterPresets, PaneView, PathDiffPane, PathDiffPaneCtx},
+    fs_tree::{FileSystemView, RowsId, VisibleRowTwoFolderDiff},
+    path_diff_pane::{FilterPresets, PaneView, PathDiffPaneCtx},
     status_line::ToolMessage,
     tree_compare::TreeCompare,
     tree_filter::{DiffFilter, DuplicatesFilter},
@@ -35,8 +32,9 @@ pub struct PathDiffView<'a> {
     pub root_requests: &'a mut RootRequests,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ViewChoice {
+    #[default]
     Tree,
     Map,
     Duplicates,
@@ -74,8 +72,6 @@ pub fn view_switch(ui: &mut egui::Ui, current: ViewChoice) -> Option<ViewChoice>
 }
 
 pub struct TreeBehavior<'a, 'b> {
-    pub log_buffer: LogBuffer,
-
     pub hash_service: &'a mut HashService,
     pub path_diff_view: &'a mut PathDiffView<'b>,
 
@@ -91,10 +87,8 @@ pub struct TreeBehavior<'a, 'b> {
     pub diff_filter: &'a mut DiffFilter,
     pub duplicates_filter: &'a mut DuplicatesFilter,
     pub likeness_bar: &'a mut bool,
-    pub swapped: bool,
     pub tolerance: &'a mut Tolerance,
     pub tree_compare: &'a TreeCompare,
-    pub h_scroll_link: &'a mut HScrollLink,
     pub find: &'a mut TreeFindView<'b>,
     pub keyboard_taken: bool,
     pub actions: &'a [FolderAction],
@@ -111,10 +105,8 @@ impl<'a, 'b> TreeBehavior<'a, 'b> {
             tree_sort: self.tree_sort,
             diff_filter: self.diff_filter,
             likeness_bar: self.likeness_bar,
-            swapped: self.swapped,
             tolerance: self.tolerance,
             tree_compare: self.tree_compare,
-            h_scroll_link: self.h_scroll_link,
             find: self.find,
             path_diff_view: self.path_diff_view,
             keyboard_taken: self.keyboard_taken,
@@ -143,68 +135,5 @@ impl<'a, 'b> TreeBehavior<'a, 'b> {
             actions: self.actions,
             view_request: self.view_request,
         }
-    }
-}
-
-impl egui_tiles::Behavior<Pane> for TreeBehavior<'_, '_> {
-    fn tab_title_for_pane(&mut self, pane: &Pane) -> egui::WidgetText {
-        pane.title().into()
-    }
-
-    fn pane_ui(
-        &mut self,
-        ui: &mut egui::Ui,
-        _tile_id: egui_tiles::TileId,
-        pane: &mut Pane,
-    ) -> egui_tiles::UiResponse {
-        match pane {
-            Pane::Log(pane) => pane.ui(ui, &self.log_buffer),
-            Pane::DuplicateFiles(pane) => {
-                let mut ctx = self.create_duplicate_files_ctx();
-                pane.ui(ui, &mut ctx)
-            }
-            Pane::PathDiff(path_diff_pane) => {
-                let mut ctx = self.create_path_diff_ctx();
-                path_diff_pane.ui(ui, &mut ctx)
-            }
-        }
-    }
-}
-
-#[derive(Serialize, Deserialize)]
-pub enum Pane {
-    Log(LogPane),
-    DuplicateFiles(Box<DuplicateFilesPane>),
-    PathDiff(Box<PathDiffPane>),
-}
-
-impl Pane {
-    pub fn title(&self) -> String {
-        match self {
-            Pane::Log(pane) => pane.title(),
-            Pane::DuplicateFiles(p) => p.title(),
-            Pane::PathDiff(p) => p.title(),
-        }
-    }
-}
-
-#[derive(Serialize, Deserialize)]
-pub struct LogPane {
-    pub title: Option<String>,
-    #[serde(default)]
-    pub scroll_to_bottom: bool,
-}
-impl ZAppPane for LogPane {
-    fn title(&self) -> String {
-        self.title.clone().unwrap_or("Pane".to_string())
-    }
-}
-
-impl LogPane {
-    fn ui(&mut self, ui: &mut egui::Ui, log_buffer: &LogBuffer) -> egui_tiles::UiResponse {
-        let _scope = zcommon_ui::frame_stats::scope("Log pane");
-        zcommon_ui::log_window::log_window(ui, log_buffer.clone(), &mut self.scroll_to_bottom);
-
-        egui_tiles::UiResponse::None
     }
 }

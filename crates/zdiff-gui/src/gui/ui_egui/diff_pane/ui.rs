@@ -106,7 +106,9 @@ impl FileDiffPane {
         let hint = |action: FileAction, text: &str| keymap.with_shortcut(action, text);
         let action_hint = |action: FileAction| hint(action, action.label());
 
-        if !folder_pair {
+        if let Some(folder) = ctx.folder.as_deref_mut() {
+            folder.toolbar_ui(ui);
+        } else {
             toolbar(ui, |ui| {
                 toolbar_group(ui, |ui| {
                     viewer_override_combo(ui, ctx.viewer_override, ctx.viewer_fallback);
@@ -1228,7 +1230,7 @@ impl FileDiffPane {
                                 ui.scope(|ui| {
                                     // The pane's monospace and zero row spacing are for text rows.
                                     ui.reset_style();
-                                    folder.ui(ui, ctx.sides_swapped);
+                                    folder.ui(ui, ctx.sides_swapped, *ctx.h_scroll_linked);
                                 });
                             }
                             if let Some(sides) = side_viewers.as_mut() {

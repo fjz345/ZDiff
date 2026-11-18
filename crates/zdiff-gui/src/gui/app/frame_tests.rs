@@ -12,7 +12,7 @@ use super::{
     state::{AppState, AppStateCtx},
 };
 use crate::{
-    folder::roots::Side,
+    folder::{roots::Side, view::FolderView},
     ui_egui::text_mode::TextMode,
     viewer::{ViewerKind, Viewers, hex_strings::HexMode},
 };
@@ -711,4 +711,90 @@ fn a_folder_pair_paints_one_pair_of_path_bars() {
         assert_eq!(texts.iter().filter(|text| *text == folder).count(), 1);
     }
     assert!(!texts.iter().any(|text| text == "Open Folder"));
+}
+
+#[test]
+fn a_folder_pair_paints_one_menu_bar() {
+    let dirs = folder_dirs();
+    let (ctx, mut app) = shown_folder_app(&dirs);
+
+    let texts = frame_texts(&ctx, &mut app, Vec::new());
+
+    for menu in ["File", "Options"] {
+        assert_eq!(texts.iter().filter(|text| *text == menu).count(), 1);
+    }
+}
+
+fn click_text(ctx: &egui::Context, app: &mut ZApp, text: &str) {
+    let painted = painted_texts(ctx, app, Vec::new());
+    let (_, pos) = painted
+        .iter()
+        .find(|(painted, _)| painted == text)
+        .unwrap_or_else(|| panic!("{text:?} is not painted"));
+    frame_texts(ctx, app, vec![egui::Event::PointerMoved(*pos)]);
+    for pressed in [true, false] {
+        let button = egui::Event::PointerButton {
+            pos: *pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        frame_texts(ctx, app, vec![button]);
+    }
+}
+
+#[test]
+fn the_shell_scroll_link_drives_the_folder_tree() {
+    let name = format!("{}.txt", "long_name_".repeat(20));
+    let dirs = folder_dirs();
+    for dir in &dirs {
+        std::fs::write(dir.path().join(&name), "same").unwrap();
+    }
+    let name_shifts_after_scrolling_the_left_side = |linked: bool| {
+        let (ctx, mut app) = shown_folder_app(&dirs);
+        app.state.as_mut().unwrap().ctx_mut().h_scroll_linked = linked;
+        let mut name_positions = |events| {
+            let mut positions: Vec<egui::Pos2> = painted_texts(&ctx, &mut app, events)
+                .into_iter()
+                .filter(|(text, _)| *text == name)
+                .map(|(_, pos)| pos)
+                .collect();
+            positions.sort_by(|a, b| a.x.total_cmp(&b.x));
+            <[egui::Pos2; 2]>::try_from(positions).expect("the name is painted on both sides")
+        };
+        let before = name_positions(Vec::new());
+        name_positions(vec![
+            egui::Event::PointerMoved(egui::pos2(200.0, before[0].y)),
+            egui::Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Point,
+                delta: egui::vec2(-300.0, 0.0),
+                modifiers: egui::Modifiers::NONE,
+            },
+        ]);
+        for _ in 0..30 {
+            name_positions(Vec::new());
+        }
+        let after = name_positions(Vec::new());
+        [before[0].x - after[0].x, before[1].x - after[1].x]
+    };
+
+    let [left, right] = name_shifts_after_scrolling_the_left_side(true);
+    assert!(left > 0.0 && left == right, "{left} {right}");
+
+    let [left, right] = name_shifts_after_scrolling_the_left_side(false);
+    assert!(left > 0.0 && right == 0.0, "{left} {right}");
+}
+
+#[test]
+fn the_view_choice_survives_a_restart() {
+    let dirs = folder_dirs();
+    let (ctx, mut app) = shown_folder_app(&dirs);
+    assert!(!app.folder.duplicates_shown());
+
+    click_text(&ctx, &mut app, "Duplicates");
+    let json = serde_json::to_string(&app.folder).unwrap();
+    let restored: FolderView = serde_json::from_str(&json).unwrap();
+
+    assert!(app.folder.duplicates_shown());
+    assert!(restored.duplicates_shown());
 }

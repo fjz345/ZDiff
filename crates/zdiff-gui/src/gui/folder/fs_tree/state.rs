@@ -64,16 +64,6 @@ pub struct VisibleRowTwoFolderDiff {
     pub folder_likeness: Option<FolderLikeness>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct HScrollLink(pub bool);
-
-impl Default for HScrollLink {
-    fn default() -> Self {
-        Self(true)
-    }
-}
-
 #[derive(Default)]
 pub struct TreeTable {
     pub(super) split: Split,

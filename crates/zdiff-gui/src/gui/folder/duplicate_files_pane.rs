@@ -641,6 +641,8 @@ pub struct DuplicateFilesPane {
     members_generation: u64,
     #[serde(skip)]
     pending_deletions: Option<PendingDeletions>,
+    #[serde(skip)]
+    scroll_to_cursor: bool,
 }
 
 struct TreeRows {
@@ -700,6 +702,7 @@ impl DuplicateFilesPane {
             cursor_rows: CursorRowsCache::default(),
             members_generation: 0,
             pending_deletions: None,
+            scroll_to_cursor: false,
         }
     }
 
@@ -1106,21 +1109,19 @@ impl DuplicateFilesPane {
         self.resolution_summary = Some(report);
     }
 
-    pub fn ui(
-        &mut self,
-        ui: &mut egui::Ui,
-        ctx: &mut DuplicateFilesPaneCtx,
-    ) -> egui_tiles::UiResponse {
-        let _scope = zcommon_ui::frame_stats::scope("Duplicate files pane");
+    pub fn update(&mut self, egui_ctx: &egui::Context, ctx: &mut DuplicateFilesPaneCtx) {
         self.forget_cursor_of_other_root(ctx.path_diff_view.file_system_1_view.as_ref());
         self.hash_size_collisions(ctx);
-        self.set_regroup_wake(ui.ctx());
+        self.set_regroup_wake(egui_ctx);
         self.update_groups(ctx);
-        let scroll_to_cursor = self.apply_actions(ctx);
+        self.scroll_to_cursor = self.apply_actions(ctx);
         if ctx.actions.contains(&FolderAction::Export) {
             self.export(ctx);
         }
+    }
 
+    pub fn toolbar_ui(&mut self, ui: &mut egui::Ui, ctx: &mut DuplicateFilesPaneCtx) {
+        let _scope = zcommon_ui::frame_stats::scope("Duplicate files pane");
         ui.vertical(|ui| {
             self.ui_popups(ui, ctx);
 
@@ -1215,9 +1216,11 @@ impl DuplicateFilesPane {
                 );
             });
         });
+    }
 
-        ui.separator();
-
+    pub fn body_ui(&mut self, ui: &mut egui::Ui, ctx: &mut DuplicateFilesPaneCtx) {
+        let _scope = zcommon_ui::frame_stats::scope("Duplicate files pane");
+        let scroll_to_cursor = std::mem::take(&mut self.scroll_to_cursor);
         if let Some(message) = non_disk_root_message_of(ctx.path_diff_view) {
             ui.colored_label(ui.visuals().warn_fg_color, message);
         }
@@ -1323,8 +1326,6 @@ impl DuplicateFilesPane {
                 &[],
             );
         }
-
-        egui_tiles::UiResponse::None
     }
 
     fn ui_popups(&mut self, ui: &mut egui::Ui, ctx: &mut DuplicateFilesPaneCtx) {

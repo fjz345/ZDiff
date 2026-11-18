@@ -16,7 +16,7 @@ use crate::{
     language_icon::{emoji_renders, language_icon, show_language_icon},
     p4::{P4Profiles, ui_p4_profiles, update_p4_profiles},
     phase_trace_window::ui_phase_trace,
-    folder::fs_tree::FolderRole,
+    folder::{folder_keymap::FolderAction, fs_tree::FolderRole},
     ui_egui::{export, file_role::FileRole, syntax},
     viewer::{FfmpegSetting, SharedKinds, ui_extension_map, ui_ffmpeg_setting},
 };
@@ -109,22 +109,28 @@ impl ZApp {
                                 ui.close();
                             }
                         }
-                        if menu_item(ui, "Open Merge...", keymap, FileAction::OpenMerge).clicked() {
-                            self.open_merge_form.open = true;
-                        }
+                        ui.add_enabled_ui(!folders, |ui| {
+                            if menu_item(ui, "Open Merge...", keymap, FileAction::OpenMerge)
+                                .clicked()
+                            {
+                                self.open_merge_form.open = true;
+                            }
+                        });
                         if menu_item(ui, "Swap Sides", keymap, FileAction::SwapSides).clicked() {
                             *sides_swapped = !*sides_swapped;
                         }
-                        if menu_item(
-                            ui,
-                            "Diff Shelved File Against Its Base Revision",
-                            keymap,
-                            FileAction::DiffShelfBase,
-                        )
-                        .clicked()
-                        {
-                            run_diff_against_shelf_base(file_1, file_2);
-                        }
+                        ui.add_enabled_ui(!folders, |ui| {
+                            if menu_item(
+                                ui,
+                                "Diff Shelved File Against Its Base Revision",
+                                keymap,
+                                FileAction::DiffShelfBase,
+                            )
+                            .clicked()
+                            {
+                                run_diff_against_shelf_base(file_1, file_2);
+                            }
+                        });
                         if menu_item(ui, "Refresh", keymap, FileAction::RefreshDiff).clicked() {
                             diff_processor.reset_ctx();
                             Self::refresh_file_contents(file_1, file_2);
@@ -132,38 +138,61 @@ impl ZApp {
                                 self.folder.refresh();
                             }
                         }
-                        if menu_item(
-                            ui,
-                            "Recompute Diff (Keep Loaded Files)",
-                            keymap,
-                            FileAction::RefreshDiffRowsOnly,
-                        )
-                        .clicked()
-                        {
-                            diff_processor.reset_ctx();
-                        }
+                        ui.add_enabled_ui(!folders, |ui| {
+                            if menu_item(
+                                ui,
+                                "Recompute Diff (Keep Loaded Files)",
+                                keymap,
+                                FileAction::RefreshDiffRowsOnly,
+                            )
+                            .clicked()
+                            {
+                                diff_processor.reset_ctx();
+                            }
+                        });
                         if menu_item(ui, "Clear File Paths", keymap, FileAction::ClearFilePaths)
                             .clicked()
                         {
                             Self::clear_file_paths(file_1, file_2, diff_processor);
                         }
-                        ui.add_enabled_ui(text_diff_shown, |ui| {
-                            if menu_item(ui, "Export Diff...", keymap, FileAction::ExportDiff)
+                        if folders {
+                            let duplicates = self.folder.duplicates_shown();
+                            let export_label = if duplicates {
+                                "Export Duplicates..."
+                            } else {
+                                "Export Folder Diff..."
+                            };
+                            if menu_item(ui, export_label, keymap, FileAction::ExportDiff).clicked()
+                            {
+                                self.folder.request_export();
+                            }
+                            ui.add_enabled_ui(!duplicates, |ui| {
+                                if menu_item(ui, "Find", keymap, FileAction::Find).clicked() {
+                                    self.folder.open_find();
+                                }
+                            });
+                        } else {
+                            ui.add_enabled_ui(text_diff_shown, |ui| {
+                                if menu_item(ui, "Export Diff...", keymap, FileAction::ExportDiff)
+                                    .clicked()
+                                {
+                                    match diff_processor.get_minimal_diff_ctx() {
+                                        Some(diff_ctx) => export::export_diff(&diff_ctx),
+                                        None => log::info!("Export Diff: the diff is not ready"),
+                                    }
+                                }
+                            });
+                            if menu_item(ui, "Find", keymap, FileAction::Find).clicked() {
+                                *find_open = true;
+                            }
+                        }
+                        ui.add_enabled_ui(!folders, |ui| {
+                            if menu_item(ui, "Go to Line / Offset", keymap, FileAction::Goto)
                                 .clicked()
                             {
-                                match diff_processor.get_minimal_diff_ctx() {
-                                    Some(diff_ctx) => export::export_diff(&diff_ctx),
-                                    None => log::info!("Export Diff: the diff is not ready"),
-                                }
+                                *goto_open = true;
                             }
                         });
-                        if menu_item(ui, "Find", keymap, FileAction::Find).clicked() {
-                            *find_open = true;
-                        }
-                        if menu_item(ui, "Go to Line / Offset", keymap, FileAction::Goto).clicked()
-                        {
-                            *goto_open = true;
-                        }
                     });
 
                     ui.menu_button("Options", |ui| {
@@ -294,11 +323,25 @@ impl ZApp {
                         if menu_item(ui, "Style", keymap, FileAction::OpenStyle).clicked() {
                             self.style_window.open(ui.ctx());
                         }
+                        if folders
+                            && menu_item(
+                                ui,
+                                "External Diff Tools",
+                                self.folder.keymap(),
+                                FolderAction::OpenDiffTools,
+                            )
+                            .clicked()
+                        {
+                            self.folder.open_tools_window();
+                        }
                         ui.checkbox(&mut self.show_frame_breakdown, "Frame Time Breakdown");
                     });
 
                     #[cfg(debug_assertions)]
                     ui.menu_button("Debug", |ui| {
+                        if folders && ui.button("Clear FileSystemModels").clicked() {
+                            self.folder.clear_models();
+                        }
                         if ui.button("Phase Trace").clicked() {
                             self.open_phase_trace_window = true;
                             ui.close();
@@ -478,6 +521,7 @@ impl ZApp {
         }
         if folders {
             self.style_window.show::<FolderRole>(ui.ctx(), "Folder diff");
+            self.folder.show_windows(ui.ctx());
         } else {
             self.style_window.show::<FileRole>(ui.ctx(), "File diff");
         }

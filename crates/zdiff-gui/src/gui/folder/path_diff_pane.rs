@@ -16,8 +16,8 @@ use zdiff_folder::{
 use crate::folder::{
     folder_keymap::FolderAction,
     fs_tree::{
-        CursorRowsCache, DiffState, FileSystemView, FolderTreeCtx, HScrollLink, TreeMode,
-        TreeTable, TwoFolderTable, draw_ui_folder_tree,
+        CursorRowsCache, DiffState, FileSystemView, FolderTreeCtx, TreeMode, TreeTable,
+        TwoFolderTable, draw_ui_folder_tree,
     },
     panes::{PathDiffView, ViewChoice, view_switch},
     status_line::ToolMessage,
@@ -41,10 +41,8 @@ pub struct PathDiffPaneCtx<'a, 'b> {
     pub tree_sort: &'a mut TreeSort,
     pub diff_filter: &'a mut DiffFilter,
     pub likeness_bar: &'a mut bool,
-    pub swapped: bool,
     pub tolerance: &'a mut Tolerance,
     pub tree_compare: &'a TreeCompare,
-    pub h_scroll_link: &'a mut HScrollLink,
     pub find: &'a mut TreeFindView<'b>,
     /// A widget had keyboard focus when the frame started, so the tree's keys are not
     /// for the cursor.
@@ -116,24 +114,10 @@ impl PathDiffPane {
         }
     }
 
-    pub fn ui(&mut self, ui: &mut egui::Ui, ctx: &mut PathDiffPaneCtx) -> egui_tiles::UiResponse {
-        self.forget_cursor_of_other_roots(
-            ctx.path_diff_view.file_system_1_view.as_ref(),
-            ctx.path_diff_view.file_system_2_view.as_ref(),
-        );
-        if ctx.actions.contains(&FolderAction::ToggleMap) {
-            self.view = match self.view {
-                PaneView::Tree => PaneView::Map,
-                PaneView::Map => PaneView::Tree,
-            };
-        }
-
+    pub fn toolbar_ui(&mut self, ui: &mut egui::Ui, ctx: &mut PathDiffPaneCtx) {
         toolbar(ui, |ui| {
             if let Some(choice) = view_switch(ui, self.view.into()) {
-                match choice.pane_view() {
-                    Some(view) => self.view = view,
-                    None => *ctx.view_request = Some(choice),
-                }
+                *ctx.view_request = Some(choice);
             }
             ui.separator();
 
@@ -227,8 +211,19 @@ impl PathDiffPane {
         toolbar(ui, |ui| {
             draw_filter_bar(ui, ctx.path_filter, ctx.filter_presets);
         });
+    }
 
-        ui.separator();
+    pub fn body_ui(
+        &mut self,
+        ui: &mut egui::Ui,
+        ctx: &mut PathDiffPaneCtx,
+        swapped: bool,
+        h_scroll_linked: bool,
+    ) {
+        self.forget_cursor_of_other_roots(
+            ctx.path_diff_view.file_system_1_view.as_ref(),
+            ctx.path_diff_view.file_system_2_view.as_ref(),
+        );
 
         let shown = ctx.path_diff_view.file_system_1_view.is_some()
             || ctx.path_diff_view.file_system_2_view.is_some();
@@ -251,7 +246,7 @@ impl PathDiffPane {
                     keyboard_taken: ctx.keyboard_taken,
                 },
             );
-            return egui_tiles::UiResponse::None;
+            return;
         }
 
         // Not inside a ScrollArea: the table scrolls itself, and at fractional DPI an outer
@@ -280,13 +275,11 @@ impl PathDiffPane {
                 likeness_bar: *ctx.likeness_bar,
                 tolerance: ctx.tolerance,
                 table: &mut self.table,
-                linked: ctx.h_scroll_link.0,
-                swapped: ctx.swapped,
+                linked: h_scroll_linked,
+                swapped,
                 find: ctx.find,
             }),
         );
-
-        egui_tiles::UiResponse::None
     }
 }
 

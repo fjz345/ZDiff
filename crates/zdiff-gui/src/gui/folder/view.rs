@@ -1,4 +1,4 @@
-use eframe::egui::{self, Layout, PointerButton, containers::menu::MenuConfig};
+use eframe::egui::{self, Layout, PointerButton};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
@@ -15,7 +15,6 @@ use zcommon::{
     hash::HashService,
     job::Job,
     kinds::KindTable,
-    logger::{self, LogBuffer},
     lru::LruCache,
     universal_path::UniversalPath,
     vcs::{git::GitCommand, p4::P4Command},
@@ -23,7 +22,7 @@ use zcommon::{
 use zcommon_ui::{
     find_popup::{FindPopupEvent, find_popup},
     frame_stats,
-    keymap::{Keymap, menu_item},
+    keymap::Keymap,
 };
 use zdiff_folder::{
     external_diff_tool::DiffToolConfig, filter::PathFilter, fs::FileSystemModel, scan::ScanOutput,
@@ -34,10 +33,8 @@ use crate::folder::{
     duplicate_files_pane::DuplicateFilesPane,
     export::{folder_diff_report, save_report},
     folder_keymap::{self, FolderAction, KeybindingsWindow},
-    fs_tree::{
-        FileSystemView, HScrollLink, RowsId, VisibleRowTwoFolderDiff, apply_blueprint_results,
-    },
-    panes::{Pane, PathDiffView, TreeBehavior, ViewChoice},
+    fs_tree::{FileSystemView, RowsId, VisibleRowTwoFolderDiff, apply_blueprint_results},
+    panes::{PathDiffView, TreeBehavior, ViewChoice},
     path_diff_pane::{FilterPresets, PathDiffPane},
     revision_open,
     roots::Side,
@@ -53,7 +50,6 @@ use crate::folder::{
     tree_sort::TreeSort,
     tree_tolerance::Tolerance,
 };
-use egui_tiles::Tile;
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct FolderState {
@@ -128,8 +124,6 @@ pub struct FolderState {
     two_folder_diff_rows_find: FolderFind,
     #[serde(skip)]
     find_matches: Option<usize>,
-    #[serde(default)]
-    pub h_scroll_link: HScrollLink,
 
     #[serde(skip)]
     conflict_map: HashMap<String, Vec<PathBuf>>,
@@ -427,6 +421,45 @@ impl FolderState {
                 scan.request_rescan();
             }
         }
+    }
+
+    fn ui_status_rows_bottom_up(&mut self, ui: &mut egui::Ui) -> bool {
+        let working = self.file_system_1_scan.is_scanning()
+            || self.file_system_2_scan.is_scanning()
+            || self.tree_compare.is_comparing();
+        let shown =
+            self.file_system_model_1_view.is_some() || self.file_system_model_2_view.is_some();
+        if working {
+            ui_tool_message(ui, self.tool_message.as_ref());
+            ui_compare_progress(ui, &mut self.tree_compare);
+            ui_scan_progress(ui, Side::Folder2, &mut self.file_system_2_scan);
+            ui_scan_progress(ui, Side::Folder1, &mut self.file_system_1_scan);
+        } else if shown {
+            if let Some(rows) = self.two_folder_diff_visible_rows.as_deref()
+                && self
+                    .row_counts
+                    .as_ref()
+                    .is_none_or(|(counted, _)| *counted != self.two_folder_diff_rows_id)
+            {
+                self.row_counts = Some((self.two_folder_diff_rows_id, count_rows(rows)));
+            }
+            let row_counts = self
+                .two_folder_diff_visible_rows
+                .as_ref()
+                .and(self.row_counts.as_ref().map(|(_, counts)| counts));
+            ui_tool_message(ui, self.tool_message.as_ref());
+            ui_status_summary(
+                ui,
+                row_counts,
+                [
+                    self.file_system_1_scan.shown(),
+                    self.file_system_2_scan.shown(),
+                ],
+                self.tree_compare.compare_time(),
+                self.tolerance.enabled,
+            );
+        }
+        working || shown
     }
 
     fn scan_error(&self) -> Option<String> {
@@ -791,12 +824,11 @@ pub struct FolderView {
 }
 
 #[derive(Serialize, Deserialize)]
+#[serde(default)]
 struct FolderPanes {
-    tree: egui_tiles::Tree<Pane>,
-    #[serde(skip, default = "restored_log_buffer")]
-    log_buffer: LogBuffer,
-
-    diff_mode_path_diff: bool,
+    path_diff: PathDiffPane,
+    duplicates: DuplicateFilesPane,
+    view: ViewChoice,
 
     #[serde(skip)]
     tools_window: ToolsWindow,
@@ -804,8 +836,6 @@ struct FolderPanes {
     keybindings_window: KeybindingsWindow,
     #[serde(skip)]
     find_open: bool,
-    #[serde(skip)]
-    export_requested: bool,
     #[serde(skip)]
     last_discard_frame: Option<u64>,
     #[serde(skip)]
@@ -831,10 +861,6 @@ fn discard_stale_rows(stale: bool, last_discard_frame: &mut Option<u64>, frame: 
     discard
 }
 
-fn restored_log_buffer() -> LogBuffer {
-    logger::global_log_buffer().unwrap_or_default()
-}
-
 pub fn on_exit() {
     revision_open::remove_all();
 }
@@ -845,10 +871,15 @@ impl FolderView {
         panes.poll(ctx, state, map_claims_back);
     }
 
-    pub fn ui(&mut self, ui: &mut egui::Ui, swapped: bool) {
+    pub fn toolbar_ui(&mut self, ui: &mut egui::Ui) {
+        let Self { state, panes } = self;
+        panes.toolbar_ui(ui, state);
+    }
+
+    pub fn ui(&mut self, ui: &mut egui::Ui, swapped: bool, h_scroll_linked: bool) {
         let frame_start = Instant::now();
         let Self { state, panes } = self;
-        panes.ui(ui, state, swapped);
+        panes.ui(ui, state, swapped, h_scroll_linked);
         // The panes drew the old rows under the new flags; the next pass rebuilds
         // them before drawing, and only that pass is painted.
         if discard_stale_rows(
@@ -871,6 +902,43 @@ impl FolderView {
 
     pub fn keymap_mut(&mut self) -> &mut Keymap<FolderAction> {
         &mut self.state.keymap
+    }
+
+    pub fn keymap(&self) -> &Keymap<FolderAction> {
+        &self.state.keymap
+    }
+
+    pub fn duplicates_shown(&self) -> bool {
+        self.panes.view == ViewChoice::Duplicates
+    }
+
+    pub fn open_find(&mut self) {
+        self.panes.find_open = !self.duplicates_shown();
+    }
+
+    pub fn request_export(&mut self) {
+        self.panes.polled.actions.push(FolderAction::Export);
+    }
+
+    pub fn open_tools_window(&mut self) {
+        self.panes.tools_window.open = true;
+    }
+
+    pub fn show_windows(&mut self, ctx: &egui::Context) {
+        let Self { state, panes } = self;
+        if panes.tools_window.open {
+            panes.tools_window.show(ctx, &mut state.diff_config);
+        }
+        if panes.keybindings_window.open {
+            panes.keybindings_window.show(ctx, &mut state.keymap);
+        }
+    }
+
+    #[cfg(debug_assertions)]
+    pub fn clear_models(&mut self) {
+        self.state.file_system_model_1_view = None;
+        self.state.file_system_model_2_view = None;
+        self.state.two_folder_diff_visible_rows = None;
     }
 
     pub fn set_roots(&mut self, roots: [Option<PathBuf>; 2]) {
@@ -926,13 +994,12 @@ impl FolderView {
 impl Default for FolderPanes {
     fn default() -> Self {
         Self {
-            tree: Self::create_tree(),
-            log_buffer: restored_log_buffer(),
-            diff_mode_path_diff: true,
+            path_diff: PathDiffPane::new(None),
+            duplicates: DuplicateFilesPane::new(None),
+            view: ViewChoice::Tree,
             tools_window: ToolsWindow::default(),
             keybindings_window: KeybindingsWindow::default(),
             find_open: false,
-            export_requested: false,
             last_discard_frame: None,
             polled: PolledInput::default(),
         }
@@ -940,115 +1007,6 @@ impl Default for FolderPanes {
 }
 
 impl FolderPanes {
-    fn create_tree() -> egui_tiles::Tree<Pane> {
-        let mut tiles = egui_tiles::Tiles::default();
-
-        let mut tabs = vec![];
-
-        // let tile_console = tiles.insert_pane(Pane::Log(LogPane {
-        //     title: Some("Log".to_string()),
-        //     scroll_to_bottom: true,
-        // }));
-
-        let tile_path_diff = tiles.insert_pane(Pane::PathDiff(Box::new(PathDiffPane::new(Some(
-            "Path Diff".to_string(),
-        )))));
-
-        let tile_duplicate_file = tiles.insert_pane(Pane::DuplicateFiles(Box::new(
-            DuplicateFilesPane::new(Some("Duplicate Files".to_string())),
-        )));
-
-        // let master_tile = tiles.insert_horizontal_tile(vec![tile_duplicate_file]);
-        let master_tile = tiles.insert_horizontal_tile(vec![tile_path_diff, tile_duplicate_file]);
-        tabs.push(tiles.insert_vertical_tile(vec![master_tile]));
-
-        tiles.set_visible(tile_duplicate_file, false);
-        let root = tiles.insert_tab_tile(tabs);
-
-        egui_tiles::Tree::new("folder_tree", root, tiles)
-    }
-
-    fn show_menu(&mut self, ui: &mut egui::Ui, app_ctx: &mut FolderState) {
-        ui.horizontal(|ui| {
-            egui::MenuBar::new()
-                .config(
-                    MenuConfig::new().close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside),
-                )
-                .ui(ui, |ui| {
-                    ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
-                    ui.menu_button("File", |ui| {
-                        if menu_item(ui, "Refresh", &app_ctx.keymap, FolderAction::Refresh)
-                            .clicked()
-                        {
-                            app_ctx.refresh();
-                            ui.ctx().request_repaint();
-                        }
-                        ui.add_enabled_ui(self.diff_mode_path_diff, |ui| {
-                            if menu_item(ui, "Find", &app_ctx.keymap, FolderAction::Find).clicked()
-                            {
-                                self.find_open = true;
-                            }
-                        });
-                        let export_label = if self.diff_mode_path_diff {
-                            "Export Folder Diff..."
-                        } else {
-                            "Export Duplicates..."
-                        };
-                        if menu_item(ui, export_label, &app_ctx.keymap, FolderAction::Export)
-                            .clicked()
-                        {
-                            self.export_requested = true;
-                            ui.ctx().request_repaint();
-                        }
-                    });
-
-                    ui.menu_button("Options", |ui| {
-                        if menu_item(
-                            ui,
-                            "External Diff Tools",
-                            &app_ctx.keymap,
-                            FolderAction::OpenDiffTools,
-                        )
-                        .clicked()
-                        {
-                            self.tools_window.open = true;
-                        }
-                        if menu_item(
-                            ui,
-                            "Keyboard Shortcuts",
-                            &app_ctx.keymap,
-                            FolderAction::OpenKeybindings,
-                        )
-                        .clicked()
-                        {
-                            self.keybindings_window.open = true;
-                        }
-                        ui.add_enabled_ui(self.diff_mode_path_diff, |ui| {
-                            ui.checkbox(&mut app_ctx.h_scroll_link.0, "Link Horizontal Scrolling")
-                                .on_hover_text(
-                                    "Scroll the left and right folder sides sideways together",
-                                );
-                        });
-                    });
-
-                    #[cfg(debug_assertions)]
-                    ui.menu_button("Debug", |ui| {
-                        if ui.button("Clear FileSystemModels").clicked() {
-                            app_ctx.file_system_model_1_view = None;
-                            app_ctx.file_system_model_2_view = None;
-                            app_ctx.two_folder_diff_visible_rows = None;
-                        }
-                    });
-                });
-        });
-        if self.tools_window.open {
-            self.tools_window.show(ui.ctx(), &mut app_ctx.diff_config);
-        }
-        if self.keybindings_window.open {
-            self.keybindings_window.show(ui.ctx(), &mut app_ctx.keymap);
-        }
-    }
-
     fn dispatch(
         &mut self,
         ctx: &egui::Context,
@@ -1084,163 +1042,162 @@ impl FolderPanes {
         };
     }
 
-    fn ui(&mut self, ui: &mut egui::Ui, app_ctx: &mut FolderState, swapped: bool) {
-        let ctx = &ui.ctx().clone();
-        let PolledInput {
-            mut actions,
-            keyboard_taken,
-        } = std::mem::take(&mut self.polled);
-        // The menu draws after this frame's actions are taken, so its export runs next frame.
-        if std::mem::take(&mut self.export_requested) {
-            actions.push(FolderAction::Export);
-        }
+    fn apply_view_actions(&mut self) {
+        let actions = &self.polled.actions;
         if actions.contains(&FolderAction::OpenKeybindings) {
             self.keybindings_window.open = true;
         }
         if actions.contains(&FolderAction::OpenDiffTools) {
             self.tools_window.open = true;
         }
-        if actions.contains(&FolderAction::ToggleDiffMode) {
-            self.diff_mode_path_diff = !self.diff_mode_path_diff;
-        }
-        if actions.contains(&FolderAction::Find) && self.diff_mode_path_diff {
+        let toggled = |action| actions.contains(&action);
+        let choice = match self.view {
+            ViewChoice::Duplicates if toggled(FolderAction::ToggleDiffMode) => {
+                Some(self.path_diff.view.into())
+            }
+            ViewChoice::Duplicates => None,
+            _ if toggled(FolderAction::ToggleDiffMode) => Some(ViewChoice::Duplicates),
+            ViewChoice::Tree if toggled(FolderAction::ToggleMap) => Some(ViewChoice::Map),
+            ViewChoice::Map if toggled(FolderAction::ToggleMap) => Some(ViewChoice::Tree),
+            ViewChoice::Tree | ViewChoice::Map => None,
+        };
+        if actions.contains(&FolderAction::Find) {
             self.find_open = true;
         }
-        if actions.contains(&FolderAction::Export) && self.diff_mode_path_diff {
-            app_ctx.export_folder_diff();
+        if let Some(choice) = choice {
+            self.apply_view_choice(choice);
         }
-        if !self.diff_mode_path_diff {
+        if self.view == ViewChoice::Duplicates {
             self.find_open = false;
+        }
+    }
+
+    fn with_pane_ctx(
+        &mut self,
+        ctx: &egui::Context,
+        app_ctx: &mut FolderState,
+        draw: impl FnOnce(&mut PathDiffPane, &mut DuplicateFilesPane, &mut TreeBehavior),
+    ) {
+        let mut diff_action_triggered = false;
+        let scan_error = app_ctx.scan_error();
+        let scanning =
+            app_ctx.file_system_1_scan.is_scanning() || app_ctx.file_system_2_scan.is_scanning();
+        let mut path_diff_view = PathDiffView {
+            scanning,
+            file_system_1_view: &mut app_ctx.file_system_model_1_view,
+            file_system_2_view: &mut app_ctx.file_system_model_2_view,
+            file_system_1_scan: &mut app_ctx.file_system_1_scan,
+            visible_rows: &mut app_ctx.two_folder_diff_visible_rows,
+            rows_id: app_ctx.two_folder_diff_rows_id,
+            scan_error,
+            root_requests: &mut app_ctx.root_requests,
+        };
+        let mut find_view = TreeFindView {
+            matcher: app_ctx.find_matcher.as_ref(),
+            match_path: app_ctx.find_applied.match_path,
+            chip: (!self.find_open && app_ctx.find_matcher.is_some())
+                .then_some(app_ctx.find_applied.query.text.as_str()),
+            chip_event: None,
+        };
+        let mut view_request = None;
+        let mut behavior = TreeBehavior {
+            hash_service: &mut app_ctx.hash_service,
+
+            conflict_map: &mut app_ctx.conflict_map,
+            conflict_map_resolved: &mut app_ctx.conflict_map_resolved,
+            diff_action_pressed: &mut diff_action_triggered,
+
+            diff_tool_config: &app_ctx.diff_config,
+            tool_message: &mut app_ctx.tool_message,
+            path_filter: &mut app_ctx.path_filter,
+            filter_presets: &mut app_ctx.filter_presets,
+            tree_sort: &mut app_ctx.tree_sort,
+            diff_filter: &mut app_ctx.diff_filter,
+            duplicates_filter: &mut app_ctx.duplicates_filter,
+            likeness_bar: &mut app_ctx.likeness_bar,
+            tolerance: &mut app_ctx.tolerance,
+            tree_compare: &app_ctx.tree_compare,
+            find: &mut find_view,
+            path_diff_view: &mut path_diff_view,
+            keyboard_taken: self.polled.keyboard_taken,
+            actions: &self.polled.actions,
+            view_request: &mut view_request,
+        };
+
+        draw(&mut self.path_diff, &mut self.duplicates, &mut behavior);
+        let chip_event = behavior.find.chip_event;
+        if let Some(choice) = view_request {
+            self.apply_view_choice(choice);
+            ctx.request_repaint();
+        }
+
+        match chip_event {
+            Some(FindChipEvent::Reopen) => self.find_open = true,
+            Some(FindChipEvent::Clear) => {
+                app_ctx.folder_find.query.text.clear();
+                app_ctx.apply_find();
+            }
+            None => {}
+        }
+        // The popup and the rows only change on the next update.
+        if chip_event.is_some() {
+            ctx.request_repaint();
+        }
+    }
+
+    fn toolbar_ui(&mut self, ui: &mut egui::Ui, app_ctx: &mut FolderState) {
+        let ctx = &ui.ctx().clone();
+        let view = self.view;
+        self.with_pane_ctx(ctx, app_ctx, |path_diff, duplicates, behavior| match view {
+            ViewChoice::Duplicates => {
+                let pane_ctx = &mut behavior.create_duplicate_files_ctx();
+                duplicates.update(ctx, pane_ctx);
+                duplicates.toolbar_ui(ui, pane_ctx);
+            }
+            ViewChoice::Tree | ViewChoice::Map => {
+                path_diff.toolbar_ui(ui, &mut behavior.create_path_diff_ctx());
+            }
+        });
+    }
+
+    fn ui(
+        &mut self,
+        ui: &mut egui::Ui,
+        app_ctx: &mut FolderState,
+        swapped: bool,
+        h_scroll_linked: bool,
+    ) {
+        let ctx = &ui.ctx().clone();
+        let view = self.view;
+        if self.polled.actions.contains(&FolderAction::Export) && view != ViewChoice::Duplicates {
+            app_ctx.export_folder_diff();
         }
         if self.find_open {
             let _scope = frame_stats::scope("Find popup");
             self.show_find(ctx, app_ctx);
         }
-        let timed = frame_stats::scope("Status line");
-        let working = app_ctx.file_system_1_scan.is_scanning()
-            || app_ctx.file_system_2_scan.is_scanning()
-            || app_ctx.tree_compare.is_comparing();
-        let shown = app_ctx.file_system_model_1_view.is_some()
-            || app_ctx.file_system_model_2_view.is_some();
-        // The shell's panel already has the side margins.
-        let status_frame = egui::Frame::side_top_panel(ui.style())
-            .inner_margin(egui::Margin::symmetric(0, 2));
-        let status_line = egui::TopBottomPanel::bottom("status_line").frame(status_frame);
-        if working {
-            status_line.show_inside(ui, |ui| {
-                ui_scan_progress(ui, Side::Folder1, &mut app_ctx.file_system_1_scan);
-                ui_scan_progress(ui, Side::Folder2, &mut app_ctx.file_system_2_scan);
-                ui_compare_progress(ui, &mut app_ctx.tree_compare);
-                ui_tool_message(ui, app_ctx.tool_message.as_ref());
-            });
-        } else if shown {
-            if let Some(rows) = app_ctx.two_folder_diff_visible_rows.as_deref()
-                && app_ctx
-                    .row_counts
-                    .as_ref()
-                    .is_none_or(|(counted, _)| *counted != app_ctx.two_folder_diff_rows_id)
-            {
-                app_ctx.row_counts = Some((app_ctx.two_folder_diff_rows_id, count_rows(rows)));
+        ui.with_layout(Layout::bottom_up(egui::Align::Min), |ui| {
+            let timed = frame_stats::scope("Status line");
+            if app_ctx.ui_status_rows_bottom_up(ui) {
+                ui.separator();
             }
-            let row_counts = app_ctx
-                .two_folder_diff_visible_rows
-                .as_ref()
-                .and(app_ctx.row_counts.as_ref().map(|(_, counts)| counts));
-            status_line.show_inside(ui, |ui| {
-                ui_status_summary(
-                    ui,
-                    row_counts,
-                    [
-                        app_ctx.file_system_1_scan.shown(),
-                        app_ctx.file_system_2_scan.shown(),
-                    ],
-                    app_ctx.tree_compare.compare_time(),
-                    app_ctx.tolerance.enabled,
-                );
-                ui_tool_message(ui, app_ctx.tool_message.as_ref());
-            });
-        }
-        drop(timed);
-        egui::CentralPanel::default().frame(egui::Frame::NONE).show_inside(ui, |ui| {
-            let timed = frame_stats::scope("Folder menu and windows");
-            self.show_menu(ui, app_ctx);
             drop(timed);
-
-            ui.separator();
-
-            ui.with_layout(Layout::left_to_right(egui::Align::Min), |ui| {
-                let mut diff_action_triggered = false;
-                let scan_error = app_ctx.scan_error();
-                let scanning = app_ctx.file_system_1_scan.is_scanning()
-                    || app_ctx.file_system_2_scan.is_scanning();
-                let mut path_diff_view = PathDiffView {
-                    scanning,
-                    file_system_1_view: &mut app_ctx.file_system_model_1_view,
-                    file_system_2_view: &mut app_ctx.file_system_model_2_view,
-                    file_system_1_scan: &mut app_ctx.file_system_1_scan,
-                    visible_rows: &mut app_ctx.two_folder_diff_visible_rows,
-                    rows_id: app_ctx.two_folder_diff_rows_id,
-                    scan_error,
-                    root_requests: &mut app_ctx.root_requests,
-                };
-                let mut find_view = TreeFindView {
-                    matcher: app_ctx.find_matcher.as_ref(),
-                    match_path: app_ctx.find_applied.match_path,
-                    chip: (!self.find_open && app_ctx.find_matcher.is_some())
-                        .then_some(app_ctx.find_applied.query.text.as_str()),
-                    chip_event: None,
-                };
-                let mut view_request = None;
-                let mut behavior = TreeBehavior {
-                    log_buffer: self.log_buffer.clone(),
-                    hash_service: &mut app_ctx.hash_service,
-
-                    conflict_map: &mut app_ctx.conflict_map,
-                    conflict_map_resolved: &mut app_ctx.conflict_map_resolved,
-                    diff_action_pressed: &mut diff_action_triggered,
-
-                    diff_tool_config: &app_ctx.diff_config,
-                    tool_message: &mut app_ctx.tool_message,
-                    path_filter: &mut app_ctx.path_filter,
-                    filter_presets: &mut app_ctx.filter_presets,
-                    tree_sort: &mut app_ctx.tree_sort,
-                    diff_filter: &mut app_ctx.diff_filter,
-                    duplicates_filter: &mut app_ctx.duplicates_filter,
-                    likeness_bar: &mut app_ctx.likeness_bar,
-                    swapped,
-                    tolerance: &mut app_ctx.tolerance,
-                    tree_compare: &app_ctx.tree_compare,
-                    h_scroll_link: &mut app_ctx.h_scroll_link,
-                    find: &mut find_view,
-                    path_diff_view: &mut path_diff_view,
-                    keyboard_taken,
-                    actions: &actions,
-                    view_request: &mut view_request,
-                };
-
-                let timed = frame_stats::scope("Folder panes");
-                self.tree.ui(&mut behavior, ui);
-                drop(timed);
-                let chip_event = behavior.find.chip_event;
-                if let Some(choice) = view_request {
-                    self.apply_view_choice(choice);
-                    ui.ctx().request_repaint();
-                }
-
-                match chip_event {
-                    Some(FindChipEvent::Reopen) => self.find_open = true,
-                    Some(FindChipEvent::Clear) => {
-                        app_ctx.folder_find.query.text.clear();
-                        app_ctx.apply_find();
+            ui.with_layout(Layout::top_down(egui::Align::Min), |ui| {
+                let _scope = frame_stats::scope("Folder panes");
+                self.with_pane_ctx(ctx, app_ctx, |path_diff, duplicates, behavior| match view {
+                    ViewChoice::Duplicates => {
+                        duplicates.body_ui(ui, &mut behavior.create_duplicate_files_ctx());
                     }
-                    None => {}
-                }
-                // The popup and the rows only change on the next update.
-                if chip_event.is_some() {
-                    ctx.request_repaint();
-                }
+                    ViewChoice::Tree | ViewChoice::Map => path_diff.body_ui(
+                        ui,
+                        &mut behavior.create_path_diff_ctx(),
+                        swapped,
+                        h_scroll_linked,
+                    ),
+                });
             });
         });
+        self.polled = PolledInput::default();
     }
 
     fn show_find(&mut self, ctx: &egui::Context, app_ctx: &mut FolderState) {
@@ -1278,73 +1235,16 @@ impl FolderPanes {
         }
     }
 
-    // Quick hacky funtion to determine if path_diff is open or duplicate_diff is open
-    fn is_path_diff(&self) -> bool {
-        for (tileid, tile) in self.tree.tiles.iter() {
-            if let Tile::Pane(Pane::PathDiff(_path_diff)) = tile {
-                if self.tree.is_visible(*tileid) {
-                    return true;
-                }
-            } else if let Tile::Pane(Pane::DuplicateFiles(_file_explorer)) = tile
-                && self.tree.is_visible(*tileid)
-            {
-                return false;
-            }
-        }
-        panic!("PathDiff or DuplicateFiles should always be active");
-    }
-    fn set_path_diff_visible(&mut self, visible: bool) {
-        let mut found_tile_id = None;
-        for (tileid, tile) in self.tree.tiles.iter() {
-            if let Tile::Pane(Pane::PathDiff(..)) = tile {
-                found_tile_id = Some(tileid);
-                break;
-            }
-        }
-        self.tree
-            .set_visible(*found_tile_id.expect("Should always find"), visible);
-    }
-    fn set_duplicate_files_visible(&mut self, visible: bool) {
-        let mut found_tile_id = None;
-        for (tileid, tile) in self.tree.tiles.iter() {
-            if let Tile::Pane(Pane::DuplicateFiles(..)) = tile {
-                found_tile_id = Some(tileid);
-                break;
-            }
-        }
-        self.tree
-            .set_visible(*found_tile_id.expect("Should always find"), visible);
-    }
-    fn path_diff_pane_mut(&mut self) -> &mut PathDiffPane {
-        self.tree
-            .tiles
-            .tiles_mut()
-            .find_map(|tile| match tile {
-                Tile::Pane(Pane::PathDiff(pane)) => Some(pane.as_mut()),
-                _ => None,
-            })
-            .expect("Should always find")
-    }
     fn apply_view_choice(&mut self, choice: ViewChoice) {
-        match choice.pane_view() {
-            Some(view) => {
-                self.diff_mode_path_diff = true;
-                self.path_diff_pane_mut().view = view;
-            }
-            None => self.diff_mode_path_diff = false,
+        self.view = choice;
+        // `path_diff.view` is also the view ToggleDiffMode returns to from the duplicates.
+        if let Some(view) = choice.pane_view() {
+            self.path_diff.view = view;
         }
     }
 
     fn poll(&mut self, ctx: &egui::Context, state: &mut FolderState, map_claims_back: bool) {
-        if self.is_path_diff() != self.diff_mode_path_diff {
-            if self.is_path_diff() {
-                self.set_path_diff_visible(false);
-                self.set_duplicate_files_visible(true);
-            } else {
-                self.set_duplicate_files_visible(false);
-                self.set_path_diff_visible(true);
-            }
-        }
+        self.apply_view_choice(self.view);
         state.update_scans(ctx);
         state.tree_compare.set_repaint(ctx);
         state.update_compare(Instant::now());
@@ -1366,6 +1266,7 @@ impl FolderPanes {
             ctx.request_repaint_after(Duration::from_millis(100));
         }
         self.dispatch(ctx, &state.keymap, map_claims_back);
+        self.apply_view_actions();
     }
 }
 
@@ -1378,7 +1279,7 @@ mod tests {
     };
     use crate::app::ZApp;
     use crate::folder::folder_keymap::FolderAction;
-    use crate::folder::fs_tree::{DiffState, FileSystemView, HScrollLink};
+    use crate::folder::fs_tree::{DiffState, FileSystemView};
     use crate::folder::panes::ViewChoice;
     use crate::folder::path_diff_pane::{BLACKLIST_PRESETS, FilterField, FilterPresets, PaneView};
     use crate::folder::roots::Side;
@@ -1400,7 +1301,6 @@ mod tests {
     };
     use tempfile::{TempDir, tempdir};
     use zcommon::hash::HashService;
-    use zcommon::logger::LogCollector;
     use zcommon_ui::keymap::{Action, Keymap, Shortcut};
     use zdiff_folder::likeness::{Likeness, Measure};
     use zdiff_folder::{
@@ -1724,14 +1624,6 @@ mod tests {
     }
 
     #[test]
-    fn a_restored_app_shows_the_global_log_buffer() {
-        let global = LogCollector::init().expect("no other logger in the test binary");
-        let json = serde_json::to_string(&FolderView::default()).unwrap();
-        let restored: FolderView = serde_json::from_str(&json).unwrap();
-        assert!(Arc::ptr_eq(&restored.panes.log_buffer, &global));
-    }
-
-    #[test]
     fn the_no_build_dirs_preset_hides_target_and_keeps_src() {
         let (left, right) = (tempdir().unwrap(), tempdir().unwrap());
         for root in [left.path(), right.path()] {
@@ -1938,37 +1830,6 @@ mod tests {
         let restored: FolderState = serde_json::from_value(json).unwrap();
 
         assert!(!restored.likeness_bar);
-    }
-
-    #[test]
-    fn linked_horizontal_scroll_is_on_by_default() {
-        assert!(FolderState::default().h_scroll_link.0);
-    }
-
-    #[test]
-    fn unlinked_horizontal_scroll_survives_a_restart() {
-        let state = FolderState {
-            h_scroll_link: HScrollLink(false),
-            ..Default::default()
-        };
-
-        let json = serde_json::to_string(&state).unwrap();
-        let restored: FolderState = serde_json::from_str(&json).unwrap();
-
-        assert!(!restored.h_scroll_link.0);
-    }
-
-    #[test]
-    fn a_state_saved_before_the_link_toggle_existed_loads_it_on() {
-        let mut json: serde_json::Value = serde_json::to_value(FolderState::default()).unwrap();
-        json.as_object_mut()
-            .unwrap()
-            .remove("h_scroll_link")
-            .unwrap();
-
-        let restored: FolderState = serde_json::from_value(json).unwrap();
-
-        assert!(restored.h_scroll_link.0);
     }
 
     #[test]
@@ -3314,7 +3175,7 @@ mod tests {
         let (_left, _right, mut state) = nested_folder_diff(TreeSort::default());
         state.hash_service = HashService::new(0);
         let mut app = idle_app(state);
-        app.folder.panes.diff_mode_path_diff = false;
+        app.folder.panes.view = ViewChoice::Duplicates;
 
         let [before, click, next] = click_frame_and_next(&mut app, "F");
 
@@ -3365,7 +3226,7 @@ mod tests {
             };
             ctx.run(input, |ctx| {
                 view.poll(ctx, false);
-                egui::CentralPanel::default().show(ctx, |ui| view.ui(ui, false));
+                egui::CentralPanel::default().show(ctx, |ui| view.ui(ui, false, true));
             })
         };
         for _ in 0..5 {
@@ -3484,51 +3345,71 @@ mod tests {
     #[test]
     fn a_queued_hash_keeps_the_duplicate_tab_polling() {
         let (_left, _right, mut app) = shown_app(HashService::new(0));
-        app.folder.panes.diff_mode_path_diff = false;
+        app.folder.panes.view = ViewChoice::Duplicates;
 
         assert!(settled_repaint_delay(&mut app) <= Duration::from_millis(100));
     }
 
     #[test]
-    fn choosing_a_view_sets_the_mode_and_the_folder_pane_view() {
+    fn choosing_a_view_sets_the_view_and_the_folder_pane_view() {
         let (_left, _right, mut app) = shown_app(HashService::new(0));
         let ctx = egui::Context::default();
         let choose = |app: &mut ZApp, choice: ViewChoice| {
             app.folder.panes.apply_view_choice(choice);
             repaint_delay(&ctx, app);
-            (
-                app.folder.panes.diff_mode_path_diff,
-                app.folder.panes.is_path_diff(),
-                app.folder.panes.path_diff_pane_mut().view,
-            )
+            (app.folder.panes.view, app.folder.panes.path_diff.view)
         };
 
         assert_eq!(
             choose(&mut app, ViewChoice::Map),
-            (true, true, PaneView::Map)
+            (ViewChoice::Map, PaneView::Map)
         );
         assert_eq!(
             choose(&mut app, ViewChoice::Duplicates),
-            (false, false, PaneView::Map)
+            (ViewChoice::Duplicates, PaneView::Map)
         );
         assert_eq!(
             choose(&mut app, ViewChoice::Tree),
-            (true, true, PaneView::Tree)
+            (ViewChoice::Tree, PaneView::Tree)
         );
         assert_eq!(
             choose(&mut app, ViewChoice::Duplicates),
-            (false, false, PaneView::Tree)
+            (ViewChoice::Duplicates, PaneView::Tree)
         );
         assert_eq!(
             choose(&mut app, ViewChoice::Map),
-            (true, true, PaneView::Map)
+            (ViewChoice::Map, PaneView::Map)
+        );
+    }
+
+    #[test]
+    fn the_diff_mode_toggle_returns_from_the_duplicates_to_the_last_tree_or_map() {
+        let mut panes = FolderPanes::default();
+        let toggle = |panes: &mut FolderPanes, action| {
+            panes.polled.actions = vec![action];
+            panes.apply_view_actions();
+            panes.view
+        };
+
+        assert_eq!(toggle(&mut panes, FolderAction::ToggleMap), ViewChoice::Map);
+        assert_eq!(
+            toggle(&mut panes, FolderAction::ToggleDiffMode),
+            ViewChoice::Duplicates
+        );
+        assert_eq!(
+            toggle(&mut panes, FolderAction::ToggleMap),
+            ViewChoice::Duplicates
+        );
+        assert_eq!(
+            toggle(&mut panes, FolderAction::ToggleDiffMode),
+            ViewChoice::Map
         );
     }
 
     #[test]
     fn an_idle_duplicate_tab_stops_repainting() {
         let (_left, _right, mut app) = shown_app(HashService::new(1));
-        app.folder.panes.diff_mode_path_diff = false;
+        app.folder.panes.view = ViewChoice::Duplicates;
         let ctx = egui::Context::default();
         let deadline = Instant::now() + Duration::from_secs(10);
         while repaint_delay(&ctx, &mut app) != Duration::MAX {

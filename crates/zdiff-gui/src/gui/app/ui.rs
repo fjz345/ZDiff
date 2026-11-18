@@ -194,7 +194,7 @@ impl ZApp {
                 goto_input.clear();
                 *goto_open = goto_window_open;
             }
-            if *find_open {
+            if *find_open && !folders {
                 let event = find_popup(ctx, find_query, find_error.as_deref(), None, |ui| {
                     ui.checkbox(find_both_panes, "Both panes").changed()
                 });
