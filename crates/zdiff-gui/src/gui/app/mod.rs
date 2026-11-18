@@ -1,3 +1,4 @@
+mod folder_mode;
 mod input;
 mod launch;
 mod menu;
@@ -16,6 +17,8 @@ use eframe::egui::{self};
 use serde::{Deserialize, Serialize};
 use std::{
     env,
+    ffi::OsString,
+    path::Path,
     sync::{
         Arc,
         atomic::{AtomicU8, Ordering},
@@ -30,9 +33,10 @@ use zcommon_ui::shared_keymap::load_shared;
 use zcommon_ui::style_window::StyleWindow;
 
 use crate::{
-    cli::{self},
+    cli::{self, LaunchMode},
     diff_ctx::UpdateDiffRowsInput,
     file::LoadedFile,
+    folder::{self, Mode, roots::parse_launch_args, view::FolderView},
     keybindings::FileAction,
     p4::update_p4_profiles,
     revert::{PendingP4Edit, RevertTarget},
@@ -56,6 +60,8 @@ pub struct ZApp {
     // Option > Hack to avoid cloning state when matching &mut self.state in update loop
     state: Option<AppState>,
     tree: egui_tiles::Tree<Pane>,
+    #[serde(default)]
+    pub(crate) folder: FolderView,
 
     #[serde(skip)]
     open_shortcuts_window: bool,
@@ -96,7 +102,7 @@ pub struct ZApp {
     #[serde(skip)]
     frame_stats: FrameStats,
     #[serde(default)]
-    show_frame_breakdown: bool,
+    pub(crate) show_frame_breakdown: bool,
 }
 
 impl ZApp {
@@ -116,10 +122,7 @@ impl ZApp {
                 .map(|f| f.variant_name())
                 .unwrap_or_default()
         );
-        self.state = self
-            .state
-            .take()
-            .map(|ctx| AppState::Startup(ctx.into_ctx()));
+        self.run_startup_again();
 
         if let Some(AppState::Startup(ctx) | AppState::Idle(ctx)) = &mut self.state {
             update_p4_profiles(ctx.p4_profiles.clone());
@@ -127,26 +130,53 @@ impl ZApp {
                 zcommon::kinds::kinds_file_path(),
                 &mut ctx.legacy_extension_map,
             );
+        }
+        let (_, args) = zcommon::console::take_log_flag(env::args_os().skip(1));
+        self.launch(args);
+    }
 
-            let (_, args) = zcommon::console::take_log_flag(env::args().skip(1));
-            if args.is_empty() {
-                return;
+    pub(super) fn run_startup_again(&mut self) {
+        self.state = self
+            .state
+            .take()
+            .map(|ctx| AppState::Startup(ctx.into_ctx()));
+    }
+
+    pub(super) fn launch(&mut self, args: Vec<OsString>) {
+        if args.is_empty() {
+            return;
+        }
+        let ctx = self
+            .state
+            .as_mut()
+            .expect("State should always be valid at launch")
+            .ctx_mut();
+        match cli::launch_mode(&args, Path::is_dir) {
+            LaunchMode::Folders(folder_args) => {
+                self.folder
+                    .apply_launch_args(&parse_launch_args(folder_args));
+                ctx.mode = Mode::Folder;
             }
-            match apply_launch(
-                &mut ctx.file_1,
-                &mut ctx.file_2,
-                cli::parse_launch_args(args),
-            ) {
-                LaunchOutcome::Opened => {}
-                LaunchOutcome::Merge(request, names) => {
-                    self.merge =
-                        Some(MergeView::new(*request, ctx.myers_diff_algorithm).with_names(names));
-                }
-                LaunchOutcome::Help => self.open_help_window = true,
-                LaunchOutcome::Error(message) => {
-                    // A tool trusting the exit code must not take a failed launch as a merge.
-                    self.exit_code.store(1, Ordering::Relaxed);
-                    self.launch_error = Some(message);
+            LaunchMode::Files => {
+                ctx.mode = Mode::File;
+                let args = args.iter().map(|arg| arg.to_string_lossy().into_owned());
+                match apply_launch(
+                    &mut ctx.file_1,
+                    &mut ctx.file_2,
+                    cli::parse_launch_args(args),
+                ) {
+                    LaunchOutcome::Opened => {}
+                    LaunchOutcome::Merge(request, names) => {
+                        self.merge = Some(
+                            MergeView::new(*request, ctx.myers_diff_algorithm).with_names(names),
+                        );
+                    }
+                    LaunchOutcome::Help => self.open_help_window = true,
+                    LaunchOutcome::Error(message) => {
+                        // A tool trusting the exit code must not take a failed launch as a merge.
+                        self.exit_code.store(1, Ordering::Relaxed);
+                        self.launch_error = Some(message);
+                    }
                 }
             }
         }
@@ -157,6 +187,7 @@ impl ZApp {
             zoom: default_zoom(),
             state: Some(AppState::default()),
             tree: Self::create_tree(),
+            folder: FolderView::default(),
             open_shortcuts_window: false,
             keymap_editor: KeymapEditor::default(),
             style_window: StyleWindow::default().with_row_looks().with_syntax(),
@@ -238,10 +269,21 @@ impl eframe::App for ZApp {
         }
     }
 
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        folder::view::on_exit();
+    }
+
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         self.frame_stats.begin_frame(ctx, frame);
+        let shows_folder = folder_mode::shows_folder(
+            self.state
+                .as_mut()
+                .expect("State was not valid while processing inputs")
+                .ctx_mut(),
+            &self.merge,
+        );
         // Update conflict cursor before input processing
-        {
+        if !shows_folder {
             let _scope = frame_stats::scope("Conflict count");
             let app_ctx = self
                 .state
@@ -280,10 +322,13 @@ impl eframe::App for ZApp {
             || ctx.input(|i| i.events.contains(&egui::Event::WindowFocused(true)))
         {
             load_shared(&mut state.ctx_mut().keybindings.keymap);
+            load_shared(self.folder.keymap_mut());
         }
 
         let timed = frame_stats::scope("Shortcut dispatch");
-        self.process_ctx_inputs(ctx, frame);
+        if !shows_folder {
+            self.process_ctx_inputs(ctx, frame);
+        }
         drop(timed);
         self.frame_stats.mark("Input and shortcuts");
 
@@ -304,6 +349,15 @@ impl eframe::App for ZApp {
                     ui.centered_and_justified(|ui| ui.label("Loading..."));
                 });
                 AppState::Idle(state_ctx)
+            }
+
+            AppState::Idle(mut state) if folder_mode::shows_folder(&state, &self.merge) => {
+                self.zoom = sync_zoom(ctx);
+                if self.folder_frame(ctx, &mut state) {
+                    AppState::Exit(state)
+                } else {
+                    AppState::Idle(state)
+                }
             }
 
             AppState::Idle(mut state) => {

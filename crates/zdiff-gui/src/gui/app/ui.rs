@@ -52,6 +52,7 @@ impl ZApp {
                 text_mode,
                 text_likeness,
                 sides_swapped,
+                mode: _,
                 diff_options,
                 file_1,
                 file_2,
@@ -635,7 +636,7 @@ impl ZApp {
 }
 
 // Every viewport command requests a repaint, so sending one each frame never lets the app idle.
-fn send_title(ctx: &egui::Context, sent: &mut Option<String>, title: String) {
+pub(super) fn send_title(ctx: &egui::Context, sent: &mut Option<String>, title: String) {
     if sent.as_ref() != Some(&title) {
         ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
         *sent = Some(title);

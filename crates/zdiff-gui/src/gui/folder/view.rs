@@ -889,12 +889,7 @@ fn window_title(state: &FolderState) -> String {
         .map_or(0, |rows| rows.len());
     let left = state.file_system_1_root_path.clone().unwrap_or_default();
     let right = state.file_system_2_root_path.clone().unwrap_or_default();
-    format!(
-        "ZDiffFolder [{}] - {}, {}",
-        rows,
-        left.display(),
-        right.display()
-    )
+    format!("zdiff [{}] - {}, {}", rows, left.display(), right.display())
 }
 
 fn restored_log_buffer() -> LogBuffer {
@@ -925,6 +920,14 @@ impl FolderView {
             &mut self.state.file_system_1_root_path,
             &mut self.state.file_system_2_root_path,
         );
+    }
+
+    #[cfg(test)]
+    pub(crate) fn roots(&self) -> [Option<PathBuf>; 2] {
+        [
+            self.state.file_system_1_root_path.clone(),
+            self.state.file_system_2_root_path.clone(),
+        ]
     }
 }
 
@@ -971,7 +974,7 @@ impl FolderPanes {
         tiles.set_visible(tile_duplicate_file, false);
         let root = tiles.insert_tab_tile(tabs);
 
-        egui_tiles::Tree::new("my_tree", root, tiles)
+        egui_tiles::Tree::new("folder_tree", root, tiles)
     }
 
     fn show_menu(
@@ -1528,6 +1531,7 @@ mod tests {
         FolderPanes, FolderState, FolderView, ScanAction, cancel_scan, discard_stale_rows,
         finish_side_scan, scan_action, scan_progress_text, update_side_scan,
     };
+    use crate::app::ZApp;
     use crate::folder::folder_keymap::FolderAction;
     use crate::folder::fs_tree::{DiffState, FileSystemView, HScrollLink};
     use crate::folder::panes::ViewChoice;
@@ -1539,7 +1543,6 @@ mod tests {
     use crate::folder::tree_likeness::FolderLikeness;
     use crate::folder::tree_sort::{SortKey, TreeSort};
     use crate::folder::tree_tolerance::{SizeDelta, Tolerance};
-    use crate::folder::{Phase, ZApp};
     use eframe::egui;
     use std::{
         fs,
@@ -3379,13 +3382,10 @@ mod tests {
     }
 
     fn idle_app(state: FolderState) -> ZApp {
-        let mut app = ZApp::new();
-        app.folder = FolderView {
+        ZApp::idle_showing_folder(FolderView {
             state,
             panes: FolderPanes::default(),
-        };
-        app.phase = Phase::Idle;
-        app
+        })
     }
 
     fn folder_state(app: &ZApp) -> &FolderState {

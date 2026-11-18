@@ -1,0 +1,753 @@
+{
+  "zoom": 1.25,
+  "state": {
+    "Idle": {
+      "file_1": {},
+      "file_2": {},
+      "hex_settings": {
+        "mode": "Bytes",
+        "min_string_len": 4
+      },
+      "image_settings": {
+        "sampling": "Nearest",
+        "mode": "SideBySide",
+        "channel": "All",
+        "blink_ms": 500,
+        "metric": "Exact",
+        "alignment": "TopLeft"
+      },
+      "audio_settings": {
+        "mode": "Lanes",
+        "spectrum": {
+          "window": 2048,
+          "floor_db": -100.0,
+          "ceil_db": 0.0,
+          "diff_range_db": 24.0
+        }
+      },
+      "ffmpeg": {
+        "path": ""
+      },
+      "pdb_options": {
+        "public_only": false,
+        "ignore_addresses": false,
+        "ignore_identity": true
+      },
+      "diff_options": {
+        "ignore_whitespace": false,
+        "ignore_comments": false,
+        "ignore_regex": "",
+        "ignore_regex_enabled": true,
+        "ignore_line_endings": false,
+        "ignore_file_markers": false,
+        "highlight_rows": true,
+        "mark_scopes": false,
+        "mark_lines": true,
+        "mark_tokens": false,
+        "mark_chars": false,
+        "ghost_rows": true,
+        "diff_only_with_extra_rows": null,
+        "phases": {
+          "scope": false,
+          "line": true,
+          "token": true,
+          "character": false
+        }
+      },
+      "myers_diff_algorithm": "Linear",
+      "code_language_override": null,
+      "search_syntax_variants": true,
+      "keybindings": {
+        "keymap": {
+          "open_file_source": [
+            {
+              "key": "F1",
+              "modifiers": {
+                "alt": false,
+                "ctrl": true,
+                "shift": false,
+                "mac_cmd": false,
+                "command": true
+              }
+            }
+          ],
+          "open_file_target": [
+            {
+              "key": "F2",
+              "modifiers": {
+                "alt": false,
+                "ctrl": true,
+                "shift": false,
+                "mac_cmd": false,
+                "command": true
+              }
+            }
+          ],
+          "refresh_diff": [
+            {
+              "key": "R",
+              "modifiers": {
+                "alt": false,
+                "ctrl": true,
+                "shift": false,
+                "mac_cmd": false,
+                "command": true
+              }
+            }
+          ],
+          "refresh_diff_rows_only": [
+            {
+              "key": "R",
+              "modifiers": {
+                "alt": true,
+                "ctrl": true,
+                "shift": false,
+                "mac_cmd": false,
+                "command": true
+              }
+            }
+          ],
+          "open_options_keybindings": [
+            {
+              "key": "O",
+              "modifiers": {
+                "alt": false,
+                "ctrl": true,
+                "shift": false,
+                "mac_cmd": false,
+                "command": true
+              }
+            }
+          ],
+          "open_universal_path": [
+            {
+              "key": "U",
+              "modifiers": {
+                "alt": false,
+                "ctrl": true,
+                "shift": false,
+                "mac_cmd": false,
+                "command": true
+              }
+            }
+          ],
+          "find": [
+            {
+              "key": "F",
+              "modifiers": {
+                "alt": false,
+                "ctrl": true,
+                "shift": false,
+                "mac_cmd": false,
+                "command": true
+              }
+            }
+          ],
+          "goto": [
+            {
+              "key": "G",
+              "modifiers": {
+                "alt": false,
+                "ctrl": true,
+                "shift": false,
+                "mac_cmd": false,
+                "command": true
+              }
+            }
+          ],
+          "next_conflict": [
+            {
+              "key": "Num2",
+              "modifiers": {
+                "alt": false,
+                "ctrl": true,
+                "shift": false,
+                "mac_cmd": false,
+                "command": true
+              }
+            },
+            {
+              "key": "ArrowDown",
+              "modifiers": {
+                "alt": true,
+                "ctrl": false,
+                "shift": false,
+                "mac_cmd": false,
+                "command": false
+              }
+            }
+          ],
+          "prev_conflict": [
+            {
+              "key": "Num1",
+              "modifiers": {
+                "alt": false,
+                "ctrl": true,
+                "shift": false,
+                "mac_cmd": false,
+                "command": true
+              }
+            },
+            {
+              "key": "ArrowUp",
+              "modifiers": {
+                "alt": true,
+                "ctrl": false,
+                "shift": false,
+                "mac_cmd": false,
+                "command": false
+              }
+            }
+          ],
+          "next_find": [
+            {
+              "key": "Enter",
+              "modifiers": {
+                "alt": false,
+                "ctrl": false,
+                "shift": false,
+                "mac_cmd": false,
+                "command": false
+              }
+            }
+          ],
+          "prev_find": [
+            {
+              "key": "Enter",
+              "modifiers": {
+                "alt": false,
+                "ctrl": false,
+                "shift": true,
+                "mac_cmd": false,
+                "command": false
+              }
+            }
+          ],
+          "revision_graph": [
+            {
+              "key": "R",
+              "modifiers": {
+                "alt": false,
+                "ctrl": true,
+                "shift": true,
+                "mac_cmd": false,
+                "command": true
+              }
+            }
+          ],
+          "timelapse_view": [
+            {
+              "key": "T",
+              "modifiers": {
+                "alt": false,
+                "ctrl": true,
+                "shift": true,
+                "mac_cmd": false,
+                "command": true
+              }
+            }
+          ],
+          "undo_revert": [
+            {
+              "key": "Z",
+              "modifiers": {
+                "alt": false,
+                "ctrl": true,
+                "shift": false,
+                "mac_cmd": false,
+                "command": true
+              }
+            },
+            {
+              "button": "Extra1",
+              "modifiers": {
+                "alt": false,
+                "ctrl": false,
+                "shift": false,
+                "mac_cmd": false,
+                "command": false
+              }
+            }
+          ],
+          "redo_revert": [
+            {
+              "key": "Y",
+              "modifiers": {
+                "alt": false,
+                "ctrl": true,
+                "shift": false,
+                "mac_cmd": false,
+                "command": true
+              }
+            },
+            {
+              "key": "Z",
+              "modifiers": {
+                "alt": false,
+                "ctrl": true,
+                "shift": true,
+                "mac_cmd": false,
+                "command": true
+              }
+            },
+            {
+              "button": "Extra2",
+              "modifiers": {
+                "alt": false,
+                "ctrl": false,
+                "shift": false,
+                "mac_cmd": false,
+                "command": false
+              }
+            }
+          ],
+          "diff_local_file": [
+            {
+              "key": "L",
+              "modifiers": {
+                "alt": false,
+                "ctrl": true,
+                "shift": false,
+                "mac_cmd": false,
+                "command": true
+              }
+            }
+          ],
+          "diff_shelf_base": [
+            {
+              "key": "B",
+              "modifiers": {
+                "alt": false,
+                "ctrl": true,
+                "shift": false,
+                "mac_cmd": false,
+                "command": true
+              }
+            }
+          ],
+          "swap_sides": [
+            {
+              "key": "S",
+              "modifiers": {
+                "alt": false,
+                "ctrl": true,
+                "shift": true,
+                "mac_cmd": false,
+                "command": true
+              }
+            }
+          ],
+          "ignore_whitespace": [
+            {
+              "key": "W",
+              "modifiers": {
+                "alt": true,
+                "ctrl": false,
+                "shift": false,
+                "mac_cmd": false,
+                "command": false
+              }
+            }
+          ],
+          "ignore_comments": [
+            {
+              "key": "C",
+              "modifiers": {
+                "alt": true,
+                "ctrl": false,
+                "shift": false,
+                "mac_cmd": false,
+                "command": false
+              }
+            }
+          ],
+          "ignore_regex": [
+            {
+              "key": "X",
+              "modifiers": {
+                "alt": true,
+                "ctrl": false,
+                "shift": false,
+                "mac_cmd": false,
+                "command": false
+              }
+            }
+          ],
+          "ignore_line_endings": [
+            {
+              "key": "E",
+              "modifiers": {
+                "alt": true,
+                "ctrl": false,
+                "shift": false,
+                "mac_cmd": false,
+                "command": false
+              }
+            }
+          ],
+          "ignore_file_markers": [
+            {
+              "key": "M",
+              "modifiers": {
+                "alt": true,
+                "ctrl": false,
+                "shift": false,
+                "mac_cmd": false,
+                "command": false
+              }
+            }
+          ],
+          "highlight_rows": [
+            {
+              "key": "H",
+              "modifiers": {
+                "alt": true,
+                "ctrl": false,
+                "shift": false,
+                "mac_cmd": false,
+                "command": false
+              }
+            }
+          ],
+          "ghost_rows": [
+            {
+              "key": "G",
+              "modifiers": {
+                "alt": true,
+                "ctrl": false,
+                "shift": false,
+                "mac_cmd": false,
+                "command": false
+              }
+            }
+          ],
+          "link_h_scroll": [
+            {
+              "key": "L",
+              "modifiers": {
+                "alt": true,
+                "ctrl": false,
+                "shift": false,
+                "mac_cmd": false,
+                "command": false
+              }
+            }
+          ],
+          "word_wrap": [
+            {
+              "key": "Z",
+              "modifiers": {
+                "alt": true,
+                "ctrl": false,
+                "shift": false,
+                "mac_cmd": false,
+                "command": false
+              }
+            }
+          ],
+          "diff_only": [
+            {
+              "key": "D",
+              "modifiers": {
+                "alt": true,
+                "ctrl": false,
+                "shift": false,
+                "mac_cmd": false,
+                "command": false
+              }
+            }
+          ],
+          "diff_only_fewer_context_rows": [
+            {
+              "key": "OpenBracket",
+              "modifiers": {
+                "alt": true,
+                "ctrl": false,
+                "shift": false,
+                "mac_cmd": false,
+                "command": false
+              }
+            }
+          ],
+          "diff_only_more_context_rows": [
+            {
+              "key": "CloseBracket",
+              "modifiers": {
+                "alt": true,
+                "ctrl": false,
+                "shift": false,
+                "mac_cmd": false,
+                "command": false
+              }
+            }
+          ],
+          "toggle_all_options": [
+            {
+              "key": "A",
+              "modifiers": {
+                "alt": true,
+                "ctrl": false,
+                "shift": false,
+                "mac_cmd": false,
+                "command": false
+              }
+            }
+          ],
+          "save_merge": [
+            {
+              "key": "S",
+              "modifiers": {
+                "alt": false,
+                "ctrl": true,
+                "shift": false,
+                "mac_cmd": false,
+                "command": true
+              }
+            }
+          ],
+          "next_frame": [
+            {
+              "key": "ArrowRight",
+              "modifiers": {
+                "alt": false,
+                "ctrl": false,
+                "shift": false,
+                "mac_cmd": false,
+                "command": false
+              }
+            }
+          ],
+          "prev_frame": [
+            {
+              "key": "ArrowLeft",
+              "modifiers": {
+                "alt": false,
+                "ctrl": false,
+                "shift": false,
+                "mac_cmd": false,
+                "command": false
+              }
+            }
+          ],
+          "open_merge": [
+            {
+              "key": "M",
+              "modifiers": {
+                "alt": false,
+                "ctrl": true,
+                "shift": false,
+                "mac_cmd": false,
+                "command": true
+              }
+            }
+          ],
+          "clear_file_paths": [
+            {
+              "key": "W",
+              "modifiers": {
+                "alt": false,
+                "ctrl": true,
+                "shift": false,
+                "mac_cmd": false,
+                "command": true
+              }
+            }
+          ],
+          "open_file_viewers": [
+            {
+              "key": "V",
+              "modifiers": {
+                "alt": true,
+                "ctrl": true,
+                "shift": false,
+                "mac_cmd": false,
+                "command": true
+              }
+            }
+          ],
+          "open_style": [
+            {
+              "key": "Comma",
+              "modifiers": {
+                "alt": false,
+                "ctrl": true,
+                "shift": false,
+                "mac_cmd": false,
+                "command": true
+              }
+            }
+          ],
+          "export_diff": [
+            {
+              "key": "E",
+              "modifiers": {
+                "alt": false,
+                "ctrl": true,
+                "shift": false,
+                "mac_cmd": false,
+                "command": true
+              }
+            }
+          ]
+        },
+        "user_quick_diffs": [
+          [
+            {
+              "key": "F1",
+              "modifiers": {
+                "alt": false,
+                "ctrl": false,
+                "shift": false,
+                "mac_cmd": false,
+                "command": false
+              }
+            },
+            {
+              "target": [
+                "",
+                ""
+              ],
+              "source": null,
+              "p4_profile": null
+            }
+          ],
+          [
+            {
+              "key": "F2",
+              "modifiers": {
+                "alt": false,
+                "ctrl": false,
+                "shift": false,
+                "mac_cmd": false,
+                "command": false
+              }
+            },
+            {
+              "target": [
+                "",
+                ""
+              ],
+              "source": null,
+              "p4_profile": null
+            }
+          ],
+          [
+            {
+              "key": "F3",
+              "modifiers": {
+                "alt": false,
+                "ctrl": false,
+                "shift": false,
+                "mac_cmd": false,
+                "command": false
+              }
+            },
+            {
+              "target": [
+                "",
+                ""
+              ],
+              "source": null,
+              "p4_profile": null
+            }
+          ],
+          [
+            {
+              "key": "F4",
+              "modifiers": {
+                "alt": false,
+                "ctrl": false,
+                "shift": false,
+                "mac_cmd": false,
+                "command": false
+              }
+            },
+            {
+              "target": [
+                "",
+                ""
+              ],
+              "source": null,
+              "p4_profile": null
+            }
+          ]
+        ]
+      },
+      "p4_profiles": {
+        "profiles": [],
+        "default": null,
+        "next_id": 0
+      },
+      "regex_ignore_presets": [],
+      "scroll_left": 0.0,
+      "scroll_right": 0.0,
+      "h_scroll_linked": true,
+      "h_scroll_modifier": "Shift",
+      "center_jumps": true,
+      "word_wrap": false,
+      "scope_breadcrumb": false,
+      "scope_block_headers": false,
+      "revert_buttons": true,
+      "text_mode": "SideBySide",
+      "text_likeness": "Lines",
+      "sides_swapped": true,
+      "find_both_panes": false
+    }
+  },
+  "tree": {
+    "id": 6548801023460913313,
+    "root": 4,
+    "tiles": {
+      "next_tile_id": 5,
+      "tiles": {
+        "1": {
+          "Pane": {
+            "FileDiff": {
+              "title": "Path Diff"
+            }
+          }
+        },
+        "3": {
+          "Container": {
+            "Linear": {
+              "children": [
+                2
+              ],
+              "dir": "Vertical",
+              "shares": {
+                "shares": {}
+              }
+            }
+          }
+        },
+        "2": {
+          "Container": {
+            "Linear": {
+              "children": [
+                1
+              ],
+              "dir": "Horizontal",
+              "shares": {
+                "shares": {}
+              }
+            }
+          }
+        },
+        "4": {
+          "Container": {
+            "Tabs": {
+              "children": [
+                3
+              ],
+              "active": 3
+            }
+          }
+        }
+      },
+      "invisible": []
+    },
+    "height": null,
+    "width": null
+  },
+  "show_frame_breakdown": false
+}

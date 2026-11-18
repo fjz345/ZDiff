@@ -512,7 +512,7 @@ pub fn draw_ui_folder_tree(
                 } else {
                     let (_, clicked) = empty_state(
                         &mut overlay,
-                        "Welcome to ZDiffFolder",
+                        "Welcome to ZDiff",
                         "Drag and drop a folder onto the left or right pane, or use the buttons below to start comparing.",
                         &["Open Left", "Open Right"],
                     );

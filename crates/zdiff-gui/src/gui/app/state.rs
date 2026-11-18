@@ -9,6 +9,7 @@ use super::nav::NavHistory;
 use crate::{
     diff_ctx::DiffProcessor,
     file::FileProcessor,
+    folder::Mode,
     keybindings::Keybindings,
     p4::P4Profiles,
     pdb_dump::PdbDumpOptions,
@@ -137,6 +138,8 @@ pub struct AppStateCtx {
     pub text_likeness: TextMetric,
     #[cfg_attr(feature = "serde", serde(default))]
     pub sides_swapped: bool,
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub mode: Mode,
 
     #[cfg_attr(feature = "serde", serde(skip))]
     pub goto_open: bool,
@@ -209,6 +212,7 @@ impl Default for AppStateCtx {
             text_mode: Default::default(),
             text_likeness: Default::default(),
             sides_swapped: false,
+            mode: Mode::File,
             goto_open: Default::default(),
             find_open: Default::default(),
             goto_input: Default::default(),
@@ -986,5 +990,71 @@ mod tests {
             .unwrap();
         let mut restored: AppStateCtx = serde_json::from_value(json).unwrap();
         assert_ne!(restored.p4_profiles.add("new".into()), id);
+    }
+    #[test]
+    fn a_save_from_before_the_folder_mode_loads_in_file_mode() {
+        let mut app: ZApp =
+            serde_json::from_str(include_str!("testdata/zdiff_state_before_folder_mode.json"))
+                .unwrap();
+        assert_eq!(app.zoom, 1.25);
+        assert_eq!(app.folder.roots(), [None, None]);
+        let state = app.state.as_mut().unwrap().ctx_mut();
+        assert!(state.sides_swapped);
+        assert_eq!(state.mode, Mode::File);
+    }
+
+    #[test]
+    fn folder_roots_and_mode_survive_a_restart() {
+        let (left, right) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let mut app = ZApp::new();
+        app.launch(vec![left.path().into(), right.path().into()]);
+        let roots = app.folder.roots();
+        assert!(roots.iter().all(Option::is_some), "{roots:?}");
+
+        let json = serde_json::to_string(&app).unwrap();
+        let mut restored: ZApp = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.folder.roots(), roots);
+        assert_eq!(
+            restored.state.as_mut().unwrap().ctx_mut().mode,
+            Mode::Folder
+        );
+    }
+
+    #[derive(Default)]
+    struct MemoryStorage(std::collections::HashMap<String, String>);
+
+    impl eframe::Storage for MemoryStorage {
+        fn get_string(&self, key: &str) -> Option<String> {
+            self.0.get(key).cloned()
+        }
+
+        fn set_string(&mut self, key: &str, value: String) {
+            self.0.insert(key.to_owned(), value);
+        }
+
+        fn flush(&mut self) {}
+    }
+
+    #[test]
+    fn a_window_minimized_at_exit_is_saved_as_it_was_at_startup() {
+        const RESTORED: &str = "(inner_position_pixels:Some((x:169.0,y:262.0)),outer_position_pixels:Some((x:160.0,y:224.0)),fullscreen:false,maximized:false,inner_size_points:Some((x:1508.8,y:704.8)))";
+        const MINIMIZED: &str = "(inner_position_pixels:Some((x:-32000.0,y:-32000.0)),outer_position_pixels:Some((x:-32000.0,y:-32000.0)),fullscreen:false,maximized:false,inner_size_points:Some((x:0.0,y:0.0)))";
+        let mut storage = MemoryStorage::default();
+        storage.0.insert("window".to_owned(), RESTORED.to_owned());
+        let mut app = ZApp::new();
+        app.remember_window_from(Some(&storage));
+
+        storage.0.insert("window".to_owned(), MINIMIZED.to_owned());
+        eframe::App::save(&mut app, &mut storage);
+
+        assert_eq!(storage.0["window"], RESTORED);
+    }
+
+    #[test]
+    fn a_restored_idle_app_runs_startup_again() {
+        let mut app = ZApp::new();
+        app.state = Some(AppState::Idle(AppStateCtx::default()));
+        app.run_startup_again();
+        assert!(matches!(app.state, Some(AppState::Startup(_))));
     }
 }
