@@ -37,7 +37,7 @@ impl ZApp {
     ) -> bool {
         let map_claims_back = tree_map::take_mouse_back_claim(ctx);
         // The editor takes the captured key press only later in this frame, when it is drawn.
-        let capturing = self.keymap_editor.is_capturing();
+        let capturing = self.capturing_shortcut();
         let app_state_ctx = self
             .state
             .as_mut()
@@ -96,18 +96,7 @@ impl ZApp {
                     keymap.dispatch(&r.events, text_focused)
                 };
                 for action in actions {
-                    let in_folders = matches!(
-                        action,
-                        FileAction::Undo
-                            | FileAction::Redo
-                            | FileAction::OpenStyle
-                            | FileAction::OpenFileSource
-                            | FileAction::OpenFileTarget
-                            | FileAction::RefreshDiff
-                            | FileAction::SwapSides
-                            | FileAction::ClearFilePaths
-                    );
-                    if folders && !in_folders {
+                    if folders && !action.applies_to_folders() {
                         continue;
                     }
                     log::info!("Action triggered: {}", action.label());
@@ -128,9 +117,6 @@ impl ZApp {
                                 &mut app_state_ctx.file_1,
                                 &mut app_state_ctx.file_2,
                             );
-                            if folders {
-                                self.folder.refresh();
-                            }
                         }
                         FileAction::RefreshDiffRowsOnly => {
                             app_state_ctx.diff_processor.reset_ctx();

@@ -32,7 +32,7 @@ use zdiff_folder::{
 use crate::folder::{
     duplicate_files_pane::DuplicateFilesPane,
     export::{folder_diff_report, save_report},
-    folder_keymap::{self, FolderAction, KeybindingsWindow},
+    folder_keymap::{self, FolderAction},
     fs_tree::{FileSystemView, RowsId, VisibleRowTwoFolderDiff, apply_blueprint_results},
     panes::{PathDiffView, TreeBehavior, ViewChoice},
     path_diff_pane::{FilterPresets, PathDiffPane},
@@ -842,8 +842,6 @@ struct FolderPanes {
     #[serde(skip)]
     tools_window: ToolsWindow,
     #[serde(skip)]
-    keybindings_window: KeybindingsWindow,
-    #[serde(skip)]
     find_open: bool,
     #[serde(skip)]
     last_discard_frame: Option<u64>,
@@ -880,9 +878,13 @@ pub fn on_exit() {
 }
 
 impl FolderView {
-    pub fn poll(&mut self, ctx: &egui::Context, map_claims_back: bool) {
+    pub fn poll(&mut self, ctx: &egui::Context, map_claims_back: bool, capturing_shortcut: bool) {
         let Self { state, panes } = self;
-        panes.poll(ctx, state, map_claims_back);
+        panes.poll(ctx, state, map_claims_back, capturing_shortcut);
+    }
+
+    pub fn refresh_requested(&self) -> bool {
+        self.panes.polled.actions.contains(&FolderAction::Refresh)
     }
 
     pub fn toolbar_ui(&mut self, ui: &mut egui::Ui) {
@@ -944,9 +946,6 @@ impl FolderView {
         let Self { state, panes } = self;
         if panes.tools_window.open {
             panes.tools_window.show(ctx, &mut state.diff_config);
-        }
-        if panes.keybindings_window.open {
-            panes.keybindings_window.show(ctx, &mut state.keymap);
         }
     }
 
@@ -1029,7 +1028,6 @@ impl Default for FolderPanes {
             duplicates: DuplicateFilesPane::new(None),
             view: ViewChoice::Tree,
             tools_window: ToolsWindow::default(),
-            keybindings_window: KeybindingsWindow::default(),
             find_open: false,
             last_discard_frame: None,
             polled: PolledInput::default(),
@@ -1043,10 +1041,10 @@ impl FolderPanes {
         ctx: &egui::Context,
         keymap: &Keymap<FolderAction>,
         map_claims_back: bool,
+        capturing: bool,
     ) {
         // Read before any widget runs: a single-line TextEdit gives up focus on Enter without
         // consuming the key, so a later check would hand that Enter to the tree cursor.
-        let capturing = self.keybindings_window.is_capturing();
         let keyboard_taken = ctx.wants_keyboard_input() || capturing;
         let actions = if capturing {
             Vec::new()
@@ -1075,9 +1073,6 @@ impl FolderPanes {
 
     fn apply_view_actions(&mut self) {
         let actions = &self.polled.actions;
-        if actions.contains(&FolderAction::OpenKeybindings) {
-            self.keybindings_window.open = true;
-        }
         if actions.contains(&FolderAction::OpenDiffTools) {
             self.tools_window.open = true;
         }
@@ -1274,7 +1269,13 @@ impl FolderPanes {
         }
     }
 
-    fn poll(&mut self, ctx: &egui::Context, state: &mut FolderState, map_claims_back: bool) {
+    fn poll(
+        &mut self,
+        ctx: &egui::Context,
+        state: &mut FolderState,
+        map_claims_back: bool,
+        capturing_shortcut: bool,
+    ) {
         self.apply_view_choice(self.view);
         state.update_scans(ctx);
         state.tree_compare.set_repaint(ctx);
@@ -1296,7 +1297,7 @@ impl FolderPanes {
         if fetching {
             ctx.request_repaint_after(Duration::from_millis(100));
         }
-        self.dispatch(ctx, &state.keymap, map_claims_back);
+        self.dispatch(ctx, &state.keymap, map_claims_back, capturing_shortcut);
         self.apply_view_actions();
     }
 }
@@ -1578,7 +1579,7 @@ mod tests {
         state.keymap.shortcuts_mut(FolderAction::NextDiff).remove(0);
         state
             .keymap
-            .shortcuts_mut(FolderAction::OpenKeybindings)
+            .shortcuts_mut(FolderAction::ToggleMap)
             .clear();
 
         let json = serde_json::to_string(&state).unwrap();
@@ -3256,7 +3257,7 @@ mod tests {
                 ..Default::default()
             };
             ctx.run(input, |ctx| {
-                view.poll(ctx, false);
+                view.poll(ctx, false, false);
                 egui::CentralPanel::default().show(ctx, |ui| view.ui(ui, false, true));
             })
         };

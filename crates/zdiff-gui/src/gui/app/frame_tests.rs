@@ -586,6 +586,39 @@ fn tab_on_a_folder_pair_does_not_toggle_the_active_side() {
 }
 
 #[test]
+fn swap_sides_refresh_and_find_keys_act_once_on_a_folder_pair() {
+    let ctrl = egui::Modifiers {
+        ctrl: true,
+        command: true,
+        ..egui::Modifiers::NONE
+    };
+    let scanning =
+        |app: &ZApp| [Side::Folder1, Side::Folder2].map(|side| app.folder.is_scanning(side));
+    let dirs = folder_dirs();
+    let (ctx, mut app) = shown_folder_app(&dirs);
+    frames_until(&ctx, &mut app, "finished the first scans", |app, _| {
+        scanning(app) == [false; 2]
+    });
+
+    let swap = key_press(egui::Key::S, ctrl | egui::Modifiers::SHIFT);
+    frame_texts(&ctx, &mut app, swap);
+    assert!(app.state.as_mut().unwrap().ctx_mut().sides_swapped);
+
+    frame_texts(&ctx, &mut app, key_press(egui::Key::R, ctrl));
+    frame_texts(&ctx, &mut app, Vec::new());
+    assert_eq!(scanning(&app), [true; 2]);
+    frames_until(&ctx, &mut app, "finished the rescans", |app, _| {
+        scanning(app) == [false; 2]
+    });
+    frame_texts(&ctx, &mut app, Vec::new());
+    assert_eq!(scanning(&app), [false; 2]);
+
+    frame_texts(&ctx, &mut app, ctrl_f());
+    assert!(app.folder.find_open());
+    assert!(!app.state.as_mut().unwrap().ctx_mut().find_open);
+}
+
+#[test]
 fn a_scan_running_while_a_file_pair_is_shown_completes_after_returning() {
     let dir = tempdir().unwrap();
     let pair = write_pair(dir.path(), "txt", b"a\nb\n", b"a\nc\n");

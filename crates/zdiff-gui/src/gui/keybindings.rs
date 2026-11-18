@@ -373,6 +373,25 @@ impl Action for FileAction {
     }
 }
 
+impl FileAction {
+    pub fn applies_to_folders(self) -> bool {
+        matches!(
+            self,
+            Self::OpenFileSource
+                | Self::OpenFileTarget
+                | Self::SwapSides
+                | Self::ClearFilePaths
+                | Self::Undo
+                | Self::Redo
+                | Self::OpenKeybindings
+                | Self::OpenStyle
+                | Self::OpenUniversalPath
+                | Self::OpenFileViewers
+                | Self::LinkHScroll
+        )
+    }
+}
+
 pub type QuickDiffSlot = (Option<Shortcut>, QuickDiffPaths);
 
 #[derive(Debug, Clone)]
@@ -795,6 +814,29 @@ mod tests {
                 .collect();
             assert_eq!(mapped.len(), 1, "{shared:?}");
             assert_eq!(mapped[0].defaults(), shared.defaults(), "{shared:?}");
+        }
+    }
+
+    #[test]
+    fn no_default_key_fires_in_both_keymaps_while_the_folder_viewer_shows() {
+        use crate::folder::folder_keymap::FolderAction;
+
+        let app_wide = || FileAction::all().iter().filter(|a| a.applies_to_folders());
+        for &folder in FolderAction::all() {
+            for file in app_wide() {
+                for shortcut in folder.defaults() {
+                    assert!(!file.defaults().contains(shortcut), "{folder:?} {file:?}");
+                }
+            }
+            let Some(shared) = folder.shared() else {
+                continue;
+            };
+            let counterparts: Vec<_> = FileAction::all()
+                .iter()
+                .filter(|a| a.shared() == Some(shared))
+                .collect();
+            assert_eq!(counterparts.len(), 1, "{folder:?}");
+            assert!(!counterparts[0].applies_to_folders(), "{folder:?}");
         }
     }
 

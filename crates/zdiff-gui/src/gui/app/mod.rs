@@ -36,7 +36,7 @@ use crate::{
     cli::{self},
     diff_ctx::UpdateDiffRowsInput,
     file::LoadedFile,
-    folder::{self, view::FolderView},
+    folder::{self, folder_keymap::FolderAction, view::FolderView},
     keybindings::FileAction,
     p4::update_p4_profiles,
     revert::{PendingP4Edit, RevertTarget},
@@ -67,6 +67,8 @@ pub struct ZApp {
     open_shortcuts_window: bool,
     #[serde(skip)]
     keymap_editor: KeymapEditor<FileAction>,
+    #[serde(skip)]
+    folder_keymap_editor: KeymapEditor<FolderAction>,
     #[serde(skip)]
     style_window: StyleWindow,
     #[serde(skip)]
@@ -189,6 +191,7 @@ impl ZApp {
             folder: FolderView::default(),
             open_shortcuts_window: false,
             keymap_editor: KeymapEditor::default(),
+            folder_keymap_editor: KeymapEditor::default(),
             style_window: StyleWindow::default().with_row_looks().with_syntax(),
             open_universal_path_window: false,
             open_viewers_window: false,

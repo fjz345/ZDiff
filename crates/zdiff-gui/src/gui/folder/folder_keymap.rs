@@ -1,8 +1,6 @@
-use eframe::egui::{self, Key, Modifiers};
+use eframe::egui::{Key, Modifiers};
 use zcommon_ui::{
-    common::show_settings_window,
-    keymap::{Action, Keymap, Shortcut, TypingPolicy},
-    keymap_editor::KeymapEditor,
+    keymap::{Action, Keymap, Shortcut},
     shared_keymap::SharedAction,
 };
 
@@ -15,109 +13,73 @@ const CTRL: Modifiers = Modifiers {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum FolderAction {
-    OpenFolder1,
-    OpenFolder2,
     NextDiff,
     PrevDiff,
     Refresh,
-    SwapSides,
-    OpenKeybindings,
     Find,
     KeepThis,
     NextGroup,
     PrevGroup,
-    ClearPaths,
-    OpenStyle,
     OpenDiffTools,
     ToggleDiffMode,
     Export,
     ToggleMap,
-    Undo,
-    Redo,
 }
 
 impl Action for FolderAction {
     fn all() -> &'static [Self] {
         &[
-            Self::OpenFolder1,
-            Self::OpenFolder2,
             Self::NextDiff,
             Self::PrevDiff,
             Self::Refresh,
-            Self::SwapSides,
-            Self::OpenKeybindings,
             Self::Find,
             Self::KeepThis,
             Self::NextGroup,
             Self::PrevGroup,
-            Self::ClearPaths,
-            Self::OpenStyle,
             Self::OpenDiffTools,
             Self::ToggleDiffMode,
             Self::Export,
             Self::ToggleMap,
-            Self::Undo,
-            Self::Redo,
         ]
     }
 
     fn name(self) -> &'static str {
         match self {
-            Self::OpenFolder1 => "open_folder_1",
-            Self::OpenFolder2 => "open_folder_2",
             Self::NextDiff => "next_diff",
             Self::PrevDiff => "prev_diff",
             Self::Refresh => "refresh",
-            Self::SwapSides => "swap_sides",
-            Self::OpenKeybindings => "open_keybindings",
             Self::Find => "find",
             Self::KeepThis => "keep_this",
             Self::NextGroup => "next_group",
             Self::PrevGroup => "prev_group",
-            Self::ClearPaths => "clear_paths",
-            Self::OpenStyle => "open_style",
             Self::OpenDiffTools => "open_diff_tools",
             Self::ToggleDiffMode => "toggle_diff_mode",
             Self::Export => "export",
             Self::ToggleMap => "toggle_map",
-            Self::Undo => "undo",
-            Self::Redo => "redo",
         }
     }
 
     fn label(self) -> &'static str {
         match self {
-            Self::OpenFolder1 => "Open Left Folder",
-            Self::OpenFolder2 => "Open Right Folder",
             Self::NextDiff => "Next Differing File",
             Self::PrevDiff => "Previous Differing File",
             Self::Refresh => "Refresh",
-            Self::SwapSides => "Swap Sides",
-            Self::OpenKeybindings => "Open Keyboard Shortcuts",
             Self::Find => "Find",
             Self::KeepThis => "Toggle Keep on Duplicate",
             Self::NextGroup => "Next Duplicate Group",
             Self::PrevGroup => "Previous Duplicate Group",
-            Self::ClearPaths => "Clear Folder Paths",
-            Self::OpenStyle => "Open Style Settings",
             Self::OpenDiffTools => "Open External Diff Tools",
             Self::ToggleDiffMode => "Switch Path / Duplicate Diff",
             Self::Export => "Export Folder Diff / Duplicates",
             Self::ToggleMap => "Switch Tree / Map View",
-            Self::Undo => "Undo",
-            Self::Redo => "Redo",
         }
     }
 
     fn defaults(self) -> &'static [Shortcut] {
         match self {
-            Self::OpenFolder1 => SharedAction::Open1.defaults(),
-            Self::OpenFolder2 => SharedAction::Open2.defaults(),
             Self::NextDiff => SharedAction::NextDiff.defaults(),
             Self::PrevDiff => SharedAction::PrevDiff.defaults(),
             Self::Refresh => SharedAction::Refresh.defaults(),
-            Self::SwapSides => SharedAction::SwapSides.defaults(),
-            Self::OpenKeybindings => SharedAction::OpenKeybindings.defaults(),
             Self::Find => SharedAction::Find.defaults(),
             Self::KeepThis => &[Shortcut::Key {
                 key: Key::K,
@@ -131,8 +93,6 @@ impl Action for FolderAction {
                 key: Key::Num3,
                 modifiers: CTRL,
             }],
-            Self::ClearPaths => SharedAction::ClearPaths.defaults(),
-            Self::OpenStyle => SharedAction::OpenStyle.defaults(),
             Self::OpenDiffTools => &[Shortcut::Key {
                 key: Key::T,
                 modifiers: CTRL,
@@ -142,8 +102,6 @@ impl Action for FolderAction {
                 modifiers: CTRL,
             }],
             Self::Export => SharedAction::Export.defaults(),
-            Self::Undo => SharedAction::Undo.defaults(),
-            Self::Redo => SharedAction::Redo.defaults(),
             Self::ToggleMap => &[Shortcut::Key {
                 key: Key::M,
                 modifiers: CTRL,
@@ -151,28 +109,13 @@ impl Action for FolderAction {
         }
     }
 
-    fn typing_policy(self) -> TypingPolicy {
-        match self {
-            Self::ClearPaths | Self::Undo | Self::Redo => TypingPolicy::Never,
-            _ => TypingPolicy::CtrlOrAlt,
-        }
-    }
-
     fn shared(self) -> Option<SharedAction> {
         match self {
-            Self::OpenFolder1 => Some(SharedAction::Open1),
-            Self::OpenFolder2 => Some(SharedAction::Open2),
             Self::NextDiff => Some(SharedAction::NextDiff),
             Self::PrevDiff => Some(SharedAction::PrevDiff),
             Self::Refresh => Some(SharedAction::Refresh),
-            Self::SwapSides => Some(SharedAction::SwapSides),
-            Self::OpenKeybindings => Some(SharedAction::OpenKeybindings),
             Self::Find => Some(SharedAction::Find),
-            Self::ClearPaths => Some(SharedAction::ClearPaths),
-            Self::OpenStyle => Some(SharedAction::OpenStyle),
             Self::Export => Some(SharedAction::Export),
-            Self::Undo => Some(SharedAction::Undo),
-            Self::Redo => Some(SharedAction::Redo),
             Self::KeepThis
             | Self::NextGroup
             | Self::PrevGroup
@@ -198,36 +141,45 @@ pub fn deserialize_keymap<'de, D: serde::Deserializer<'de>>(
     Ok(keymap)
 }
 
-#[derive(Default)]
-pub struct KeybindingsWindow {
-    pub open: bool,
-    editor: KeymapEditor<FolderAction>,
-}
-
-impl KeybindingsWindow {
-    pub fn is_capturing(&self) -> bool {
-        self.editor.is_capturing()
-    }
-
-    pub fn show(&mut self, ctx: &egui::Context, keymap: &mut Keymap<FolderAction>) {
-        show_settings_window(
-            ctx,
-            &mut self.open,
-            "Keyboard Shortcuts",
-            [560.0, 640.0],
-            |ui| self.editor.ui(ui, keymap),
-        );
-        if !self.open {
-            self.editor.cancel_capture();
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::keybindings::FileAction;
     use eframe::egui::Event;
     use std::collections::HashSet;
+    use zcommon_ui::shared_keymap::sync_from_file;
+
+    #[test]
+    fn a_shared_binding_customised_before_the_removed_actions_still_fires_through_the_file_keymap()
+    {
+        let custom = Shortcut::Key {
+            key: Key::F9,
+            modifiers: Modifiers::NONE,
+        };
+        let mut old = serde_json::to_value(Keymap::<FolderAction>::default()).unwrap();
+        for name in ["swap_sides", "undo", "open_folder_1"] {
+            let saved = old.as_object_mut().unwrap();
+            saved.insert(name.to_owned(), serde_json::json!([custom]));
+        }
+        let folder: Keymap<FolderAction> = serde_json::from_value(old).unwrap();
+        assert_eq!(folder, Keymap::default());
+
+        let dir = tempfile::tempdir().unwrap();
+        let shared_file = dir.path().join("keymap.json");
+        let written_by_the_folder_editor = serde_json::json!({ "swap_sides": [custom] });
+        std::fs::write(&shared_file, written_by_the_folder_editor.to_string()).unwrap();
+        let mut file = Keymap::<FileAction>::default();
+        sync_from_file(&mut file, &shared_file).unwrap();
+
+        let f9 = Event::Key {
+            key: Key::F9,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: Modifiers::NONE,
+        };
+        assert_eq!(file.dispatch(&[f9], false), [FileAction::SwapSides]);
+    }
 
     #[test]
     fn folder_action_names_are_unique() {
@@ -310,30 +262,17 @@ mod tests {
     }
 
     #[test]
-    fn every_shared_action_is_mapped_once_with_the_shared_defaults() {
+    fn a_shared_action_is_mapped_at_most_once_with_the_shared_defaults() {
         for &shared in SharedAction::ALL {
             let mapped: Vec<_> = FolderAction::all()
                 .iter()
                 .filter(|a| a.shared() == Some(shared))
                 .collect();
-            assert_eq!(mapped.len(), 1, "{shared:?}");
-            assert_eq!(mapped[0].defaults(), shared.defaults(), "{shared:?}");
+            assert!(mapped.len() <= 1, "{shared:?}");
+            for action in mapped {
+                assert_eq!(action.defaults(), shared.defaults(), "{shared:?}");
+            }
         }
-    }
-
-    #[test]
-    fn ctrl_f1_and_f2_open_the_folders_by_default() {
-        let press = |key| Event::Key {
-            key,
-            physical_key: None,
-            pressed: true,
-            repeat: false,
-            modifiers: CTRL,
-        };
-        assert_eq!(
-            Keymap::<FolderAction>::default().dispatch(&[press(Key::F1), press(Key::F2)], false),
-            [FolderAction::OpenFolder1, FolderAction::OpenFolder2]
-        );
     }
 
     #[test]

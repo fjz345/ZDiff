@@ -138,23 +138,15 @@ pub fn draw_ui_folder_tree(
         let target = match action {
             FolderAction::NextDiff => cursor.next_diff(cursor_rows),
             FolderAction::PrevDiff => cursor.prev_diff(cursor_rows),
-            FolderAction::OpenFolder1
-            | FolderAction::OpenFolder2
-            | FolderAction::Refresh
-            | FolderAction::SwapSides
-            | FolderAction::OpenKeybindings
+            FolderAction::Refresh
             | FolderAction::Find
             | FolderAction::KeepThis
             | FolderAction::NextGroup
             | FolderAction::PrevGroup
-            | FolderAction::ClearPaths
-            | FolderAction::OpenStyle
             | FolderAction::OpenDiffTools
             | FolderAction::ToggleDiffMode
             | FolderAction::Export
-            | FolderAction::ToggleMap
-            | FolderAction::Undo
-            | FolderAction::Redo => continue,
+            | FolderAction::ToggleMap => continue,
         };
         let Some((moved, expand)) = target else {
             log::info!("No more diffs");

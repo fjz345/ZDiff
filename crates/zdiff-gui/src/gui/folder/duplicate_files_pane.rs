@@ -880,22 +880,14 @@ impl DuplicateFilesPane {
                 }
                 FolderAction::NextGroup => true,
                 FolderAction::PrevGroup => false,
-                FolderAction::OpenFolder1
-                | FolderAction::OpenFolder2
-                | FolderAction::NextDiff
+                FolderAction::NextDiff
                 | FolderAction::PrevDiff
                 | FolderAction::Refresh
-                | FolderAction::SwapSides
-                | FolderAction::OpenKeybindings
                 | FolderAction::Find
-                | FolderAction::ClearPaths
-                | FolderAction::OpenStyle
                 | FolderAction::OpenDiffTools
                 | FolderAction::ToggleDiffMode
                 | FolderAction::Export
-                | FolderAction::ToggleMap
-                | FolderAction::Undo
-                | FolderAction::Redo => continue,
+                | FolderAction::ToggleMap => continue,
             };
             let Some((cursor, expand)) =
                 group_jump(&self.cursor, view, rows, groups, flat, forward)

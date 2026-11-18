@@ -59,8 +59,26 @@ impl ZApp {
     ) {
         let sides = [state.file_1.get_full_path(), state.file_2.get_full_path()];
         self.folder.set_roots(sides.each_ref().map(root_of_side));
-        self.folder.poll(ctx, map_claims_back);
+        let capturing = self.capturing_shortcut();
+        self.folder.poll(ctx, map_claims_back, capturing);
+        if self.folder.refresh_requested() {
+            self.refresh_folders(&mut state.file_1, &mut state.file_2);
+        }
         self.frame_stats.mark("Folder polling");
+    }
+
+    pub(super) fn capturing_shortcut(&self) -> bool {
+        self.keymap_editor.is_capturing() || self.folder_keymap_editor.is_capturing()
+    }
+
+    pub(super) fn refresh_folders(
+        &mut self,
+        file_1: &mut FileProcessor,
+        file_2: &mut FileProcessor,
+    ) {
+        // A side's cached kind goes stale when its folder was deleted or replaced by a file.
+        Self::refresh_file_contents(file_1, file_2);
+        self.folder.refresh();
     }
 
     pub(super) fn apply_folder_root_requests(&mut self, state: &mut AppStateCtx) {

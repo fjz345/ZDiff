@@ -30,14 +30,23 @@ impl<A: Action> KeymapEditor<A> {
     /// While capturing, removes the frame's first key press from the input so later readers
     /// (an app's Esc to quit) don't act on it too.
     pub fn ui(&mut self, ui: &mut egui::Ui, keymap: &mut Keymap<A>) {
+        self.ui_where(ui, keymap, |_| true);
+    }
+
+    pub fn ui_where(
+        &mut self,
+        ui: &mut egui::Ui,
+        keymap: &mut Keymap<A>,
+        lists: impl Fn(A) -> bool,
+    ) {
         let before = keymap.clone();
-        self.keymap_ui(ui, keymap);
+        self.keymap_ui(ui, keymap, &lists);
         if *keymap != before {
             save_shared(&before, keymap);
         }
     }
 
-    fn keymap_ui(&mut self, ui: &mut egui::Ui, keymap: &mut Keymap<A>) {
+    fn keymap_ui(&mut self, ui: &mut egui::Ui, keymap: &mut Keymap<A>, lists: &dyn Fn(A) -> bool) {
         if let Some((action, slot)) = self.capture
             && let Some(captured) = take_press(ui)
         {
@@ -63,7 +72,7 @@ impl<A: Action> KeymapEditor<A> {
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if confirm_button(ui, "Reset all...", "Reset every shortcut to its default") {
-                    *keymap = Keymap::default();
+                    reset_listed(keymap, lists);
                     self.capture = None;
                 }
             });
@@ -79,10 +88,7 @@ impl<A: Action> KeymapEditor<A> {
             .striped(true)
             .spacing([16.0, 4.0])
             .show(ui, |ui| {
-                for &action in A::all() {
-                    if !matches_filter(action.label(), keymap.shortcuts(action), &self.filter) {
-                        continue;
-                    }
+                for action in listed_actions(keymap, &self.filter, lists) {
                     shown += 1;
                     let others = |shortcut: Option<&Shortcut>| {
                         let mut labels: Vec<&str> = Vec::new();
@@ -195,6 +201,23 @@ fn capture(event: &egui::Event) -> Option<Option<Shortcut>> {
     }
 }
 
+fn listed_actions<A: Action>(
+    keymap: &Keymap<A>,
+    filter: &str,
+    lists: &dyn Fn(A) -> bool,
+) -> Vec<A> {
+    let listed = |action: &A| {
+        lists(*action) && matches_filter(action.label(), keymap.shortcuts(*action), filter)
+    };
+    A::all().iter().copied().filter(listed).collect()
+}
+
+fn reset_listed<A: Action>(keymap: &mut Keymap<A>, lists: &dyn Fn(A) -> bool) {
+    for &action in A::all().iter().filter(|&&action| lists(action)) {
+        *keymap.shortcuts_mut(action) = action.defaults().to_vec();
+    }
+}
+
 fn matches_filter(label: &str, shortcuts: &[Shortcut], filter: &str) -> bool {
     let filter = filter.trim().to_lowercase();
     filter.is_empty()
@@ -218,6 +241,58 @@ fn set_shortcut(shortcuts: &mut Vec<Shortcut>, slot: Option<usize>, shortcut: Sh
 mod tests {
     use super::*;
     use eframe::egui::Modifiers;
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    enum TestAction {
+        Listed,
+        Hidden,
+    }
+
+    impl Action for TestAction {
+        fn all() -> &'static [Self] {
+            &[Self::Listed, Self::Hidden]
+        }
+
+        fn name(self) -> &'static str {
+            match self {
+                Self::Listed => "listed",
+                Self::Hidden => "hidden",
+            }
+        }
+
+        fn label(self) -> &'static str {
+            self.name()
+        }
+
+        fn defaults(self) -> &'static [Shortcut] {
+            &[]
+        }
+    }
+
+    #[test]
+    fn the_predicate_hides_actions_from_the_list_and_keeps_their_bindings() {
+        let custom = Shortcut::Key {
+            key: Key::F,
+            modifiers: Modifiers::CTRL,
+        };
+        let mut keymap = Keymap::<TestAction>::default();
+        for &action in TestAction::all() {
+            keymap.shortcuts_mut(action).push(custom);
+        }
+        let lists = |action| action != TestAction::Hidden;
+
+        assert_eq!(listed_actions(&keymap, "", &lists), [TestAction::Listed]);
+        assert_eq!(listed_actions(&keymap, "hidden", &lists), []);
+        assert_eq!(
+            listed_actions(&keymap, "", &|_| true),
+            [TestAction::Listed, TestAction::Hidden]
+        );
+
+        reset_listed(&mut keymap, &lists);
+
+        assert_eq!(keymap.shortcuts(TestAction::Listed), []);
+        assert_eq!(keymap.shortcuts(TestAction::Hidden), [custom]);
+    }
 
     #[test]
     fn filter_matches_label_or_shortcut_text_ignoring_case() {

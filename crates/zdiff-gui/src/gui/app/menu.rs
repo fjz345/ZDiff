@@ -1,10 +1,11 @@
 use super::{ZApp, quickdiff::run_diff_against_shelf_base};
 use eframe::egui::{self, containers::menu::MenuConfig};
 use zcommon::vcs::revision::PathKind;
-use zcommon_ui::common::{show_custom_popup, show_settings_window};
+use zcommon_ui::common::{section_heading, show_custom_popup, show_settings_window};
 use zcommon_ui::frame_stats;
 use zcommon_ui::h_scroll::WheelModifier;
-use zcommon_ui::keymap::menu_item;
+use zcommon_ui::keymap::{Action, menu_item};
+use zcommon_ui::shared_keymap::load_shared;
 use zdiff::myers::{DiffPhases, MyersDiffAlgorithm};
 
 use crate::{
@@ -131,12 +132,16 @@ impl ZApp {
                                 run_diff_against_shelf_base(file_1, file_2);
                             }
                         });
-                        if menu_item(ui, "Refresh", keymap, FileAction::RefreshDiff).clicked() {
+                        if folders {
+                            let keymap = self.folder.keymap();
+                            if menu_item(ui, "Refresh", keymap, FolderAction::Refresh).clicked() {
+                                self.refresh_folders(file_1, file_2);
+                            }
+                        } else if menu_item(ui, "Refresh", keymap, FileAction::RefreshDiff)
+                            .clicked()
+                        {
                             diff_processor.reset_ctx();
                             Self::refresh_file_contents(file_1, file_2);
-                            if folders {
-                                self.folder.refresh();
-                            }
                         }
                         ui.add_enabled_ui(!folders, |ui| {
                             if menu_item(
@@ -162,12 +167,13 @@ impl ZApp {
                             } else {
                                 "Export Folder Diff..."
                             };
-                            if menu_item(ui, export_label, keymap, FileAction::ExportDiff).clicked()
-                            {
+                            let keymap = self.folder.keymap();
+                            if menu_item(ui, export_label, keymap, FolderAction::Export).clicked() {
                                 self.folder.request_export();
                             }
                             ui.add_enabled_ui(!duplicates, |ui| {
-                                if menu_item(ui, "Find", keymap, FileAction::Find).clicked() {
+                                let keymap = self.folder.keymap();
+                                if menu_item(ui, "Find", keymap, FolderAction::Find).clicked() {
                                     self.folder.open_find();
                                 }
                             });
@@ -494,17 +500,36 @@ impl ZApp {
                 "Keyboard Shortcuts",
                 [600.0, 680.0],
                 |ui| {
+                    let file_before = keybindings.keymap.clone();
+                    let folder_before = self.folder.keymap().clone();
                     ui_keybindings(
                         ui,
                         keybindings,
                         &mut self.keymap_editor,
                         &p4_profiles.profiles,
                     );
+                    section_heading(ui, "Folder diff");
+                    ui.push_id("folder_keymap", |ui| {
+                        self.folder_keymap_editor.ui_where(
+                            ui,
+                            self.folder.keymap_mut(),
+                            |action| action.shared().is_none(),
+                        );
+                    });
+                    let file_changed = keybindings.keymap != file_before;
+                    let folder_changed = *self.folder.keymap() != folder_before;
+                    if file_changed {
+                        load_shared(self.folder.keymap_mut());
+                    }
+                    if folder_changed {
+                        load_shared(&mut keybindings.keymap);
+                    }
                 },
             );
         }
         if !self.open_shortcuts_window {
             self.keymap_editor.cancel_capture();
+            self.folder_keymap_editor.cancel_capture();
         }
         if self.open_viewers_window {
             show_settings_window(
