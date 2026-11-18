@@ -216,6 +216,23 @@ pub(super) fn file_path_request(
     Some(relative.map_or(path, |relative| UniversalPath::from(relative.to_string())))
 }
 
+pub(super) fn folder_ancestor(side: &UniversalPath, segment: usize) -> UniversalPath {
+    let ancestor = |folder: &str| {
+        let segments = split_path(folder);
+        let segment = segment.min(segments.len().saturating_sub(1));
+        segments.get(segment).map_or(folder.to_owned(), |s| s.path.clone())
+    };
+    match side {
+        UniversalPath::Local(folder) => {
+            UniversalPath::Local(ancestor(&folder.to_string_lossy()).into())
+        }
+        UniversalPath::Git(folder, rev) => {
+            UniversalPath::Git(ancestor(&folder.to_string_lossy()).into(), rev.clone())
+        }
+        UniversalPath::Depot(folder, rev) => UniversalPath::Depot(ancestor(folder), rev.clone()),
+    }
+}
+
 pub(super) fn root_path_request(
     action: PathBarAction,
     root: &UniversalPath,
@@ -546,6 +563,31 @@ mod tests {
                 Rect::NOTHING,
             ];
             assert_eq!(drop_rects(rows, pane, shown_sides(true)), rows);
+        }
+
+        #[test]
+        fn a_segment_click_on_a_folder_side_opens_the_ancestor_at_the_same_revision() {
+            use super::super::{folder_ancestor, split_path};
+
+            let ancestor = |side: &str, segment: usize| {
+                folder_ancestor(&UniversalPath::from(side), segment).to_string()
+            };
+            assert_eq!(ancestor(r"C:\ws\src\gui", 2), r"C:\ws\src");
+            assert_eq!(
+                ancestor(r"C:\ws\src\gui@git:origin/main", 2),
+                r"C:\ws\src@git:origin/main"
+            );
+            assert_eq!(
+                ancestor(r"C:\ws\src\gui@git:origin/main", 4),
+                r"C:\ws\src\gui@git:origin/main",
+                "a segment of the revision is the folder itself"
+            );
+            assert_eq!(ancestor(r"C:\ws\src@git:index", 1), r"C:\ws@git:index");
+            let depot_parent = split_path("//depot/main/src").len() - 2;
+            assert_eq!(
+                ancestor("//depot/main/src@1234", depot_parent),
+                "//depot/main@1234"
+            );
         }
 
         #[test]

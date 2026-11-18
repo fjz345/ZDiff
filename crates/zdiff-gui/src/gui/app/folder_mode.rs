@@ -1,5 +1,3 @@
-use std::path::PathBuf;
-
 use eframe::egui;
 use zdiff::universal_path::UniversalPath;
 
@@ -58,26 +56,18 @@ impl ZApp {
         ctx: &egui::Context,
         state: &mut AppStateCtx,
         map_claims_back: bool,
-    ) -> [Option<PathBuf>; 2] {
+    ) {
         let sides = [state.file_1.get_full_path(), state.file_2.get_full_path()];
         self.folder.set_roots(sides.each_ref().map(root_of_side));
-        let shown = self.folder.roots();
         self.folder.poll(ctx, map_claims_back);
         self.frame_stats.mark("Folder polling");
-        shown
     }
 
-    // Until U3 the folder still edits its own roots (bars, dialogs, drops, scan revert).
-    pub(super) fn write_back_folder_roots(
-        &self,
-        state: &mut AppStateCtx,
-        shown: [Option<PathBuf>; 2],
-    ) {
+    pub(super) fn apply_folder_root_requests(&mut self, state: &mut AppStateCtx) {
         let files = [&mut state.file_1, &mut state.file_2];
-        let roots = shown.into_iter().zip(self.folder.roots());
-        for (file, (shown, root)) in files.into_iter().zip(roots) {
-            if shown != root {
-                file.restore_path(root.map(UniversalPath::from).unwrap_or_default(), None);
+        for (file, root) in files.into_iter().zip(self.folder.take_root_requests()) {
+            if let Some(root) = root {
+                file.restore_path(UniversalPath::from(root), None);
             }
         }
     }

@@ -478,4 +478,59 @@ mod tests {
             Some(UniversalPath::from(r"C:\ws\a.rs@git:main"))
         );
     }
+
+    #[test]
+    fn back_and_forward_step_through_folder_root_changes() {
+        let mut ctx = AppStateCtx::default();
+        let left = UniversalPath::from(r"C:\ws\src");
+        let branch = UniversalPath::from(r"C:\ws\src@git:main");
+        let right = UniversalPath::from("//depot/main/src");
+        ctx.file_1.set_path(left.clone());
+        ctx.file_2.set_path(right.clone());
+        ctx.observe_history();
+        ctx.file_1.set_path(branch.clone());
+        ctx.observe_history();
+        ctx.sides_swapped = true;
+        ctx.observe_history();
+
+        ZApp::step_history(&mut ctx, Undo);
+        assert!(!ctx.sides_swapped);
+        assert_eq!(paths(&mut ctx), [branch.clone(), right.clone()]);
+        ZApp::step_history(&mut ctx, Undo);
+        assert_eq!(paths(&mut ctx), [left, right.clone()]);
+
+        ZApp::step_history(&mut ctx, Redo);
+        ZApp::step_history(&mut ctx, Redo);
+        assert!(ctx.sides_swapped);
+        assert_eq!(paths(&mut ctx), [branch, right]);
+    }
+
+    #[test]
+    fn the_previous_revision_of_a_folder_side_is_the_same_folder_before_its_latest_change() {
+        let mut ctx = AppStateCtx::default();
+        let previous = |ctx: &mut AppStateCtx, side: usize| {
+            let current = paths(ctx)[side].clone();
+            previous_revision(&ctx.nav_history, side, &current)
+        };
+        let local = UniversalPath::from(r"C:\ws\src");
+        let branch = UniversalPath::from(r"C:\ws\src@git:main");
+        ctx.file_1.set_path(local.clone());
+        ctx.observe_history();
+        assert_eq!(previous(&mut ctx, 0), None);
+
+        ctx.file_1.set_path(branch.clone());
+        ctx.observe_history();
+        ctx.file_2.set_path(UniversalPath::from(r"C:\ws\docs"));
+        ctx.observe_history();
+        assert_eq!(previous(&mut ctx, 0), Some(local));
+        assert_eq!(previous(&mut ctx, 1), None, "was empty");
+
+        ctx.file_1.set_path(UniversalPath::from("//stream/main/src"));
+        ctx.observe_history();
+        assert_eq!(previous(&mut ctx, 0), Some(branch));
+
+        ctx.file_1.set_path(UniversalPath::from(r"C:\ws\docs"));
+        ctx.observe_history();
+        assert_eq!(previous(&mut ctx, 0), None, "another folder");
+    }
 }

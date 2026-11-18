@@ -7,6 +7,7 @@ use super::{
     state::AppState,
 };
 use eframe::egui::{self, PointerButton};
+use zcommon::vcs::revision::PathKind;
 use zcommon_ui::keymap::{Action, Shortcut};
 use zdiff::universal_path::UniversalPath;
 
@@ -53,6 +54,11 @@ impl ZApp {
         let mut save_merge = false;
         let mut export_diff = false;
         let mut open_style = false;
+        let picked_kind = if folders {
+            PathKind::Folder
+        } else {
+            PathKind::File
+        };
         {
             ctx.input(|r| {
                 if capturing {
@@ -90,25 +96,41 @@ impl ZApp {
                     keymap.dispatch(&r.events, text_focused)
                 };
                 for action in actions {
-                    let in_folders =
-                        matches!(action, FileAction::Undo | FileAction::Redo | FileAction::OpenStyle);
+                    let in_folders = matches!(
+                        action,
+                        FileAction::Undo
+                            | FileAction::Redo
+                            | FileAction::OpenStyle
+                            | FileAction::OpenFileSource
+                            | FileAction::OpenFileTarget
+                            | FileAction::RefreshDiff
+                            | FileAction::SwapSides
+                            | FileAction::ClearFilePaths
+                    );
                     if folders && !in_folders {
                         continue;
                     }
                     log::info!("Action triggered: {}", action.label());
                     match action {
-                        FileAction::OpenFileSource => {
-                            Self::open_file_picker(app_state_ctx.file_1.get_tx(), ctx.clone())
-                        }
-                        FileAction::OpenFileTarget => {
-                            Self::open_file_picker(app_state_ctx.file_2.get_tx(), ctx.clone())
-                        }
+                        FileAction::OpenFileSource => Self::open_file_picker(
+                            picked_kind,
+                            app_state_ctx.file_1.get_tx(),
+                            ctx.clone(),
+                        ),
+                        FileAction::OpenFileTarget => Self::open_file_picker(
+                            picked_kind,
+                            app_state_ctx.file_2.get_tx(),
+                            ctx.clone(),
+                        ),
                         FileAction::RefreshDiff => {
                             app_state_ctx.diff_processor.reset_ctx();
                             Self::refresh_file_contents(
                                 &mut app_state_ctx.file_1,
                                 &mut app_state_ctx.file_2,
                             );
+                            if folders {
+                                self.folder.refresh();
+                            }
                         }
                         FileAction::RefreshDiffRowsOnly => {
                             app_state_ctx.diff_processor.reset_ctx();

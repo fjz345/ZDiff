@@ -1,11 +1,9 @@
-use crate::folder::fs_tree::apply_path_bar;
 use crate::folder::fs_tree::{
     ContentWidths, CursorRowsCache, DiffState, EXPANDER_WIDTH, FileSystemView, RowLayout, RowsId,
     TREE_INDENT, TreeTable, VisibleRowTwoFolderDiff, aggregate_folder_state,
     apply_blueprint_results, apply_cursor_request, cursor_keys, side_width, single_side_rows,
     tree_hidden, two_folder_cursor_rows,
 };
-use crate::folder::roots::{InvalidRoot, Side};
 use crate::folder::status_line::ToolMessage;
 use crate::folder::tree_compare::pending_pairs;
 use crate::folder::tree_cursor::{CursorRequest, TreeCursor};
@@ -16,8 +14,6 @@ use crate::folder::tree_sort::{SortKey, TreeSort, sort_two_folder_rows};
 use crate::folder::tree_tolerance::{SizeDelta, Tolerance};
 use eframe::egui;
 use std::time::{Duration, SystemTime};
-use zcommon::path::split_path;
-use zcommon_ui::pathbar::PathBarAction;
 use zdiff_folder::external_diff_tool::{DiffTool, DiffToolConfig};
 
 use std::cell::Cell;
@@ -2364,142 +2360,6 @@ fn next_and_prev_diff_reach_every_differing_file_in_every_option_combination() {
         }
     }
 }
-#[test]
-fn path_bar_parent_segment_reroots_only_that_side() {
-    let dir = tempdir().unwrap();
-    let parent = dir.path().join("a");
-    let root = parent.join("b");
-    fs::create_dir_all(&root).unwrap();
-    let mut root_1 = Some(root.clone());
-    let mut root_2 = Some(root.clone());
-    let parent_index = split_path(&root.to_string_lossy()).len() - 2;
-
-    apply_path_bar(
-        [&mut root_1, &mut root_2],
-        Side::Folder1,
-        PathBarAction::Segment(parent_index),
-    )
-    .unwrap();
-
-    assert_eq!(root_1, Some(parent));
-    assert_eq!(root_2, Some(root));
-}
-
-#[test]
-fn path_bar_segment_on_a_git_root_keeps_the_revision() {
-    let dir = tempdir().unwrap();
-    let text = format!(
-        "{}@git:origin/main",
-        dir.path().join("a").join("b").display()
-    );
-    let mut root_1 = Some(text.into());
-    let mut root_2 = None;
-    let parent_index = split_path(&dir.path().join("a").to_string_lossy()).len() - 1;
-
-    apply_path_bar(
-        [&mut root_1, &mut root_2],
-        Side::Folder1,
-        PathBarAction::Segment(parent_index),
-    )
-    .unwrap();
-
-    let expected = format!("{}@git:origin/main", dir.path().join("a").display());
-    assert_eq!(root_1, Some(expected.into()));
-}
-
-#[test]
-fn path_bar_segment_on_folder_2_reroots_folder_2() {
-    let dir = tempdir().unwrap();
-    let root = dir.path().join("a");
-    fs::create_dir_all(&root).unwrap();
-    let mut root_1 = Some(root.clone());
-    let mut root_2 = Some(root.clone());
-    let parent_index = split_path(&root.to_string_lossy()).len() - 2;
-
-    apply_path_bar(
-        [&mut root_1, &mut root_2],
-        Side::Folder2,
-        PathBarAction::Segment(parent_index),
-    )
-    .unwrap();
-
-    assert_eq!(root_1, Some(root));
-    assert_eq!(root_2, Some(dir.path().to_path_buf()));
-}
-
-#[test]
-fn path_bar_committed_folder_sets_root() {
-    let dir = tempdir().unwrap();
-    let target = dir.path().join("target");
-    fs::create_dir(&target).unwrap();
-    let mut root_1 = None;
-    let mut root_2 = Some(dir.path().to_path_buf());
-
-    apply_path_bar(
-        [&mut root_1, &mut root_2],
-        Side::Folder2,
-        PathBarAction::Commit(target.to_string_lossy().into_owned()),
-    )
-    .unwrap();
-
-    assert_eq!(root_1, None);
-    assert_eq!(root_2, Some(target));
-}
-
-#[test]
-fn path_bar_committed_quoted_path_with_spaces_sets_root() {
-    let dir = tempdir().unwrap();
-    let target = dir.path().join("with space");
-    fs::create_dir(&target).unwrap();
-    let mut root_1 = None;
-    let mut root_2 = None;
-
-    apply_path_bar(
-        [&mut root_1, &mut root_2],
-        Side::Folder1,
-        PathBarAction::Commit(format!(" \"{}\" ", target.display())),
-    )
-    .unwrap();
-
-    assert_eq!(root_1, Some(target));
-}
-
-#[test]
-fn path_bar_committed_missing_path_keeps_root() {
-    let dir = tempdir().unwrap();
-    let missing = dir.path().join("missing");
-    let mut root_1 = Some(dir.path().to_path_buf());
-    let mut root_2 = None;
-
-    let result = apply_path_bar(
-        [&mut root_1, &mut root_2],
-        Side::Folder1,
-        PathBarAction::Commit(missing.to_string_lossy().into_owned()),
-    );
-
-    assert_eq!(result, Err(InvalidRoot::Missing(missing)));
-    assert_eq!(root_1, Some(dir.path().to_path_buf()));
-    assert_eq!(root_2, None);
-}
-
-#[test]
-fn path_bar_committed_file_keeps_root() {
-    let dir = tempdir().unwrap();
-    let file = dir.path().join("file.txt");
-    File::create(&file).unwrap();
-    let mut root_1 = None;
-    let mut root_2 = Some(dir.path().to_path_buf());
-
-    let result = apply_path_bar(
-        [&mut root_1, &mut root_2],
-        Side::Folder2,
-        PathBarAction::Commit(file.to_string_lossy().into_owned()),
-    );
-
-    assert_eq!(result, Err(InvalidRoot::NotAFolder(file)));
-    assert_eq!(root_2, Some(dir.path().to_path_buf()));
-}
-
 fn anchor_rows(rel_paths: &[&str]) -> (Vec<VisibleRowTwoFolderDiff>, Vec<usize>) {
     let rows = rel_paths
         .iter()

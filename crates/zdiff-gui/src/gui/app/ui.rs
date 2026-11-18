@@ -11,11 +11,13 @@ use zcommon_ui::common::show_custom_popup;
 use zcommon_ui::find_popup::{FindPopupEvent, find_popup};
 use zcommon_ui::frame_stats;
 
+use zcommon::vcs::revision::PathKind;
 use zdiff::universal_path::UniversalPath;
 
 use egui_tiles::Tile;
 
 use crate::{
+    folder::roots::Side,
     p4::P4Command,
     revert::{self, RevertRefusal, RevertWrite},
     ui_egui::{
@@ -271,11 +273,21 @@ impl ZApp {
                     .map(|s| s.as_ref().map_or(&[][..], |s| &s.offsets[..])),
                 None => [&[][..]; 2],
             };
-            // Until U3 a folder side's state is the folder's own scan message.
+            let folder_sides = [Side::Folder1, Side::Folder2];
             let [source_load_error, target_load_error] = if folders {
-                [None, None]
+                folder_sides.map(|side| self.folder.side_error(side).map(str::to_owned))
             } else {
                 folder_mode::load_errors(file_1, file_2)
+            };
+            let [source_path_valid, target_path_valid] = if folders {
+                [source_load_error.is_none(), target_load_error.is_none()]
+            } else {
+                [file_1.path_valid(), file_2.path_valid()]
+            };
+            let [source_loading, target_loading] = if folders {
+                folder_sides.map(|side| self.folder.is_scanning(side))
+            } else {
+                [&mut *file_1, &mut *file_2].map(|file| file.get_loading_path().is_some())
             };
             let mut block_toggle_request = None;
             let mut reveal_line_request = None;
@@ -319,12 +331,12 @@ impl ZApp {
                     file_target_root: file_2.get_root(),
                     file_source_root_valid: file_1.root_valid(),
                     file_target_root_valid: file_2.root_valid(),
-                    file_source_path_valid: folders || file_1.path_valid(),
-                    file_target_path_valid: folders || file_2.path_valid(),
+                    file_source_path_valid: source_path_valid,
+                    file_target_path_valid: target_path_valid,
                     file_source_load_error: source_load_error,
-                    file_source_loading: !folders && file_1.get_loading_path().is_some(),
+                    file_source_loading: source_loading,
                     file_target_load_error: target_load_error,
-                    file_target_loading: !folders && file_2.get_loading_path().is_some(),
+                    file_target_loading: target_loading,
                     active_highlights: &active_highlights,
                     highlight_side,
                     conflict_cursor: &mut conflict_cursor,
@@ -438,10 +450,10 @@ impl ZApp {
 
             match behavior.ctx_file_diff.open_file_request.take() {
                 Some(ActiveSide::Left) => {
-                    Self::open_file_picker(app_ctx.file_1.get_tx(), ctx.clone())
+                    Self::open_file_picker(PathKind::File, app_ctx.file_1.get_tx(), ctx.clone())
                 }
                 Some(ActiveSide::Right) => {
-                    Self::open_file_picker(app_ctx.file_2.get_tx(), ctx.clone())
+                    Self::open_file_picker(PathKind::File, app_ctx.file_2.get_tx(), ctx.clone())
                 }
                 None => {}
             }

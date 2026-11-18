@@ -1,5 +1,6 @@
 use super::{ZApp, quickdiff::run_diff_against_shelf_base};
 use eframe::egui::{self, containers::menu::MenuConfig};
+use zcommon::vcs::revision::PathKind;
 use zcommon_ui::common::{show_custom_popup, show_settings_window};
 use zcommon_ui::frame_stats;
 use zcommon_ui::h_scroll::WheelModifier;
@@ -89,12 +90,24 @@ impl ZApp {
                         if menu_item(ui, "Open Left", keymap, FileAction::OpenFileSource)
                             .clicked()
                         {
-                            Self::open_file_picker(file_1.get_tx(), ui.ctx().clone());
+                            let ctx = ui.ctx().clone();
+                            Self::open_file_picker(PathKind::File, file_1.get_tx(), ctx);
                         }
                         if menu_item(ui, "Open Right", keymap, FileAction::OpenFileTarget)
                             .clicked()
                         {
-                            Self::open_file_picker(file_2.get_tx(), ui.ctx().clone());
+                            let ctx = ui.ctx().clone();
+                            Self::open_file_picker(PathKind::File, file_2.get_tx(), ctx);
+                        }
+                        for (label, file) in [
+                            ("Open Left Folder...", &mut *file_1),
+                            ("Open Right Folder...", &mut *file_2),
+                        ] {
+                            if ui.button(label).clicked() {
+                                let ctx = ui.ctx().clone();
+                                Self::open_file_picker(PathKind::Folder, file.get_tx(), ctx);
+                                ui.close();
+                            }
                         }
                         if menu_item(ui, "Open Merge...", keymap, FileAction::OpenMerge).clicked() {
                             self.open_merge_form.open = true;
@@ -115,6 +128,9 @@ impl ZApp {
                         if menu_item(ui, "Refresh", keymap, FileAction::RefreshDiff).clicked() {
                             diff_processor.reset_ctx();
                             Self::refresh_file_contents(file_1, file_2);
+                            if folders {
+                                self.folder.refresh();
+                            }
                         }
                         if menu_item(
                             ui,
@@ -354,6 +370,26 @@ impl ZApp {
                             "../../test/test_ignore_whitespace_extreme_simple/1.txt",
                             "../../test/test_ignore_whitespace_extreme_simple/2.txt",
                         );
+
+                        for (label, p1, p2) in [
+                            (
+                                "Open Folders test_similar_1 vs test_similar_2",
+                                "../../test/test_similar_1",
+                                "../../test/test_similar_2",
+                            ),
+                            (
+                                "Open Folders test_similar_2 vs test_similar_2_one_deeper",
+                                "../../test/test_similar_2",
+                                "../../test/test_similar_2_one_deeper",
+                            ),
+                            (
+                                "Open Folders 1 vs test_similar_1/1",
+                                "../../test/1",
+                                "../../test/test_similar_1/1",
+                            ),
+                        ] {
+                            load_btn(ui, label, file_1, file_2, diff_processor, p1, p2);
+                        }
 
                         ui.separator();
 

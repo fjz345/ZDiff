@@ -13,7 +13,6 @@ use std::{
 use zcommon::{
     find::{FindError, Matcher},
     hash::HashService,
-    history::SnapshotHistory,
     job::Job,
     kinds::KindTable,
     logger::{self, LogBuffer},
@@ -41,8 +40,7 @@ use crate::folder::{
     panes::{Pane, PathDiffView, TreeBehavior, ViewChoice},
     path_diff_pane::{FilterPresets, PathDiffPane},
     revision_open,
-    roots::{Side, clear_root, set_root, set_root_or_report},
-    side_revision::split_side,
+    roots::Side,
     status_line::{
         RowCounts, ScanSummary, ToolMessage, count_rows, counts_text, ui_status_summary,
         ui_tool_message,
@@ -51,6 +49,7 @@ use crate::folder::{
     tree_compare::{CompareUpdate, PairLikeness, TreeCompare, patch_row_states},
     tree_filter::{DiffFilter, DuplicatesFilter, arrange_two_folder_rows},
     tree_find::{FindChipEvent, FolderFind, TreeFindView, find_mask},
+    tree_menu::RootRequests,
     tree_sort::TreeSort,
     tree_tolerance::Tolerance,
 };
@@ -60,7 +59,9 @@ use egui_tiles::Tile;
 pub struct FolderState {
     #[serde(skip)]
     pub hash_service: HashService,
+    #[serde(skip)]
     pub file_system_1_root_path: Option<PathBuf>,
+    #[serde(skip)]
     pub file_system_2_root_path: Option<PathBuf>,
     #[serde(skip)]
     pub file_system_model_1_view: Option<FileSystemView>,
@@ -108,8 +109,6 @@ pub struct FolderState {
     pub duplicates_filter: DuplicatesFilter,
     #[serde(default)]
     pub likeness_bar: bool,
-    #[serde(default)]
-    pub sides_swapped: bool,
     #[serde(skip)]
     two_folder_diff_rows_tolerance: Tolerance,
     #[serde(default)]
@@ -143,13 +142,7 @@ pub struct FolderState {
     #[serde(default, deserialize_with = "folder_keymap::deserialize_keymap")]
     keymap: Keymap<FolderAction>,
     #[serde(skip)]
-    nav_history: SnapshotHistory<FolderNav>,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-struct FolderNav {
-    roots: [Option<PathBuf>; 2],
-    sides_swapped: bool,
+    root_requests: RootRequests,
 }
 
 struct BuiltRowsKey {
@@ -178,47 +171,7 @@ fn built_rows_bytes(rows: &[VisibleRowTwoFolderDiff]) -> usize {
     paths + size_of_val(rows)
 }
 
-fn previous_root(
-    history: &SnapshotHistory<FolderNav>,
-    side: usize,
-    current: &Path,
-) -> Option<PathBuf> {
-    history
-        .newest_first()
-        .map(|nav| nav.roots[side].as_deref())
-        .find(|root| *root != Some(current))
-        .flatten()
-        .filter(|root| folder_name(root) == folder_name(current))
-        .map(Path::to_path_buf)
-}
-
-fn folder_name(root: &Path) -> String {
-    let folder = split_side(root).0.to_string_lossy().into_owned();
-    let folder = folder.trim_end_matches(['/', '\\']);
-    folder
-        .rsplit(['/', '\\'])
-        .next()
-        .unwrap_or_default()
-        .to_owned()
-}
-
 impl FolderState {
-    fn observe_nav(&mut self) {
-        let now = FolderNav {
-            roots: [
-                self.file_system_1_root_path.clone(),
-                self.file_system_2_root_path.clone(),
-            ],
-            sides_swapped: self.sides_swapped,
-        };
-        self.nav_history.observe(&now);
-    }
-
-    fn previous_roots(&self) -> [Option<PathBuf>; 2] {
-        let roots = [&self.file_system_1_root_path, &self.file_system_2_root_path];
-        std::array::from_fn(|side| previous_root(&self.nav_history, side, roots[side].as_deref()?))
-    }
-
     fn rows_inputs_changed(&self) -> bool {
         self.two_folder_diff_rows_filter != self.path_filter
             || self.two_folder_diff_rows_sort != self.tree_sort
@@ -476,16 +429,24 @@ impl FolderState {
         }
     }
 
-    fn clear_roots(&mut self) {
-        clear_root(&mut self.file_system_1_root_path);
-        clear_root(&mut self.file_system_2_root_path);
+    fn scan_error(&self) -> Option<String> {
+        let sides = [
+            (Side::Folder1, &self.file_system_1_scan, &self.file_system_1_root_path),
+            (Side::Folder2, &self.file_system_2_scan, &self.file_system_2_root_path),
+        ];
+        let lines: Vec<String> = sides
+            .into_iter()
+            .filter_map(|(side, scan, root)| Some((side, scan.error_for(root.as_deref())?)))
+            .map(|(side, error)| format!("{side}: {error}"))
+            .collect();
+        (!lines.is_empty()).then(|| lines.join("\n"))
     }
 
     fn update_scans(&mut self, repaint: &egui::Context) {
         let _scope = frame_stats::scope("Scan polling");
         update_side_scan(
             Side::Folder1,
-            &mut self.file_system_1_root_path,
+            self.file_system_1_root_path.as_deref(),
             &mut self.file_system_model_1_view,
             &mut self.file_system_1_scan,
             &mut self.two_folder_diff_visible_rows,
@@ -493,7 +454,7 @@ impl FolderState {
         );
         update_side_scan(
             Side::Folder2,
-            &mut self.file_system_2_root_path,
+            self.file_system_2_root_path.as_deref(),
             &mut self.file_system_model_2_view,
             &mut self.file_system_2_scan,
             &mut self.two_folder_diff_visible_rows,
@@ -572,12 +533,24 @@ impl ScanJob {
 pub struct SideScan {
     job: Option<ScanJob>,
     rescan: bool,
+    cancel: bool,
     shown: Option<ScanSummary>,
+    failed: Option<(PathBuf, String)>,
 }
 
 impl SideScan {
     pub fn request_rescan(&mut self) {
         self.rescan = true;
+    }
+
+    // Applied by the next poll: this frame's rows are still drawn from the view.
+    pub fn request_cancel(&mut self) {
+        self.cancel = true;
+    }
+
+    fn error_for(&self, root: Option<&Path>) -> Option<&str> {
+        let (failed, error) = self.failed.as_ref()?;
+        (root == Some(failed)).then_some(error)
     }
 
     pub fn job(&self) -> Option<&ScanJob> {
@@ -605,6 +578,7 @@ fn scan_action(
     root: Option<&Path>,
     shown: Option<&Path>,
     job: Option<&Path>,
+    failed: Option<&Path>,
     rescan: bool,
 ) -> ScanAction {
     let Some(root) = root else {
@@ -612,7 +586,7 @@ fn scan_action(
     };
     if job == Some(root) {
         ScanAction::Keep
-    } else if shown == Some(root) && !rescan {
+    } else if (shown == Some(root) || failed == Some(root)) && !rescan {
         ScanAction::Stop
     } else {
         ScanAction::Start(root.to_path_buf())
@@ -645,30 +619,43 @@ fn install_scanned(old: Option<&FileSystemView>, model: FileSystemModel) -> File
     view
 }
 
-/// Back to the root of the shown view, so the next frame does not scan the abandoned root again.
-fn revert_root(side: Side, root: &mut Option<PathBuf>, view: Option<&FileSystemView>) {
-    match shown_root(view) {
-        Some(shown) => {
-            if set_root(root, side, &shown).is_err() {
-                clear_root(root);
-            }
-        }
-        None => clear_root(root),
+fn fail_scan(
+    side: Side,
+    root: PathBuf,
+    error: String,
+    view: &mut Option<FileSystemView>,
+    scan: &mut SideScan,
+    rows: &mut Option<Vec<VisibleRowTwoFolderDiff>>,
+) {
+    log::error!("{side}: {}: {error}", root.display());
+    scan.shown = None;
+    scan.failed = Some((root, error));
+    if view.take().is_some() {
+        *rows = None;
     }
 }
 
+const SCAN_CANCELLED: &str = "Scan cancelled";
+
 pub(crate) fn update_side_scan(
     side: Side,
-    root: &mut Option<PathBuf>,
+    root: Option<&Path>,
     view: &mut Option<FileSystemView>,
     scan: &mut SideScan,
     rows: &mut Option<Vec<VisibleRowTwoFolderDiff>>,
     repaint: &egui::Context,
 ) {
+    if std::mem::take(&mut scan.cancel)
+        && let Some(job) = scan.job.take()
+    {
+        scan.rescan = false;
+        fail_scan(side, job.root, SCAN_CANCELLED.to_owned(), view, scan, rows);
+    }
     let action = scan_action(
-        root.as_deref(),
+        root,
         shown_root(view.as_ref()).as_deref(),
         scan.job.as_ref().map(ScanJob::root),
+        scan.failed.as_ref().map(|(root, _)| root.as_path()),
         scan.rescan,
     );
     match action {
@@ -676,6 +663,7 @@ pub(crate) fn update_side_scan(
         ScanAction::Start(path) => {
             scan.job = Some(ScanJob::start(path, repaint.clone()));
             scan.rescan = false;
+            scan.failed = None;
             return;
         }
         ScanAction::Stop => scan.job = None,
@@ -683,6 +671,7 @@ pub(crate) fn update_side_scan(
             scan.job = None;
             scan.rescan = false;
             scan.shown = None;
+            scan.failed = None;
             if view.take().is_some() {
                 *rows = None;
             }
@@ -695,12 +684,9 @@ pub(crate) fn update_side_scan(
     let running = job.job.is_running();
     let Some(result) = job.job.poll().pop() else {
         if !running {
-            log::error!(
-                "{side}: the scan of {} stopped without a result",
-                job.root.display()
-            );
-            scan.job = None;
-            revert_root(side, root, view.as_ref());
+            let job = scan.job.take().expect("checked above");
+            let error = "the scan stopped without a result".to_owned();
+            fail_scan(side, job.root, error, view, scan, rows);
         }
         return;
     };
@@ -717,38 +703,12 @@ pub(crate) fn update_side_scan(
             *view = Some(install_scanned(view.as_ref(), output.model));
             *rows = None;
         }
-        Some(Err(e)) => {
-            log::error!("{side}: {}: {e}", job.root.display());
-            revert_root(side, root, view.as_ref());
-        }
-        None => {
-            log::info!("{side}: scan of {} cancelled", job.root.display());
-            revert_root(side, root, view.as_ref());
-        }
+        Some(Err(e)) => fail_scan(side, job.root, e.to_string(), view, scan, rows),
+        None => fail_scan(side, job.root, SCAN_CANCELLED.to_owned(), view, scan, rows),
     }
 }
 
-/// Keeps the previous view, or the empty state when there was none.
-pub(crate) fn cancel_scan(
-    side: Side,
-    root: &mut Option<PathBuf>,
-    view: Option<&FileSystemView>,
-    scan: &mut SideScan,
-) {
-    if let Some(job) = scan.job.take() {
-        log::info!("{side}: scan of {} cancelled", job.root.display());
-    }
-    scan.rescan = false;
-    revert_root(side, root, view);
-}
-
-fn ui_scan_progress(
-    ui: &mut egui::Ui,
-    side: Side,
-    root: &mut Option<PathBuf>,
-    view: Option<&FileSystemView>,
-    scan: &mut SideScan,
-) {
+fn ui_scan_progress(ui: &mut egui::Ui, side: Side, scan: &mut SideScan) {
     let Some(job) = scan.job() else {
         return;
     };
@@ -761,7 +721,8 @@ fn ui_scan_progress(
         })
         .inner;
     if cancelled {
-        cancel_scan(side, root, view, scan);
+        scan.request_cancel();
+        ui.ctx().request_repaint();
     }
 }
 
@@ -798,7 +759,7 @@ fn ui_compare_progress(ui: &mut egui::Ui, compare: &mut TreeCompare) {
 #[cfg(test)]
 pub(crate) fn finish_side_scan(
     side: Side,
-    root: &mut Option<PathBuf>,
+    root: Option<&Path>,
     view: &mut Option<FileSystemView>,
     scan: &mut SideScan,
     rows: &mut Option<Vec<VisibleRowTwoFolderDiff>>,
@@ -834,9 +795,6 @@ struct FolderPanes {
     tree: egui_tiles::Tree<Pane>,
     #[serde(skip, default = "restored_log_buffer")]
     log_buffer: LogBuffer,
-
-    open_dir_window_1: bool,
-    open_dir_window_2: bool,
 
     diff_mode_path_diff: bool,
 
@@ -887,10 +845,10 @@ impl FolderView {
         panes.poll(ctx, state, map_claims_back);
     }
 
-    pub fn ui(&mut self, ui: &mut egui::Ui) {
+    pub fn ui(&mut self, ui: &mut egui::Ui, swapped: bool) {
         let frame_start = Instant::now();
         let Self { state, panes } = self;
-        panes.ui(ui, state);
+        panes.ui(ui, state, swapped);
         // The panes drew the old rows under the new flags; the next pass rebuilds
         // them before drawing, and only that pass is painted.
         if discard_stale_rows(
@@ -928,6 +886,30 @@ impl FolderView {
         }
     }
 
+    pub fn side_error(&self, side: Side) -> Option<&str> {
+        let state = &self.state;
+        let (scan, root) = match side {
+            Side::Folder1 => (&state.file_system_1_scan, &state.file_system_1_root_path),
+            Side::Folder2 => (&state.file_system_2_scan, &state.file_system_2_root_path),
+        };
+        scan.error_for(root.as_deref())
+    }
+
+    pub fn is_scanning(&self, side: Side) -> bool {
+        match side {
+            Side::Folder1 => self.state.file_system_1_scan.is_scanning(),
+            Side::Folder2 => self.state.file_system_2_scan.is_scanning(),
+        }
+    }
+
+    pub fn refresh(&mut self) {
+        self.state.refresh();
+    }
+
+    pub fn take_root_requests(&mut self) -> RootRequests {
+        std::mem::take(&mut self.state.root_requests)
+    }
+
     #[cfg(test)]
     pub(crate) fn find_open(&self) -> bool {
         self.panes.find_open
@@ -946,8 +928,6 @@ impl Default for FolderPanes {
         Self {
             tree: Self::create_tree(),
             log_buffer: restored_log_buffer(),
-            open_dir_window_1: false,
-            open_dir_window_2: false,
             diff_mode_path_diff: true,
             tools_window: ToolsWindow::default(),
             keybindings_window: KeybindingsWindow::default(),
@@ -997,46 +977,11 @@ impl FolderPanes {
                 .ui(ui, |ui| {
                     ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
                     ui.menu_button("File", |ui| {
-                        if menu_item(
-                            ui,
-                            "Open Left",
-                            &app_ctx.keymap,
-                            FolderAction::OpenFolder1,
-                        )
-                        .clicked()
-                        {
-                            self.open_dir_window_1 = true;
-                        }
-                        if menu_item(
-                            ui,
-                            "Open Right",
-                            &app_ctx.keymap,
-                            FolderAction::OpenFolder2,
-                        )
-                        .clicked()
-                        {
-                            self.open_dir_window_2 = true;
-                        }
-                        if menu_item(ui, "Swap Sides", &app_ctx.keymap, FolderAction::SwapSides)
-                            .clicked()
-                        {
-                            app_ctx.sides_swapped = !app_ctx.sides_swapped;
-                        }
                         if menu_item(ui, "Refresh", &app_ctx.keymap, FolderAction::Refresh)
                             .clicked()
                         {
                             app_ctx.refresh();
                             ui.ctx().request_repaint();
-                        }
-                        if menu_item(
-                            ui,
-                            "Clear Folder Paths",
-                            &app_ctx.keymap,
-                            FolderAction::ClearPaths,
-                        )
-                        .clicked()
-                        {
-                            app_ctx.clear_roots();
                         }
                         ui.add_enabled_ui(self.diff_mode_path_diff, |ui| {
                             if menu_item(ui, "Find", &app_ctx.keymap, FolderAction::Find).clicked()
@@ -1093,41 +1038,6 @@ impl FolderPanes {
                             app_ctx.file_system_model_2_view = None;
                             app_ctx.two_folder_diff_visible_rows = None;
                         }
-                        ui.separator();
-                        for (label, p1, p2) in [
-                            (
-                                "Open test_similar_1 vs test_similar_2",
-                                "test_similar_1",
-                                "test_similar_2",
-                            ),
-                            (
-                                "Open test_similar_2 vs test_similar_2_one_deeper",
-                                "test_similar_2",
-                                "test_similar_2_one_deeper",
-                            ),
-                            ("Open 1 vs test_similar_1/1", "1", "test_similar_1/1"),
-                        ] {
-                            if ui.button(label).clicked() {
-                                let base = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                                    .join("../../test");
-                                let (p1, p2) = (base.join(p1), base.join(p2));
-                                if let Some(missing) = [&p1, &p2].into_iter().find(|p| !p.is_dir())
-                                {
-                                    log::warn!("{label}: missing fixture {}", missing.display());
-                                } else {
-                                    let _ = set_root(
-                                        &mut app_ctx.file_system_1_root_path,
-                                        Side::Folder1,
-                                        &p1,
-                                    );
-                                    let _ = set_root(
-                                        &mut app_ctx.file_system_2_root_path,
-                                        Side::Folder2,
-                                        &p2,
-                                    );
-                                }
-                            }
-                        }
                     });
                 });
         });
@@ -1174,7 +1084,7 @@ impl FolderPanes {
         };
     }
 
-    fn ui(&mut self, ui: &mut egui::Ui, app_ctx: &mut FolderState) {
+    fn ui(&mut self, ui: &mut egui::Ui, app_ctx: &mut FolderState, swapped: bool) {
         let ctx = &ui.ctx().clone();
         let PolledInput {
             mut actions,
@@ -1184,25 +1094,8 @@ impl FolderPanes {
         if std::mem::take(&mut self.export_requested) {
             actions.push(FolderAction::Export);
         }
-        app_ctx.observe_nav();
-        if actions.contains(&FolderAction::OpenFolder1) {
-            self.open_dir_window_1 = true;
-        }
-        if actions.contains(&FolderAction::OpenFolder2) {
-            self.open_dir_window_2 = true;
-        }
         if actions.contains(&FolderAction::OpenKeybindings) {
             self.keybindings_window.open = true;
-        }
-        if actions.contains(&FolderAction::Refresh) {
-            app_ctx.refresh();
-            ctx.request_repaint();
-        }
-        if actions.contains(&FolderAction::SwapSides) {
-            app_ctx.sides_swapped = !app_ctx.sides_swapped;
-        }
-        if actions.contains(&FolderAction::ClearPaths) {
-            app_ctx.clear_roots();
         }
         if actions.contains(&FolderAction::OpenDiffTools) {
             self.tools_window.open = true;
@@ -1235,20 +1128,8 @@ impl FolderPanes {
         let status_line = egui::TopBottomPanel::bottom("status_line").frame(status_frame);
         if working {
             status_line.show_inside(ui, |ui| {
-                ui_scan_progress(
-                    ui,
-                    Side::Folder1,
-                    &mut app_ctx.file_system_1_root_path,
-                    app_ctx.file_system_model_1_view.as_ref(),
-                    &mut app_ctx.file_system_1_scan,
-                );
-                ui_scan_progress(
-                    ui,
-                    Side::Folder2,
-                    &mut app_ctx.file_system_2_root_path,
-                    app_ctx.file_system_model_2_view.as_ref(),
-                    &mut app_ctx.file_system_2_scan,
-                );
+                ui_scan_progress(ui, Side::Folder1, &mut app_ctx.file_system_1_scan);
+                ui_scan_progress(ui, Side::Folder2, &mut app_ctx.file_system_2_scan);
                 ui_compare_progress(ui, &mut app_ctx.tree_compare);
                 ui_tool_message(ui, app_ctx.tool_message.as_ref());
             });
@@ -1289,7 +1170,7 @@ impl FolderPanes {
 
             ui.with_layout(Layout::left_to_right(egui::Align::Min), |ui| {
                 let mut diff_action_triggered = false;
-                let previous_roots = app_ctx.previous_roots();
+                let scan_error = app_ctx.scan_error();
                 let scanning = app_ctx.file_system_1_scan.is_scanning()
                     || app_ctx.file_system_2_scan.is_scanning();
                 let mut path_diff_view = PathDiffView {
@@ -1297,11 +1178,10 @@ impl FolderPanes {
                     file_system_1_view: &mut app_ctx.file_system_model_1_view,
                     file_system_2_view: &mut app_ctx.file_system_model_2_view,
                     file_system_1_scan: &mut app_ctx.file_system_1_scan,
-                    file_system_1_root_path: &mut app_ctx.file_system_1_root_path,
-                    file_system_2_root_path: &mut app_ctx.file_system_2_root_path,
                     visible_rows: &mut app_ctx.two_folder_diff_visible_rows,
                     rows_id: app_ctx.two_folder_diff_rows_id,
-                    previous_roots,
+                    scan_error,
+                    root_requests: &mut app_ctx.root_requests,
                 };
                 let mut find_view = TreeFindView {
                     matcher: app_ctx.find_matcher.as_ref(),
@@ -1327,7 +1207,7 @@ impl FolderPanes {
                     diff_filter: &mut app_ctx.diff_filter,
                     duplicates_filter: &mut app_ctx.duplicates_filter,
                     likeness_bar: &mut app_ctx.likeness_bar,
-                    sides_swapped: app_ctx.sides_swapped,
+                    swapped,
                     tolerance: &mut app_ctx.tolerance,
                     tree_compare: &app_ctx.tree_compare,
                     h_scroll_link: &mut app_ctx.h_scroll_link,
@@ -1465,29 +1345,6 @@ impl FolderPanes {
                 self.set_path_diff_visible(true);
             }
         }
-        // Handle folder dialogs
-        if self.open_dir_window_1 {
-            self.open_dir_window_1 = false;
-            if let Some(path) = rfd::FileDialog::new().pick_folder() {
-                set_root_or_report(
-                    &mut state.file_system_1_root_path,
-                    Side::Folder1,
-                    &path,
-                    &mut state.tool_message,
-                );
-            }
-        }
-        if self.open_dir_window_2 {
-            self.open_dir_window_2 = false;
-            if let Some(path) = rfd::FileDialog::new().pick_folder() {
-                set_root_or_report(
-                    &mut state.file_system_2_root_path,
-                    Side::Folder2,
-                    &path,
-                    &mut state.tool_message,
-                );
-            }
-        }
         state.update_scans(ctx);
         state.tree_compare.set_repaint(ctx);
         state.update_compare(Instant::now());
@@ -1516,15 +1373,15 @@ impl FolderPanes {
 mod tests {
     use super::{
         FolderPanes, FolderState, FolderView, ScanAction,
-        cancel_scan, discard_stale_rows, finish_side_scan, scan_action, scan_progress_text,
-        update_side_scan,
+        SCAN_CANCELLED, discard_stale_rows, finish_side_scan, root_of_side, scan_action,
+        scan_progress_text, update_side_scan,
     };
     use crate::app::ZApp;
     use crate::folder::folder_keymap::FolderAction;
     use crate::folder::fs_tree::{DiffState, FileSystemView, HScrollLink};
     use crate::folder::panes::ViewChoice;
     use crate::folder::path_diff_pane::{BLACKLIST_PRESETS, FilterField, FilterPresets, PaneView};
-    use crate::folder::roots::{Side, clear_root, set_root};
+    use crate::folder::roots::Side;
     use crate::folder::tree_compare::PairResult;
     use crate::folder::tree_filter::{DiffFilter, DuplicatesFilter, StateFilter};
     use crate::folder::tree_find::FolderFind;
@@ -2071,19 +1928,6 @@ mod tests {
     }
 
     #[test]
-    fn swapped_sides_survive_a_restart() {
-        let state = FolderState {
-            sides_swapped: true,
-            ..Default::default()
-        };
-
-        let json = serde_json::to_string(&state).unwrap();
-        let restored: FolderState = serde_json::from_str(&json).unwrap();
-
-        assert!(restored.sides_swapped);
-    }
-
-    #[test]
     fn a_state_saved_before_the_likeness_bar_existed_loads_it_off() {
         let mut json: serde_json::Value = serde_json::to_value(FolderState::default()).unwrap();
         json.as_object_mut()
@@ -2572,14 +2416,14 @@ mod tests {
     fn finish_scans(state: &mut FolderState) {
         finish_side_scan(
             Side::Folder1,
-            &mut state.file_system_1_root_path,
+            state.file_system_1_root_path.as_deref(),
             &mut state.file_system_model_1_view,
             &mut state.file_system_1_scan,
             &mut state.two_folder_diff_visible_rows,
         );
         finish_side_scan(
             Side::Folder2,
-            &mut state.file_system_2_root_path,
+            state.file_system_2_root_path.as_deref(),
             &mut state.file_system_model_2_view,
             &mut state.file_system_2_scan,
             &mut state.two_folder_diff_visible_rows,
@@ -2593,8 +2437,8 @@ mod tests {
 
     fn loaded(root_1: &Path, root_2: &Path) -> FolderState {
         let mut state = FolderState::default();
-        set_root(&mut state.file_system_1_root_path, Side::Folder1, root_1).unwrap();
-        set_root(&mut state.file_system_2_root_path, Side::Folder2, root_2).unwrap();
+        state.file_system_1_root_path = Some(root_1.into());
+        state.file_system_2_root_path = Some(root_2.into());
         finish_scans(&mut state);
         state
     }
@@ -2602,7 +2446,7 @@ mod tests {
     fn update_side_1(state: &mut FolderState) {
         update_side_scan(
             Side::Folder1,
-            &mut state.file_system_1_root_path,
+            state.file_system_1_root_path.as_deref(),
             &mut state.file_system_model_1_view,
             &mut state.file_system_1_scan,
             &mut state.two_folder_diff_visible_rows,
@@ -2610,34 +2454,25 @@ mod tests {
         );
     }
 
-    fn cancel_side_1(state: &mut FolderState) {
-        cancel_scan(
-            Side::Folder1,
-            &mut state.file_system_1_root_path,
-            state.file_system_model_1_view.as_ref(),
-            &mut state.file_system_1_scan,
-        );
-    }
-
     #[test]
     fn a_side_without_a_root_is_cleared() {
         let a = Path::new("a");
         assert_eq!(
-            scan_action(None, Some(a), Some(a), false),
+            scan_action(None, Some(a), Some(a), None, false),
             ScanAction::Clear
         );
-        assert_eq!(scan_action(None, None, None, true), ScanAction::Clear);
+        assert_eq!(scan_action(None, None, None, None, true), ScanAction::Clear);
     }
 
     #[test]
     fn a_new_root_starts_a_scan() {
         let (a, b) = (Path::new("a"), Path::new("b"));
         assert_eq!(
-            scan_action(Some(b), Some(a), None, false),
+            scan_action(Some(b), Some(a), None, None, false),
             ScanAction::Start(b.into())
         );
         assert_eq!(
-            scan_action(Some(b), None, None, false),
+            scan_action(Some(b), None, None, None, false),
             ScanAction::Start(b.into())
         );
     }
@@ -2646,7 +2481,7 @@ mod tests {
     fn a_new_root_replaces_the_scan_of_another_root() {
         let (a, b, c) = (Path::new("a"), Path::new("b"), Path::new("c"));
         assert_eq!(
-            scan_action(Some(b), Some(a), Some(c), false),
+            scan_action(Some(b), Some(a), Some(c), None, false),
             ScanAction::Start(b.into())
         );
     }
@@ -2655,12 +2490,12 @@ mod tests {
     fn the_scan_of_the_root_keeps_running() {
         let (a, b) = (Path::new("a"), Path::new("b"));
         assert_eq!(
-            scan_action(Some(b), Some(a), Some(b), false),
+            scan_action(Some(b), Some(a), Some(b), None, false),
             ScanAction::Keep
         );
-        assert_eq!(scan_action(Some(b), None, Some(b), false), ScanAction::Keep);
+        assert_eq!(scan_action(Some(b), None, Some(b), None, false), ScanAction::Keep);
         assert_eq!(
-            scan_action(Some(a), Some(a), Some(a), false),
+            scan_action(Some(a), Some(a), Some(a), None, false),
             ScanAction::Keep
         );
     }
@@ -2668,9 +2503,9 @@ mod tests {
     #[test]
     fn the_shown_root_needs_no_scan() {
         let (a, b) = (Path::new("a"), Path::new("b"));
-        assert_eq!(scan_action(Some(a), Some(a), None, false), ScanAction::Stop);
+        assert_eq!(scan_action(Some(a), Some(a), None, None, false), ScanAction::Stop);
         assert_eq!(
-            scan_action(Some(a), Some(a), Some(b), false),
+            scan_action(Some(a), Some(a), Some(b), None, false),
             ScanAction::Stop
         );
     }
@@ -2679,29 +2514,19 @@ mod tests {
     fn a_rescan_scans_the_shown_root_again() {
         let a = Path::new("a");
         assert_eq!(
-            scan_action(Some(a), Some(a), None, true),
+            scan_action(Some(a), Some(a), None, None, true),
             ScanAction::Start(a.into())
         );
     }
 
     #[test]
-    fn launch_with_remembered_roots_scans_both_sides_in_the_background() {
+    fn roots_given_by_the_shell_scan_both_sides_in_the_background() {
         let (left, right) = (tempdir().unwrap(), tempdir().unwrap());
         fs::write(left.path().join("a.txt"), "a").unwrap();
         fs::write(right.path().join("b.txt"), "b").unwrap();
         let mut state = FolderState::default();
-        set_root(
-            &mut state.file_system_1_root_path,
-            Side::Folder1,
-            left.path(),
-        )
-        .unwrap();
-        set_root(
-            &mut state.file_system_2_root_path,
-            Side::Folder2,
-            right.path(),
-        )
-        .unwrap();
+        state.file_system_1_root_path = Some(left.path().into());
+        state.file_system_2_root_path = Some(right.path().into());
 
         state.update_scans(&egui::Context::default());
         assert!(state.file_system_1_scan.is_scanning());
@@ -2737,12 +2562,7 @@ mod tests {
             .clone();
         state.build_two_folder_diff_rows_if_stale();
 
-        set_root(
-            &mut state.file_system_2_root_path,
-            Side::Folder2,
-            other.path(),
-        )
-        .unwrap();
+        state.file_system_2_root_path = Some(other.path().into());
         state.update_scans(&egui::Context::default());
         assert!(!state.file_system_1_scan.is_scanning());
         let job = state.file_system_2_scan.job().expect("side 2 scans");
@@ -2764,68 +2584,108 @@ mod tests {
     }
 
     #[test]
-    fn cancelling_a_scan_keeps_the_previous_view() {
-        let (left, right, other) = (tempdir().unwrap(), tempdir().unwrap(), tempdir().unwrap());
-        let mut state = loaded(left.path(), right.path());
-        let model_1 = state
-            .file_system_model_1_view
-            .as_ref()
-            .unwrap()
-            .file_system
-            .clone();
-
-        set_root(
-            &mut state.file_system_1_root_path,
-            Side::Folder1,
-            other.path(),
-        )
-        .unwrap();
-        update_side_1(&mut state);
-        assert!(state.file_system_1_scan.is_scanning());
-        cancel_side_1(&mut state);
-
-        assert_eq!(state.file_system_1_root_path.as_deref(), Some(left.path()));
-        assert!(!state.file_system_1_scan.is_scanning());
-        update_side_1(&mut state);
-        assert!(!state.file_system_1_scan.is_scanning());
-        let view_1 = state.file_system_model_1_view.as_ref().unwrap();
-        assert!(Arc::ptr_eq(&view_1.file_system, &model_1));
+    fn a_failed_scan_is_not_retried_while_the_root_stays() {
+        let (a, b) = (Path::new("a"), Path::new("b"));
+        assert_eq!(
+            scan_action(Some(a), None, None, Some(a), false),
+            ScanAction::Stop
+        );
+        assert_eq!(
+            scan_action(Some(a), None, None, Some(a), true),
+            ScanAction::Start(a.into())
+        );
+        assert_eq!(
+            scan_action(Some(b), None, None, Some(a), false),
+            ScanAction::Start(b.into())
+        );
     }
 
     #[test]
-    fn cancelling_the_first_scan_leaves_the_side_empty() {
-        let dir = tempdir().unwrap();
-        let mut state = FolderState::default();
-        set_root(
-            &mut state.file_system_1_root_path,
-            Side::Folder1,
-            dir.path(),
-        )
-        .unwrap();
-        update_side_1(&mut state);
-        assert!(state.file_system_1_scan.is_scanning());
-        cancel_side_1(&mut state);
-
-        assert_eq!(state.file_system_1_root_path, None);
-        update_side_1(&mut state);
-        assert!(!state.file_system_1_scan.is_scanning());
-        assert!(state.file_system_model_1_view.is_none());
-    }
-
-    #[test]
-    fn a_failed_scan_keeps_the_previous_view() {
+    fn a_failed_scan_shows_its_error_and_is_not_retried_until_refresh_or_a_new_root() {
         let (left, right, gone) = (tempdir().unwrap(), tempdir().unwrap(), tempdir().unwrap());
         let mut state = loaded(left.path(), right.path());
+        state.build_two_folder_diff_rows_if_stale();
         let gone: PathBuf = gone.path().into();
-        set_root(&mut state.file_system_1_root_path, Side::Folder1, &gone).unwrap();
         fs::remove_dir(&gone).unwrap();
+        state.file_system_1_root_path = Some(gone.clone());
 
         finish_scans(&mut state);
-        assert_eq!(state.file_system_1_root_path.as_deref(), Some(left.path()));
+        assert_eq!(state.file_system_1_root_path.as_deref(), Some(&*gone));
+        assert!(state.file_system_model_1_view.is_none());
+        assert!(state.two_folder_diff_visible_rows.is_none());
+        assert!(state.file_system_1_scan.error_for(Some(&gone)).is_some());
+        assert_eq!(
+            shown(&state.file_system_model_2_view),
+            Some(right.path().into())
+        );
+
+        update_side_1(&mut state);
+        assert!(!state.file_system_1_scan.is_scanning());
+
+        state.refresh();
+        update_side_1(&mut state);
+        assert!(state.file_system_1_scan.is_scanning());
+        assert_eq!(state.file_system_1_scan.error_for(Some(&gone)), None);
+        finish_scans(&mut state);
+        assert!(state.file_system_1_scan.error_for(Some(&gone)).is_some());
+
+        state.file_system_1_root_path = Some(left.path().into());
+        finish_scans(&mut state);
         assert_eq!(
             shown(&state.file_system_model_1_view),
             Some(left.path().into())
         );
+        assert_eq!(state.file_system_1_scan.error_for(Some(left.path())), None);
+    }
+
+    #[test]
+    fn a_cancelled_scan_leaves_the_side_with_an_error() {
+        let (left, right, other) = (tempdir().unwrap(), tempdir().unwrap(), tempdir().unwrap());
+        let mut state = loaded(left.path(), right.path());
+        state.build_two_folder_diff_rows_if_stale();
+        state.file_system_1_root_path = Some(other.path().into());
+        update_side_1(&mut state);
+        assert!(state.file_system_1_scan.is_scanning());
+
+        state.file_system_1_scan.request_cancel();
+        update_side_1(&mut state);
+
+        assert_eq!(state.file_system_1_root_path.as_deref(), Some(other.path()));
+        assert!(!state.file_system_1_scan.is_scanning());
+        assert!(state.file_system_model_1_view.is_none());
+        assert!(state.two_folder_diff_visible_rows.is_none());
+        assert_eq!(
+            state.file_system_1_scan.error_for(Some(other.path())),
+            Some(SCAN_CANCELLED)
+        );
+        update_side_1(&mut state);
+        assert!(!state.file_system_1_scan.is_scanning());
+    }
+
+    #[test]
+    fn a_revision_picked_for_a_folder_side_gives_the_root_text_the_scan_dispatches_on() {
+        use zcommon::universal_path::{DepotRev, GitRev, UniversalPath};
+
+        let folder = PathBuf::from(r"D:\repo\src\gui");
+        let git = |rev| UniversalPath::Git(folder.clone(), rev);
+        let depot = |rev| UniversalPath::Depot("//depot/main/src".to_owned(), rev);
+        for (picked, root) in [
+            (git(GitRev::Rev("main".to_owned())), r"D:\repo\src\gui@git:main"),
+            (
+                git(GitRev::Rev("origin/dev".to_owned())),
+                r"D:\repo\src\gui@git:origin/dev",
+            ),
+            (git(GitRev::Index), r"D:\repo\src\gui@git:index"),
+            (UniversalPath::Local(folder.clone()), r"D:\repo\src\gui"),
+            (depot(None), "//depot/main/src"),
+            (depot(Some(DepotRev::Change(1234))), "//depot/main/src@1234"),
+            (depot(Some(DepotRev::Shelf(77))), "//depot/main/src@=77"),
+        ] {
+            let side_root = root_of_side(&picked).expect("a side with a path has a root");
+            assert_eq!(side_root, Path::new(root));
+            assert_eq!(UniversalPath::from(&*side_root), picked);
+        }
+        assert_eq!(root_of_side(&UniversalPath::default()), None);
     }
 
     #[test]
@@ -2834,7 +2694,7 @@ mod tests {
         let mut state = loaded(left.path(), right.path());
         state.build_two_folder_diff_rows_if_stale();
 
-        clear_root(&mut state.file_system_2_root_path);
+        state.file_system_2_root_path = None;
         state.update_scans(&egui::Context::default());
         assert!(state.file_system_model_2_view.is_none());
         assert!(state.two_folder_diff_visible_rows.is_none());
@@ -2842,32 +2702,6 @@ mod tests {
         state.build_two_folder_diff_rows_if_stale();
         state.update_scans(&egui::Context::default());
         assert!(state.two_folder_diff_visible_rows.is_some());
-    }
-
-    #[test]
-    fn the_previous_root_is_the_same_folder_before_its_latest_change() {
-        let local = PathBuf::from(r"C:\ws\src");
-        let branch = PathBuf::from(r"C:\ws\src@git:main");
-        let mut state = FolderState {
-            file_system_1_root_path: Some(local.clone()),
-            ..Default::default()
-        };
-        state.observe_nav();
-        assert_eq!(state.previous_roots(), [None, None]);
-
-        state.file_system_1_root_path = Some(branch.clone());
-        state.observe_nav();
-        state.file_system_2_root_path = Some(PathBuf::from(r"C:\ws\docs"));
-        state.observe_nav();
-        assert_eq!(state.previous_roots(), [Some(local), None]);
-
-        state.file_system_1_root_path = Some(PathBuf::from("//stream/main/src"));
-        state.observe_nav();
-        assert_eq!(state.previous_roots()[0], Some(branch.clone()));
-
-        state.file_system_1_root_path = Some(PathBuf::from(r"C:\ws\docs"));
-        state.observe_nav();
-        assert_eq!(state.previous_roots()[0], None, "another folder");
     }
 
     #[test]
@@ -3531,7 +3365,7 @@ mod tests {
             };
             ctx.run(input, |ctx| {
                 view.poll(ctx, false);
-                egui::CentralPanel::default().show(ctx, |ui| view.ui(ui));
+                egui::CentralPanel::default().show(ctx, |ui| view.ui(ui, false));
             })
         };
         for _ in 0..5 {

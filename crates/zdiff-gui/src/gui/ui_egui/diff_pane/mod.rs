@@ -90,6 +90,7 @@ use eframe::egui::{self, TextEdit, UiBuilder, Vec2, text_selection::LabelSelecti
 use serde::{Deserialize, Serialize};
 use zcommon::{
     find::Matcher,
+    vcs::revision::PathKind,
     path::{PathSegment, common_parent, split_path},
     presets::{BuiltinPreset, UserPresets},
     style::{Rgba8, RowLook, SharedRole, SyntaxCategory, stripe_segments},

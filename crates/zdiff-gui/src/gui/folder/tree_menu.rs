@@ -2,8 +2,7 @@ use std::path::{Path, PathBuf};
 
 use eframe::egui;
 
-use crate::folder::roots::{Side, set_root_or_report, validate_root};
-use crate::folder::status_line::ToolMessage;
+use crate::folder::roots::Side;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Entry {
@@ -106,36 +105,13 @@ pub fn show_row_menu(
     action
 }
 
-pub fn apply_row_action(
-    ctx: &egui::Context,
-    action: RowAction,
-    root_1: &mut Option<PathBuf>,
-    root_2: &mut Option<PathBuf>,
-    tool_message: &mut Option<ToolMessage>,
-) {
+pub type RootRequests = [Option<PathBuf>; 2];
+
+pub fn apply_row_action(ctx: &egui::Context, action: RowAction, root_requests: &mut RootRequests) {
     match action {
-        RowAction::SetRoots([path_1, path_2]) => {
-            // Checked up front so a folder deleted since the scan can't leave one side re-rooted.
-            for (side, path) in [(Side::Folder1, &path_1), (Side::Folder2, &path_2)] {
-                if let Err(e) = validate_root(path) {
-                    let error = format!("Set as root: {side}: {e}");
-                    log::error!("{error}");
-                    *tool_message = Some(ToolMessage {
-                        error: Some(error),
-                        ..ToolMessage::default()
-                    });
-                    return;
-                }
-            }
-            set_root_or_report(root_1, Side::Folder1, &path_1, tool_message);
-            set_root_or_report(root_2, Side::Folder2, &path_2, tool_message);
-        }
-        RowAction::SetRoot(Side::Folder1, path) => {
-            set_root_or_report(root_1, Side::Folder1, &path, tool_message);
-        }
-        RowAction::SetRoot(Side::Folder2, path) => {
-            set_root_or_report(root_2, Side::Folder2, &path, tool_message);
-        }
+        RowAction::SetRoots(paths) => *root_requests = paths.map(Some),
+        RowAction::SetRoot(Side::Folder1, path) => root_requests[0] = Some(path),
+        RowAction::SetRoot(Side::Folder2, path) => root_requests[1] = Some(path),
         RowAction::OpenInExplorer(path) => open_in_explorer(&path),
         RowAction::CopyPath(path) => ctx.copy_text(path.to_string_lossy().into_owned()),
     }

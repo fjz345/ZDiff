@@ -12,6 +12,7 @@ use super::{
     state::{AppState, AppStateCtx},
 };
 use crate::{
+    folder::roots::Side,
     ui_egui::text_mode::TextMode,
     viewer::{ViewerKind, Viewers, hex_strings::HexMode},
 };
@@ -604,4 +605,110 @@ fn a_scan_running_while_a_file_pair_is_shown_completes_after_returning() {
     set_sides(&mut app, folders);
     let returned = frame_texts(&ctx, &mut app, Vec::new());
     assert!(paints_folder_names(&returned), "{returned:?}");
+}
+
+#[test]
+fn a_missing_folder_next_to_a_folder_shows_the_scan_error_and_settles() {
+    let dirs = folder_dirs();
+    let missing = dirs[1].path().join("missing");
+    let mut app = ZApp::new();
+    set_sides(&mut app, [dirs[0].path(), &missing]);
+    let ctx = egui::Context::default();
+
+    frames_until(&ctx, &mut app, "showed the scan error", |app, texts| {
+        app.folder.side_error(Side::Folder2).is_some()
+            && texts.iter().any(|text| text.contains(FOLDER_NAMES[0]))
+    });
+
+    assert_eq!(viewers(&mut app), Some(Viewers::Folders));
+    assert_eq!(app.folder.side_error(Side::Folder1), None);
+    assert_eq!(sides(&mut app)[1], UniversalPath::from(&*missing));
+    for _ in 0..5 {
+        run_frame(&ctx, &mut app, SCREEN.x, Vec::new());
+    }
+    let settled = run_frame(&ctx, &mut app, SCREEN.x, Vec::new()).1;
+    assert_eq!(repaint_delay(&settled), Duration::MAX);
+    assert!(!app.folder.is_scanning(Side::Folder2));
+}
+
+#[test]
+fn two_missing_sides_of_a_known_folder_pair_paint_both_scan_errors() {
+    let dirs = folder_dirs();
+    let (ctx, mut app) = shown_folder_app(&dirs);
+    for dir in dirs {
+        dir.close().unwrap();
+    }
+    let state = app.state.as_mut().unwrap().ctx_mut();
+    ZApp::refresh_file_contents(&mut state.file_1, &mut state.file_2);
+    app.folder.refresh();
+
+    frames_until(&ctx, &mut app, "painted both scan errors", |app, texts| {
+        [(Side::Folder1, "Left"), (Side::Folder2, "Right")]
+            .into_iter()
+            .all(|(side, name)| {
+                app.folder.side_error(side).is_some_and(|error| {
+                    let line = format!("{name}: {error}");
+                    texts.iter().any(|text| text.contains(&line))
+                })
+            })
+    });
+    assert_eq!(viewers(&mut app), Some(Viewers::Folders));
+}
+
+#[test]
+fn a_swapped_folder_pair_paints_the_roots_in_swapped_columns_and_back_restores_them() {
+    let dirs = folder_dirs();
+    let (ctx, mut app) = shown_folder_app(&dirs);
+    let name_columns = |app: &mut ZApp, events: Vec<egui::Event>| {
+        let painted = painted_texts(&ctx, app, events);
+        FOLDER_NAMES.map(|name| {
+            let (_, pos) = painted
+                .iter()
+                .find(|(text, _)| text.contains(name))
+                .unwrap();
+            pos.x
+        })
+    };
+    let [only_left, only_right] = name_columns(&mut app, Vec::new());
+    assert!(only_left < only_right);
+
+    app.state.as_mut().unwrap().ctx_mut().sides_swapped = true;
+    let [only_left, only_right] = name_columns(&mut app, Vec::new());
+    assert!(only_left > only_right);
+
+    name_columns(&mut app, mouse_button_click(egui::PointerButton::Extra1));
+    let [only_left, only_right] = name_columns(&mut app, Vec::new());
+    assert!(!app.state.as_mut().unwrap().ctx_mut().sides_swapped);
+    assert!(only_left < only_right);
+    assert_eq!(viewers(&mut app), Some(Viewers::Folders));
+}
+
+#[test]
+fn a_folder_set_on_a_side_becomes_that_root() {
+    let dirs = folder_dirs();
+    let other = tempdir().unwrap();
+    let (ctx, mut app) = shown_folder_app(&dirs);
+
+    let picked = app.state.as_mut().unwrap().ctx_mut().file_2.get_tx();
+    picked.send(UniversalPath::from(other.path())).unwrap();
+    frame_texts(&ctx, &mut app, Vec::new());
+
+    assert_eq!(
+        app.folder.roots(),
+        [dirs[0].path(), other.path()].map(|root| Some(root.to_path_buf()))
+    );
+}
+
+#[test]
+fn a_folder_pair_paints_one_pair_of_path_bars() {
+    let dirs = folder_dirs();
+    let (ctx, mut app) = shown_folder_app(&dirs);
+
+    let texts = frame_texts(&ctx, &mut app, Vec::new());
+
+    for dir in &dirs {
+        let folder = dir.path().file_name().unwrap().to_str().unwrap();
+        assert_eq!(texts.iter().filter(|text| *text == folder).count(), 1);
+    }
+    assert!(!texts.iter().any(|text| text == "Open Folder"));
 }

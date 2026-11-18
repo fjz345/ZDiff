@@ -485,6 +485,11 @@ impl FileDiffPane {
                                 }
                                 root_path_request(bar.inner?, &root)
                             };
+                            let path_kind = if folder_pair {
+                                PathKind::Folder
+                            } else {
+                                PathKind::File
+                            };
                             let dim = file_path_dim(
                                 [&ctx.file_source_path, &ctx.file_target_path],
                                 ctx.file_source_label.is_some() || ctx.file_target_label.is_some(),
@@ -511,7 +516,9 @@ impl FileDiffPane {
                                 let (picked, bar) = ui
                                     .horizontal(|ui| {
                                         let picked = (label.is_none() && !path.is_empty())
-                                            .then(|| revision_dropdown(ui, id_salt, path, previous))
+                                            .then(|| {
+                                                revision_dropdown(ui, id_salt, path_kind, path, previous)
+                                            })
                                             .flatten();
                                         let bar = ui.scope(|ui| {
                                             path_bar(
@@ -535,6 +542,10 @@ impl FileDiffPane {
                                     paint_busy(ui, rect);
                                 }
                                 match bar.inner {
+                                    Some(PathBarAction::Segment(i)) if folder_pair => {
+                                        let ancestor = folder_ancestor(path, i).to_string();
+                                        (file_path_request(&ancestor, path, root), None, false)
+                                    }
                                     Some(PathBarAction::Segment(i)) => {
                                         (None, Some(segments[i].path.clone()), false)
                                     }
@@ -1217,7 +1228,7 @@ impl FileDiffPane {
                                 ui.scope(|ui| {
                                     // The pane's monospace and zero row spacing are for text rows.
                                     ui.reset_style();
-                                    folder.ui(ui);
+                                    folder.ui(ui, ctx.sides_swapped);
                                 });
                             }
                             if let Some(sides) = side_viewers.as_mut() {
@@ -1311,7 +1322,7 @@ impl FileDiffPane {
                             let (_, clicked) = empty_state(
                                 &mut welcome_ui,
                                 "Welcome to ZDiff",
-                                "Drag and drop files here or use the buttons below to start comparing.",
+                                "Drag and drop files or folders here, or use the buttons below to start comparing.",
                                 &["Open Left", "Open Right"],
                             );
                             *ctx.open_file_request = match clicked {

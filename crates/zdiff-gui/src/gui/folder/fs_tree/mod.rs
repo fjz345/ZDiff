@@ -25,18 +25,15 @@ use zdiff_folder::{
     fs::{FileSystemModel, FsNode, FsNodeDepth, FsNodeId, TreeIter},
 };
 
-use zcommon::path::{common_parent, split_path};
 use zcommon::style::{Rgba8, Role};
 use zcommon_ui::h_scroll::text_width;
-use zcommon_ui::pane::{empty_state, loading_state};
-use zcommon_ui::pathbar::{PathBarAction, path_bar};
+use zcommon_ui::pane::{error_state, loading_state};
 use zcommon_ui::style_window::role_color;
 use zcommon_ui::table::{Rows, Split, SplitColumn, SplitTable};
 
 use crate::folder::folder_keymap::FolderAction;
 use crate::folder::revision_open::{self, RevisionOpen, is_revision};
-use crate::folder::roots::{InvalidRoot, Side, set_root, set_root_or_report};
-use crate::folder::side_revision::{revision_dropdown, split_side, with_revision};
+use crate::folder::roots::Side;
 use crate::folder::status_line::ToolMessage;
 use crate::folder::tools_window::resolve_tool_exe;
 use crate::folder::tree_compare::{PairLikeness, TreeCompare};
@@ -47,7 +44,9 @@ use crate::folder::tree_guides::{Guide, TreeGuides, tree_guides};
 use crate::folder::tree_likeness::{
     FolderLikeness, LikenessSum, PreviewPair, likeness_cell, ui_likeness_cell,
 };
-use crate::folder::tree_menu::{Entry, RowAction, apply_row_action, row_menu, show_row_menu};
+use crate::folder::tree_menu::{
+    Entry, RootRequests, RowAction, apply_row_action, row_menu, show_row_menu,
+};
 use crate::folder::tree_sort::{SortKey, TreeSort, sort_two_folder_rows};
 use crate::folder::tree_tolerance::{SideMeta, Tolerance, similar_tooltip};
 

@@ -346,8 +346,9 @@ impl eframe::App for ZApp {
 
             AppState::Idle(mut state) => {
                 self.zoom = sync_zoom(ctx);
-                let shown_folder_roots =
-                    folders.then(|| self.poll_folder(ctx, &mut state, map_claims_back));
+                if folders {
+                    self.poll_folder(ctx, &mut state, map_claims_back);
+                }
 
                 let timed = frame_stats::scope("Viewer resolution");
                 state.file_1.set_pdb_options(&state.pdb_options);
@@ -575,9 +576,7 @@ impl eframe::App for ZApp {
                 self.frame_stats.mark("Text diff pipeline");
 
                 self.ui(ctx, frame, &mut state);
-                if let Some(shown) = shown_folder_roots {
-                    self.write_back_folder_roots(&mut state, shown);
-                }
+                self.apply_folder_root_requests(&mut state);
 
                 AppState::Idle(state)
             }

@@ -53,7 +53,6 @@ use crate::folder::panes::PathDiffView;
 use crate::folder::panes::ViewChoice;
 use crate::folder::panes::view_switch;
 use crate::folder::roots::Side;
-use crate::folder::roots::set_root_or_report;
 use crate::folder::status_line::ToolMessage;
 use crate::folder::tree_cursor::CursorRequest;
 use crate::folder::tree_cursor::TreeCursor;
@@ -607,8 +606,6 @@ pub struct DuplicateFilesPane {
     #[serde(skip)]
     confirm_resolve: bool,
     #[serde(skip)]
-    pub open_dir_window: bool,
-    #[serde(skip)]
     groups: Option<DuplicateGroups>,
     #[serde(skip)]
     group_job: Option<Job<DuplicateGroups>>,
@@ -687,7 +684,6 @@ impl DuplicateFilesPane {
         Self {
             title,
             confirm_resolve: false,
-            open_dir_window: false,
             groups: None,
             group_job: None,
             grouped_for: None,
@@ -1134,10 +1130,6 @@ impl DuplicateFilesPane {
                 }
                 ui.separator();
 
-                if ui.button("Open Folder").clicked() {
-                    self.open_dir_window = true;
-                }
-
                 if let Some(fs_view) = &mut ctx.path_diff_view.file_system_1_view {
                     let (button_text, collapse) =
                         FileSystemView::collapse_all_toggle(fs_view.is_anything_collapsed());
@@ -1297,10 +1289,7 @@ impl DuplicateFilesPane {
                     file_system_2_view: &mut None,
                     visible_rows: Some(&cache.rows),
                     rows_id: cache.id,
-                    root_1: ctx.path_diff_view.file_system_1_root_path,
-                    root_2: &mut None,
-                    open_dir_window_1: &mut self.open_dir_window,
-                    open_dir_window_2: &mut false,
+                    root_requests: ctx.path_diff_view.root_requests,
                     diff_tool_config: ctx.diff_tool_config,
                     tool_message: ctx.tool_message,
                     cursor: &mut self.cursor,
@@ -1309,8 +1298,8 @@ impl DuplicateFilesPane {
                     keyboard_taken: ctx.keyboard_taken,
                     actions: &[],
                     diff_filter: ctx.duplicates_filter.diff_filter(),
-                    previous_roots: [ctx.path_diff_view.previous_roots[0].as_deref(), None],
                     scanning: ctx.path_diff_view.scanning,
+                    scan_error: None,
                 },
                 TreeMode::SingleSide {
                     pending_deletion: &pending_deletion.ids,
@@ -1327,29 +1316,12 @@ impl DuplicateFilesPane {
         } else if ctx.path_diff_view.file_system_1_scan.is_scanning() {
             loading_state(ui, "Scanning folder...");
         } else {
-            let (_, clicked) = empty_state(
+            empty_state(
                 ui,
                 "Find Duplicate Files",
-                "Open a folder to group its files by content.",
-                &["Open Folder"],
+                "Set a folder on the left side to group its files by content.",
+                &[],
             );
-            if clicked.is_some() {
-                self.open_dir_window = true;
-            }
-        }
-
-        if self.open_dir_window {
-            self.open_dir_window = false;
-            if let Some(path) = rfd::FileDialog::new().pick_folder() {
-                // The app loads the view from the root path; a view set here directly
-                // would be replaced on the next frame.
-                set_root_or_report(
-                    ctx.path_diff_view.file_system_1_root_path,
-                    Side::Folder1,
-                    &path,
-                    ctx.tool_message,
-                );
-            }
         }
 
         egui_tiles::UiResponse::None
@@ -1537,6 +1509,7 @@ impl DuplicateFilesPane {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::folder::tree_menu::RootRequests;
     use crate::folder::tree_sort::SortKey;
     use crate::folder::view::{SideScan, finish_side_scan};
     use std::fs;
@@ -1552,7 +1525,7 @@ mod tests {
     struct PaneState {
         hash_service: HashService,
         root_1: Option<PathBuf>,
-        root_2: Option<PathBuf>,
+        root_requests: RootRequests,
         view_1: Option<FileSystemView>,
         scan_1: SideScan,
         view_2: Option<FileSystemView>,
@@ -1573,7 +1546,7 @@ mod tests {
             Self {
                 hash_service: HashService::new(0),
                 root_1: view_root(Some(&view)),
-                root_2: None,
+                root_requests: Default::default(),
                 view_1: Some(view),
                 scan_1: SideScan::default(),
                 view_2: None,
@@ -1626,7 +1599,7 @@ mod tests {
         fn finish_rescan(&mut self) {
             finish_side_scan(
                 Side::Folder1,
-                &mut self.root_1,
+                self.root_1.as_deref(),
                 &mut self.view_1,
                 &mut self.scan_1,
                 &mut self.visible_rows,
@@ -1635,15 +1608,14 @@ mod tests {
 
         fn with_ctx<R>(&mut self, f: impl FnOnce(&mut DuplicateFilesPaneCtx) -> R) -> R {
             let mut path_diff_view = PathDiffView {
-                file_system_1_root_path: &mut self.root_1,
-                file_system_2_root_path: &mut self.root_2,
                 file_system_1_view: &mut self.view_1,
                 file_system_2_view: &mut self.view_2,
                 file_system_1_scan: &mut self.scan_1,
                 visible_rows: &mut self.visible_rows,
                 rows_id: RowsId::default(),
-                previous_roots: Default::default(),
                 scanning: false,
+                scan_error: None,
+                root_requests: &mut self.root_requests,
             };
             let mut ctx = DuplicateFilesPaneCtx {
                 hash_service: &mut self.hash_service,

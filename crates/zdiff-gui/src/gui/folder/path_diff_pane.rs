@@ -20,7 +20,6 @@ use crate::folder::{
         TreeTable, TwoFolderTable, draw_ui_folder_tree,
     },
     panes::{PathDiffView, ViewChoice, view_switch},
-    roots::{Side, set_root_or_report},
     status_line::ToolMessage,
     tree_compare::TreeCompare,
     tree_cursor::TreeCursor,
@@ -42,7 +41,7 @@ pub struct PathDiffPaneCtx<'a, 'b> {
     pub tree_sort: &'a mut TreeSort,
     pub diff_filter: &'a mut DiffFilter,
     pub likeness_bar: &'a mut bool,
-    pub sides_swapped: bool,
+    pub swapped: bool,
     pub tolerance: &'a mut Tolerance,
     pub tree_compare: &'a TreeCompare,
     pub h_scroll_link: &'a mut HScrollLink,
@@ -57,12 +56,6 @@ pub struct PathDiffPaneCtx<'a, 'b> {
 #[derive(Serialize, Deserialize)]
 pub struct PathDiffPane {
     pub title: Option<String>,
-
-    #[serde(skip)]
-    pub open_dir_window_1: bool,
-
-    #[serde(skip)]
-    pub open_dir_window_2: bool,
 
     #[serde(skip)]
     cursor: TreeCursor,
@@ -96,8 +89,6 @@ impl PathDiffPane {
     pub fn new(title: Option<String>) -> Self {
         Self {
             title,
-            open_dir_window_1: false,
-            open_dir_window_2: false,
             cursor: TreeCursor::default(),
             cursor_roots: (None, None),
             table: TreeTable::default(),
@@ -272,10 +263,7 @@ impl PathDiffPane {
                 file_system_2_view: ctx.path_diff_view.file_system_2_view,
                 visible_rows: ctx.path_diff_view.visible_rows.as_deref(),
                 rows_id: ctx.path_diff_view.rows_id,
-                root_1: ctx.path_diff_view.file_system_1_root_path,
-                root_2: ctx.path_diff_view.file_system_2_root_path,
-                open_dir_window_1: &mut self.open_dir_window_1,
-                open_dir_window_2: &mut self.open_dir_window_2,
+                root_requests: ctx.path_diff_view.root_requests,
                 diff_tool_config: ctx.diff_tool_config,
                 tool_message: ctx.tool_message,
                 cursor: &mut self.cursor,
@@ -284,12 +272,8 @@ impl PathDiffPane {
                 keyboard_taken: ctx.keyboard_taken,
                 actions: ctx.actions,
                 diff_filter: *ctx.diff_filter,
-                previous_roots: ctx
-                    .path_diff_view
-                    .previous_roots
-                    .each_ref()
-                    .map(|r| r.as_deref()),
                 scanning: ctx.path_diff_view.scanning,
+                scan_error: ctx.path_diff_view.scan_error.as_deref(),
             },
             TreeMode::TwoFolder(TwoFolderTable {
                 compare: ctx.tree_compare,
@@ -297,34 +281,10 @@ impl PathDiffPane {
                 tolerance: ctx.tolerance,
                 table: &mut self.table,
                 linked: ctx.h_scroll_link.0,
-                swapped: ctx.sides_swapped,
+                swapped: ctx.swapped,
                 find: ctx.find,
             }),
         );
-
-        // Handle folder dialogs
-        if self.open_dir_window_1 {
-            self.open_dir_window_1 = false;
-            if let Some(path) = rfd::FileDialog::new().pick_folder() {
-                set_root_or_report(
-                    ctx.path_diff_view.file_system_1_root_path,
-                    Side::Folder1,
-                    &path,
-                    ctx.tool_message,
-                );
-            }
-        }
-        if self.open_dir_window_2 {
-            self.open_dir_window_2 = false;
-            if let Some(path) = rfd::FileDialog::new().pick_folder() {
-                set_root_or_report(
-                    ctx.path_diff_view.file_system_2_root_path,
-                    Side::Folder2,
-                    &path,
-                    ctx.tool_message,
-                );
-            }
-        }
 
         egui_tiles::UiResponse::None
     }

@@ -18,21 +18,21 @@ use crate::folder::{
     tree_compare::TreeCompare,
     tree_filter::{DiffFilter, DuplicatesFilter},
     tree_find::TreeFindView,
+    tree_menu::RootRequests,
     tree_sort::TreeSort,
     tree_tolerance::Tolerance,
     view::SideScan,
 };
 
 pub struct PathDiffView<'a> {
-    pub file_system_1_root_path: &'a mut Option<PathBuf>,
-    pub file_system_2_root_path: &'a mut Option<PathBuf>,
     pub file_system_1_view: &'a mut Option<FileSystemView>,
     pub file_system_2_view: &'a mut Option<FileSystemView>,
     pub file_system_1_scan: &'a mut SideScan,
     pub visible_rows: &'a mut Option<Vec<VisibleRowTwoFolderDiff>>,
     pub rows_id: RowsId,
-    pub previous_roots: [Option<PathBuf>; 2],
     pub scanning: bool,
+    pub scan_error: Option<String>,
+    pub root_requests: &'a mut RootRequests,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -91,7 +91,7 @@ pub struct TreeBehavior<'a, 'b> {
     pub diff_filter: &'a mut DiffFilter,
     pub duplicates_filter: &'a mut DuplicatesFilter,
     pub likeness_bar: &'a mut bool,
-    pub sides_swapped: bool,
+    pub swapped: bool,
     pub tolerance: &'a mut Tolerance,
     pub tree_compare: &'a TreeCompare,
     pub h_scroll_link: &'a mut HScrollLink,
@@ -111,7 +111,7 @@ impl<'a, 'b> TreeBehavior<'a, 'b> {
             tree_sort: self.tree_sort,
             diff_filter: self.diff_filter,
             likeness_bar: self.likeness_bar,
-            sides_swapped: self.sides_swapped,
+            swapped: self.swapped,
             tolerance: self.tolerance,
             tree_compare: self.tree_compare,
             h_scroll_link: self.h_scroll_link,

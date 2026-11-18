@@ -36,10 +36,7 @@ pub struct FolderTreeCtx<'a> {
     pub file_system_2_view: &'a mut Option<FileSystemView>,
     pub visible_rows: Option<&'a [VisibleRowTwoFolderDiff]>,
     pub rows_id: RowsId,
-    pub root_1: &'a mut Option<PathBuf>,
-    pub root_2: &'a mut Option<PathBuf>,
-    pub open_dir_window_1: &'a mut bool,
-    pub open_dir_window_2: &'a mut bool,
+    pub root_requests: &'a mut RootRequests,
     pub diff_tool_config: &'a DiffToolConfig,
     pub tool_message: &'a mut Option<ToolMessage>,
     pub cursor: &'a mut TreeCursor,
@@ -48,8 +45,8 @@ pub struct FolderTreeCtx<'a> {
     pub keyboard_taken: bool,
     pub actions: &'a [FolderAction],
     pub diff_filter: DiffFilter,
-    pub previous_roots: [Option<&'a Path>; 2],
     pub scanning: bool,
+    pub scan_error: Option<&'a str>,
 }
 
 pub fn draw_ui_folder_tree(
@@ -63,10 +60,7 @@ pub fn draw_ui_folder_tree(
         file_system_2_view,
         visible_rows,
         rows_id,
-        root_1,
-        root_2,
-        open_dir_window_1,
-        open_dir_window_2,
+        root_requests,
         diff_tool_config,
         tool_message,
         cursor,
@@ -75,8 +69,8 @@ pub fn draw_ui_folder_tree(
         keyboard_taken,
         actions,
         diff_filter,
-        previous_roots,
         scanning,
+        scan_error,
     } = ctx;
     let no_view = file_system_1_view.is_none() && file_system_2_view.is_none();
     // The app keeps the id of rows it dropped; the cache must not pair that id with no rows.
@@ -228,7 +222,6 @@ pub fn draw_ui_folder_tree(
     .map(|row| &row.diff_state);
     let available_height = ui.available_height();
     let available_width = ui.available_width();
-    let table_top = ui.cursor().top();
     let mut side_rects = [egui::Rect::NOTHING; 2];
     let mut clicked_row = None;
     let mut toggle_row = None;
@@ -247,8 +240,6 @@ pub fn draw_ui_folder_tree(
         } => (None, Some(pending_deletion), Some(columns), Some(row_menu)),
     };
     let shown = shown_sides(two_folder.as_ref().is_some_and(|t| t.swapped));
-    let side_of = |column: usize| [Side::Folder1, Side::Folder2][shown[column]];
-    let mut open_dir_windows = [open_dir_window_1, open_dir_window_2];
     let (find_matcher, match_path, find_chip_query) =
         two_folder
             .as_ref()
@@ -353,18 +344,7 @@ pub fn draw_ui_folder_tree(
                 let body = table
                     .header(header_height, |mut header| {
                         header.col(|ui| {
-                            folder_header(
-                                ui,
-                                sort,
-                                &mut *open_dir_windows[0],
-                                SideRoots {
-                                    current: [&mut *root_1, &mut *root_2],
-                                    previous: previous_roots,
-                                },
-                                row_height_header,
-                                None,
-                                Side::Folder1,
-                            );
+                            folder_header(ui, sort, None);
                         });
                         for column in columns.iter() {
                             header.col(|ui| {
@@ -429,18 +409,7 @@ pub fn draw_ui_folder_tree(
                 header_height,
                 |column, ui| match column {
                     SplitColumn::Left => {
-                        chip_event = folder_header(
-                            ui,
-                            sort,
-                            &mut *open_dir_windows[shown[0]],
-                            SideRoots {
-                                current: [&mut *root_1, &mut *root_2],
-                                previous: previous_roots,
-                            },
-                            row_height_header,
-                            find_chip_query,
-                            side_of(0),
-                        );
+                        chip_event = folder_header(ui, sort, find_chip_query);
                     }
                     SplitColumn::Center => center.show(ui, |slot, ui| match slot {
                         CenterSlot::State => {
@@ -460,26 +429,7 @@ pub fn draw_ui_folder_tree(
                         }
                         CenterSlot::Tag(_) => {}
                     }),
-                    SplitColumn::Right => {
-                        let available = ui.available_width();
-                        let side = side_of(1);
-                        ui.vertical(|ui| {
-                            if ui
-                                .add_sized(
-                                    [available, row_height_header],
-                                    egui::Button::new("Open Folder"),
-                                )
-                                .clicked()
-                            {
-                                *open_dir_windows[shown[1]] = true;
-                            }
-                            let roots = SideRoots {
-                                current: [&mut *root_1, &mut *root_2],
-                                previous: previous_roots,
-                            };
-                            root_path_bar(ui, roots, side);
-                        });
-                    }
+                    SplitColumn::Right => {}
                 },
                 Rows::Uniform {
                     height: row_height,
@@ -509,16 +459,8 @@ pub fn draw_ui_folder_tree(
                 let mut overlay = ui.new_child(egui::UiBuilder::new().max_rect(body));
                 if scanning {
                     loading_state(&mut overlay, "Scanning folders...");
-                } else {
-                    let (_, clicked) = empty_state(
-                        &mut overlay,
-                        "Welcome to ZDiff",
-                        "Drag and drop a folder onto the left or right pane, or use the buttons below to start comparing.",
-                        &["Open Left", "Open Right"],
-                    );
-                    if let Some(column) = clicked {
-                        *open_dir_windows[shown[column]] = true;
-                    }
+                } else if let Some(error) = scan_error {
+                    error_state(&mut overlay, error);
                 }
             }
             two_folder.table.set_anchor(
@@ -560,13 +502,8 @@ pub fn draw_ui_folder_tree(
         *cursor = TreeCursor::at(&entry.rel_path);
     }
 
-    let table_y = table_top..=ui.min_rect().bottom();
-    let column_rects =
-        side_rects.map(|rect| egui::Rect::from_x_y_ranges(rect.x_range(), table_y.clone()));
-    let [rect_1, rect_2] = shown.map(|column| column_rects[column]);
-    handle_drops(ui, root_1, root_2, rect_1, rect_2, tool_message);
     if let Some(action) = row_action {
-        apply_row_action(ui.ctx(), action, root_1, root_2, tool_message);
+        apply_row_action(ui.ctx(), action, root_requests);
     }
     // The status line was drawn before this pane; show the new message next frame.
     if *tool_message != tool_message_before {
@@ -580,41 +517,16 @@ pub(super) fn shown_sides(swapped: bool) -> [usize; 2] {
     if swapped { [1, 0] } else { [0, 1] }
 }
 
-pub(super) struct SideRoots<'a> {
-    pub current: [&'a mut Option<PathBuf>; 2],
-    pub previous: [Option<&'a Path>; 2],
-}
-
 pub(super) fn folder_header(
     ui: &mut egui::Ui,
     sort: &mut TreeSort,
-    open_dir_window: &mut bool,
-    roots: SideRoots,
-    button_height: f32,
     find_chip_query: Option<&str>,
-    side: Side,
 ) -> Option<FindChipEvent> {
-    let mut chip_event = None;
-    ui.vertical(|ui| {
-        ui.horizontal(|ui| {
-            sort_header(ui, "Name", SortKey::Name, sort);
-            if let Some(query) = find_chip_query {
-                chip_event = find_chip(ui, query);
-            }
-            let available = ui.available_width();
-            if ui
-                .add_sized(
-                    [available, button_height],
-                    egui::Button::new("Open Folder"),
-                )
-                .clicked()
-            {
-                *open_dir_window = true;
-            }
-        });
-        root_path_bar(ui, roots, side);
-    });
-    chip_event
+    ui.horizontal(|ui| {
+        sort_header(ui, "Name", SortKey::Name, sort);
+        find_chip_query.and_then(|query| find_chip(ui, query))
+    })
+    .inner
 }
 
 pub(super) fn find_chip(ui: &mut egui::Ui, query: &str) -> Option<FindChipEvent> {
@@ -656,117 +568,4 @@ pub(super) fn sort_header(ui: &mut egui::Ui, text: &str, key: SortKey, sort: &mu
     {
         *sort = sort.clicked(key);
     }
-}
-
-pub(super) fn handle_drops(
-    ui: &egui::Ui,
-    root_1: &mut Option<PathBuf>,
-    root_2: &mut Option<PathBuf>,
-    rect1: egui::Rect,
-    rect2: egui::Rect,
-    tool_message: &mut Option<ToolMessage>,
-) -> bool {
-    let dropped = match zcommon_ui::common::dropped_file(ui.ctx()) {
-        Some((path, drop_pos)) if rect1.contains(drop_pos) => {
-            set_root_or_report(root_1, Side::Folder1, &path, tool_message);
-            true
-        }
-        Some((path, drop_pos)) if rect2.contains(drop_pos) => {
-            set_root_or_report(root_2, Side::Folder2, &path, tool_message);
-            true
-        }
-        _ => false,
-    };
-    if dropped {
-        // The status line was drawn before this pane.
-        ui.ctx().request_repaint();
-    }
-    dropped
-}
-
-#[derive(Clone)]
-pub(super) struct PathBarError {
-    root: Option<PathBuf>,
-    reason: String,
-}
-
-pub(super) fn root_path_bar(ui: &mut egui::Ui, roots: SideRoots, side: Side) {
-    let SideRoots {
-        current: roots,
-        previous: previous_roots,
-    } = roots;
-    let folders = roots.each_ref().map(|r| {
-        r.as_deref()
-            .map(|p| split_side(p).0.to_string_lossy().into_owned())
-    });
-    let dim = match &folders {
-        [Some(a), Some(b)] => common_parent(a, false, b, false),
-        _ => 0,
-    };
-    let index = match side {
-        Side::Folder1 => 0,
-        Side::Folder2 => 1,
-    };
-    let mut segments = folders[index]
-        .as_deref()
-        .map(split_path)
-        .unwrap_or_default();
-    // Editing starts from the last segment's path, which must keep the revision.
-    if let (Some(last), Some(root)) = (segments.last_mut(), roots[index].as_deref()) {
-        last.path = root.to_string_lossy().into_owned();
-    }
-    // Keyed to the root it was rejected against, so any later root change clears the red.
-    let error_id = ui.make_persistent_id(("root_path_bar_error", index));
-    let error = ui
-        .data(|d| d.get_temp::<PathBarError>(error_id))
-        .filter(|e| e.root == *roots[index]);
-    let (picked, action) = ui
-        .horizontal(|ui| {
-            let picked =
-                revision_dropdown(ui, index, roots[index].as_deref(), previous_roots[index]);
-            let action = path_bar(
-                ui,
-                ("root_path_bar", index),
-                &segments,
-                dim,
-                |i| i + 1 < segments.len(),
-                error.as_ref().map(|e| e.reason.as_str()),
-                false,
-            );
-            (picked, action)
-        })
-        .inner;
-    let picked = picked.map(|root| PathBarAction::Commit(root.to_string_lossy().into_owned()));
-    if let Some(action) = picked.or(action) {
-        let root = roots[index].clone();
-        match apply_path_bar(roots, side, action) {
-            Ok(()) => ui.data_mut(|d| d.remove::<PathBarError>(error_id)),
-            Err(e) => ui.data_mut(|d| {
-                let reason = e.to_string();
-                d.insert_temp(error_id, PathBarError { root, reason })
-            }),
-        }
-    }
-}
-
-pub(crate) fn apply_path_bar(
-    roots: [&mut Option<PathBuf>; 2],
-    side: Side,
-    action: PathBarAction,
-) -> Result<(), InvalidRoot> {
-    let [root_1, root_2] = roots;
-    let root = match side {
-        Side::Folder1 => root_1,
-        Side::Folder2 => root_2,
-    };
-    let path = match action {
-        PathBarAction::Segment(i) => {
-            let current = root.as_ref().expect("segment clicked on an empty path bar");
-            let (folder, rev) = split_side(current);
-            let segment = PathBuf::from(&split_path(&folder.to_string_lossy())[i].path);
-            with_revision(&segment, rev)
-        }
-        PathBarAction::Commit(text) => PathBuf::from(text.trim().trim_matches('"')),
-    };
-    set_root(root, side, &path)
 }
