@@ -63,7 +63,7 @@ use crate::folder::{
 use egui_tiles::Tile;
 
 #[derive(Debug, Default, Serialize, Deserialize)]
-pub struct AppStateCtx {
+pub struct FolderState {
     #[serde(skip)]
     pub hash_service: HashService,
     pub file_system_1_root_path: Option<PathBuf>,
@@ -208,7 +208,7 @@ fn folder_name(root: &Path) -> String {
         .to_owned()
 }
 
-impl AppStateCtx {
+impl FolderState {
     fn observe_nav(&mut self) {
         let now = FolderNav {
             roots: [
@@ -839,14 +839,14 @@ pub(crate) fn finish_side_scan(
 
 #[derive(Debug, Serialize, Deserialize)]
 enum AppState {
-    Startup(AppStateCtx),
-    Idle(AppStateCtx),
+    Startup(FolderState),
+    Idle(FolderState),
     Exit(),
 }
 
 impl Default for AppState {
     fn default() -> Self {
-        AppState::Startup(AppStateCtx::default())
+        AppState::Startup(FolderState::default())
     }
 }
 
@@ -898,6 +898,21 @@ fn discard_stale_rows(stale: bool, last_discard_frame: &mut Option<u64>, frame: 
         *last_discard_frame = Some(frame);
     }
     discard
+}
+
+fn window_title(state: &FolderState) -> String {
+    let rows = state
+        .two_folder_diff_visible_rows
+        .as_ref()
+        .map_or(0, |rows| rows.len());
+    let left = state.file_system_1_root_path.clone().unwrap_or_default();
+    let right = state.file_system_2_root_path.clone().unwrap_or_default();
+    format!(
+        "ZDiffFolder [{}] - {}, {}",
+        rows,
+        left.display(),
+        right.display()
+    )
 }
 
 fn restored_log_buffer() -> LogBuffer {
@@ -993,7 +1008,7 @@ impl ZApp {
         egui_tiles::Tree::new("my_tree", root, tiles)
     }
 
-    fn show_menu(&mut self, ui: &mut egui::Ui, app_ctx: &mut AppStateCtx) {
+    fn show_menu(&mut self, ui: &mut egui::Ui, app_ctx: &mut FolderState) {
         ui.horizontal(|ui| {
             egui::MenuBar::new()
                 .config(
@@ -1159,7 +1174,7 @@ impl ZApp {
         self.style_window.show::<FolderRole>(ui.ctx(), "Folder");
     }
 
-    fn ui(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame, app_ctx: &mut AppStateCtx) {
+    fn ui(&mut self, ctx: &egui::Context, app_ctx: &mut FolderState) {
         // Read before any widget runs: a single-line TextEdit gives up focus on Enter without
         // consuming the key, so a later check would hand that Enter to the tree cursor.
         let capturing = self.keybindings_window.is_capturing();
@@ -1356,34 +1371,12 @@ impl ZApp {
                 }
                 self.frame_stats.mark("Pane drawing");
 
-                for (_tile_id, tile) in self.tree.tiles.iter() {
-                    if let Tile::Pane(Pane::DuplicateFiles(_file_explorer)) = tile {
-                        let built_rows_len = app_ctx
-                            .two_folder_diff_visible_rows
-                            .as_ref()
-                            .map(|f| f.len())
-                            .unwrap_or(0);
-                        let source_path =
-                            app_ctx.file_system_1_root_path.clone().unwrap_or_default();
-                        let target_path =
-                            app_ctx.file_system_2_root_path.clone().unwrap_or_default();
-
-                        let new_title = format!(
-                            "ZDiffFolder [{}] - {}, {}",
-                            built_rows_len,
-                            source_path.display(),
-                            target_path.display()
-                        );
-
-                        // Every viewport command requests a repaint, so an unchanged title
-                        // would keep the app redrawing while idle.
-                        if new_title != self.title {
-                            ctx.send_viewport_cmd(egui::ViewportCommand::Title(new_title.clone()));
-                            self.title = new_title;
-                        }
-
-                        break;
-                    }
+                let new_title = window_title(app_ctx);
+                // Every viewport command requests a repaint, so an unchanged title
+                // would keep the app redrawing while idle.
+                if new_title != self.title {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Title(new_title.clone()));
+                    self.title = new_title;
                 }
 
                 match chip_event {
@@ -1403,7 +1396,7 @@ impl ZApp {
         });
     }
 
-    fn show_find(&mut self, ctx: &egui::Context, app_ctx: &mut AppStateCtx) {
+    fn show_find(&mut self, ctx: &egui::Context, app_ctx: &mut FolderState) {
         let status = app_ctx.find_matches.map(|matches| match matches {
             0 => "No results".to_owned(),
             1 => "1 match".to_owned(),
@@ -1527,6 +1520,80 @@ impl ZApp {
             None => self.diff_mode_path_diff = false,
         }
     }
+
+    fn idle_frame(&mut self, ctx: &egui::Context, state: &mut FolderState) {
+        let frame_start = Instant::now();
+        if self.is_path_diff() != self.diff_mode_path_diff {
+            if self.is_path_diff() {
+                self.set_path_diff_visible(false);
+                self.set_duplicate_files_visible(true);
+            } else {
+                self.set_duplicate_files_visible(false);
+                self.set_path_diff_visible(true);
+            }
+        }
+        // Handle folder dialogs
+        if self.open_dir_window_1 {
+            self.open_dir_window_1 = false;
+            if let Some(path) = rfd::FileDialog::new().pick_folder() {
+                set_root_or_report(
+                    &mut state.file_system_1_root_path,
+                    Side::Folder1,
+                    &path,
+                    &mut state.tool_message,
+                );
+            }
+        }
+        if self.open_dir_window_2 {
+            self.open_dir_window_2 = false;
+            if let Some(path) = rfd::FileDialog::new().pick_folder() {
+                set_root_or_report(
+                    &mut state.file_system_2_root_path,
+                    Side::Folder2,
+                    &path,
+                    &mut state.tool_message,
+                );
+            }
+        }
+        state.update_scans(ctx);
+        state.tree_compare.set_repaint(ctx);
+        state.update_compare(Instant::now());
+        self.frame_stats.mark("Scan and compare polling");
+        state.build_two_folder_diff_rows_if_stale();
+        self.frame_stats.mark("Row rebuild");
+        if state.file_system_1_scan.is_scanning()
+            || state.file_system_2_scan.is_scanning()
+            || state.tree_compare.is_comparing()
+        {
+            ctx.request_repaint_after(SCAN_PROGRESS_INTERVAL);
+        }
+        if state.poll_blueprints_pending(Instant::now()) {
+            ctx.request_repaint_after(Duration::from_millis(100));
+        }
+        let fetching = revision_open::is_fetching();
+        if let Some(outcome) = revision_open::take_outcome() {
+            state.tool_message = (outcome != ToolMessage::default()).then_some(outcome);
+        }
+        if fetching {
+            ctx.request_repaint_after(Duration::from_millis(100));
+        }
+        self.frame_stats.mark("Blueprint and revision polling");
+
+        self.ui(ctx, state);
+        // The panes drew the old rows under the new flags; the next pass rebuilds
+        // them before drawing, and only that pass is painted.
+        if discard_stale_rows(
+            state.rows_are_stale(),
+            &mut self.last_discard_frame,
+            ctx.cumulative_frame_nr(),
+        ) {
+            ctx.request_discard("folder rows are stale");
+        }
+        let frame_time = frame_start.elapsed();
+        if frame_time > LONG_FRAME {
+            log::warn!("UI frame took {} ms", frame_time.as_millis());
+        }
+    }
 }
 
 impl eframe::App for ZApp {
@@ -1563,84 +1630,13 @@ impl eframe::App for ZApp {
                 AppState::Idle(state_ctx)
             }
             AppState::Idle(mut state) => {
-                let frame_start = Instant::now();
                 self.zoom = sync_zoom(ctx);
                 if ctx.input(|i| i.events.contains(&egui::Event::WindowFocused(true))) {
                     load_shared(&mut state.keymap);
                 }
-                if self.is_path_diff() != self.diff_mode_path_diff {
-                    if self.is_path_diff() {
-                        self.set_path_diff_visible(false);
-                        self.set_duplicate_files_visible(true);
-                    } else {
-                        self.set_duplicate_files_visible(false);
-                        self.set_path_diff_visible(true);
-                    }
-                }
-                // Handle folder dialogs
-                if self.open_dir_window_1 {
-                    self.open_dir_window_1 = false;
-                    if let Some(path) = rfd::FileDialog::new().pick_folder() {
-                        set_root_or_report(
-                            &mut state.file_system_1_root_path,
-                            Side::Folder1,
-                            &path,
-                            &mut state.tool_message,
-                        );
-                    }
-                }
-                if self.open_dir_window_2 {
-                    self.open_dir_window_2 = false;
-                    if let Some(path) = rfd::FileDialog::new().pick_folder() {
-                        set_root_or_report(
-                            &mut state.file_system_2_root_path,
-                            Side::Folder2,
-                            &path,
-                            &mut state.tool_message,
-                        );
-                    }
-                }
-                state.update_scans(ctx);
-                state.tree_compare.set_repaint(ctx);
-                state.update_compare(Instant::now());
-                self.frame_stats.mark("Scan and compare polling");
-                state.build_two_folder_diff_rows_if_stale();
-                self.frame_stats.mark("Row rebuild");
-                if state.file_system_1_scan.is_scanning()
-                    || state.file_system_2_scan.is_scanning()
-                    || state.tree_compare.is_comparing()
-                {
-                    ctx.request_repaint_after(SCAN_PROGRESS_INTERVAL);
-                }
-                if state.poll_blueprints_pending(Instant::now()) {
-                    ctx.request_repaint_after(Duration::from_millis(100));
-                }
-                let fetching = revision_open::is_fetching();
-                if let Some(outcome) = revision_open::take_outcome() {
-                    state.tool_message = (outcome != ToolMessage::default()).then_some(outcome);
-                }
-                if fetching {
-                    ctx.request_repaint_after(Duration::from_millis(100));
-                }
-                self.frame_stats.mark("Blueprint and revision polling");
-
-                self.ui(ctx, frame, &mut state);
-                // The panes drew the old rows under the new flags; the next pass rebuilds
-                // them before drawing, and only that pass is painted.
-                if discard_stale_rows(
-                    state.rows_are_stale(),
-                    &mut self.last_discard_frame,
-                    ctx.cumulative_frame_nr(),
-                ) {
-                    ctx.request_discard("folder rows are stale");
-                }
-
+                self.idle_frame(ctx, &mut state);
                 self.process_ctx_inputs(ctx, frame);
                 self.frame_stats.mark("Esc and click handling");
-                let frame_time = frame_start.elapsed();
-                if frame_time > LONG_FRAME {
-                    log::warn!("UI frame took {} ms", frame_time.as_millis());
-                }
                 AppState::Idle(state)
             }
             AppState::Exit() => {
@@ -1662,8 +1658,8 @@ impl eframe::App for ZApp {
 #[cfg(test)]
 mod tests {
     use super::{
-        AppState, AppStateCtx, ScanAction, ZApp, cancel_scan, discard_stale_rows,
-        finish_side_scan, scan_action, scan_progress_text, update_side_scan,
+        AppState, FolderState, ScanAction, ZApp, cancel_scan, discard_stale_rows, finish_side_scan,
+        scan_action, scan_progress_text, update_side_scan,
     };
     use crate::folder::folder_keymap::FolderAction;
     use crate::folder::fs_tree::{DiffState, FileSystemView, HScrollLink};
@@ -1698,7 +1694,7 @@ mod tests {
         scan::{ContentHash, FlatEntry, FlatListing, HashKind, scan},
     };
 
-    fn finish_compare(state: &mut AppStateCtx) {
+    fn finish_compare(state: &mut FolderState) {
         state.build_two_folder_diff_rows_if_stale();
         let deadline = Instant::now() + Duration::from_secs(10);
         while state.tree_compare.is_comparing() {
@@ -1717,7 +1713,7 @@ mod tests {
         }
         fs::write(left.path().join("b.txt"), "left b").unwrap();
         fs::write(right.path().join("b.txt"), "right b").unwrap();
-        let mut state = AppStateCtx {
+        let mut state = FolderState {
             tree_sort: TreeSort::default().clicked(SortKey::State),
             file_system_model_1_view: load_view(left.path()),
             file_system_model_2_view: load_view(right.path()),
@@ -1757,13 +1753,13 @@ mod tests {
             fs::write(root.join("a.txt"), "a").unwrap();
             fs::write(root.join("b.md"), "b").unwrap();
         }
-        let mut state = AppStateCtx {
+        let mut state = FolderState {
             file_system_model_1_view: load_view(left.path()),
             file_system_model_2_view: load_view(right.path()),
             ..Default::default()
         };
         finish_compare(&mut state);
-        let a_state = |state: &AppStateCtx| {
+        let a_state = |state: &FolderState| {
             let rows = state.two_folder_diff_visible_rows.as_ref().unwrap();
             let row = rows.iter().find(|row| row.rel_path == "a.txt").unwrap();
             row.diff_state.clone()
@@ -1789,7 +1785,7 @@ mod tests {
             fs::write(root.join("a.txt"), "a").unwrap();
             fs::write(root.join("b.md"), "b").unwrap();
         }
-        let mut state = AppStateCtx {
+        let mut state = FolderState {
             file_system_model_1_view: load_view(left.path()),
             file_system_model_2_view: load_view(right.path()),
             ..Default::default()
@@ -1815,7 +1811,7 @@ mod tests {
         let (left, right) = (tempdir().unwrap(), tempdir().unwrap());
         fs::write(left.path().join("a.txt"), "left").unwrap();
         fs::write(right.path().join("a.txt"), "right").unwrap();
-        let mut state = AppStateCtx {
+        let mut state = FolderState {
             file_system_model_1_view: load_view(left.path()),
             file_system_model_2_view: load_view(right.path()),
             ..Default::default()
@@ -1848,7 +1844,7 @@ mod tests {
         }
         fs::write(left.path().join("sub/b.txt"), "left b").unwrap();
         fs::write(right.path().join("sub/b.txt"), "right b").unwrap();
-        let mut state = AppStateCtx {
+        let mut state = FolderState {
             likeness_bar: true,
             file_system_model_1_view: load_view(left.path()),
             file_system_model_2_view: load_view(right.path()),
@@ -1899,20 +1895,20 @@ mod tests {
         )))
     }
 
-    fn row_paths(state: &AppStateCtx) -> Vec<&str> {
+    fn row_paths(state: &FolderState) -> Vec<&str> {
         let rows = state.two_folder_diff_visible_rows.as_ref().unwrap();
         rows.iter().map(|r| r.rel_path.as_str()).collect()
     }
 
     #[test]
     fn the_filter_survives_a_restart() {
-        let state = AppStateCtx {
+        let state = FolderState {
             path_filter: blacklist("*.obj, target/"),
             ..Default::default()
         };
 
         let json = serde_json::to_string(&state).unwrap();
-        let restored: AppStateCtx = serde_json::from_str(&json).unwrap();
+        let restored: FolderState = serde_json::from_str(&json).unwrap();
 
         assert_eq!(restored.path_filter, state.path_filter);
         assert!(restored.path_filter.is_blacklisted("a.OBJ", false));
@@ -1921,17 +1917,17 @@ mod tests {
 
     #[test]
     fn a_state_saved_before_the_filter_existed_loads_with_an_empty_filter() {
-        let mut json: serde_json::Value = serde_json::to_value(AppStateCtx::default()).unwrap();
+        let mut json: serde_json::Value = serde_json::to_value(FolderState::default()).unwrap();
         json.as_object_mut().unwrap().remove("path_filter").unwrap();
 
-        let restored: AppStateCtx = serde_json::from_value(json).unwrap();
+        let restored: FolderState = serde_json::from_value(json).unwrap();
 
         assert_eq!(restored.path_filter, PathFilter::default());
     }
 
     #[test]
     fn the_keymap_survives_a_restart() {
-        let mut state = AppStateCtx::default();
+        let mut state = FolderState::default();
         state.keymap.shortcuts_mut(FolderAction::NextDiff).remove(0);
         state
             .keymap
@@ -1939,7 +1935,7 @@ mod tests {
             .clear();
 
         let json = serde_json::to_string(&state).unwrap();
-        let restored: AppStateCtx = serde_json::from_str(&json).unwrap();
+        let restored: FolderState = serde_json::from_str(&json).unwrap();
 
         assert_eq!(restored.keymap, state.keymap);
         assert_ne!(restored.keymap, Keymap::default());
@@ -1947,10 +1943,10 @@ mod tests {
 
     #[test]
     fn a_state_saved_before_the_keymap_existed_loads_the_default_keymap() {
-        let mut json: serde_json::Value = serde_json::to_value(AppStateCtx::default()).unwrap();
+        let mut json: serde_json::Value = serde_json::to_value(FolderState::default()).unwrap();
         json.as_object_mut().unwrap().remove("keymap");
 
-        let restored: AppStateCtx = serde_json::from_value(json).unwrap();
+        let restored: FolderState = serde_json::from_value(json).unwrap();
 
         assert_eq!(restored.keymap, Keymap::default());
     }
@@ -1966,10 +1962,10 @@ mod tests {
             modifiers: egui::Modifiers::NONE,
         };
         let restore = |refresh: Vec<Shortcut>| {
-            let mut state = AppStateCtx::default();
+            let mut state = FolderState::default();
             *state.keymap.shortcuts_mut(FolderAction::Refresh) = refresh;
             let json = serde_json::to_string(&state).unwrap();
-            serde_json::from_str::<AppStateCtx>(&json).unwrap().keymap
+            serde_json::from_str::<FolderState>(&json).unwrap().keymap
         };
 
         assert_eq!(
@@ -1993,7 +1989,7 @@ mod tests {
             fs::write(root.join("a.txt"), "a").unwrap();
             fs::write(root.join("b.obj"), "b").unwrap();
         }
-        let mut state = AppStateCtx {
+        let mut state = FolderState {
             file_system_model_1_view: load_view(left.path()),
             file_system_model_2_view: load_view(right.path()),
             ..Default::default()
@@ -2081,7 +2077,7 @@ mod tests {
     #[test]
     fn a_restored_idle_app_runs_startup_again() {
         let mut app = ZApp::new(LogBuffer::default());
-        app.state = Some(AppState::Idle(AppStateCtx::default()));
+        app.state = Some(AppState::Idle(FolderState::default()));
         app.request_init();
         assert!(matches!(app.state, Some(AppState::Startup(_))));
     }
@@ -2095,7 +2091,7 @@ mod tests {
                 fs::write(root.join(dir).join("a.rs"), "a").unwrap();
             }
         }
-        let mut state = AppStateCtx {
+        let mut state = FolderState {
             file_system_model_1_view: load_view(left.path()),
             file_system_model_2_view: load_view(right.path()),
             ..Default::default()
@@ -2113,14 +2109,14 @@ mod tests {
 
     #[test]
     fn filter_presets_survive_a_restart() {
-        let mut state = AppStateCtx::default();
+        let mut state = FolderState::default();
         let (builtins, user) = FilterField::Blacklist.presets(&mut state.filter_presets);
         user.save(builtins, "Mine", "*.tmp").unwrap();
         let (builtins, user) = FilterField::Whitelist.presets(&mut state.filter_presets);
         user.save(builtins, "Shaders", "*.hlsl *.usf").unwrap();
 
         let json = serde_json::to_string(&state).unwrap();
-        let restored: AppStateCtx = serde_json::from_str(&json).unwrap();
+        let restored: FolderState = serde_json::from_str(&json).unwrap();
 
         assert_eq!(restored.filter_presets, state.filter_presets);
         assert_ne!(restored.filter_presets, FilterPresets::default());
@@ -2128,20 +2124,20 @@ mod tests {
 
     #[test]
     fn a_state_saved_before_filter_presets_existed_loads_none() {
-        let mut json: serde_json::Value = serde_json::to_value(AppStateCtx::default()).unwrap();
+        let mut json: serde_json::Value = serde_json::to_value(FolderState::default()).unwrap();
         json.as_object_mut()
             .unwrap()
             .remove("filter_presets")
             .unwrap();
 
-        let restored: AppStateCtx = serde_json::from_value(json).unwrap();
+        let restored: FolderState = serde_json::from_value(json).unwrap();
 
         assert_eq!(restored.filter_presets, FilterPresets::default());
     }
 
     #[test]
     fn the_sort_survives_a_restart() {
-        let mut state = AppStateCtx {
+        let mut state = FolderState {
             tree_sort: TreeSort::default()
                 .clicked(SortKey::State)
                 .clicked(SortKey::State),
@@ -2150,7 +2146,7 @@ mod tests {
         state.tree_sort.flat = true;
 
         let json = serde_json::to_string(&state).unwrap();
-        let restored: AppStateCtx = serde_json::from_str(&json).unwrap();
+        let restored: FolderState = serde_json::from_str(&json).unwrap();
 
         assert_eq!(
             restored.tree_sort,
@@ -2164,10 +2160,10 @@ mod tests {
 
     #[test]
     fn a_state_saved_before_the_sort_existed_loads_sorted_by_name_ascending() {
-        let mut json: serde_json::Value = serde_json::to_value(AppStateCtx::default()).unwrap();
+        let mut json: serde_json::Value = serde_json::to_value(FolderState::default()).unwrap();
         json.as_object_mut().unwrap().remove("tree_sort").unwrap();
 
-        let restored: AppStateCtx = serde_json::from_value(json).unwrap();
+        let restored: FolderState = serde_json::from_value(json).unwrap();
 
         assert_eq!(
             restored.tree_sort,
@@ -2182,7 +2178,7 @@ mod tests {
     #[test]
     fn the_state_filter_and_show_parents_survive_a_restart() {
         for states in [StateFilter::Diff, StateFilter::Equal] {
-            let state = AppStateCtx {
+            let state = FolderState {
                 diff_filter: DiffFilter {
                     states,
                     show_parents: false,
@@ -2191,7 +2187,7 @@ mod tests {
             };
 
             let json = serde_json::to_string(&state).unwrap();
-            let restored: AppStateCtx = serde_json::from_str(&json).unwrap();
+            let restored: FolderState = serde_json::from_str(&json).unwrap();
 
             assert_eq!(restored.diff_filter, state.diff_filter);
         }
@@ -2199,10 +2195,10 @@ mod tests {
 
     #[test]
     fn a_state_saved_before_diff_only_existed_shows_every_row_with_parents() {
-        let mut json: serde_json::Value = serde_json::to_value(AppStateCtx::default()).unwrap();
+        let mut json: serde_json::Value = serde_json::to_value(FolderState::default()).unwrap();
         json.as_object_mut().unwrap().remove("diff_filter").unwrap();
 
-        let restored: AppStateCtx = serde_json::from_value(json).unwrap();
+        let restored: FolderState = serde_json::from_value(json).unwrap();
 
         assert_eq!(
             restored.diff_filter,
@@ -2216,11 +2212,11 @@ mod tests {
     #[test]
     fn a_saved_diff_only_loads_as_the_diff_state_filter() {
         for (diff_only, states) in [(true, StateFilter::Diff), (false, StateFilter::All)] {
-            let mut json: serde_json::Value = serde_json::to_value(AppStateCtx::default()).unwrap();
+            let mut json: serde_json::Value = serde_json::to_value(FolderState::default()).unwrap();
             json["diff_filter"] =
                 serde_json::json!({ "diff_only": diff_only, "show_parents": false });
 
-            let restored: AppStateCtx = serde_json::from_value(json).unwrap();
+            let restored: FolderState = serde_json::from_value(json).unwrap();
 
             assert_eq!(
                 restored.diff_filter,
@@ -2234,7 +2230,7 @@ mod tests {
 
     #[test]
     fn the_duplicates_bar_survives_a_restart() {
-        let state = AppStateCtx {
+        let state = FolderState {
             duplicates_filter: DuplicatesFilter {
                 duplicates_only: true,
                 show_parents: false,
@@ -2244,20 +2240,20 @@ mod tests {
         };
 
         let json = serde_json::to_string(&state).unwrap();
-        let restored: AppStateCtx = serde_json::from_str(&json).unwrap();
+        let restored: FolderState = serde_json::from_str(&json).unwrap();
 
         assert_eq!(restored.duplicates_filter, state.duplicates_filter);
     }
 
     #[test]
     fn a_state_saved_before_the_duplicates_bar_existed_shows_every_row_without_hashes() {
-        let mut json: serde_json::Value = serde_json::to_value(AppStateCtx::default()).unwrap();
+        let mut json: serde_json::Value = serde_json::to_value(FolderState::default()).unwrap();
         json.as_object_mut()
             .unwrap()
             .remove("duplicates_filter")
             .unwrap();
 
-        let restored: AppStateCtx = serde_json::from_value(json).unwrap();
+        let restored: FolderState = serde_json::from_value(json).unwrap();
 
         assert_eq!(
             restored.duplicates_filter,
@@ -2271,70 +2267,70 @@ mod tests {
 
     #[test]
     fn the_likeness_bar_survives_a_restart() {
-        let state = AppStateCtx {
+        let state = FolderState {
             likeness_bar: true,
             ..Default::default()
         };
 
         let json = serde_json::to_string(&state).unwrap();
-        let restored: AppStateCtx = serde_json::from_str(&json).unwrap();
+        let restored: FolderState = serde_json::from_str(&json).unwrap();
 
         assert!(restored.likeness_bar);
     }
 
     #[test]
     fn swapped_sides_survive_a_restart() {
-        let state = AppStateCtx {
+        let state = FolderState {
             sides_swapped: true,
             ..Default::default()
         };
 
         let json = serde_json::to_string(&state).unwrap();
-        let restored: AppStateCtx = serde_json::from_str(&json).unwrap();
+        let restored: FolderState = serde_json::from_str(&json).unwrap();
 
         assert!(restored.sides_swapped);
     }
 
     #[test]
     fn a_state_saved_before_the_likeness_bar_existed_loads_it_off() {
-        let mut json: serde_json::Value = serde_json::to_value(AppStateCtx::default()).unwrap();
+        let mut json: serde_json::Value = serde_json::to_value(FolderState::default()).unwrap();
         json.as_object_mut()
             .unwrap()
             .remove("likeness_bar")
             .unwrap();
 
-        let restored: AppStateCtx = serde_json::from_value(json).unwrap();
+        let restored: FolderState = serde_json::from_value(json).unwrap();
 
         assert!(!restored.likeness_bar);
     }
 
     #[test]
     fn linked_horizontal_scroll_is_on_by_default() {
-        assert!(AppStateCtx::default().h_scroll_link.0);
+        assert!(FolderState::default().h_scroll_link.0);
     }
 
     #[test]
     fn unlinked_horizontal_scroll_survives_a_restart() {
-        let state = AppStateCtx {
+        let state = FolderState {
             h_scroll_link: HScrollLink(false),
             ..Default::default()
         };
 
         let json = serde_json::to_string(&state).unwrap();
-        let restored: AppStateCtx = serde_json::from_str(&json).unwrap();
+        let restored: FolderState = serde_json::from_str(&json).unwrap();
 
         assert!(!restored.h_scroll_link.0);
     }
 
     #[test]
     fn a_state_saved_before_the_link_toggle_existed_loads_it_on() {
-        let mut json: serde_json::Value = serde_json::to_value(AppStateCtx::default()).unwrap();
+        let mut json: serde_json::Value = serde_json::to_value(FolderState::default()).unwrap();
         json.as_object_mut()
             .unwrap()
             .remove("h_scroll_link")
             .unwrap();
 
-        let restored: AppStateCtx = serde_json::from_value(json).unwrap();
+        let restored: FolderState = serde_json::from_value(json).unwrap();
 
         assert!(restored.h_scroll_link.0);
     }
@@ -2347,7 +2343,7 @@ mod tests {
         }
         fs::write(left.path().join("b.txt"), "left b").unwrap();
         fs::write(right.path().join("b.txt"), "right b").unwrap();
-        let mut state = AppStateCtx {
+        let mut state = FolderState {
             file_system_model_1_view: load_view(left.path()),
             file_system_model_2_view: load_view(right.path()),
             ..Default::default()
@@ -2363,7 +2359,7 @@ mod tests {
 
     #[test]
     fn the_tolerance_settings_survive_a_restart() {
-        let state = AppStateCtx {
+        let state = FolderState {
             tolerance: Tolerance {
                 enabled: true,
                 size: false,
@@ -2376,17 +2372,17 @@ mod tests {
         };
 
         let json = serde_json::to_string(&state).unwrap();
-        let restored: AppStateCtx = serde_json::from_str(&json).unwrap();
+        let restored: FolderState = serde_json::from_str(&json).unwrap();
 
         assert_eq!(restored.tolerance, state.tolerance);
     }
 
     #[test]
     fn a_state_saved_before_tolerance_existed_loads_it_off_with_a_1_percent_size_criterion() {
-        let mut json: serde_json::Value = serde_json::to_value(AppStateCtx::default()).unwrap();
+        let mut json: serde_json::Value = serde_json::to_value(FolderState::default()).unwrap();
         json.as_object_mut().unwrap().remove("tolerance").unwrap();
 
-        let restored: AppStateCtx = serde_json::from_value(json).unwrap();
+        let restored: FolderState = serde_json::from_value(json).unwrap();
 
         assert_eq!(
             restored.tolerance,
@@ -2409,13 +2405,13 @@ mod tests {
         }
         fs::write(left.path().join("b.txt"), "left b").unwrap();
         fs::write(right.path().join("b.txt"), "right b").unwrap();
-        let mut state = AppStateCtx {
+        let mut state = FolderState {
             file_system_model_1_view: load_view(left.path()),
             file_system_model_2_view: load_view(right.path()),
             ..Default::default()
         };
         finish_compare(&mut state);
-        let b_state = |state: &AppStateCtx| {
+        let b_state = |state: &FolderState| {
             let rows = state.two_folder_diff_visible_rows.as_ref().unwrap();
             let row = rows.iter().find(|row| row.rel_path == "b.txt").unwrap();
             row.diff_state.clone()
@@ -2439,25 +2435,25 @@ mod tests {
 
     #[test]
     fn a_tolerance_saved_before_the_likeness_criterion_existed_loads_it_off_at_99_percent() {
-        let mut json: serde_json::Value = serde_json::to_value(AppStateCtx::default()).unwrap();
+        let mut json: serde_json::Value = serde_json::to_value(FolderState::default()).unwrap();
         let tolerance = json["tolerance"].as_object_mut().unwrap();
         tolerance.remove("likeness").unwrap();
         tolerance.remove("min_likeness").unwrap();
 
-        let restored: AppStateCtx = serde_json::from_value(json).unwrap();
+        let restored: FolderState = serde_json::from_value(json).unwrap();
 
         assert!(!restored.tolerance.likeness);
         assert_eq!(restored.tolerance.min_likeness, 99.0);
     }
 
-    fn b_different_trees() -> (TempDir, TempDir, AppStateCtx) {
+    fn b_different_trees() -> (TempDir, TempDir, FolderState) {
         let (left, right) = (tempdir().unwrap(), tempdir().unwrap());
         for root in [left.path(), right.path()] {
             fs::write(root.join("a.txt"), "a").unwrap();
         }
         fs::write(left.path().join("b.txt"), "left b").unwrap();
         fs::write(right.path().join("b.txt"), "right b").unwrap();
-        let state = AppStateCtx {
+        let state = FolderState {
             file_system_model_1_view: load_view(left.path()),
             file_system_model_2_view: load_view(right.path()),
             ..Default::default()
@@ -2465,7 +2461,7 @@ mod tests {
         (left, right, state)
     }
 
-    fn b_state(state: &AppStateCtx) -> DiffState {
+    fn b_state(state: &FolderState) -> DiffState {
         let rows = state.two_folder_diff_visible_rows.as_ref().unwrap();
         let row = rows.iter().find(|row| row.rel_path == "b.txt").unwrap();
         row.diff_state.clone()
@@ -2520,7 +2516,7 @@ mod tests {
         }
         fs::write(left.path().join("z/b.txt"), "left b").unwrap();
         fs::write(right.path().join("z/b.txt"), "right b").unwrap();
-        let mut state = AppStateCtx {
+        let mut state = FolderState {
             file_system_model_1_view: load_view(left.path()),
             file_system_model_2_view: load_view(right.path()),
             ..Default::default()
@@ -2577,7 +2573,7 @@ mod tests {
         }
         fs::write(left.path().join("b.txt"), "left b").unwrap();
         fs::write(right.path().join("b.txt"), "right b").unwrap();
-        let mut state = AppStateCtx {
+        let mut state = FolderState {
             file_system_model_1_view: load_view(left.path()),
             file_system_model_2_view: load_view(right.path()),
             ..Default::default()
@@ -2599,7 +2595,7 @@ mod tests {
         assert_eq!(row_paths(&state), ["", "z", "z/c.txt", "a.txt", "b.txt"]);
     }
 
-    fn find_state(files: &[&str]) -> (TempDir, TempDir, AppStateCtx) {
+    fn find_state(files: &[&str]) -> (TempDir, TempDir, FolderState) {
         let (left, right) = (tempdir().unwrap(), tempdir().unwrap());
         for root in [left.path(), right.path()] {
             for file in files {
@@ -2608,7 +2604,7 @@ mod tests {
                 fs::write(path, root.to_string_lossy().as_bytes()).unwrap();
             }
         }
-        let state = AppStateCtx {
+        let state = FolderState {
             file_system_model_1_view: load_view(left.path()),
             file_system_model_2_view: load_view(right.path()),
             ..Default::default()
@@ -2616,7 +2612,7 @@ mod tests {
         (left, right, state)
     }
 
-    fn set_find(state: &mut AppStateCtx, text: &str) {
+    fn set_find(state: &mut FolderState, text: &str) {
         state.folder_find.query.text = text.to_owned();
         state.apply_find();
     }
@@ -2774,14 +2770,14 @@ mod tests {
 
         let json = serde_json::to_string(&state).unwrap();
         assert!(!json.contains("forgotten_query"));
-        let restored: AppStateCtx = serde_json::from_str(&json).unwrap();
+        let restored: FolderState = serde_json::from_str(&json).unwrap();
 
         assert_eq!(restored.folder_find, FolderFind::default());
         assert_eq!(restored.find_applied, FolderFind::default());
         assert_eq!(restored.find_matches, None);
     }
 
-    fn finish_scans(state: &mut AppStateCtx) {
+    fn finish_scans(state: &mut FolderState) {
         finish_side_scan(
             Side::Folder1,
             &mut state.file_system_1_root_path,
@@ -2803,15 +2799,15 @@ mod tests {
             .map(|view| view.file_system.path(view.file_system.get_root_node_id()))
     }
 
-    fn loaded(root_1: &Path, root_2: &Path) -> AppStateCtx {
-        let mut state = AppStateCtx::default();
+    fn loaded(root_1: &Path, root_2: &Path) -> FolderState {
+        let mut state = FolderState::default();
         set_root(&mut state.file_system_1_root_path, Side::Folder1, root_1).unwrap();
         set_root(&mut state.file_system_2_root_path, Side::Folder2, root_2).unwrap();
         finish_scans(&mut state);
         state
     }
 
-    fn update_side_1(state: &mut AppStateCtx) {
+    fn update_side_1(state: &mut FolderState) {
         update_side_scan(
             Side::Folder1,
             &mut state.file_system_1_root_path,
@@ -2822,7 +2818,7 @@ mod tests {
         );
     }
 
-    fn cancel_side_1(state: &mut AppStateCtx) {
+    fn cancel_side_1(state: &mut FolderState) {
         cancel_scan(
             Side::Folder1,
             &mut state.file_system_1_root_path,
@@ -2901,7 +2897,7 @@ mod tests {
         let (left, right) = (tempdir().unwrap(), tempdir().unwrap());
         fs::write(left.path().join("a.txt"), "a").unwrap();
         fs::write(right.path().join("b.txt"), "b").unwrap();
-        let mut state = AppStateCtx::default();
+        let mut state = FolderState::default();
         set_root(
             &mut state.file_system_1_root_path,
             Side::Folder1,
@@ -3007,7 +3003,7 @@ mod tests {
     #[test]
     fn cancelling_the_first_scan_leaves_the_side_empty() {
         let dir = tempdir().unwrap();
-        let mut state = AppStateCtx::default();
+        let mut state = FolderState::default();
         set_root(
             &mut state.file_system_1_root_path,
             Side::Folder1,
@@ -3061,7 +3057,7 @@ mod tests {
         use zcommon::history::HistoryStep::{Redo, Undo};
         let (a, b) = (PathBuf::from(r"C:\a"), PathBuf::from(r"C:\b"));
         let branch = PathBuf::from(r"C:\a@git:main");
-        let mut state = AppStateCtx {
+        let mut state = FolderState {
             file_system_1_root_path: Some(a.clone()),
             file_system_2_root_path: Some(b.clone()),
             ..Default::default()
@@ -3090,7 +3086,7 @@ mod tests {
     fn the_previous_root_is_the_same_folder_before_its_latest_change() {
         let local = PathBuf::from(r"C:\ws\src");
         let branch = PathBuf::from(r"C:\ws\src@git:main");
-        let mut state = AppStateCtx {
+        let mut state = FolderState {
             file_system_1_root_path: Some(local.clone()),
             ..Default::default()
         };
@@ -3266,7 +3262,7 @@ mod tests {
     #[test]
     fn idle_and_scrolling_frames_of_a_100k_file_folder_diff_fit_a_60_hz_frame() {
         let (left, right) = (tempdir().unwrap(), tempdir().unwrap());
-        let mut state = AppStateCtx {
+        let mut state = FolderState {
             file_system_1_root_path: Some(left.path().to_path_buf()),
             file_system_2_root_path: Some(right.path().to_path_buf()),
             file_system_model_1_view: Some(in_memory_view(left.path(), files_50k(1))),
@@ -3274,8 +3270,7 @@ mod tests {
             ..Default::default()
         };
         finish_compare(&mut state);
-        let mut app = ZApp::new(LogBuffer::default());
-        app.state = Some(AppState::Idle(state));
+        let mut app = idle_app(state);
         let ctx = egui::Context::default();
 
         median_frame(&ctx, &mut app, 3, Vec::new);
@@ -3301,7 +3296,7 @@ mod tests {
     #[test]
     fn idle_and_pointer_moved_frames_of_a_100k_file_diff_expanded_to_its_diffs_fit_a_60_hz_frame() {
         let (left, right) = (tempdir().unwrap(), tempdir().unwrap());
-        let mut state = AppStateCtx {
+        let mut state = FolderState {
             file_system_1_root_path: Some(left.path().to_path_buf()),
             file_system_2_root_path: Some(right.path().to_path_buf()),
             file_system_model_1_view: Some(in_memory_view(left.path(), files_50k(1))),
@@ -3320,8 +3315,7 @@ mod tests {
                 views[1].collapsed.insert(second, true);
             }
         }
-        let mut app = ZApp::new(LogBuffer::default());
-        app.state = Some(AppState::Idle(state));
+        let mut app = idle_app(state);
         let ctx = egui::Context::default();
 
         median_frame(&ctx, &mut app, 3, Vec::new);
@@ -3400,7 +3394,7 @@ mod tests {
     #[test]
     fn pressing_the_folder_tree_scroll_bar_scrolls_at_a_fractional_zoom() {
         let (left, right) = (tempdir().unwrap(), tempdir().unwrap());
-        let mut state = AppStateCtx {
+        let mut state = FolderState {
             file_system_1_root_path: Some(left.path().to_path_buf()),
             file_system_2_root_path: Some(right.path().to_path_buf()),
             file_system_model_1_view: Some(in_memory_view(left.path(), files_50k(1))),
@@ -3408,8 +3402,7 @@ mod tests {
             ..Default::default()
         };
         finish_compare(&mut state);
-        let mut app = ZApp::new(LogBuffer::default());
-        app.state = Some(AppState::Idle(state));
+        let mut app = idle_app(state);
         let ctx = egui::Context::default();
         ctx.set_zoom_factor(1.25);
         let screen = egui::vec2(1600.0, 1000.0);
@@ -3468,7 +3461,7 @@ mod tests {
         tree_sort: TreeSort,
     ) -> (String, Vec<String>) {
         let (left, right) = (tempdir().unwrap(), tempdir().unwrap());
-        let mut state = AppStateCtx {
+        let mut state = FolderState {
             file_system_1_root_path: Some(left.path().to_path_buf()),
             file_system_2_root_path: Some(right.path().to_path_buf()),
             file_system_model_1_view: Some(in_memory_view(left.path(), pending_files())),
@@ -3479,8 +3472,7 @@ mod tests {
         };
         state.build_two_folder_diff_rows_if_stale();
         let (sender, paths) = state.tree_compare.pause(Instant::now());
-        let mut app = ZApp::new(LogBuffer::default());
-        app.state = Some(AppState::Idle(state));
+        let mut app = idle_app(state);
         let ctx = egui::Context::default();
         let screen = egui::vec2(1600.0, 1000.0);
         let wheel = || {
@@ -3514,10 +3506,7 @@ mod tests {
             sender.send((i, result)).unwrap();
         }
         drop(sender);
-        let comparing = |app: &ZApp| match &app.state {
-            Some(AppState::Idle(state)) => state.tree_compare.is_comparing(),
-            _ => unreachable!("the app is idle"),
-        };
+        let comparing = |app: &ZApp| folder_state(app).tree_compare.is_comparing();
         while comparing(&app) {
             frame_texts(&ctx, &mut app, screen, Vec::new());
         }
@@ -3574,9 +3563,9 @@ mod tests {
             .collect()
     }
 
-    fn nested_folder_diff(tree_sort: TreeSort) -> (TempDir, TempDir, AppStateCtx) {
+    fn nested_folder_diff(tree_sort: TreeSort) -> (TempDir, TempDir, FolderState) {
         let (left, right) = (tempdir().unwrap(), tempdir().unwrap());
-        let mut state = AppStateCtx {
+        let mut state = FolderState {
             file_system_1_root_path: Some(left.path().to_path_buf()),
             file_system_2_root_path: Some(right.path().to_path_buf()),
             file_system_model_1_view: Some(in_memory_view(left.path(), nested_files(1))),
@@ -3588,13 +3577,13 @@ mod tests {
         (left, right, state)
     }
 
-    fn idle_app(state: AppStateCtx) -> ZApp {
+    fn idle_app(state: FolderState) -> ZApp {
         let mut app = ZApp::new(LogBuffer::default());
         app.state = Some(AppState::Idle(state));
         app
     }
 
-    fn idle_state(app: &ZApp) -> &AppStateCtx {
+    fn folder_state(app: &ZApp) -> &FolderState {
         match &app.state {
             Some(AppState::Idle(state)) => state,
             _ => unreachable!("the app is idle"),
@@ -3655,7 +3644,7 @@ mod tests {
 
         let [before, click, next] = click_frame_and_next(&mut app, "F");
 
-        assert!(idle_state(&app).tree_sort.flat);
+        assert!(folder_state(&app).tree_sort.flat);
         assert_ne!(before.steady_texts(), next.steady_texts());
         assert_eq!(click.steady_texts(), next.steady_texts());
         assert_eq!(next.passes, 1);
@@ -3688,7 +3677,7 @@ mod tests {
 
         let [before, click, next] = click_frame_and_next(&mut app, "F");
 
-        assert!(!idle_state(&app).tree_sort.flat);
+        assert!(!folder_state(&app).tree_sort.flat);
         assert_ne!(before.steady_texts(), next.steady_texts());
         assert_eq!(click.steady_texts(), next.steady_texts());
         assert_eq!(next.passes, 1);
@@ -3701,7 +3690,7 @@ mod tests {
 
         let [before, click, next] = click_frame_and_next(&mut app, "D");
 
-        assert_eq!(idle_state(&app).diff_filter.states, StateFilter::Diff);
+        assert_eq!(folder_state(&app).diff_filter.states, StateFilter::Diff);
         assert_ne!(before.steady_texts(), next.steady_texts());
         assert_eq!(click.steady_texts(), next.steady_texts());
         assert_eq!(next.passes, 1);
@@ -3723,7 +3712,7 @@ mod tests {
         );
         let next = painted_frame(&ctx, &mut app, SCREEN, Vec::new());
 
-        assert_eq!(idle_state(&app).path_filter, blacklist("dir_0/"));
+        assert_eq!(folder_state(&app).path_filter, blacklist("dir_0/"));
         assert_ne!(before.steady_texts(), next.steady_texts());
         assert_eq!(typed.steady_texts(), next.steady_texts());
         assert_eq!(next.passes, 1);
@@ -3738,7 +3727,7 @@ mod tests {
 
         let [before, click, next] = click_frame_and_next(&mut app, "F");
 
-        assert!(idle_state(&app).tree_sort.flat);
+        assert!(folder_state(&app).tree_sort.flat);
         assert_ne!(before.steady_texts(), next.steady_texts());
         assert_eq!(click.steady_texts(), next.steady_texts());
         assert_eq!(next.passes, 1);
@@ -3747,7 +3736,7 @@ mod tests {
     #[test]
     fn the_rows_go_stale_with_each_of_their_inputs_until_rebuilt() {
         let (_left, _right, mut state) = nested_folder_diff(TreeSort::default());
-        let changes: [fn(&mut AppStateCtx); 6] = [
+        let changes: [fn(&mut FolderState); 6] = [
             |state| state.tree_sort.flat = true,
             |state| state.diff_filter.states = StateFilter::Diff,
             |state| state.diff_filter.show_parents = false,
@@ -3770,12 +3759,12 @@ mod tests {
 
     #[test]
     fn a_changed_sort_without_a_shown_folder_paints_in_one_pass_and_idles() {
-        let mut state = AppStateCtx::default();
+        let mut state = FolderState::default();
         state.tree_sort.flat = true;
         state.diff_filter.states = StateFilter::Diff;
         let mut app = idle_app(state);
 
-        assert!(!idle_state(&app).rows_are_stale());
+        assert!(!folder_state(&app).rows_are_stale());
         assert_eq!(settled_frame(&egui::Context::default(), &mut app).passes, 1);
         assert_eq!(settled_repaint_delay(&mut app), Duration::MAX);
     }
@@ -3807,7 +3796,7 @@ mod tests {
             fs::write(root.join("a.txt"), "same size").unwrap();
             fs::write(root.join("b.txt"), "same_size").unwrap();
         }
-        let mut state = AppStateCtx {
+        let mut state = FolderState {
             hash_service,
             file_system_1_root_path: Some(left.path().to_path_buf()),
             file_system_2_root_path: Some(right.path().to_path_buf()),
@@ -3816,8 +3805,7 @@ mod tests {
             ..Default::default()
         };
         finish_compare(&mut state);
-        let mut app = ZApp::new(LogBuffer::default());
-        app.state = Some(AppState::Idle(state));
+        let app = idle_app(state);
         (left, right, app)
     }
 

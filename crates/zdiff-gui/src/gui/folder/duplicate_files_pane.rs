@@ -1537,8 +1537,8 @@ impl DuplicateFilesPane {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::folder::app::{SideScan, finish_side_scan};
     use crate::folder::tree_sort::SortKey;
+    use crate::folder::view::{SideScan, finish_side_scan};
     use std::fs;
     use std::io;
     use std::path::Path;

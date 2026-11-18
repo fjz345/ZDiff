@@ -1,4 +1,3 @@
-pub mod app;
 pub mod duplicate_files_pane;
 pub mod export;
 pub mod folder_keymap;
@@ -20,3 +19,4 @@ pub mod tree_map;
 pub mod tree_menu;
 pub mod tree_sort;
 pub mod tree_tolerance;
+pub mod view;

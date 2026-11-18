@@ -13,7 +13,7 @@ use std::{
 use crate::{
     app::ZApp,
     cli::LaunchMode,
-    folder::{app::ZApp as FolderZApp, roots::parse_launch_args},
+    folder::{roots::parse_launch_args, view::ZApp as FolderZApp},
 };
 
 mod app;
