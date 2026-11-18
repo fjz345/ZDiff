@@ -183,6 +183,7 @@ pub struct FileDiffPaneCtx<'a> {
     pub revert_request: &'a mut Option<RevertRequest>,
     /// `RowBlock::key` of the block whose button was clicked, and what the button asks for.
     pub block_toggle_request: &'a mut Option<(usize, BlockToggle)>,
+    pub open_pair_request: &'a mut Option<[UniversalPath; 2]>,
     pub scope_breadcrumb: bool,
     pub scope_block_headers: bool,
     pub revert_buttons: bool,

@@ -354,6 +354,18 @@ pub fn depot_node(content: &DepotContent, path: &Path) -> io::Result<(String, De
     Ok((format!("{}/{rel}", content.depot_folder), revision))
 }
 
+pub fn git_node(content: &GitContent, path: &Path) -> io::Result<(PathBuf, GitRev)> {
+    let rel = rel_under(&content.model_root, path)?;
+    let file = [content.dir.as_str(), rel.as_str()]
+        .into_iter()
+        .filter(|part| !part.is_empty())
+        .fold(content.repo_root.clone(), |file, part| {
+            join_rel(&file, part)
+        });
+    let revision = content.commit.clone().map_or(GitRev::Index, GitRev::Rev);
+    Ok((file, revision))
+}
+
 /// The file of a node of a depot side at the revision it was listed with.
 pub fn read_depot_file(
     p4: &impl P4Runner,
@@ -634,6 +646,33 @@ mod tests {
             String::from_utf8(bytes).unwrap(),
             format!("bytes of {COMMIT}:src/a/b.rs")
         );
+    }
+
+    #[test]
+    fn a_git_node_is_its_working_tree_path_at_the_listed_commit_or_the_index() {
+        let listed = content(Some(COMMIT));
+        let file = PathBuf::from("D:/repo").join("src").join("a").join("b.rs");
+        let path = listed.model_root.join("a").join("b.rs");
+        assert_eq!(
+            git_node(&listed, &path).unwrap(),
+            (file.clone(), GitRev::Rev(COMMIT.into()))
+        );
+        assert_eq!(
+            git_node(&content(None), &path).unwrap(),
+            (file, GitRev::Index)
+        );
+
+        let at_repo_root = GitContent {
+            dir: String::new(),
+            ..content(None)
+        };
+        assert_eq!(
+            git_node(&at_repo_root, &at_repo_root.model_root.join("b.rs")).unwrap(),
+            (PathBuf::from("D:/repo").join("b.rs"), GitRev::Index)
+        );
+
+        let outside = git_node(&listed, Path::new(r"D:\repo\src\b.rs")).unwrap_err();
+        assert_eq!(outside.kind(), io::ErrorKind::NotFound);
     }
 
     #[test]

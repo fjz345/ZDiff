@@ -290,6 +290,7 @@ impl ZApp {
                 [&mut *file_1, &mut *file_2].map(|file| file.get_loading_path().is_some())
             };
             let mut block_toggle_request = None;
+            let mut open_pair_request = None;
             let mut reveal_line_request = None;
             let mut toggle_all_request = false;
             let mut behavior = TreeBehavior {
@@ -352,6 +353,7 @@ impl ZApp {
                     code_language,
                     revert_request: &mut None,
                     block_toggle_request: &mut block_toggle_request,
+                    open_pair_request: &mut open_pair_request,
                     scope_breadcrumb: *scope_breadcrumb,
                     scope_block_headers: *scope_block_headers,
                     revert_buttons: *revert_buttons,
@@ -464,6 +466,10 @@ impl ZApp {
             if let Some(file_path) = behavior.ctx_file_diff.load_file_2_request.take() {
                 log::debug!("Set new path from file_2_request: {}", file_path);
                 app_ctx.file_2.set_path(file_path);
+            }
+            if let Some([left, right]) = behavior.ctx_file_diff.open_pair_request.take() {
+                app_ctx.file_1.restore_path(left, None);
+                app_ctx.file_2.restore_path(right, None);
             }
             match behavior.ctx_file_diff.back_to_previous_request.take() {
                 Some(ActiveSide::Left) => {

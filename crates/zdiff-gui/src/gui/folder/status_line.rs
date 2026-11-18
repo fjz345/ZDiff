@@ -1,5 +1,6 @@
 use eframe::egui;
 use std::time::Duration;
+use zcommon::universal_path::UniversalPath;
 use zdiff_folder::scan::SkippedEntry;
 
 use crate::folder::{
@@ -28,6 +29,7 @@ pub struct ToolMessage {
     pub status: Option<String>,
     pub warning: Option<String>,
     pub error: Option<String>,
+    pub open_in_app: Option<[UniversalPath; 2]>,
 }
 
 /// Files, plus folders on one side only; a folder on both sides only aggregates its files.

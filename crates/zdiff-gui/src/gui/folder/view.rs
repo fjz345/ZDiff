@@ -262,6 +262,15 @@ impl FolderState {
         }
     }
 
+    fn take_open_pair(&mut self) -> Option<[UniversalPath; 2]> {
+        let message = self.tool_message.as_mut()?;
+        let pair = message.open_in_app.take()?;
+        if *message == ToolMessage::default() {
+            self.tool_message = None;
+        }
+        Some(pair)
+    }
+
     fn export_folder_diff(&mut self) {
         let Some(rows) = self.two_folder_diff_visible_rows.as_deref() else {
             self.tool_message = Some(ToolMessage {
@@ -861,6 +870,11 @@ fn discard_stale_rows(stale: bool, last_discard_frame: &mut Option<u64>, frame: 
     discard
 }
 
+#[derive(Debug, Default, PartialEq)]
+pub struct FolderOutcome {
+    pub open_pair: Option<[UniversalPath; 2]>,
+}
+
 pub fn on_exit() {
     revision_open::remove_all();
 }
@@ -876,10 +890,11 @@ impl FolderView {
         panes.toolbar_ui(ui, state);
     }
 
-    pub fn ui(&mut self, ui: &mut egui::Ui, swapped: bool, h_scroll_linked: bool) {
+    pub fn ui(&mut self, ui: &mut egui::Ui, swapped: bool, h_scroll_linked: bool) -> FolderOutcome {
         let frame_start = Instant::now();
         let Self { state, panes } = self;
         panes.ui(ui, state, swapped, h_scroll_linked);
+        let open_pair = state.take_open_pair();
         // The panes drew the old rows under the new flags; the next pass rebuilds
         // them before drawing, and only that pass is painted.
         if discard_stale_rows(
@@ -893,6 +908,7 @@ impl FolderView {
         if frame_time > LONG_FRAME {
             log::warn!("UI frame took {} ms", frame_time.as_millis());
         }
+        FolderOutcome { open_pair }
     }
 
     pub fn title_counts(&self) -> String {
@@ -981,6 +997,21 @@ impl FolderView {
     #[cfg(test)]
     pub(crate) fn find_open(&self) -> bool {
         self.panes.find_open
+    }
+
+    #[cfg(test)]
+    pub(crate) fn state_mut(&mut self) -> &mut FolderState {
+        &mut self.state
+    }
+
+    #[cfg(test)]
+    pub(crate) fn cursor_mut(&mut self) -> &mut crate::folder::tree_cursor::TreeCursor {
+        self.panes.path_diff.cursor_mut()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn is_comparing(&self) -> bool {
+        self.state.tree_compare.is_comparing()
     }
 
     pub fn roots(&self) -> [Option<PathBuf>; 2] {

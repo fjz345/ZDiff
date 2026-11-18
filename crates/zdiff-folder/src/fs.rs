@@ -153,7 +153,7 @@ impl FileSystemModel {
         &self.content
     }
 
-    pub(crate) fn set_content(&mut self, content: ContentSource) {
+    pub fn set_content(&mut self, content: ContentSource) {
         self.content = content;
     }
 

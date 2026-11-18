@@ -4,6 +4,7 @@ use crate::folder::fs_tree::{
     apply_blueprint_results, apply_cursor_request, cursor_keys, side_width, single_side_rows,
     tree_hidden, two_folder_cursor_rows,
 };
+use crate::folder::revision_open;
 use crate::folder::status_line::ToolMessage;
 use crate::folder::tree_compare::pending_pairs;
 use crate::folder::tree_cursor::{CursorRequest, TreeCursor};
@@ -19,13 +20,15 @@ use zdiff_folder::external_diff_tool::{DiffTool, DiffToolConfig};
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::fs::{self, File};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tempfile::{TempDir, tempdir};
 use zcommon::kinds::{FileKind, KindTable};
+use zcommon::universal_path::{DepotRev, GitRev, UniversalPath};
 use zdiff_folder::comparison::PairState;
 use zdiff_folder::filter::{PathFilter, PatternList};
 use zdiff_folder::fs::{FileSystemModel, FsIsDir, FsNodeDepth, FsNodeId};
+use zdiff_folder::vcs_source::{ContentSource, DepotContent, DepotRevisions, GitContent};
 
 #[test]
 fn folder_role_names_are_unique_against_the_shared_roles() {
@@ -1919,9 +1922,8 @@ fn opening_a_file_in_single_side_mode_launches_nothing() {
     let mut left = load_view(left_dir.path());
     let rows = single_rows(&left, &PathFilter::default());
     let mut message = Some(ToolMessage {
-        status: None,
         warning: Some("stale".to_string()),
-        error: None,
+        ..ToolMessage::default()
     });
 
     apply_cursor_request(
@@ -1952,13 +1954,22 @@ fn missing_tool_config(kinds: Vec<FileKind>, mark_undiffable: bool) -> DiffToolC
 
 fn open_b_txt(config: &DiffToolConfig) -> Option<ToolMessage> {
     let (left_dir, right_dir) = two_folder_trees();
-    let mut left = load_view(left_dir.path());
-    let mut right = load_view(right_dir.path());
+    open_b_txt_of(
+        load_view(left_dir.path()),
+        load_view(right_dir.path()),
+        config,
+    )
+}
+
+fn open_b_txt_of(
+    mut left: FileSystemView,
+    mut right: FileSystemView,
+    config: &DiffToolConfig,
+) -> Option<ToolMessage> {
     let rows = build_counting(&left, &right, &mut PairStates::default(), &Cell::new(0));
     let mut message = Some(ToolMessage {
-        status: None,
         warning: Some("stale".to_string()),
-        error: None,
+        ..ToolMessage::default()
     });
     let open = CursorRequest::Open("b.txt".to_string());
     apply_cursor_request(
@@ -1970,6 +1981,93 @@ fn open_b_txt(config: &DiffToolConfig) -> Option<ToolMessage> {
         &mut message,
     );
     message
+}
+
+fn revision_view(root: &Path, content: ContentSource) -> FileSystemView {
+    let mut model = FileSystemModel::new(root).unwrap();
+    model.set_content(content);
+    FileSystemView::new(Arc::new(model))
+}
+
+fn in_app_open(pair: [UniversalPath; 2]) -> Option<ToolMessage> {
+    Some(ToolMessage {
+        open_in_app: Some(pair),
+        ..ToolMessage::default()
+    })
+}
+
+#[test]
+fn opening_a_two_sided_row_with_the_default_tool_asks_for_an_in_app_open_and_starts_no_process() {
+    let (left_dir, right_dir) = two_folder_trees();
+    let open = |config: &DiffToolConfig| {
+        open_b_txt_of(
+            load_view(left_dir.path()),
+            load_view(right_dir.path()),
+            config,
+        )
+    };
+    let pair = [&left_dir, &right_dir].map(|dir| UniversalPath::Local(dir.path().join("b.txt")));
+
+    assert_eq!(open(&DiffToolConfig::default()), in_app_open(pair.clone()));
+
+    let mut unexpandable = DiffToolConfig::default();
+    unexpandable.tools[0].template = "{left".to_string();
+    assert_eq!(open(&unexpandable), in_app_open(pair));
+}
+
+#[test]
+fn a_git_or_depot_row_opened_with_the_default_tool_asks_for_the_revision_paths() {
+    let (left_dir, right_dir) = two_folder_trees();
+    let git = ContentSource::Git(GitContent {
+        model_root: left_dir.path().to_path_buf(),
+        repo_root: PathBuf::from("D:/repo"),
+        dir: "src".into(),
+        commit: Some("abc".into()),
+    });
+    let depot = |revisions| {
+        ContentSource::Depot(DepotContent {
+            model_root: right_dir.path().to_path_buf(),
+            depot_folder: "//depot/main".into(),
+            revisions,
+        })
+    };
+    let open = |revisions| {
+        open_b_txt_of(
+            revision_view(left_dir.path(), git.clone()),
+            revision_view(right_dir.path(), depot(revisions)),
+            &DiffToolConfig::default(),
+        )
+    };
+
+    let listed = open(DepotRevisions::Files([("b.txt".to_string(), 3)].into()));
+    assert_eq!(
+        listed,
+        in_app_open([
+            UniversalPath::Git(
+                PathBuf::from("D:/repo").join("src").join("b.txt"),
+                GitRev::Rev("abc".into())
+            ),
+            UniversalPath::Depot("//depot/main/b.txt".into(), Some(DepotRev::Rev(3))),
+        ])
+    );
+
+    let unlisted = open(DepotRevisions::Files(HashMap::new())).unwrap();
+    assert_eq!(unlisted.open_in_app, None);
+    let error = unlisted.error.unwrap();
+    assert!(error.contains("b.txt was not listed"), "{error}");
+    assert!(!revision_open::is_fetching());
+}
+
+#[test]
+fn a_non_bundled_tool_asks_for_none() {
+    let message = open_b_txt(&missing_tool_config(vec![FileKind::Text], true)).unwrap();
+    assert_eq!(message.open_in_app, None);
+
+    let mut full_path = DiffToolConfig::default();
+    full_path.tools[0].exe_path = r"C:\zdiff-folder-test-missing\zdiff-gui.exe".into();
+    let message = open_b_txt(&full_path).unwrap();
+    assert_eq!(message.open_in_app, None);
+    assert!(message.error.is_some());
 }
 
 #[test]

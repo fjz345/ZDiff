@@ -96,6 +96,11 @@ impl PathDiffPane {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn cursor_mut(&mut self) -> &mut TreeCursor {
+        &mut self.cursor
+    }
+
     /// Opening another folder on either side clears the cursor. A rescan of the same roots
     /// keeps it.
     fn forget_cursor_of_other_roots(

@@ -45,7 +45,7 @@ pub struct LegacyDiffToolConfig {
 impl LegacyDiffToolConfig {
     pub fn default_zdiff() -> Self {
         Self {
-            exe_path: PathBuf::from(r"zdiff-gui.exe"),
+            exe_path: PathBuf::from(BUNDLED_EXE_NAME),
             prefix_args: DiffToolDefaultArgs::from_string(""),
             diff_path_1_args: String::from(r#"{}"#),
             diff_path_2_args: String::from(r#"{}"#),
@@ -70,6 +70,16 @@ pub struct DiffTool {
     pub exe_path: PathBuf,
     pub template: String,
     pub kinds: Vec<FileKind>,
+}
+
+const BUNDLED_EXE_NAME: &str = "zdiff-gui.exe";
+
+impl DiffTool {
+    pub fn is_bundled(&self) -> bool {
+        self.exe_path
+            .to_str()
+            .is_some_and(|exe| exe.eq_ignore_ascii_case(BUNDLED_EXE_NAME))
+    }
 }
 
 impl From<LegacyDiffToolConfig> for DiffTool {
@@ -161,7 +171,7 @@ pub fn presets(local_app_data: Option<&Path>) -> Vec<DiffToolPreset> {
         DiffToolPreset {
             name: "zdiff-gui",
             install_paths: Vec::new(),
-            bare_name: "zdiff-gui.exe",
+            bare_name: BUNDLED_EXE_NAME,
             template: r#""{left}" "{right}" -nl "{left_name}" -nr "{right_name}""#,
             kinds: FileKind::ALL
                 .into_iter()
@@ -774,6 +784,21 @@ mod tests {
                 "Folder 2: sub/a.txt".to_string()
             )
         );
+    }
+
+    #[test]
+    fn the_bare_zdiff_gui_tool_is_bundled_and_a_full_path_or_another_tool_is_not() {
+        let tool = |exe_path: &str| DiffTool {
+            exe_path: exe_path.into(),
+            ..DiffToolConfig::default().tools.remove(0)
+        };
+        assert!(DiffToolConfig::default().tools[0].is_bundled());
+        assert!(tool("ZDiff-GUI.exe").is_bundled());
+        assert!(DiffTool::from(LegacyDiffToolConfig::default_zdiff()).is_bundled());
+        assert!(!tool(r"C:\apps\zdiff-gui.exe").is_bundled());
+        assert!(!tool(r"bin\zdiff-gui.exe").is_bundled());
+        assert!(!tool("zdiff-gui").is_bundled());
+        assert!(!tool("TortoiseMerge.exe").is_bundled());
     }
 
     #[test]

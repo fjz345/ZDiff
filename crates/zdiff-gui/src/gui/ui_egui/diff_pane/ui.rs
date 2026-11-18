@@ -1230,7 +1230,9 @@ impl FileDiffPane {
                                 ui.scope(|ui| {
                                     // The pane's monospace and zero row spacing are for text rows.
                                     ui.reset_style();
-                                    folder.ui(ui, ctx.sides_swapped, *ctx.h_scroll_linked);
+                                    *ctx.open_pair_request = folder
+                                        .ui(ui, ctx.sides_swapped, *ctx.h_scroll_linked)
+                                        .open_pair;
                                 });
                             }
                             if let Some(sides) = side_viewers.as_mut() {

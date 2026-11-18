@@ -37,6 +37,25 @@ pub(super) fn on_row_item_clicked(
                 log::warn!("{warning}");
                 message.warning = Some(warning);
             }
+            let both_views = "rows with both sides are built from both views";
+            let (left_model, right_model) = (
+                &file_system_1_view.expect(both_views).file_system,
+                &file_system_2_view.expect(both_views).file_system,
+            );
+            let side =
+                |model: &FileSystemModel, id: FsNodeId| (model.content().clone(), model.path(id));
+            let sides = [side(left_model, path1), side(right_model, path2)];
+            if diff_tool.is_bundled() {
+                match in_app_pair(sides) {
+                    Ok(pair) => message.open_in_app = Some(pair),
+                    Err(err) => {
+                        let error = format!("diffing failed: {}: {err}", entry.rel_path);
+                        log::error!("{error}");
+                        message.error = Some(error);
+                    }
+                }
+                return Some(message);
+            }
             let exe = match resolve_tool_exe(&diff_tool.exe_path) {
                 Ok(exe) => exe,
                 Err(err) => {
@@ -46,14 +65,6 @@ pub(super) fn on_row_item_clicked(
                     return Some(message);
                 }
             };
-            let both_views = "rows with both sides are built from both views";
-            let (left_model, right_model) = (
-                &file_system_1_view.expect(both_views).file_system,
-                &file_system_2_view.expect(both_views).file_system,
-            );
-            let side =
-                |model: &FileSystemModel, id: FsNodeId| (model.content().clone(), model.path(id));
-            let sides = [side(left_model, path1), side(right_model, path2)];
             if sides.iter().any(|(content, _)| is_revision(content)) {
                 message.status = Some(format!("Fetching {}...", entry.rel_path));
                 revision_open::spawn(RevisionOpen {
@@ -98,6 +109,18 @@ pub(super) fn on_row_item_clicked(
             (message != ToolMessage::default()).then_some(message)
         }
     }
+}
+
+fn in_app_pair(sides: [(ContentSource, PathBuf); 2]) -> io::Result<[UniversalPath; 2]> {
+    let [left, right] = sides.map(|(content, path)| match content {
+        ContentSource::Disk => Ok(UniversalPath::Local(path)),
+        ContentSource::Git(content) => {
+            git_node(&content, &path).map(|(file, revision)| UniversalPath::Git(file, revision))
+        }
+        ContentSource::Depot(content) => depot_node(&content, &path)
+            .map(|(file, revision)| UniversalPath::Depot(file, Some(revision))),
+    });
+    Ok([left?, right?])
 }
 
 /// `flat_rel_path`: in flat mode, the row's relative path, drawn instead of the indented name and

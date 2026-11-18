@@ -1,18 +1,23 @@
 use std::{
     path::{Path, PathBuf},
+    sync::Arc,
     time::{Duration, Instant},
 };
 
 use eframe::egui;
 use tempfile::{TempDir, tempdir};
 use zdiff::universal_path::UniversalPath;
+use zdiff_folder::{
+    filter::{PathFilter, PatternList},
+    fs::FileSystemModel,
+};
 
 use super::{
     ZApp, folder_mode,
     state::{AppState, AppStateCtx},
 };
 use crate::{
-    folder::{roots::Side, view::FolderView},
+    folder::{roots::Side, tree_cursor::TreeCursor, view::FolderView},
     ui_egui::text_mode::TextMode,
     viewer::{ViewerKind, Viewers, hex_strings::HexMode},
 };
@@ -797,4 +802,130 @@ fn the_view_choice_survives_a_restart() {
 
     assert!(app.folder.duplicates_shown());
     assert!(restored.duplicates_shown());
+}
+
+fn open_cursor_row(ctx: &egui::Context, app: &mut ZApp, rel_path: &str) {
+    *app.folder.cursor_mut() = TreeCursor::at(rel_path);
+    frame_texts(ctx, app, key_press(egui::Key::Enter, egui::Modifiers::NONE));
+}
+
+fn mouse_nav(ctx: &egui::Context, app: &mut ZApp, button: egui::PointerButton) {
+    frame_texts(ctx, app, mouse_button_click(button));
+    frame_texts(ctx, app, Vec::new());
+}
+
+fn sides_at(dirs: &[TempDir; 2], rel_path: &str) -> [UniversalPath; 2] {
+    dirs.each_ref()
+        .map(|dir| UniversalPath::Local(dir.path().join(rel_path)))
+}
+
+#[derive(Debug, PartialEq)]
+struct FolderSnapshot {
+    models: [*const FileSystemModel; 2],
+    sub_collapsed: [bool; 2],
+    cursor: TreeCursor,
+    filter: PathFilter,
+}
+
+fn folder_snapshot(app: &mut ZApp, dirs: &[TempDir; 2]) -> FolderSnapshot {
+    let cursor = app.folder.cursor_mut().clone();
+    let state = app.folder.state_mut();
+    let views = [
+        &state.file_system_model_1_view,
+        &state.file_system_model_2_view,
+    ]
+    .map(|view| view.as_ref().expect("both sides are scanned"));
+    let sub_of = |i: usize| {
+        let sub = dirs[i].path().join("sub");
+        views[i].file_system.find_path(sub).unwrap()
+    };
+    FolderSnapshot {
+        models: views.map(|view| Arc::as_ptr(&view.file_system)),
+        sub_collapsed: [0, 1].map(|i| views[i].is_collapsed(sub_of(i))),
+        cursor,
+        filter: state.path_filter.clone(),
+    }
+}
+
+#[test]
+fn opening_a_row_then_back_returns_to_the_same_folder_view_and_forward_reopens_the_pair() {
+    let dirs = folder_dirs();
+    for (dir, text) in dirs.iter().zip(["a\nb\n", "a\nc\n"]) {
+        std::fs::write(dir.path().join("a.txt"), text).unwrap();
+        std::fs::create_dir(dir.path().join("sub")).unwrap();
+        std::fs::write(dir.path().join("sub").join("deep.txt"), "deep").unwrap();
+    }
+    let (ctx, mut app) = shown_folder_app(&dirs);
+    let state = app.folder.state_mut();
+    state.path_filter = PathFilter {
+        blacklist: PatternList::new("*.log"),
+        ..PathFilter::default()
+    };
+    for (view, dir) in [
+        &mut state.file_system_model_1_view,
+        &mut state.file_system_model_2_view,
+    ]
+    .into_iter()
+    .zip(&dirs)
+    {
+        let view = view.as_mut().unwrap();
+        let sub = view.file_system.find_path(dir.path().join("sub")).unwrap();
+        view.toggle_collapse(sub);
+    }
+    frame_texts(&ctx, &mut app, Vec::new());
+    let folders = sides(&mut app);
+    let pair = sides_at(&dirs, "a.txt");
+
+    open_cursor_row(&ctx, &mut app, "a.txt");
+    let opened = folder_snapshot(&mut app, &dirs);
+    assert_eq!(opened.sub_collapsed, [true, true]);
+    assert_eq!(opened.cursor, TreeCursor::at("a.txt"));
+    assert_eq!(sides(&mut app), pair);
+    frames_until_the_text_diff_shows(&ctx, &mut app);
+    assert!(!paints_folder_names(&frame_texts(
+        &ctx,
+        &mut app,
+        Vec::new()
+    )));
+
+    mouse_nav(&ctx, &mut app, egui::PointerButton::Extra1);
+    assert_eq!(viewers(&mut app), Some(Viewers::Folders));
+    assert_eq!(sides(&mut app), folders);
+    assert_eq!(folder_snapshot(&mut app, &dirs), opened);
+    assert!(paints_folder_names(&frame_texts(
+        &ctx,
+        &mut app,
+        Vec::new()
+    )));
+
+    mouse_nav(&ctx, &mut app, egui::PointerButton::Extra2);
+    assert_eq!(sides(&mut app), pair);
+    frames_until_the_text_diff_shows(&ctx, &mut app);
+}
+
+#[test]
+fn a_compare_running_when_a_row_is_opened_finishes_after_back() {
+    let dirs = folder_dirs();
+    for dir in &dirs {
+        std::fs::write(dir.path().join("a.txt"), "a\n").unwrap();
+        for i in 0..3000 {
+            std::fs::write(dir.path().join(format!("f{i:04}.txt")), "same").unwrap();
+        }
+    }
+    let mut app = ZApp::new();
+    set_sides(&mut app, [dirs[0].path(), dirs[1].path()]);
+    let ctx = egui::Context::default();
+    frames_until(&ctx, &mut app, "started the compare", |app, texts| {
+        app.folder.is_comparing() && texts.iter().any(|text| text.contains("a.txt"))
+    });
+
+    open_cursor_row(&ctx, &mut app, "a.txt");
+    assert_eq!(sides(&mut app), sides_at(&dirs, "a.txt"));
+    frames_until_the_text_diff_shows(&ctx, &mut app);
+
+    mouse_nav(&ctx, &mut app, egui::PointerButton::Extra1);
+    assert_eq!(viewers(&mut app), Some(Viewers::Folders));
+    frames_until(&ctx, &mut app, "finished the compare", |app, texts| {
+        !app.folder.is_comparing() && texts.iter().any(|text| text.contains(", 0 pending"))
+    });
 }

@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 use zcommon::{
     find::Matcher,
     kinds::{FileKind, KindTable},
+    universal_path::UniversalPath,
 };
 use zdiff_folder::{
     comparison::{FileMeta, PairState},
@@ -23,6 +24,7 @@ use zdiff_folder::{
     },
     filter::PathFilter,
     fs::{FileSystemModel, FsNode, FsNodeDepth, FsNodeId, TreeIter},
+    vcs_source::{ContentSource, depot_node, git_node},
 };
 
 use zcommon::style::{Rgba8, Role};
