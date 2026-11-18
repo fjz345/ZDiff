@@ -1,3 +1,5 @@
+use std::ffi::OsString;
+
 use super::state::AppStateCtx;
 
 use zdiff::diff_builder::DiffBuilderOptions;
@@ -14,6 +16,7 @@ use crate::{
 pub(super) enum LaunchOutcome {
     Opened,
     Merge(Box<MergeRequest>, MergeNames),
+    Folders(Vec<OsString>),
     Help,
     Error(String),
 }
@@ -59,6 +62,7 @@ pub(super) fn apply_launch(
             };
             return LaunchOutcome::Merge(Box::new(request), names);
         }
+        LaunchRequest::Folders(folder_args) => return LaunchOutcome::Folders(folder_args),
         LaunchRequest::Help => return LaunchOutcome::Help,
     };
     // set_path clears the label, so the label goes second.
@@ -273,6 +277,20 @@ mod tests {
                 outcome,
                 LaunchOutcome::Error("Output must be a local path".to_string())
             );
+        }
+
+        #[test]
+        fn a_folders_launch_leaves_the_file_sides() {
+            let mut left = FileProcessor::new();
+            let mut right = FileProcessor::new();
+            let args: [OsString; 3] = ["--folder".into(), "a".into(), "b".into()];
+            let outcome = apply_launch(&mut left, &mut right, cli::parse_launch(&args, |_| false));
+            assert_eq!(
+                outcome,
+                LaunchOutcome::Folders(vec!["a".into(), "b".into()])
+            );
+            assert_eq!(left.get_full_path(), UniversalPath::default());
+            assert_eq!(right.get_full_path(), UniversalPath::default());
         }
     }
 }

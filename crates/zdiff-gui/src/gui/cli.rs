@@ -20,6 +20,7 @@ pub enum LaunchRequest {
         right: Side,
         output: Side,
     },
+    Folders(Vec<OsString>),
     Help,
 }
 
@@ -98,7 +99,7 @@ pub const HELP: &str = "\
 Usage:
   zdiff-gui LEFT RIGHT                  diff two files
   zdiff-gui BASE LEFT RIGHT OUTPUT      merge (opens LEFT and RIGHT as a diff for now)
-  zdiff-gui LEFT RIGHT                  folder diff, when both are existing folders
+  zdiff-gui LEFT [RIGHT]                folder diff, when they are existing folders
   zdiff-gui --folder [LEFT [RIGHT]]     folder diff; without folders the last ones are reopened
 
 Files can be local paths or depot paths (//depot/a.cpp#3).
@@ -349,29 +350,32 @@ where
 
 const FOLDER_FLAG: &str = "--folder";
 
-#[derive(Debug, PartialEq, Eq)]
-pub enum LaunchMode {
-    Files,
-    Folders(Vec<OsString>),
-}
-
-pub fn launch_mode(args: &[OsString], is_dir: impl Fn(&Path) -> bool) -> LaunchMode {
+pub fn parse_launch(
+    args: &[OsString],
+    is_dir: impl Fn(&Path) -> bool,
+) -> Result<Launch, LaunchError> {
+    let folders = |folder_args, warnings| Launch {
+        request: LaunchRequest::Folders(folder_args),
+        warnings,
+    };
     if args.iter().any(|arg| arg == FOLDER_FLAG) {
         let folder_args = args.iter().filter(|arg| *arg != FOLDER_FLAG);
-        return LaunchMode::Folders(folder_args.cloned().collect());
+        return Ok(folders(folder_args.cloned().collect(), Vec::new()));
     }
-    let parsed = parse_launch_args(args.iter().map(|arg| arg.to_string_lossy().into_owned()));
-    if let Ok(Launch {
-        request: LaunchRequest::Diff { left, right },
-        ..
-    }) = parsed
+    if let [lone] = args
+        && UniversalPath::new(lone).as_path().is_some_and(&is_dir)
+    {
+        return Ok(folders(vec![lone.clone()], Vec::new()));
+    }
+    let launch = parse_launch_args(args.iter().map(|arg| arg.to_string_lossy().into_owned()))?;
+    if let LaunchRequest::Diff { left, right } = &launch.request
         && let (Some(left), Some(right)) = (left.path.as_path(), right.path.as_path())
         && is_dir(left)
         && is_dir(right)
     {
-        return LaunchMode::Folders(vec![left.into(), right.into()]);
+        return Ok(folders(vec![left.into(), right.into()], launch.warnings));
     }
-    LaunchMode::Files
+    Ok(launch)
 }
 
 #[cfg(test)]
@@ -651,15 +655,18 @@ mod tests {
         );
     }
 
-    fn mode(args: &[&str]) -> LaunchMode {
+    fn mode(args: &[&str]) -> Result<LaunchRequest, LaunchError> {
         let args: Vec<OsString> = args.iter().map(OsString::from).collect();
-        launch_mode(&args, |path| {
+        parse_launch(&args, |path| {
             path.to_str().is_some_and(|path| path.ends_with("_dir"))
         })
+        .map(|launch| launch.request)
     }
 
-    fn folders(folder_args: &[&str]) -> LaunchMode {
-        LaunchMode::Folders(folder_args.iter().map(OsString::from).collect())
+    fn folders(folder_args: &[&str]) -> Result<LaunchRequest, LaunchError> {
+        Ok(LaunchRequest::Folders(
+            folder_args.iter().map(OsString::from).collect(),
+        ))
     }
 
     #[test]
@@ -671,19 +678,31 @@ mod tests {
     }
 
     #[test]
-    fn anything_but_two_folders_is_the_file_mode() {
+    fn a_lone_existing_folder_is_the_folder_mode() {
+        assert_eq!(mode(&["old_dir"]), folders(&["old_dir"]));
+        assert_eq!(mode(&["a.txt"]), Err(LaunchError::PositionalCount(1)));
+        assert_eq!(
+            mode(&["//depot/old_dir"]),
+            Err(LaunchError::PositionalCount(1))
+        );
+    }
+
+    #[test]
+    fn anything_but_existing_local_folders_is_not_the_folder_mode() {
         for args in [
             &[][..],
             &["a.txt", "b.txt"],
             &["old_dir", "b.txt"],
             &["a.txt", "new_dir"],
-            &["old_dir"],
             &["old_dir", "new_dir", "third_dir"],
             &["base_dir", "old_dir", "new_dir", "out_dir"],
             &["//depot/old_dir", "//depot/new_dir"],
             &["--help", "old_dir", "new_dir"],
         ] {
-            assert_eq!(mode(args), LaunchMode::Files, "{args:?}");
+            assert!(
+                !matches!(mode(args), Ok(LaunchRequest::Folders(_))),
+                "{args:?}"
+            );
         }
     }
 
@@ -691,7 +710,10 @@ mod tests {
     fn flag_values_are_not_the_compared_paths() {
         assert_eq!(
             mode(&["-nl", "old_dir", "-nr", "new_dir", "a.txt", "b.txt"]),
-            LaunchMode::Files
+            Ok(diff(
+                side("a.txt", Some("old_dir")),
+                side("b.txt", Some("new_dir"))
+            ))
         );
         assert_eq!(
             mode(&["-nl", "old", "old_dir", "--right-label=new", "new_dir"]),

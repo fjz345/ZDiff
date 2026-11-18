@@ -33,7 +33,7 @@ use zcommon_ui::shared_keymap::load_shared;
 use zcommon_ui::style_window::StyleWindow;
 
 use crate::{
-    cli::{self, LaunchMode},
+    cli::{self},
     diff_ctx::UpdateDiffRowsInput,
     file::LoadedFile,
     folder::{self, Mode, roots::parse_launch_args, view::FolderView},
@@ -151,33 +151,30 @@ impl ZApp {
             .as_mut()
             .expect("State should always be valid at launch")
             .ctx_mut();
-        match cli::launch_mode(&args, Path::is_dir) {
-            LaunchMode::Folders(folder_args) => {
+        let outcome = apply_launch(
+            &mut ctx.file_1,
+            &mut ctx.file_2,
+            cli::parse_launch(&args, Path::is_dir),
+        );
+        ctx.mode = match outcome {
+            LaunchOutcome::Folders(_) => Mode::Folder,
+            _ => Mode::File,
+        };
+        match outcome {
+            LaunchOutcome::Opened => {}
+            LaunchOutcome::Merge(request, names) => {
+                self.merge =
+                    Some(MergeView::new(*request, ctx.myers_diff_algorithm).with_names(names));
+            }
+            LaunchOutcome::Folders(folder_args) => {
                 self.folder
                     .apply_launch_args(&parse_launch_args(folder_args));
-                ctx.mode = Mode::Folder;
             }
-            LaunchMode::Files => {
-                ctx.mode = Mode::File;
-                let args = args.iter().map(|arg| arg.to_string_lossy().into_owned());
-                match apply_launch(
-                    &mut ctx.file_1,
-                    &mut ctx.file_2,
-                    cli::parse_launch_args(args),
-                ) {
-                    LaunchOutcome::Opened => {}
-                    LaunchOutcome::Merge(request, names) => {
-                        self.merge = Some(
-                            MergeView::new(*request, ctx.myers_diff_algorithm).with_names(names),
-                        );
-                    }
-                    LaunchOutcome::Help => self.open_help_window = true,
-                    LaunchOutcome::Error(message) => {
-                        // A tool trusting the exit code must not take a failed launch as a merge.
-                        self.exit_code.store(1, Ordering::Relaxed);
-                        self.launch_error = Some(message);
-                    }
-                }
+            LaunchOutcome::Help => self.open_help_window = true,
+            LaunchOutcome::Error(message) => {
+                // A tool trusting the exit code must not take a failed launch as a merge.
+                self.exit_code.store(1, Ordering::Relaxed);
+                self.launch_error = Some(message);
             }
         }
     }
