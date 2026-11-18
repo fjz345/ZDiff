@@ -2,7 +2,7 @@ use std::collections::HashSet;
 
 use serde::{Deserialize, Deserializer, Serialize};
 
-use crate::ui_egui::{
+use crate::folder::{
     fs_tree::{DiffState, VisibleRowTwoFolderDiff},
     tree_sort::{TreeSort, sort_file_list, sort_two_folder_rows},
 };
@@ -165,8 +165,8 @@ pub fn arrange_two_folder_rows(
 #[cfg(test)]
 mod tests {
     use super::{DiffFilter, StateFilter, arrange_two_folder_rows, filter_diff_rows};
-    use crate::ui_egui::fs_tree::{DiffState, VisibleRowTwoFolderDiff};
-    use crate::ui_egui::tree_sort::{SortKey, TreeSort};
+    use crate::folder::fs_tree::{DiffState, VisibleRowTwoFolderDiff};
+    use crate::folder::tree_sort::{SortKey, TreeSort};
 
     fn row(rel_path: &str, is_dir: bool, diff_state: DiffState) -> VisibleRowTwoFolderDiff {
         VisibleRowTwoFolderDiff {

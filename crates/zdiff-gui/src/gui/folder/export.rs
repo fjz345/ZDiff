@@ -4,8 +4,8 @@ use std::path::{Path, PathBuf};
 
 use zdiff_folder::conflict::DuplicateGroup;
 
-use crate::ui_egui::fs_tree::{DiffState, VisibleRowTwoFolderDiff};
-use crate::ui_egui::status_line::ToolMessage;
+use crate::folder::fs_tree::{DiffState, VisibleRowTwoFolderDiff};
+use crate::folder::status_line::ToolMessage;
 
 fn root_line(out: &mut String, side: usize, root: Option<&Path>) {
     let root = root.map_or("(none)".into(), |root| root.display().to_string());
@@ -107,7 +107,7 @@ pub fn save_report(text: &str, file_name: &str) -> Option<ToolMessage> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ui_egui::fs_tree::DiffState;
+    use crate::folder::fs_tree::DiffState;
 
     fn row(rel_path: &str, is_dir: bool, diff_state: DiffState) -> VisibleRowTwoFolderDiff {
         VisibleRowTwoFolderDiff {

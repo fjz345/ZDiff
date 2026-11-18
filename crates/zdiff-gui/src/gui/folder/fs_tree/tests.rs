@@ -1,19 +1,19 @@
-use crate::ui_egui::fs_tree::apply_path_bar;
-use crate::ui_egui::fs_tree::{
+use crate::folder::fs_tree::apply_path_bar;
+use crate::folder::fs_tree::{
     ContentWidths, CursorRowsCache, DiffState, EXPANDER_WIDTH, FileSystemView, RowLayout, RowsId,
     TREE_INDENT, TreeTable, VisibleRowTwoFolderDiff, aggregate_folder_state,
     apply_blueprint_results, apply_cursor_request, cursor_keys, side_width, single_side_rows,
     tree_hidden, two_folder_cursor_rows,
 };
-use crate::ui_egui::roots::{InvalidRoot, Side};
-use crate::ui_egui::status_line::ToolMessage;
-use crate::ui_egui::tree_compare::pending_pairs;
-use crate::ui_egui::tree_cursor::{CursorRequest, TreeCursor};
-use crate::ui_egui::tree_filter::{DiffFilter, StateFilter, arrange_two_folder_rows};
-use crate::ui_egui::tree_guides::tree_guides;
-use crate::ui_egui::tree_likeness::FolderLikeness;
-use crate::ui_egui::tree_sort::{SortKey, TreeSort, sort_two_folder_rows};
-use crate::ui_egui::tree_tolerance::{SizeDelta, Tolerance};
+use crate::folder::roots::{InvalidRoot, Side};
+use crate::folder::status_line::ToolMessage;
+use crate::folder::tree_compare::pending_pairs;
+use crate::folder::tree_cursor::{CursorRequest, TreeCursor};
+use crate::folder::tree_filter::{DiffFilter, StateFilter, arrange_two_folder_rows};
+use crate::folder::tree_guides::tree_guides;
+use crate::folder::tree_likeness::FolderLikeness;
+use crate::folder::tree_sort::{SortKey, TreeSort, sort_two_folder_rows};
+use crate::folder::tree_tolerance::{SizeDelta, Tolerance};
 use eframe::egui;
 use std::time::{Duration, SystemTime};
 use zcommon::path::split_path;
@@ -33,7 +33,7 @@ use zdiff_folder::fs::{FileSystemModel, FsIsDir, FsNodeDepth, FsNodeId};
 
 #[test]
 fn folder_role_names_are_unique_against_the_shared_roles() {
-    use crate::ui_egui::fs_tree::FolderRole;
+    use crate::folder::fs_tree::FolderRole;
     use zcommon::style::{Role, SharedRole};
     let mut names: Vec<&str> = SharedRole::all().iter().map(|r| r.name()).collect();
     names.extend(FolderRole::all().iter().map(|r| r.name()));
@@ -45,7 +45,7 @@ fn folder_role_names_are_unique_against_the_shared_roles() {
 
 #[test]
 fn every_file_kind_has_a_tag_role() {
-    use crate::ui_egui::fs_tree::FolderRole;
+    use crate::folder::fs_tree::FolderRole;
     use zcommon::style::Role;
     for kind in FileKind::ALL {
         assert!(

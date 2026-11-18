@@ -18,7 +18,7 @@ use zdiff_folder::{
     vcs_source::ContentSource,
 };
 
-use crate::ui_egui::status_line::ToolMessage;
+use crate::folder::status_line::ToolMessage;
 
 pub struct RevisionOpen {
     pub tool: DiffTool,

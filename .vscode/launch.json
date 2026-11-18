@@ -44,43 +44,6 @@
         {
             "type": "lldb",
             "request": "launch",
-            "name": "Debug executable 'zdiff-folder-gui'",
-            "cargo": {
-                "args": [
-                    "build",
-                    "--bin=zdiff-folder-gui",
-                    "--package=zdiff-folder"
-                ],
-                "filter": {
-                    "name": "zdiff-folder-gui",
-                    "kind": "bin"
-                }
-            },
-            "args": [],
-            "cwd": "${workspaceFolder}"
-        },
-        {
-            "type": "lldb",
-            "request": "launch",
-            "name": "Debug unit tests in executable 'zdiff-folder-gui'",
-            "cargo": {
-                "args": [
-                    "test",
-                    "--no-run",
-                    "--bin=zdiff-folder-gui",
-                    "--package=zdiff-folder"
-                ],
-                "filter": {
-                    "name": "zdiff-folder-gui",
-                    "kind": "bin"
-                }
-            },
-            "args": [],
-            "cwd": "${workspaceFolder}"
-        },
-        {
-            "type": "lldb",
-            "request": "launch",
             "name": "Debug unit tests in executable 'zdiff-gui'",
             "cargo": {
                 "args": [

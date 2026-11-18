@@ -33,23 +33,23 @@ use zcommon_ui::pathbar::{PathBarAction, path_bar};
 use zcommon_ui::style_window::role_color;
 use zcommon_ui::table::{Rows, Split, SplitColumn, SplitTable};
 
-use crate::ui_egui::folder_keymap::FolderAction;
-use crate::ui_egui::revision_open::{self, RevisionOpen, is_revision};
-use crate::ui_egui::roots::{InvalidRoot, Side, set_root, set_root_or_report};
-use crate::ui_egui::side_revision::{revision_dropdown, split_side, with_revision};
-use crate::ui_egui::status_line::ToolMessage;
-use crate::ui_egui::tools_window::resolve_tool_exe;
-use crate::ui_egui::tree_compare::{PairLikeness, TreeCompare};
-use crate::ui_egui::tree_cursor::{CursorRequest, CursorRow, TreeCursor};
-use crate::ui_egui::tree_filter::DiffFilter;
-use crate::ui_egui::tree_find::{FindChipEvent, TreeFindView, drawn_ranges};
-use crate::ui_egui::tree_guides::{Guide, TreeGuides, tree_guides};
-use crate::ui_egui::tree_likeness::{
+use crate::folder::folder_keymap::FolderAction;
+use crate::folder::revision_open::{self, RevisionOpen, is_revision};
+use crate::folder::roots::{InvalidRoot, Side, set_root, set_root_or_report};
+use crate::folder::side_revision::{revision_dropdown, split_side, with_revision};
+use crate::folder::status_line::ToolMessage;
+use crate::folder::tools_window::resolve_tool_exe;
+use crate::folder::tree_compare::{PairLikeness, TreeCompare};
+use crate::folder::tree_cursor::{CursorRequest, CursorRow, TreeCursor};
+use crate::folder::tree_filter::DiffFilter;
+use crate::folder::tree_find::{FindChipEvent, TreeFindView, drawn_ranges};
+use crate::folder::tree_guides::{Guide, TreeGuides, tree_guides};
+use crate::folder::tree_likeness::{
     FolderLikeness, LikenessSum, PreviewPair, likeness_cell, ui_likeness_cell,
 };
-use crate::ui_egui::tree_menu::{Entry, RowAction, apply_row_action, row_menu, show_row_menu};
-use crate::ui_egui::tree_sort::{SortKey, TreeSort, sort_two_folder_rows};
-use crate::ui_egui::tree_tolerance::{SideMeta, Tolerance, similar_tooltip};
+use crate::folder::tree_menu::{Entry, RowAction, apply_row_action, row_menu, show_row_menu};
+use crate::folder::tree_sort::{SortKey, TreeSort, sort_two_folder_rows};
+use crate::folder::tree_tolerance::{SideMeta, Tolerance, similar_tooltip};
 
 mod cells;
 mod look;

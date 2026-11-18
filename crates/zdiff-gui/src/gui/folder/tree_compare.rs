@@ -20,7 +20,7 @@ use zdiff_folder::{
     vcs_source::ContentSource,
 };
 
-use crate::ui_egui::fs_tree::{DiffState, FileSystemView, VisibleRowTwoFolderDiff};
+use crate::folder::fs_tree::{DiffState, FileSystemView, VisibleRowTwoFolderDiff};
 
 // Disk bound: more readers than this mostly make the reads seek against each other.
 const MAX_COMPARE_WORKERS: usize = 4;
@@ -718,9 +718,9 @@ mod tests {
         CompareUpdate, LikenessSettings, PairLikeness, PairResult, ROWS_PATCH_INTERVAL,
         TreeCompare, apply_result, pending_pairs,
     };
-    use crate::ui_egui::fs_tree::{DiffState, FileSystemView, VisibleRowTwoFolderDiff};
-    use crate::ui_egui::tree_likeness::{LikenessCell, likeness_cell};
-    use crate::ui_egui::tree_tolerance::{SizeDelta, Tolerance};
+    use crate::folder::fs_tree::{DiffState, FileSystemView, VisibleRowTwoFolderDiff};
+    use crate::folder::tree_likeness::{LikenessCell, likeness_cell};
+    use crate::folder::tree_tolerance::{SizeDelta, Tolerance};
     use std::{
         fs::{self, File},
         io,

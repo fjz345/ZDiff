@@ -9,7 +9,7 @@ use zcommon::{
 use zcommon_ui::pane::{ZAppPane, toolbar_group};
 use zdiff_folder::{external_diff_tool::DiffToolConfig, filter::PathFilter};
 
-use crate::ui_egui::{
+use crate::folder::{
     app::SideScan,
     duplicate_files_pane::{DuplicateFilesPane, DuplicateFilesPaneCtx},
     folder_keymap::FolderAction,

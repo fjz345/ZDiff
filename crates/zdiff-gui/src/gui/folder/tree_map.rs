@@ -9,7 +9,7 @@ use zcommon_ui::{
 };
 use zdiff_folder::{external_diff_tool::DiffToolConfig, fs::FsNodeId};
 
-use crate::ui_egui::{
+use crate::folder::{
     fs_tree::{
         DiffState, FileSystemView, FolderRole, RowsId, VisibleRowTwoFolderDiff,
         apply_cursor_request,
@@ -1027,7 +1027,7 @@ fn likeness_legend(ui: &mut egui::Ui) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ui_egui::tree_likeness::FolderLikeness;
+    use crate::folder::tree_likeness::FolderLikeness;
 
     fn row(rel_path: &str, is_dir: bool, state: DiffState) -> VisibleRowTwoFolderDiff {
         VisibleRowTwoFolderDiff {

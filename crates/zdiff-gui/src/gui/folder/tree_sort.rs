@@ -2,7 +2,7 @@ use std::{cmp::Ordering, collections::HashMap};
 
 use serde::{Deserialize, Serialize};
 
-use crate::ui_egui::fs_tree::{DiffState, VisibleRowTwoFolderDiff};
+use crate::folder::fs_tree::{DiffState, VisibleRowTwoFolderDiff};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum SortKey {
@@ -165,7 +165,7 @@ pub fn sort_two_folder_rows(
 #[cfg(test)]
 mod tests {
     use super::{SortKey, TreeSort, sort_two_folder_rows};
-    use crate::ui_egui::fs_tree::{DiffState, VisibleRowTwoFolderDiff};
+    use crate::folder::fs_tree::{DiffState, VisibleRowTwoFolderDiff};
 
     fn row(rel_path: &str, is_dir: bool, diff_state: DiffState) -> VisibleRowTwoFolderDiff {
         VisibleRowTwoFolderDiff {

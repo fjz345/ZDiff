@@ -14,9 +14,9 @@ required-features = ["gui"]
 
 [features]
 default = ["pretty-backtrace", "serde", "gui"]
-serde = ["zdiff/serde", "zcommon/serde", "dep:serde", "dep:serde_json"]
-gui = ["serde", "dep:zcommon-ui", "dep:eframe", "dep:egui_tiles", "dep:zdiff-folder-gui"]
-pretty-backtrace = ["dep:color-backtrace", "zdiff-folder-gui?/pretty-backtrace"]
+serde = ["zdiff/serde", "zdiff-folder/serde", "zcommon/serde", "dep:serde", "dep:serde_json"]
+gui = ["serde", "dep:zcommon-ui", "dep:eframe", "dep:egui_tiles"]
+pretty-backtrace = ["dep:color-backtrace"]
 accesskit = []
 debug_alloc = ["dep:stats_alloc"]
 
@@ -27,7 +27,7 @@ eframe = { version = "0.33.3", features = ["wayland", "x11"], optional = true }
 zcommon = { path = "../zcommon" }
 zcommon-ui = { path = "../zcommon-ui", optional = true }
 zdiff = { path = "../zdiff" }
-zdiff-folder-gui = { path = "../zdiff-folder-gui", optional = true }
+zdiff-folder = { path = "../zdiff-folder" }
 eframe = { version = "0.33.3", default-features = false, features = [
     "default_fonts",
     "accesskit",
@@ -46,6 +46,7 @@ image = { version = "0.25.9", default-features = false, features = ["png", "jpeg
 serde = { version = "1.0.48", features = ["derive"], optional = true}
 serde_json = { version = "1.0.48", optional = true }
 log = "0.4.27"
+memmap2 = "0.9.10"
 pdb = "0.8.0"
 rayon = "1.12.0"
 rfd = "0.17.1"

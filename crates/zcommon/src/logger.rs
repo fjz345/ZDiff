@@ -97,6 +97,8 @@ impl Default for LogCollector {
 
 impl LogCollector {
     pub fn init() -> Result<LogBuffer, SetLoggerError> {
+        static INIT: Mutex<()> = Mutex::new(());
+        let _first_caller_finishes = INIT.lock().unwrap();
         if let Some(buffer) = GLOBAL_LOG_BUFFER.get() {
             return Ok(buffer.clone());
         }

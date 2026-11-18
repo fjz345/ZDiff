@@ -6,7 +6,7 @@ use std::{
 
 use zcommon::universal_path::UniversalPath;
 
-use crate::ui_egui::status_line::ToolMessage;
+use crate::folder::status_line::ToolMessage;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Side {

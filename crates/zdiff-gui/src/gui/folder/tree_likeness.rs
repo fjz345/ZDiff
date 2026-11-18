@@ -10,7 +10,7 @@ use zdiff_folder::{
     vcs_source::ContentSource,
 };
 
-use crate::ui_egui::{
+use crate::folder::{
     fs_tree::{DiffState, FileSystemView, VisibleRowTwoFolderDiff},
     tree_compare::{PairLikeness, TreeCompare, pair_change_map},
 };

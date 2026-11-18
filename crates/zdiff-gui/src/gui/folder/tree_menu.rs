@@ -2,8 +2,8 @@ use std::path::{Path, PathBuf};
 
 use eframe::egui;
 
-use crate::ui_egui::roots::{Side, set_root_or_report, validate_root};
-use crate::ui_egui::status_line::ToolMessage;
+use crate::folder::roots::{Side, set_root_or_report, validate_root};
+use crate::folder::status_line::ToolMessage;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Entry {

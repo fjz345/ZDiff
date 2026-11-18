@@ -2,7 +2,7 @@ use eframe::egui;
 use std::time::Duration;
 use zdiff_folder::scan::SkippedEntry;
 
-use crate::ui_egui::{
+use crate::folder::{
     fs_tree::{DiffState, VisibleRowTwoFolderDiff},
     roots::Side,
 };
@@ -125,10 +125,10 @@ mod tests {
     use zdiff_folder::{comparison::PairState, filter::PathFilter, fs::FileSystemModel};
 
     use super::{RowCounts, count_rows, counts_text};
-    use crate::ui_egui::fs_tree::{DiffState, FileSystemView, VisibleRowTwoFolderDiff};
-    use crate::ui_egui::tree_filter::{DiffFilter, StateFilter, arrange_two_folder_rows};
-    use crate::ui_egui::tree_sort::TreeSort;
-    use crate::ui_egui::tree_tolerance::{SizeDelta, Tolerance};
+    use crate::folder::fs_tree::{DiffState, FileSystemView, VisibleRowTwoFolderDiff};
+    use crate::folder::tree_filter::{DiffFilter, StateFilter, arrange_two_folder_rows};
+    use crate::folder::tree_sort::TreeSort;
+    use crate::folder::tree_tolerance::{SizeDelta, Tolerance};
 
     fn row(rel_path: &str, is_dir: bool, diff_state: DiffState) -> VisibleRowTwoFolderDiff {
         VisibleRowTwoFolderDiff {

@@ -35,7 +35,7 @@ use zdiff_folder::{
     uasset::BlueprintDetector, vcs_source::scan_side,
 };
 
-use crate::ui_egui::{
+use crate::folder::{
     duplicate_files_pane::DuplicateFilesPane,
     export::{folder_diff_report, save_report},
     folder_keymap::{self, FolderAction, KeybindingsWindow},
@@ -1665,17 +1665,17 @@ mod tests {
         AppState, AppStateCtx, ScanAction, ZApp, cancel_scan, discard_stale_rows,
         finish_side_scan, scan_action, scan_progress_text, update_side_scan,
     };
-    use crate::ui_egui::folder_keymap::FolderAction;
-    use crate::ui_egui::fs_tree::{DiffState, FileSystemView, HScrollLink};
-    use crate::ui_egui::panes::ViewChoice;
-    use crate::ui_egui::path_diff_pane::{BLACKLIST_PRESETS, FilterField, FilterPresets, PaneView};
-    use crate::ui_egui::roots::{Side, clear_root, set_root};
-    use crate::ui_egui::tree_compare::PairResult;
-    use crate::ui_egui::tree_filter::{DiffFilter, DuplicatesFilter, StateFilter};
-    use crate::ui_egui::tree_find::FolderFind;
-    use crate::ui_egui::tree_likeness::FolderLikeness;
-    use crate::ui_egui::tree_sort::{SortKey, TreeSort};
-    use crate::ui_egui::tree_tolerance::{SizeDelta, Tolerance};
+    use crate::folder::folder_keymap::FolderAction;
+    use crate::folder::fs_tree::{DiffState, FileSystemView, HScrollLink};
+    use crate::folder::panes::ViewChoice;
+    use crate::folder::path_diff_pane::{BLACKLIST_PRESETS, FilterField, FilterPresets, PaneView};
+    use crate::folder::roots::{Side, clear_root, set_root};
+    use crate::folder::tree_compare::PairResult;
+    use crate::folder::tree_filter::{DiffFilter, DuplicatesFilter, StateFilter};
+    use crate::folder::tree_find::FolderFind;
+    use crate::folder::tree_likeness::FolderLikeness;
+    use crate::folder::tree_sort::{SortKey, TreeSort};
+    use crate::folder::tree_tolerance::{SizeDelta, Tolerance};
     use eframe::egui;
     use std::{
         fs,

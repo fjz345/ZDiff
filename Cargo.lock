@@ -5186,26 +5186,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "zdiff-folder-gui"
-version = "2.1.0"
-dependencies = [
- "color-backtrace",
- "eframe",
- "egui_extras",
- "egui_tiles",
- "image",
- "log",
- "memmap2",
- "rfd",
- "serde",
- "serde_json",
- "tempfile",
- "zcommon",
- "zcommon-ui",
- "zdiff-folder",
-]
-
-[[package]]
 name = "zdiff-gui"
 version = "2.1.0"
 dependencies = [
@@ -5215,6 +5195,7 @@ dependencies = [
  "egui_tiles",
  "image",
  "log",
+ "memmap2",
  "pdb",
  "rayon",
  "rfd",
@@ -5227,7 +5208,7 @@ dependencies = [
  "zcommon",
  "zcommon-ui",
  "zdiff",
- "zdiff-folder-gui",
+ "zdiff-folder",
 ]
 
 [[package]]

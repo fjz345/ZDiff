@@ -13,7 +13,7 @@ use zdiff_folder::{
     filter::{PathFilter, PatternList},
 };
 
-use crate::ui_egui::{
+use crate::folder::{
     folder_keymap::FolderAction,
     fs_tree::{
         CursorRowsCache, DiffState, FileSystemView, FolderTreeCtx, HScrollLink, TreeMode,
@@ -537,7 +537,7 @@ mod tests {
     use super::{
         BLACKLIST_PRESETS, FilterField, FilterPresets, PaneView, PathDiffPane, WHITELIST_PRESETS,
     };
-    use crate::ui_egui::{fs_tree::FileSystemView, tree_cursor::TreeCursor};
+    use crate::folder::{fs_tree::FileSystemView, tree_cursor::TreeCursor};
     use std::{path::Path, sync::Arc};
     use tempfile::tempdir;
     use zdiff_folder::{filter::PathFilter, fs::FileSystemModel};

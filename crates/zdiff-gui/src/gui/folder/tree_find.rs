@@ -5,7 +5,7 @@ use std::{
 
 use zcommon::find::{FindQuery, Matcher};
 
-use crate::ui_egui::fs_tree::VisibleRowTwoFolderDiff;
+use crate::folder::fs_tree::VisibleRowTwoFolderDiff;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct FolderFind {
@@ -140,7 +140,7 @@ fn folder_or_ancestor_matches<'a>(
 #[cfg(test)]
 mod tests {
     use super::{FindMask, FolderFind, find_mask};
-    use crate::ui_egui::fs_tree::{DiffState, VisibleRowTwoFolderDiff};
+    use crate::folder::fs_tree::{DiffState, VisibleRowTwoFolderDiff};
     use zcommon::find::{FindQuery, Matcher};
 
     fn row(rel_path: &str, is_dir: bool, diff_state: DiffState) -> VisibleRowTwoFolderDiff {
