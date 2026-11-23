@@ -1149,7 +1149,6 @@ dependencies = [
  "log",
  "mime_guess2",
  "profiling",
- "syntect",
 ]
 
 [[package]]

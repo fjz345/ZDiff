@@ -187,7 +187,7 @@ pub(super) fn run_diff_against_shelf_base(file_1: &mut FileProcessor, file_2: &m
     }
 }
 
-#[cfg(all(test, feature = "serde"))]
+#[cfg(test)]
 mod tests {
     use super::*;
 

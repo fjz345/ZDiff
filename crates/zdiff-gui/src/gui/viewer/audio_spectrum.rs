@@ -397,9 +397,8 @@ pub fn diff_color(
     neutral.lerp_to_gamma(colors[usize::from(difference < 0.0)], t)
 }
 
-#[derive(Debug, Clone, PartialEq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(default))]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct SpectrumSettings {
     pub window: usize,
     pub floor_db: f32,

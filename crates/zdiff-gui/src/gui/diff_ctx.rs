@@ -45,23 +45,22 @@ use crate::{
     viewer::audio::{RepaintContext, repaint_job},
 };
 
-#[derive(Debug, Default, Clone)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Default, Clone, serde::Serialize, serde::Deserialize)]
 pub struct UpdateDiffRowsInput {
-    #[cfg_attr(feature = "serde", serde(skip))]
+    #[serde(skip)]
     pub file_1: Option<Arc<CachedFile<RawToken>>>,
-    #[cfg_attr(feature = "serde", serde(skip))]
+    #[serde(skip)]
     pub file_2: Option<Arc<CachedFile<RawToken>>>,
     pub options: DiffBuilderOptions,
     pub myers_diff_algorithm: MyersDiffAlgorithm,
     /// `DiffProcessor::request_update` overwrites it with the processor's pins.
-    #[cfg_attr(feature = "serde", serde(skip))]
+    #[serde(skip)]
     pub pins: Vec<Pin>,
-    #[cfg_attr(feature = "serde", serde(skip))]
+    #[serde(skip)]
     pub collect_trace: bool,
-    #[cfg_attr(feature = "serde", serde(skip))]
+    #[serde(skip)]
     pub pdb_dumps: [bool; 2],
-    #[cfg_attr(feature = "serde", serde(skip))]
+    #[serde(skip)]
     pub strings_view: bool,
 }
 impl PartialEq for UpdateDiffRowsInput {

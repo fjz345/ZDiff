@@ -27,130 +27,126 @@ use crate::{
     },
 };
 
-#[derive(Debug)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct AppStateCtx {
     pub file_1: FileProcessor,
     pub file_2: FileProcessor,
 
-    #[cfg_attr(feature = "serde", serde(skip), serde(default))]
+    #[serde(skip, default)]
     pub diff_processor: DiffProcessor,
-    #[cfg_attr(feature = "serde", serde(skip), serde(default))]
+    #[serde(skip, default)]
     pub hex_processor: HexDiffProcessor,
-    #[cfg_attr(feature = "serde", serde(default))]
+    #[serde(default)]
     pub hex_settings: HexSettings,
-    #[cfg_attr(feature = "serde", serde(skip), serde(default))]
+    #[serde(skip, default)]
     pub hex_strings: HexStrings,
-    #[cfg_attr(feature = "serde", serde(skip), serde(default))]
+    #[serde(skip, default)]
     pub strings_active: bool,
-    #[cfg_attr(feature = "serde", serde(skip), serde(default))]
+    #[serde(skip, default)]
     pub image_processor: ImageDiffProcessor,
-    #[cfg_attr(feature = "serde", serde(default))]
+    #[serde(default)]
     pub image_settings: ImageSettings,
-    #[cfg_attr(feature = "serde", serde(skip), serde(default))]
+    #[serde(skip, default)]
     pub audio_processor: AudioDiffProcessor,
-    #[cfg_attr(feature = "serde", serde(default))]
+    #[serde(default)]
     pub audio_settings: AudioSettings,
-    #[cfg_attr(feature = "serde", serde(skip), serde(default))]
+    #[serde(skip, default)]
     pub audio_meta: AudioMetaProcessor,
-    #[cfg_attr(feature = "serde", serde(skip), serde(default))]
+    #[serde(skip, default)]
     pub video_frames: VideoFrameProcessor,
-    #[cfg_attr(feature = "serde", serde(skip), serde(default))]
+    #[serde(skip, default)]
     pub video_meta: VideoMetaProcessor,
     /// Resolved each frame from the loaded files; `None` while neither side is loaded.
-    #[cfg_attr(feature = "serde", serde(skip), serde(default))]
+    #[serde(skip, default)]
     pub viewers: Option<Viewers>,
     /// Not persisted: paths aren't either, so a restart always opens a new pair.
-    #[cfg_attr(feature = "serde", serde(skip), serde(default))]
+    #[serde(skip, default)]
     pub viewer_override: ViewerOverride,
     /// The last logged reason the pair isn't in the viewer it asked for.
-    #[cfg_attr(feature = "serde", serde(skip), serde(default))]
+    #[serde(skip, default)]
     pub viewer_fallback: Option<String>,
     // Pre-shared-table viewer map, kept in the save until migrated into the kind file.
-    #[cfg_attr(
-        feature = "serde",
-        serde(
-            default,
-            rename = "extension_map",
-            skip_serializing_if = "Option::is_none"
-        )
+    #[serde(
+        default,
+        rename = "extension_map",
+        skip_serializing_if = "Option::is_none"
     )]
     pub legacy_extension_map: Option<BTreeMap<String, ViewerKind>>,
-    #[cfg_attr(feature = "serde", serde(skip), serde(default))]
+    #[serde(skip, default)]
     pub kinds: SharedKinds,
-    #[cfg_attr(feature = "serde", serde(default))]
+    #[serde(default)]
     pub ffmpeg: FfmpegSetting,
-    #[cfg_attr(feature = "serde", serde(default))]
+    #[serde(default)]
     pub pdb_options: PdbDumpOptions,
     /// Undo and redo of reverts; in memory only.
-    #[cfg_attr(feature = "serde", serde(skip), serde(default))]
+    #[serde(skip, default)]
     pub revert_history: RevertHistory,
-    #[cfg_attr(feature = "serde", serde(skip), serde(default))]
+    #[serde(skip, default)]
     pub nav_history: NavHistory,
-    #[cfg_attr(feature = "serde", serde(skip), serde(default))]
+    #[serde(skip, default)]
     pub browser_folders: [Option<String>; 2],
-    #[cfg_attr(feature = "serde", serde(skip), serde(default))]
+    #[serde(skip, default)]
     pub known_folders: HashSet<String>,
-    #[cfg_attr(feature = "serde", serde(skip), serde(default))]
+    #[serde(skip, default)]
     pub toggle_all: ToggleAll,
 
     pub diff_options: DiffBuilderOptions,
 
     pub myers_diff_algorithm: MyersDiffAlgorithm,
     // A new key, so saves pinned to the old "rs" default load as Auto.
-    #[cfg_attr(feature = "serde", serde(default))]
+    #[serde(default)]
     pub code_language_override: Option<String>,
-    #[cfg_attr(feature = "serde", serde(skip), serde(default))]
+    #[serde(skip, default)]
     pub syntax_filter: String,
-    #[cfg_attr(feature = "serde", serde(default = "default_search_syntax_variants"))]
+    #[serde(default = "default_search_syntax_variants")]
     pub search_syntax_variants: bool,
-    #[cfg_attr(feature = "serde", serde(skip), serde(default))]
+    #[serde(skip, default)]
     pub detected_languages: [DetectedLanguage; 2],
 
     // ### Keybindings
     pub keybindings: Keybindings,
 
-    #[cfg_attr(feature = "serde", serde(default))]
+    #[serde(default)]
     pub p4_profiles: P4Profiles,
-    #[cfg_attr(feature = "serde", serde(default))]
+    #[serde(default)]
     pub regex_ignore_presets: UserPresets,
 
     // ### UI TEMP
     pub scroll_left: f32,
     pub scroll_right: f32,
     // Saves from before the setting load linked, like a fresh state.
-    #[cfg_attr(feature = "serde", serde(default = "default_h_scroll_linked"))]
+    #[serde(default = "default_h_scroll_linked")]
     pub h_scroll_linked: bool,
-    #[cfg_attr(feature = "serde", serde(default))]
+    #[serde(default)]
     pub h_scroll_modifier: WheelModifier,
-    #[cfg_attr(feature = "serde", serde(default = "default_center_jumps"))]
+    #[serde(default = "default_center_jumps")]
     pub center_jumps: bool,
-    #[cfg_attr(feature = "serde", serde(default))]
+    #[serde(default)]
     pub word_wrap: bool,
-    #[cfg_attr(feature = "serde", serde(default))]
+    #[serde(default)]
     pub scope_breadcrumb: bool,
-    #[cfg_attr(feature = "serde", serde(default))]
+    #[serde(default)]
     pub scope_block_headers: bool,
-    #[cfg_attr(feature = "serde", serde(default = "default_revert_buttons"))]
+    #[serde(default = "default_revert_buttons")]
     pub revert_buttons: bool,
-    #[cfg_attr(feature = "serde", serde(default))]
+    #[serde(default)]
     pub text_mode: TextMode,
-    #[cfg_attr(feature = "serde", serde(default))]
+    #[serde(default)]
     pub text_likeness: TextMetric,
-    #[cfg_attr(feature = "serde", serde(default))]
+    #[serde(default)]
     pub sides_swapped: bool,
 
-    #[cfg_attr(feature = "serde", serde(skip))]
+    #[serde(skip)]
     pub goto_open: bool,
-    #[cfg_attr(feature = "serde", serde(skip))]
+    #[serde(skip)]
     pub goto_input: String,
-    #[cfg_attr(feature = "serde", serde(skip))]
+    #[serde(skip)]
     pub find_open: bool,
-    #[cfg_attr(feature = "serde", serde(skip))]
+    #[serde(skip)]
     pub find_query: FindQuery,
-    #[cfg_attr(feature = "serde", serde(default))]
+    #[serde(default)]
     pub find_both_panes: bool,
-    #[cfg_attr(feature = "serde", serde(skip))]
+    #[serde(skip)]
     pub find_error: Option<String>,
 }
 
@@ -282,7 +278,7 @@ impl AppState {
     }
 }
 
-#[cfg(all(test, feature = "serde"))]
+#[cfg(test)]
 mod tests {
     use super::super::ZApp;
     use super::*;

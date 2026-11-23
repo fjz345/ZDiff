@@ -257,7 +257,6 @@ mod tests {
     };
 
     use crate::diff_ctx::DiffStageTimes;
-    #[cfg(feature = "serde")]
     #[test]
     fn ignore_comments_is_persisted_with_the_diff_options() {
         let options = DiffBuilderOptions {
@@ -279,7 +278,6 @@ mod tests {
         assert_eq!(loaded, DiffBuilderOptions::default());
     }
 
-    #[cfg(feature = "serde")]
     #[test]
     fn ignore_line_endings_and_file_markers_are_persisted_with_the_diff_options() {
         let options = DiffBuilderOptions {
@@ -304,7 +302,6 @@ mod tests {
         assert_eq!(loaded, DiffBuilderOptions::default());
     }
 
-    #[cfg(feature = "serde")]
     #[test]
     fn ignore_patterns_are_persisted_with_the_diff_options() {
         // The invalid line is kept, so a typo isn't lost on restart.

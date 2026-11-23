@@ -136,7 +136,7 @@ pub(super) fn toggle_option(ctx: &mut AppStateCtx, action: FileAction) {
     }
 }
 
-#[cfg(all(test, feature = "serde"))]
+#[cfg(test)]
 mod tests {
     use super::*;
     use zdiff::ignore::IgnorePatterns;

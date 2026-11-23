@@ -26,8 +26,7 @@ pub mod video_frames;
 pub mod video_meta;
 pub mod video_timeline;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ViewerKind {
     Text,
     Hex,
@@ -157,7 +156,6 @@ pub struct SharedKinds {
     path: Option<PathBuf>,
 }
 
-#[cfg(feature = "serde")]
 impl SharedKinds {
     /// Migrates the old viewer map into the table and clears it once the table is saved, so a
     /// failed save retries on the next start.
@@ -448,12 +446,11 @@ fn hex_fallback(
 }
 
 /// The ffmpeg folder (or executable) set in Options; empty searches next to the app and PATH.
-#[derive(Debug, Default)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct FfmpegSetting {
     pub path: String,
     // Looked up on first use and again after the path changes; it stats files and walks PATH.
-    #[cfg_attr(feature = "serde", serde(skip))]
+    #[serde(skip)]
     found: Option<Result<FfmpegPaths, FfmpegNotFound>>,
 }
 
@@ -1332,7 +1329,6 @@ mod tests {
         assert!(!apply_kind_edits(&mut map, vec![KindEdit::Reset]));
     }
 
-    #[cfg(feature = "serde")]
     mod shared_file {
         use super::*;
 

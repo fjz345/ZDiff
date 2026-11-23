@@ -433,8 +433,7 @@ impl std::fmt::Debug for SideState {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub enum AudioMode {
     #[default]
     Lanes,
@@ -442,9 +441,8 @@ pub enum AudioMode {
     Spectrogram,
 }
 
-#[derive(Debug, Clone, Default, PartialEq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(default))]
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct AudioSettings {
     pub mode: AudioMode,
     pub spectrum: SpectrumSettings,

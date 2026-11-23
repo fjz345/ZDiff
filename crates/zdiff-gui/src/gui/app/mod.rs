@@ -264,7 +264,6 @@ impl eframe::App for ZApp {
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
         self.window_memory.keep_restorable(storage);
-        #[cfg(feature = "serde")]
         if let Ok(json) = serde_json::to_string(self) {
             storage.set_string(eframe::APP_KEY, json);
             log::debug!("App state saved");

@@ -1,5 +1,3 @@
-#![cfg(feature = "gui")]
-
 use std::{
     process::ExitCode,
     sync::{

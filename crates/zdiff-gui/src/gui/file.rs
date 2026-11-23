@@ -275,41 +275,40 @@ fn side_kind(path: &UniversalPath) -> SideKind {
     }
 }
 
-#[derive(Debug)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct FileProcessor {
-    #[cfg_attr(feature = "serde", serde(skip, default = "default_channel"))]
+    #[serde(skip, default = "default_channel")]
     channel: (mpsc::Sender<UniversalPath>, mpsc::Receiver<UniversalPath>),
-    #[cfg_attr(feature = "serde", serde(skip, default = "default_file_path"))]
+    #[serde(skip, default = "default_file_path")]
     file_path: UniversalPath,
 
-    #[cfg_attr(feature = "serde", serde(skip))]
+    #[serde(skip)]
     root_path: Option<UniversalPath>,
 
-    #[cfg_attr(feature = "serde", serde(skip))]
+    #[serde(skip)]
     loaded_file: Option<LoadedFile>,
 
-    #[cfg_attr(feature = "serde", serde(skip))]
+    #[serde(skip)]
     cached_file_path: Option<UniversalPath>, // only process once the path
 
     // Made on the first load: serde defaults each skipped field alone, so it couldn't share `repaint`.
-    #[cfg_attr(feature = "serde", serde(skip))]
+    #[serde(skip)]
     load_job: Option<Job<LoadResult>>,
-    #[cfg_attr(feature = "serde", serde(skip))]
+    #[serde(skip)]
     repaint: RepaintContext,
-    #[cfg_attr(feature = "serde", serde(skip))]
+    #[serde(skip)]
     loading_path: Option<UniversalPath>,
-    #[cfg_attr(feature = "serde", serde(skip))]
+    #[serde(skip)]
     label: Option<String>,
-    #[cfg_attr(feature = "serde", serde(skip))]
+    #[serde(skip)]
     load_error: Option<String>,
-    #[cfg_attr(feature = "serde", serde(skip))]
+    #[serde(skip)]
     pdb_options: PdbDumpOptions,
-    #[cfg_attr(feature = "serde", serde(skip, default = "default_load_cache"))]
+    #[serde(skip, default = "default_load_cache")]
     load_cache: LoadCache,
-    #[cfg_attr(feature = "serde", serde(skip))]
+    #[serde(skip)]
     kind: Option<(UniversalPath, SideKind)>,
-    #[cfg_attr(feature = "serde", serde(skip))]
+    #[serde(skip)]
     load_held: bool,
 }
 
@@ -1014,7 +1013,6 @@ mod tests {
         file
     }
 
-    #[cfg(feature = "serde")]
     #[test]
     fn label_is_not_serialized() {
         let file = labelled("a.txt", "depot rev 3");

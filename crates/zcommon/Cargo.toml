@@ -13,10 +13,10 @@ test-util = []
 
 [dependencies]
 blake3 = { version = "1.8.2", features = ["rayon", "mmap"] }
-log = "0.4.27"
-regex = "1.12.3"
+log = { workspace = true }
+regex = { workspace = true }
 env_logger = "0.11.9"
 dotenvy = "0.15.7"
-tempfile = "3.27.0"
-serde = { version = "1.0.48", features = ["derive"], optional = true}
-serde_json = "1.0.48"
+tempfile = { workspace = true }
+serde = { workspace = true, optional = true }
+serde_json = { workspace = true }

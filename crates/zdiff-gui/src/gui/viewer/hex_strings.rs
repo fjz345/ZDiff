@@ -15,8 +15,7 @@ use crate::file::LoadedFile;
 
 pub const DEFAULT_MIN_STRING_LEN: usize = 4;
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum HexMode {
     #[default]
     Bytes,
@@ -34,9 +33,8 @@ impl HexMode {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(default))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct HexSettings {
     pub mode: HexMode,
     pub min_string_len: usize,

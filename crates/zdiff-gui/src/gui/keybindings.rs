@@ -10,13 +10,12 @@ use crate::p4::{P4Profile, ui_p4_profile_combo};
 
 type RootAndPath = (String, String);
 
-#[derive(Debug, Clone, PartialEq, Default)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Clone, PartialEq, Default, serde::Serialize, serde::Deserialize)]
 pub struct QuickDiffPaths {
     pub target: RootAndPath,
     pub source: Option<RootAndPath>,
     /// A `P4Profile` id; `None` is Auto.
-    #[cfg_attr(feature = "serde", serde(default))]
+    #[serde(default)]
     pub p4_profile: Option<u64>,
 }
 
@@ -394,8 +393,7 @@ impl FileAction {
 
 pub type QuickDiffSlot = (Option<Shortcut>, QuickDiffPaths);
 
-#[derive(Debug, Clone)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct Keybindings {
     pub keymap: Keymap<FileAction>,
     pub user_quick_diffs: Vec<QuickDiffSlot>,
@@ -418,7 +416,6 @@ impl Default for Keybindings {
     }
 }
 
-#[cfg(feature = "serde")]
 impl<'de> serde::Deserialize<'de> for Keybindings {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         #[derive(serde::Deserialize)]
@@ -473,7 +470,6 @@ impl<'de> serde::Deserialize<'de> for Keybindings {
 }
 
 /// The named-field format saved before the keymap.
-#[cfg(feature = "serde")]
 #[derive(serde::Deserialize)]
 struct LegacyKeybindings {
     open_file_source: Option<Shortcut>,
@@ -501,27 +497,22 @@ struct LegacyKeybindings {
     diff_local_file: Option<Shortcut>,
 }
 
-#[cfg(feature = "serde")]
 fn legacy_default_undo_revert() -> Option<Shortcut> {
     Some(shortcut(Key::Z, CTRL))
 }
 
-#[cfg(feature = "serde")]
 fn legacy_default_redo_revert() -> Option<Shortcut> {
     Some(shortcut(Key::Y, CTRL))
 }
 
-#[cfg(feature = "serde")]
 fn legacy_default_redo_revert_alt() -> Option<Shortcut> {
     Some(shortcut(Key::Z, CTRL_SHIFT))
 }
 
-#[cfg(feature = "serde")]
 fn legacy_default_diff_local_file() -> Option<Shortcut> {
     Some(shortcut(Key::L, CTRL))
 }
 
-#[cfg(feature = "serde")]
 impl LegacyKeybindings {
     fn migrate(self) -> Keybindings {
         let Self {
@@ -956,7 +947,6 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "serde")]
     mod migration {
         use super::*;
         use serde_json::{Value, json};

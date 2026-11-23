@@ -167,13 +167,12 @@ impl std::fmt::Debug for SideState {
 }
 
 /// How the decoded sides are drawn. Kept across pairs.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub enum ImageMode {
     #[default]
     SideBySide,
     /// One side at a time, alternating at the blink interval.
-    #[cfg_attr(feature = "serde", serde(alias = "Blink"))]
+    #[serde(alias = "Blink")]
     AB,
     /// Both sides dimmed, with the changed pixels of the union canvas drawn over them.
     Difference,
@@ -188,8 +187,7 @@ pub enum ImageMode {
 }
 
 /// How the textures are filtered, zoomed in and out alike.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub enum ImageSampling {
     #[default]
     Nearest,
@@ -197,8 +195,7 @@ pub enum ImageSampling {
 }
 
 /// Which channel of each side is shown, before any mode. A single channel is shown as opaque gray.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub enum ImageChannel {
     #[default]
     All,
@@ -374,9 +371,8 @@ impl Blink {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(default))]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct ImageSettings {
     pub sampling: ImageSampling,
     pub mode: ImageMode,
@@ -2290,7 +2286,6 @@ mod tests {
         assert_eq!(settings.mode, ImageMode::SideBySide);
     }
 
-    #[cfg(feature = "serde")]
     #[test]
     fn mode_channel_and_blink_interval_are_saved_and_older_saves_load() {
         let settings = ImageSettings {
@@ -2373,7 +2368,6 @@ mod tests {
         assert_eq!(reset(ImageMode::AB), (0.9, 0.1, 7, false, default_interval));
     }
 
-    #[cfg(feature = "serde")]
     #[test]
     fn a_saved_blink_mode_loads_as_a_b() {
         let mode: ImageMode = serde_json::from_value(serde_json::json!("Blink")).unwrap();
@@ -3031,7 +3025,6 @@ mod tests {
         assert_eq!(heat_pixels(&processor), vec![Color32::TRANSPARENT]);
     }
 
-    #[cfg(feature = "serde")]
     #[test]
     fn heatmap_and_histogram_are_modes_that_are_saved() {
         for mode in [ImageMode::Heatmap, ImageMode::Histogram] {

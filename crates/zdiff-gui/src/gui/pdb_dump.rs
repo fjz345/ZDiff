@@ -12,12 +12,8 @@ use pdb::{
     PrimitiveType, SymbolData, Type, TypeData, TypeFinder, TypeIndex,
 };
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[cfg_attr(
-    feature = "serde",
-    derive(serde::Serialize, serde::Deserialize),
-    serde(default)
-)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct PdbDumpOptions {
     pub public_only: bool,
     pub ignore_addresses: bool,
