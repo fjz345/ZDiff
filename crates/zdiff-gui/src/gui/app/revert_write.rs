@@ -1,7 +1,6 @@
 use super::{ZApp, state::AppStateCtx};
 use eframe::egui;
 use std::{path::Path, sync::mpsc};
-use zcommon::vcs::revision::PathKind;
 use zdiff::universal_path::UniversalPath;
 
 use crate::{
@@ -11,18 +10,9 @@ use crate::{
 };
 
 impl ZApp {
-    pub(super) fn open_file_picker(
-        kind: PathKind,
-        tx: mpsc::Sender<UniversalPath>,
-        ctx: egui::Context,
-    ) {
+    pub(super) fn open_file_picker(tx: mpsc::Sender<UniversalPath>, ctx: egui::Context) {
         std::thread::spawn(move || {
-            let dialog = rfd::FileDialog::new();
-            let picked = match kind {
-                PathKind::File => dialog.pick_file(),
-                PathKind::Folder => dialog.pick_folder(),
-            };
-            if let Some(path) = picked {
+            if let Some(path) = crate::picker::pick_file_or_folder() {
                 if let Err(e) = tx.send(UniversalPath::from(path)) {
                     log::error!("Failed to send path: {e}");
                 }

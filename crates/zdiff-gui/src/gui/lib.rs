@@ -23,6 +23,7 @@ mod language_icon;
 mod p4;
 mod pdb_dump;
 mod phase_trace_window;
+mod picker;
 mod revert;
 mod scope;
 mod toggle_all;

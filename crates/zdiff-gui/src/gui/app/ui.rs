@@ -11,7 +11,6 @@ use zcommon_ui::common::show_custom_popup;
 use zcommon_ui::find_popup::{FindPopupEvent, find_popup};
 use zcommon_ui::frame_stats;
 
-use zcommon::vcs::revision::PathKind;
 use zdiff::universal_path::UniversalPath;
 
 use egui_tiles::Tile;
@@ -452,10 +451,10 @@ impl ZApp {
 
             match behavior.ctx_file_diff.open_file_request.take() {
                 Some(ActiveSide::Left) => {
-                    Self::open_file_picker(PathKind::File, app_ctx.file_1.get_tx(), ctx.clone())
+                    Self::open_file_picker(app_ctx.file_1.get_tx(), ctx.clone())
                 }
                 Some(ActiveSide::Right) => {
-                    Self::open_file_picker(PathKind::File, app_ctx.file_2.get_tx(), ctx.clone())
+                    Self::open_file_picker(app_ctx.file_2.get_tx(), ctx.clone())
                 }
                 None => {}
             }

@@ -176,8 +176,8 @@ impl Action for FileAction {
 
     fn label(self) -> &'static str {
         match self {
-            Self::OpenFileSource => "Open Left File",
-            Self::OpenFileTarget => "Open Right File",
+            Self::OpenFileSource => "Open Left",
+            Self::OpenFileTarget => "Open Right",
             Self::RefreshDiff => "Refresh",
             Self::RefreshDiffRowsOnly => "Recompute Diff (Keep Loaded Files)",
             Self::OpenKeybindings => "Open Keyboard Shortcuts",

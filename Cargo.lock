@@ -5205,6 +5205,8 @@ dependencies = [
  "syntect",
  "tempfile",
  "two-face",
+ "windows 0.62.2",
+ "windows-core 0.62.2",
  "zcommon",
  "zcommon-ui",
  "zdiff",

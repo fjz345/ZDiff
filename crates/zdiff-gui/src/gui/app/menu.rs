@@ -1,6 +1,5 @@
 use super::{ZApp, quickdiff::run_diff_against_shelf_base};
 use eframe::egui::{self, containers::menu::MenuConfig};
-use zcommon::vcs::revision::PathKind;
 use zcommon_ui::common::{section_heading, show_custom_popup, show_settings_window};
 use zcommon_ui::frame_stats;
 use zcommon_ui::h_scroll::WheelModifier;
@@ -88,39 +87,17 @@ impl ZApp {
                 .ui(ui, |ui| {
                     ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
                     ui.menu_button("File", |ui| {
-                        let (shown_kind, other_kind, other_labels) = if folders {
-                            (
-                                PathKind::Folder,
-                                PathKind::File,
-                                ["Open Left File...", "Open Right File..."],
-                            )
-                        } else {
-                            (
-                                PathKind::File,
-                                PathKind::Folder,
-                                ["Open Left Folder...", "Open Right Folder..."],
-                            )
-                        };
                         if menu_item(ui, "Open Left", keymap, FileAction::OpenFileSource)
                             .clicked()
                         {
                             let ctx = ui.ctx().clone();
-                            Self::open_file_picker(shown_kind, file_1.get_tx(), ctx);
+                            Self::open_file_picker(file_1.get_tx(), ctx);
                         }
                         if menu_item(ui, "Open Right", keymap, FileAction::OpenFileTarget)
                             .clicked()
                         {
                             let ctx = ui.ctx().clone();
-                            Self::open_file_picker(shown_kind, file_2.get_tx(), ctx);
-                        }
-                        for (label, file) in
-                            other_labels.into_iter().zip([&mut *file_1, &mut *file_2])
-                        {
-                            if ui.button(label).clicked() {
-                                let ctx = ui.ctx().clone();
-                                Self::open_file_picker(other_kind, file.get_tx(), ctx);
-                                ui.close();
-                            }
+                            Self::open_file_picker(file_2.get_tx(), ctx);
                         }
                         ui.add_enabled_ui(!folders, |ui| {
                             if menu_item(ui, "Open Merge...", keymap, FileAction::OpenMerge)
