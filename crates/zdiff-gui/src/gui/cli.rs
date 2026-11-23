@@ -216,15 +216,6 @@ fn split_tortoise(arg: &str) -> Option<(&str, &str)> {
     (!name.is_empty() && name.bytes().all(|b| b.is_ascii_alphabetic())).then_some((name, value))
 }
 
-#[cfg(test)]
-pub fn parse_launch_args<I>(args: I) -> Result<Launch, LaunchError>
-where
-    I: IntoIterator,
-    I::Item: Into<String>,
-{
-    parse_sides(args, false)
-}
-
 fn parse_sides<I>(args: I, sides_may_be_empty: bool) -> Result<Launch, LaunchError>
 where
     I: IntoIterator,
@@ -399,7 +390,8 @@ mod tests {
     use zdiff::universal_path::DepotRev;
 
     fn parse(args: &[&str]) -> Result<Launch, LaunchError> {
-        parse_launch_args(args.iter().copied())
+        let args: Vec<OsString> = args.iter().map(OsString::from).collect();
+        parse_launch(&args, |_| false)
     }
 
     fn side(path: &str, label: Option<&str>) -> Side {

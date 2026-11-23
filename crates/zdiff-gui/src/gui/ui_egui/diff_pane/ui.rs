@@ -487,10 +487,10 @@ impl FileDiffPane {
                                 }
                                 root_path_request(bar.inner?, &root)
                             };
-                            let path_kind = if folder_pair {
-                                PathKind::Folder
+                            let (path_kind, empty_side) = if folder_pair {
+                                (PathKind::Folder, "No folder")
                             } else {
-                                PathKind::File
+                                (PathKind::File, "No file")
                             };
                             let dim = file_path_dim(
                                 [&ctx.file_source_path, &ctx.file_target_path],
@@ -506,7 +506,7 @@ impl FileDiffPane {
                                                  load_error: Option<&str>,
                                                  spinner_active: bool|
                              -> (Option<UniversalPath>, Option<String>, bool) {
-                                let segments = bar_segments(path, label, "No file");
+                                let segments = bar_segments(path, label, empty_side);
                                 let dim = if path.is_empty() { segments.len() } else { dim };
                                 let full_path = path.to_string();
                                 let reason = load_error.unwrap_or("Invalid path");

@@ -221,11 +221,12 @@ mod tests {
         fn launch(args: &[&str]) -> (FileProcessor, FileProcessor, LaunchOutcome) {
             let mut left = FileProcessor::new();
             let mut right = FileProcessor::new();
+            let args: Vec<OsString> = args.iter().map(OsString::from).collect();
             let outcome = apply_launch(
                 &mut left,
                 &mut right,
                 &mut HashSet::new(),
-                cli::parse_launch_args(args.iter().copied()),
+                cli::parse_launch(&args, |_| false),
             );
             (left, right, outcome)
         }
