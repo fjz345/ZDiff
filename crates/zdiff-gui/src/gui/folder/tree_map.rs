@@ -7,7 +7,10 @@ use zcommon_ui::{
     likeness::{percent, ratio_color},
     style_window::role_color,
 };
-use zdiff_folder::{external_diff_tool::DiffToolConfig, fs::FsNodeId};
+use zdiff_folder::{
+    external_diff_tool::DiffToolConfig,
+    fs::{FsNode, FsNodeId},
+};
 
 use crate::folder::{
     fs_tree::{
@@ -18,7 +21,7 @@ use crate::folder::{
     status_line::ToolMessage,
     tree_compare::TreeCompare,
     tree_cursor::{CursorRequest, TreeCursor},
-    tree_likeness::{LikenessCell, likeness_cell},
+    tree_likeness::{LikenessCell, PreviewPair, likeness_cell, preview_ui},
 };
 
 pub const ROOT: usize = 0;
@@ -620,7 +623,8 @@ impl TreeMap {
                 .on_hover_text(
                     "Each box is a file sized by its larger side, colored by its diff state, \
                      or by its likeness while the L toggle is on. \
-                     Shows what the tree shows: filters and find apply.\n\
+                     Shows what the tree shows: filters and find apply. \
+                     Hover a differing file to see where it differs.\n\
                      Click selects, double-click opens the diff, a folder click zooms in, \
                      Backspace or mouse back zooms out.\n\
                      Scroll zooms about the pointer and drag pans; middle-click or Fit \
@@ -973,8 +977,44 @@ fn tooltip(
     if let Some(ratio) = row.and_then(|row| row_ratio(row, views, compare)) {
         ui.label(format!("Likeness: {} %", percent(ratio)));
     }
+    let preview = row
+        .filter(|row| shows_where_it_differs(row, row_nodes(row, views), compare))
+        .and_then(|row| PreviewPair::new(views, row));
+    if let Some(pair) = preview {
+        preview_ui(ui, pair);
+    }
     if node.is_dir {
         ui.label(format!("{} files", node.files));
+    }
+}
+
+fn row_nodes<'v>(
+    row: &VisibleRowTwoFolderDiff,
+    views: [Option<&'v FileSystemView>; 2],
+) -> [Option<&'v FsNode>; 2] {
+    let ids = [row.diff_state.first(), row.diff_state.second()];
+    [0, 1].map(|side| {
+        views[side]
+            .zip(ids[side])
+            .and_then(|(view, id)| view.file_system.get_node(id))
+    })
+}
+
+fn shows_where_it_differs(
+    row: &VisibleRowTwoFolderDiff,
+    nodes: [Option<&FsNode>; 2],
+    compare: &TreeCompare,
+) -> bool {
+    let [Some(left), Some(right)] = nodes else {
+        return false;
+    };
+    if !left.is_file() || !right.is_file() {
+        return false;
+    }
+    match row.diff_state {
+        DiffState::Different(..) => true,
+        DiffState::Similar(..) => compare.state_of(&row.rel_path, [left, right]).is_some(),
+        _ => false,
     }
 }
 
@@ -983,12 +1023,7 @@ fn row_ratio(
     views: [Option<&FileSystemView>; 2],
     compare: &TreeCompare,
 ) -> Option<f64> {
-    let ids = [row.diff_state.first(), row.diff_state.second()];
-    let nodes = [0, 1].map(|side| {
-        views[side]
-            .zip(ids[side])
-            .and_then(|(view, id)| view.file_system.get_node(id))
-    });
+    let nodes = row_nodes(row, views);
     match likeness_cell(row, nodes, compare) {
         LikenessCell::Folder(ratio) => Some(ratio),
         LikenessCell::Same => Some(1.0),
@@ -1643,6 +1678,35 @@ mod tests {
         map.likeness = false;
         map.frame(Vec::new());
         assert_eq!(likeness(&map), [None; 5]);
+    }
+
+    #[test]
+    fn only_differing_files_already_read_show_where_they_differ() {
+        let mut map = MapHarness::new(&[("a/x.bin", 3000), ("same.bin", 1000), ("sim.bin", 1000)]);
+        for row in &mut map.rows {
+            let (Some(left), Some(right)) = (row.diff_state.first(), row.diff_state.second())
+            else {
+                continue;
+            };
+            match row.rel_path.as_str() {
+                "same.bin" => row.diff_state = DiffState::Same(left, right),
+                "sim.bin" => row.diff_state = DiffState::Similar(left, right),
+                _ => {}
+            }
+        }
+        let views = [map.views[0].as_ref(), map.views[1].as_ref()];
+        let differs = |path: &str| {
+            let row = map.rows.iter().find(|row| row.rel_path == path).unwrap();
+            shows_where_it_differs(row, row_nodes(row, views), &map.compare)
+        };
+
+        assert!(differs("a/x.bin"));
+        assert!(!differs("a"), "folders");
+        assert!(!differs("same.bin"));
+        assert!(
+            !differs("sim.bin"),
+            "a Similar pair before its compare is never read"
+        );
     }
 
     #[test]

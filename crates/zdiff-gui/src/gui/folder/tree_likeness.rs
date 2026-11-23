@@ -163,7 +163,7 @@ impl<'a> PreviewPair<'a> {
     }
 }
 
-fn preview_ui(ui: &mut egui::Ui, pair: PreviewPair) {
+pub fn preview_ui(ui: &mut egui::Ui, pair: PreviewPair) {
     let [Some(left), Some(right)] = [0, 1].map(|i| pair.models[i].get_node(pair.ids[i])) else {
         return;
     };

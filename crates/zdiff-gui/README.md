@@ -95,7 +95,7 @@ Two folders, or a folder and an empty side, show the folder diff. It is chosen f
     - Squarified treemap of the rows the tree shows (filters and find apply): a box per file sized by its larger side, colored by its diff state, equal files muted
     - With L (likeness) on, a box present on both sides, files and folders alike, is colored by how alike its sides are, in the likeness bar's colors (Style: Difference colors), with a legend in the breadcrumb row; boxes on one side only or not compared or measured yet keep their state color
     - A thin bar on a differing file shows the smaller side's share of the larger one
-    - Hover shows the path, both sizes, the state and the likeness; click selects (the tree follows), double-click opens the diff
+    - Hover shows the path, both sizes, the state and the likeness, and for a differing file on disk where the pair differs (the likeness tooltip's map: changed lines per side, changed bytes or the image difference; Similar pairs once compared); click selects (the tree follows), double-click opens the diff
     - Click a folder to zoom in; the breadcrumb, Backspace or the mouse back button zoom out (over a zoomed-in map the back button zooms out instead of going back)
     - Scroll (or Ctrl+scroll, pinch) zooms about the pointer, so boxes merged into `+N` and closed folders open up into named boxes; drag pans a zoomed map; middle-click, the Fit button, Backspace or the mouse back button show the whole folder again, and every folder change starts fitted
 * Duplicates view (Ctrl+D toggles it with the folder diff): finds duplicate files in the left folder
