@@ -26,12 +26,16 @@ const FFMPEG_EXTRACT: [(&str, &str); 3] = [
 ];
 const FFMPEG_NOTE: &str = "ffmpeg-SOURCE.txt";
 
-const USAGE: &str = "usage: cargo xtask <fetch-ffmpeg|check-features>";
+const DIST_PACKAGE: &str = "zdiff-gui";
+const DIST_EXE: &str = "zdiff-gui.exe";
+
+const USAGE: &str = "usage: cargo xtask <fetch-ffmpeg|check-features|dist>";
 
 fn main() -> ExitCode {
     let result = match env::args().nth(1).as_deref() {
         Some("fetch-ffmpeg") => fetch_ffmpeg(),
         Some("check-features") => check_features(),
+        Some("dist") => dist(),
         _ => Err(USAGE.to_string()),
     };
     match result {
@@ -110,8 +114,66 @@ fn fetch_ffmpeg() -> Result<(), String> {
     Ok(())
 }
 
+fn dist() -> Result<(), String> {
+    let root = workspace_root();
+    let ffmpeg_dir = root.join("ffmpeg");
+    let ffmpeg_files: Vec<&str> = FFMPEG_EXTRACT
+        .iter()
+        .map(|(_, name)| *name)
+        .chain([FFMPEG_NOTE])
+        .collect();
+    let missing: Vec<&str> = ffmpeg_files
+        .iter()
+        .copied()
+        .filter(|name| !ffmpeg_dir.join(name).is_file())
+        .collect();
+    if !missing.is_empty() {
+        return Err(format!(
+            "{} missing in {}. Run 'cargo xtask fetch-ffmpeg'.",
+            missing.join(", "),
+            ffmpeg_dir.display()
+        ));
+    }
+
+    let version = workspace_packages()?
+        .into_iter()
+        .find(|package| package.name == DIST_PACKAGE)
+        .ok_or(format!("cargo metadata: no package {DIST_PACKAGE}"))?
+        .version;
+
+    run(Command::new(cargo_program()).current_dir(root).args([
+        "build",
+        "--release",
+        "-p",
+        DIST_PACKAGE,
+    ]))?;
+
+    let out_dir = root
+        .join("target")
+        .join("dist")
+        .join(format!("ZDiff_{version}"));
+    if out_dir.exists() {
+        fs::remove_dir_all(&out_dir).map_err(|e| format!("remove {}: {e}", out_dir.display()))?;
+    }
+    fs::create_dir_all(&out_dir).map_err(|e| format!("create {}: {e}", out_dir.display()))?;
+
+    let mut files = vec![
+        root.join("target").join("release").join(DIST_EXE),
+        root.join("LICENSE"),
+    ];
+    files.extend(ffmpeg_files.iter().map(|name| ffmpeg_dir.join(name)));
+    for src in &files {
+        let dst = out_dir.join(src.file_name().unwrap());
+        fs::copy(src, &dst)
+            .map_err(|e| format!("copy {} to {}: {e}", src.display(), dst.display()))?;
+    }
+    println!("Release files in {}", out_dir.display());
+    Ok(())
+}
+
 struct Package {
     name: String,
+    version: String,
     features: Vec<String>,
 }
 
@@ -164,8 +226,12 @@ fn workspace_packages() -> Result<Vec<Package>, String> {
             .cloned()
             .collect();
         features.sort();
+        let version = package["version"]
+            .as_str()
+            .ok_or("cargo metadata: package without version")?;
         result.push(Package {
             name: name.to_string(),
+            version: version.to_string(),
             features,
         });
     }

@@ -22,7 +22,7 @@ Good reference & aim for this project: https://www.scootersoftware.com/
 | [**zdiff**](./crates/zdiff) | File-level diff | Library |
 | [**zdiff-gui**](./crates/zdiff-gui) | egui app for zdiff and zdiff-folder | Application |
 | [**zdiff-folder**](./crates/zdiff-folder) | Folder-level diff | Library |
-| [**xtask**](./xtask) | `cargo xtask fetch-ffmpeg` ([ffmpeg](./ffmpeg/README.md)) | Tool |
+| [**xtask**](./xtask) | `cargo xtask fetch-ffmpeg` ([ffmpeg](./ffmpeg/README.md)), `cargo dist` (release build plus ffmpeg into `target/dist/ZDiff_<version>/`) | Tool |
 
 # Build
 ```
