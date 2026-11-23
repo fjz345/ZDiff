@@ -78,7 +78,6 @@ pub struct TreeBehavior<'a, 'b> {
     // Diff Action State
     pub conflict_map: &'a mut HashMap<String, Vec<PathBuf>>,
     pub conflict_map_resolved: &'a mut HashMap<String, PathBuf>,
-    pub diff_action_pressed: &'a mut bool,
     pub diff_tool_config: &'a DiffToolConfig,
     pub tool_message: &'a mut Option<ToolMessage>,
     pub path_filter: &'a mut PathFilter,
@@ -131,7 +130,6 @@ impl<'a, 'b> TreeBehavior<'a, 'b> {
 
             conflict_map: self.conflict_map,
             conflict_map_resolved: self.conflict_map_resolved,
-            diff_action_pressed: self.diff_action_pressed,
             actions: self.actions,
             view_request: self.view_request,
         }

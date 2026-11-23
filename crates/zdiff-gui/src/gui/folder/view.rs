@@ -1104,7 +1104,6 @@ impl FolderPanes {
         app_ctx: &mut FolderState,
         draw: impl FnOnce(&mut PathDiffPane, &mut DuplicateFilesPane, &mut TreeBehavior),
     ) {
-        let mut diff_action_triggered = false;
         let scan_error = app_ctx.scan_error();
         let scanning =
             app_ctx.file_system_1_scan.is_scanning() || app_ctx.file_system_2_scan.is_scanning();
@@ -1131,7 +1130,6 @@ impl FolderPanes {
 
             conflict_map: &mut app_ctx.conflict_map,
             conflict_map_resolved: &mut app_ctx.conflict_map_resolved,
-            diff_action_pressed: &mut diff_action_triggered,
 
             diff_tool_config: &app_ctx.diff_config,
             tool_message: &mut app_ctx.tool_message,

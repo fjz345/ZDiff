@@ -1,8 +1,8 @@
-# ZDiffFolder
+# zdiff-folder
 
 Library crate for tree folder diffs
 
-../zdiff-folder-gui/README.md builds on this
+[zdiff-gui](../zdiff-gui/README.md#folder-diff) builds on this
 
 # Features
 * Folder tree model (`fs::FileSystemModel`) with a background scanner

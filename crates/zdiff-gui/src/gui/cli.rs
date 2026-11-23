@@ -20,7 +20,6 @@ pub enum LaunchRequest {
         right: Side,
         output: Side,
     },
-    Folders(Vec<OsString>),
     Help,
 }
 
@@ -28,6 +27,7 @@ pub enum LaunchRequest {
 pub struct Launch {
     pub request: LaunchRequest,
     pub warnings: Vec<String>,
+    pub folders: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -97,12 +97,11 @@ impl std::fmt::Display for LaunchError {
 
 pub const HELP: &str = "\
 Usage:
-  zdiff-gui LEFT RIGHT                  diff two files
+  zdiff-gui LEFT [RIGHT]                diff two files or two folders (a lone LEFT must be a folder)
   zdiff-gui BASE LEFT RIGHT OUTPUT      merge (opens LEFT and RIGHT as a diff for now)
-  zdiff-gui LEFT [RIGHT]                folder diff, when they are existing folders
-  zdiff-gui --folder [LEFT [RIGHT]]     folder diff; without folders the last ones are reopened
+  zdiff-gui --folder [LEFT [RIGHT]]     marks depot paths as folders; local folders need no flag
 
-Files can be local paths or depot paths (//depot/a.cpp#3).
+Files and folders can be local paths or depot paths (//depot/a.cpp#3).
 
 p4merge labels:
   -nl LABEL   left       -nr LABEL   right
@@ -168,6 +167,13 @@ impl Slots {
             label: self.get(Field::Label(role)).take().map(|g| g.value),
         })
     }
+
+    fn side_or_empty(&mut self, role: Role) -> Side {
+        self.side(role).unwrap_or(Side {
+            path: UniversalPath::default(),
+            label: None,
+        })
+    }
 }
 
 fn gnu_field(name: &str) -> Option<Field> {
@@ -210,7 +216,16 @@ fn split_tortoise(arg: &str) -> Option<(&str, &str)> {
     (!name.is_empty() && name.bytes().all(|b| b.is_ascii_alphabetic())).then_some((name, value))
 }
 
+#[cfg(test)]
 pub fn parse_launch_args<I>(args: I) -> Result<Launch, LaunchError>
+where
+    I: IntoIterator,
+    I::Item: Into<String>,
+{
+    parse_sides(args, false)
+}
+
+fn parse_sides<I>(args: I, sides_may_be_empty: bool) -> Result<Launch, LaunchError>
 where
     I: IntoIterator,
     I::Item: Into<String>,
@@ -225,6 +240,7 @@ where
             return Ok(Launch {
                 request: LaunchRequest::Help,
                 warnings,
+                folders: false,
             });
         }
 
@@ -286,6 +302,8 @@ where
     }
 
     let positional_roles: &[Role] = match positionals.len() {
+        0 if sides_may_be_empty => &[],
+        1 if sides_may_be_empty => &[Role::Left],
         0 if [Role::Base, Role::Left, Role::Right, Role::Output]
             .iter()
             .all(|&role| slots.get(Field::Path(role)).is_none()) =>
@@ -316,6 +334,7 @@ where
                 output: slots.side(Role::Output)?,
             },
             warnings,
+            folders: false,
         });
     }
 
@@ -339,12 +358,19 @@ where
         }
     }
 
-    let left = slots.side(Role::Left)?;
-    let right = slots.side(Role::Right)?;
+    let (left, right) = if sides_may_be_empty {
+        (
+            slots.side_or_empty(Role::Left),
+            slots.side_or_empty(Role::Right),
+        )
+    } else {
+        (slots.side(Role::Left)?, slots.side(Role::Right)?)
+    };
 
     Ok(Launch {
         request: LaunchRequest::Diff { left, right },
         warnings,
+        folders: false,
     })
 }
 
@@ -354,28 +380,17 @@ pub fn parse_launch(
     args: &[OsString],
     is_dir: impl Fn(&Path) -> bool,
 ) -> Result<Launch, LaunchError> {
-    let folders = |folder_args, warnings| Launch {
-        request: LaunchRequest::Folders(folder_args),
-        warnings,
-    };
-    if args.iter().any(|arg| arg == FOLDER_FLAG) {
-        let folder_args = args.iter().filter(|arg| *arg != FOLDER_FLAG);
-        return Ok(folders(folder_args.cloned().collect(), Vec::new()));
-    }
-    if let [lone] = args
-        && UniversalPath::new(lone).as_path().is_some_and(&is_dir)
-    {
-        return Ok(folders(vec![lone.clone()], Vec::new()));
-    }
-    let launch = parse_launch_args(args.iter().map(|arg| arg.to_string_lossy().into_owned()))?;
-    if let LaunchRequest::Diff { left, right } = &launch.request
-        && let (Some(left), Some(right)) = (left.path.as_path(), right.path.as_path())
-        && is_dir(left)
-        && is_dir(right)
-    {
-        return Ok(folders(vec![left.into(), right.into()], launch.warnings));
-    }
-    Ok(launch)
+    let folders = args.iter().any(|arg| arg == FOLDER_FLAG);
+    let lone_folder = matches!(
+        args,
+        [lone] if UniversalPath::new(lone).as_path().is_some_and(&is_dir)
+    );
+    let args = args
+        .iter()
+        .filter(|arg| *arg != FOLDER_FLAG)
+        .map(|arg| arg.to_string_lossy().into_owned());
+    let launch = parse_sides(args, folders || lone_folder)?;
+    Ok(Launch { folders, ..launch })
 }
 
 #[cfg(test)]
@@ -655,34 +670,39 @@ mod tests {
         );
     }
 
-    fn mode(args: &[&str]) -> Result<LaunchRequest, LaunchError> {
+    fn launch(args: &[&str]) -> Result<Launch, LaunchError> {
         let args: Vec<OsString> = args.iter().map(OsString::from).collect();
         parse_launch(&args, |path| {
             path.to_str().is_some_and(|path| path.ends_with("_dir"))
         })
-        .map(|launch| launch.request)
     }
 
-    fn folders(folder_args: &[&str]) -> Result<LaunchRequest, LaunchError> {
-        Ok(LaunchRequest::Folders(
-            folder_args.iter().map(OsString::from).collect(),
-        ))
+    fn mode(args: &[&str]) -> Result<LaunchRequest, LaunchError> {
+        launch(args).map(|launch| launch.request)
+    }
+
+    fn sides(left: &str, right: &str, folders: bool) -> Result<Launch, LaunchError> {
+        Ok(Launch {
+            request: diff(side(left, None), side(right, None)),
+            warnings: Vec::new(),
+            folders,
+        })
     }
 
     #[test]
     fn two_existing_folders_are_the_folder_mode() {
         assert_eq!(
-            mode(&["old_dir", "new_dir"]),
-            folders(&["old_dir", "new_dir"])
+            launch(&["old_dir", "new_dir"]),
+            sides("old_dir", "new_dir", false)
         );
     }
 
     #[test]
     fn a_lone_existing_folder_is_the_folder_mode() {
-        assert_eq!(mode(&["old_dir"]), folders(&["old_dir"]));
-        assert_eq!(mode(&["a.txt"]), Err(LaunchError::PositionalCount(1)));
+        assert_eq!(launch(&["old_dir"]), sides("old_dir", "", false));
+        assert_eq!(launch(&["a.txt"]), Err(LaunchError::PositionalCount(1)));
         assert_eq!(
-            mode(&["//depot/old_dir"]),
+            launch(&["//depot/old_dir"]),
             Err(LaunchError::PositionalCount(1))
         );
     }
@@ -699,10 +719,7 @@ mod tests {
             &["//depot/old_dir", "//depot/new_dir"],
             &["--help", "old_dir", "new_dir"],
         ] {
-            assert!(
-                !matches!(mode(args), Ok(LaunchRequest::Folders(_))),
-                "{args:?}"
-            );
+            assert_eq!(launch(args), parse(args), "{args:?}");
         }
     }
 
@@ -717,26 +734,32 @@ mod tests {
         );
         assert_eq!(
             mode(&["-nl", "old", "old_dir", "--right-label=new", "new_dir"]),
-            folders(&["old_dir", "new_dir"])
+            Ok(diff(
+                side("old_dir", Some("old")),
+                side("new_dir", Some("new"))
+            ))
         );
     }
 
     #[test]
     fn tortoise_two_folder_form_is_the_folder_mode() {
         assert_eq!(
-            mode(&["/base:old_dir", "/mine:new_dir"]),
-            folders(&["old_dir", "new_dir"])
+            launch(&["/base:old_dir", "/mine:new_dir"]),
+            sides("old_dir", "new_dir", false)
         );
     }
 
     #[test]
     fn folder_flag_is_the_folder_mode_with_the_other_args_in_order() {
-        assert_eq!(mode(&["--folder"]), folders(&[]));
-        assert_eq!(mode(&["--folder", "missing"]), folders(&["missing"]));
-        assert_eq!(mode(&["a.txt", "--folder", "b"]), folders(&["a.txt", "b"]));
+        assert_eq!(launch(&["--folder"]), sides("", "", true));
+        assert_eq!(launch(&["--folder", "missing"]), sides("missing", "", true));
         assert_eq!(
-            mode(&["--folder", "a", "b", "c"]),
-            folders(&["a", "b", "c"])
+            launch(&["a.txt", "--folder", "b"]),
+            sides("a.txt", "b", true)
+        );
+        assert_eq!(
+            launch(&["--folder", "a", "b", "c"]),
+            Err(LaunchError::PositionalCount(3))
         );
     }
 

@@ -675,8 +675,6 @@ pub struct DuplicateFilesPaneCtx<'a, 'b> {
     // Diff Action State
     pub conflict_map: &'a mut HashMap<String, Vec<PathBuf>>,
     pub conflict_map_resolved: &'a mut HashMap<String, PathBuf>,
-    #[allow(dead_code)]
-    pub diff_action_pressed: &'a mut bool,
     pub actions: &'a [FolderAction],
     pub view_request: &'a mut Option<ViewChoice>,
 }
@@ -1530,7 +1528,6 @@ mod tests {
         tool_message: Option<ToolMessage>,
         conflict_map: HashMap<String, Vec<PathBuf>>,
         conflict_map_resolved: HashMap<String, PathBuf>,
-        diff_action_pressed: bool,
         actions: Vec<FolderAction>,
     }
 
@@ -1551,7 +1548,6 @@ mod tests {
                 tool_message: None,
                 conflict_map: HashMap::new(),
                 conflict_map_resolved: HashMap::new(),
-                diff_action_pressed: false,
                 actions: Vec::new(),
             }
         }
@@ -1621,7 +1617,6 @@ mod tests {
                 keyboard_taken: false,
                 conflict_map: &mut self.conflict_map,
                 conflict_map_resolved: &mut self.conflict_map_resolved,
-                diff_action_pressed: &mut self.diff_action_pressed,
                 actions: &self.actions,
                 view_request: &mut None,
             };

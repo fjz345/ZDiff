@@ -2,7 +2,7 @@
 
 ![zdiff-gui](img/showcase.png)
 
-GUI for zdiff crate
+GUI for the zdiff and zdiff-folder crates: file diff, folder diff and 3-way merge in one window
 
 # Features
 * Myers diffing (Options > Myers Algo)
@@ -27,10 +27,10 @@ GUI for zdiff crate
     - Word wrap with aligned rows, horizontal scrolling with optional linked sides (Options > Link Horizontal Scrolling, Alt+L; on by default, not part of the toolbar's All)
     - Syntax highlighting for ~190 languages (bat's syntax set), auto-detected per pane by file name, extension or first line, or picked from a filterable list (Options > Syntax Highlighting); secondary syntaxes such as HTML (Rails) or Git Config are left out until the filter has text, and unticking "Show variants when filtering" (persisted) keeps them out of filter results too
     - Diff status with -/+ counts and compute time per stage
-    - Likeness bar at the right end of the toolbar (the same bar as zdiff-folder-gui's), followed by its metric: a dropdown where the viewer offers a choice (Text: Lines or Tokens; Image: the pixel metric), otherwise the measure's name as plain text, explained on hover (Hex: Bytes; Audio: RMS; Video: Frames). Hover the bar for the formula and where the pair differs (a strip of changed lines per side, unequal bytes or the sample difference's peak, or for images a thumbnail of the difference map under the current metric). Formulas: Text: matching lines, or tokens with the Token phase on, both honoring the ignore options (persisted); Hex: equal bytes at the same offset; Image: pixels within the tolerance under the image metric (the same setting as the image toolbar's Metric); Audio: 1 - RMS(left - right) / (RMS(left) + RMS(right)); Video: 1 - the timeline's mean frame difference / 255
+    - Likeness bar at the right end of the toolbar (the same bar as the folder diff's), followed by its metric: a dropdown where the viewer offers a choice (Text: Lines or Tokens; Image: the pixel metric), otherwise the measure's name as plain text, explained on hover (Hex: Bytes; Audio: RMS; Video: Frames). Hover the bar for the formula and where the pair differs (a strip of changed lines per side, unequal bytes or the sample difference's peak, or for images a thumbnail of the difference map under the current metric). Formulas: Text: matching lines, or tokens with the Token phase on, both honoring the ignore options (persisted); Hex: equal bytes at the same offset; Image: pixels within the tolerance under the image metric (the same setting as the image toolbar's Metric); Audio: 1 - RMS(left - right) / (RMS(left) + RMS(right)); Video: 1 - the timeline's mean frame difference / 255
     - Revert a hunk on disk, with undo/redo (refused after an external change); read-only Perforce files are offered a `p4 edit`
     - Occurrence highlight: selecting text in a row highlights its other occurrences in the visible rows, on both sides
-    - Diff options (toolbar; icon or short text toggles with tooltips, the same toolbar look as zdiff-folder-gui)
+    - Diff options (toolbar; icon or short text toggles with tooltips, the same toolbar look as the folder diff)
         + Ignore whitespace (WS), comments (//), and regex patterns (.*, with presets); ignored regex matches are dimmed
         + Ignore line endings (EOL, Alt+E): CRLF, LF and CR compare equal. EOL and BOM are drawn as bordered tags: they name markers, not text
         + Ignore file markers (BOM, Alt+M): a UTF-8 BOM at the start and the presence of a final line break
@@ -58,11 +58,54 @@ GUI for zdiff crate
     - Zooming out stops at fit: the whole image (or 1:1 for an image smaller than the view), the whole audio length
     - Double-clicking an image or audio mode button resets that mode's own settings (A/B interval, swipe divider, overlay opacity, spectrogram window and ranges)
     - Audio and video need ffmpeg: `cargo xtask fetch-ffmpeg` (see [ffmpeg/README.md](../../ffmpeg/README.md))
-    - PDB (MSF 7.00): diffed as a sorted text dump: header (version, machine, stripped, optionally GUID/age/timestamp), modules, public symbols, global symbols (procedures with signatures and sizes, data, typedefs, constants; no locals), and one line per class/struct/union/enum with its fields. The toolbar's PDB menu (persisted) has Public only (as stripped), so a full PDB compares clean against its stripped copy, Ignore addresses/RVAs and Ignore GUID/age/timestamp (on by default); a change reloads the dumps. Capped at 1,000,000 lines with a truncation marker that holds the count and a hash of the lines left out, so two dumps that differ only there still show a changed line. A PDB that doesn't parse is shown in Hex; Hex and Strings on a PDB show its real bytes. Dumps can't be reverted into or merged. zdiff-folder-gui still compares PDBs by bytes, so a rebuild always differs there
+    - PDB (MSF 7.00): diffed as a sorted text dump: header (version, machine, stripped, optionally GUID/age/timestamp), modules, public symbols, global symbols (procedures with signatures and sizes, data, typedefs, constants; no locals), and one line per class/struct/union/enum with its fields. The toolbar's PDB menu (persisted) has Public only (as stripped), so a full PDB compares clean against its stripped copy, Ignore addresses/RVAs and Ignore GUID/age/timestamp (on by default); a change reloads the dumps. Capped at 1,000,000 lines with a truncation marker that holds the count and a hash of the lines left out, so two dumps that differ only there still show a changed line. A PDB that doesn't parse is shown in Hex; Hex and Strings on a PDB show its real bytes. Dumps can't be reverted into or merged. The folder diff still compares PDBs by bytes, so a rebuild always differs there
 * 3-way merge view: picks, chunk editing, undo/redo, conflict navigation, save (Ctrl+S)
 * Style window: text, syntax, hex and image colors, presets, and the look of empty and collapsed rows
-* Difference colors (Style window, or the Colors dropdown beside the video difference timeline): Heat (the default, green to yellow to red), Viridis, Inferno, Grayscale, Solid or Rainbow (blue to red), one choice shared with zdiff-folder-gui for both themes. It colors the timeline bars by height, the image heatmap and its legend, the likeness bar (low end for alike, high end for unlike) and its hover maps
+* Difference colors (Style window, or the Colors dropdown beside the video difference timeline): Heat (the default, green to yellow to red), Viridis, Inferno, Grayscale, Solid or Rainbow (blue to red), one choice for both themes, shared with the folder diff. It colors the timeline bars by height, the image heatmap and its legend, the likeness bar (low end for alike, high end for unlike) and its hover maps
 * Frame rate counter at the right end of the menu bar, `N fps (M)`: N is 1 / average CPU time per frame over the last 120 frames (vsync wait excluded), so it shows what a frame costs; M is the frames actually started in the last second, which follows input and the vsync cap; marked idle once frames stop, and M is hidden then; clicking it (or Options > Frame Time Breakdown) opens the Frame Time window: Total CPU per frame (average, max, the fps and the input-driven repaint rate) on top, then the breakdown over the last 120 frames: the app's update sections, each split into indented sub-sections plus a "(rest of section)" row, and "egui + OpenGL (outside app code)" split into egui's pass start, pass end, and tessellation plus OpenGL paint. A V-sync checkbox at the bottom is saved per app and applies on the next start, as eframe sets the swap interval only when it creates the window
+
+## Folder diff
+
+![folder diff](img/showcase-folder.png)
+
+Two folders, or a folder and an empty side, show the folder diff. It is chosen from the two sides like the other viewers, so there is no mode to switch: put a folder on a side by typing it into the path bar, dropping it, File > Open Left / Right Folder, or `zdiff-gui LEFT [RIGHT]`. A folder against a file stays a file diff, and the folder side says so in its path bar. `--folder` only marks depot paths as folders (a depot path can't be told from a file without asking p4); local folders need no flag. The folders are not reopened on the next start.
+
+* Shared with the file viewers: the path bars, the "Source control" dropdown per side (a git revision, or a Perforce depot folder, changelist or shelf, with its "Back to ..." entry), Swap Sides, Clear Paths, Undo / Redo (Back / Forward, mouse buttons included) over one history of files and folders, Options > Link Horizontal Scrolling, the Style window and its Difference colors, the frame rate counter, and the one Keyboard Shortcuts window (Ctrl+O), which lists the folder diff's own actions in a "Folder diff" section. Esc closes nothing
+* A row opens in the same window with the bundled tool (zdiff-gui), for disk, git and depot rows; Back returns to the folder diff with its views, folding, cursor, scroll and filters as they were. A tool set to an explicit exe path, or any other tool, opens a separate process. While a file pair shows, scans and compares keep running and their results are applied on return
+* Two-folder tree diff
+    - Background scan and compare, rows show Pending until compared; counts and timings in the status line under the tree
+    - A side that can't be scanned (a missing folder, a cancelled scan) shows its error on that side; Refresh or a new path scans again
+    - Compare and likeness results survive rescans in memory-bounded caches (256 MiB each, least recently used pairs dropped first); a likeness is only reused when measured with the same file kinds and pixel tolerance
+    - Rebuilt rows (compare finished, sort, filters) keep the top row of the view in place, or its nearest shown folder
+    - Compared rows are cached in memory per path filter and tolerance (last 6), so sort, diff only, flat and switching a filter or tolerance back skip the rebuild (about 130 ms down to 20 ms for 52,000 rows); a rescan or new compare results drop them
+    - Right-click menu on rows (set as root, set as Left/Right folder, open in Explorer, copy path)
+    - Tree guide lines, folder tint, dimmed equal rows; the tree background follows the light or dark style (Style window: Table background)
+    - File type tag column per side (`img`, `bin`, `BP` for Blueprint `.uasset`, ...)
+    - Sort by Name or State, cursor with keyboard navigation, next/previous differing file
+    - Find with highlighted names
+    - Blacklist and whitelist filters with presets
+    - PDBs are compared by bytes here, so a rebuild always differs; open the row for the PDB viewer
+* Toolbar, in the file toolbar's place: Tree | Map | Duplicates, Collapse All (Expand All once anything is folded) / Expand Diffs Only and the option toggles in one row, the filters below. In a narrow window its groups wrap onto more rows instead of clipping
+    - F: flat list by depth
+    - D: diff only
+    - P: show parent folders (with diff only)
+    - L: likeness bar, how alike each pair is (lines, pixels or bytes); hovering a file's bar shows where it differs, computed on the first hover: text a strip of changed lines per side, binary a strip of unequal bytes, images a thumbnail of the per-pixel difference
+    - T: tolerance, differing files that pass the size, modification time or likeness criteria count as Similar
+* Map view (Ctrl+M toggles Tree and Map)
+    - Squarified treemap of the rows the tree shows (filters and find apply): a box per file sized by its larger side, colored by its diff state, equal files muted
+    - With L (likeness) on, a box present on both sides, files and folders alike, is colored by how alike its sides are, in the likeness bar's colors (Style: Difference colors), with a legend in the breadcrumb row; boxes on one side only or not compared or measured yet keep their state color
+    - A thin bar on a differing file shows the smaller side's share of the larger one
+    - Hover shows the path, both sizes, the state and the likeness; click selects (the tree follows), double-click opens the diff
+    - Click a folder to zoom in; the breadcrumb, Backspace or the mouse back button zoom out (over a zoomed-in map the back button zooms out instead of going back)
+    - Scroll (or Ctrl+scroll, pinch) zooms about the pointer, so boxes merged into `+N` and closed folders open up into named boxes; drag pans a zoomed map; middle-click, the Fit button, Backspace or the mouse back button show the whole folder again, and every folder change starts fitted
+* Duplicates view (Ctrl+D toggles it with the folder diff): finds duplicate files in the left folder
+    - Size collisions hashed in the background, with progress and Cancel
+    - Duplicate groups shown inline in the tree; Duplicates only, Flat, Show parent folders and Hash column toggles
+    - Keep this, next/previous group, then Resolve recycles the non-keepers
+* External diff tools (Options > External Diff Tools, on a folder pair)
+    - Tools window with presets (zdiff-gui, TortoiseMerge, WinMerge, Beyond Compare, p4merge, VS Code, ...), argument templates, rules and a Test button
+    - Executables are found next to the app, at the build path or on PATH
+    - Rows a tool can't diff are marked
 
 ## Occurrence highlighting
 Selecting text within one row (drag, double-click a word, triple-click the line) highlights every other occurrence of that exact text in the visible rows on both sides, in purple. Matching is case-sensitive. Selections shorter than 2 characters, whitespace-only selections and selections spanning rows highlight nothing. The highlight clears with the selection (Escape, or a click elsewhere).
@@ -122,7 +165,7 @@ In `~/.gitconfig` (inside the quotes, use forward slashes in the path):
     cmd = \"C:/Tools/zdiff-gui.exe\" \"$BASE\" \"$LOCAL\" \"$REMOTE\" \"$MERGED\"
     trustExitCode = true
 ```
-`git difftool -d` passes two folders, which open in the folder diff (as does `zdiff-gui --folder [LEFT [RIGHT]]`; see zdiff-folder-gui).
+`git difftool -d` passes two folders, which open in the folder diff (see [Folder diff](#folder-diff)).
 
 ### TortoiseSVN / TortoiseGit
 Settings > External Programs (TortoiseSVN) or Settings > Diff Viewer / Merge Tool (TortoiseGit), choose External.
@@ -147,3 +190,7 @@ zdiff-gui reads a `.env` file only from the folder of its executable (`target/<p
 ## Todo
 * Batch DiffRow performance optimzation
 * user defined comparison per file format
+* Maybe fixed?? ____ Some PCs egui becomes white after first launch ____
+
+### Duplicate file diff
+* Allow restoring of resolved files (maybe mark file names as red?)

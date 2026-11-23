@@ -509,7 +509,7 @@ fn kind_label(kind: FileKind) -> String {
 pub fn ui_extension_map(ui: &mut egui::Ui, table: &KindTable) -> Vec<KindEdit> {
     let mut edits = Vec::new();
     section_heading(ui, "Extensions");
-    ui.weak("Shared with ZDiffFolder. Unlisted extensions are sniffed: text opens as Text, binary as Hex.");
+    ui.weak("Shared with the folder diff. Unlisted extensions are sniffed: text opens as Text, binary as Hex.");
     egui::CollapsingHeader::new("Built-in defaults")
         .id_salt("extension_map_defaults")
         .show(ui, |ui| {

@@ -1,4 +1,7 @@
-use std::{collections::HashSet, ffi::OsString, path::PathBuf};
+use std::{
+    collections::HashSet,
+    path::{Path, PathBuf},
+};
 
 use super::{folder_mode::folder_key, state::AppStateCtx};
 
@@ -20,9 +23,9 @@ pub(super) enum LaunchOutcome {
     Error(String),
 }
 
-fn folder_side(arg: &OsString) -> UniversalPath {
+fn absolute_folder(side: UniversalPath) -> UniversalPath {
     let absolute = |folder: PathBuf| std::path::absolute(&folder).unwrap_or(folder);
-    match UniversalPath::new(arg) {
+    match side {
         UniversalPath::Local(folder) => UniversalPath::from(absolute(folder)),
         UniversalPath::Git(folder, rev) => UniversalPath::Git(absolute(folder), rev),
         depot @ UniversalPath::Depot(..) => depot,
@@ -71,19 +74,20 @@ pub(super) fn apply_launch(
             };
             return LaunchOutcome::Merge(Box::new(request), names);
         }
-        LaunchRequest::Folders(folder_args) => {
-            for (file, arg) in [file_1, file_2].into_iter().zip(&folder_args) {
-                let side = folder_side(arg);
-                known_folders.insert(folder_key(&side));
-                file.restore_path(side, None);
-            }
-            return LaunchOutcome::Opened;
-        }
         LaunchRequest::Help => return LaunchOutcome::Help,
     };
     // set_path clears the label, so the label goes second.
     for (file, side) in [(file_1, left), (file_2, right)] {
-        file.set_path(side.path);
+        let is_folder = launch.folders || side.path.as_path().is_some_and(Path::is_dir);
+        let path = if is_folder && !side.path.is_empty() {
+            absolute_folder(side.path)
+        } else {
+            side.path
+        };
+        if launch.folders && !path.is_empty() {
+            known_folders.insert(folder_key(&path));
+        }
+        file.set_path(path);
         file.set_label(side.label);
     }
     LaunchOutcome::Opened
@@ -212,6 +216,7 @@ mod tests {
 
     mod launch {
         use super::*;
+        use std::ffi::OsString;
 
         fn launch(args: &[&str]) -> (FileProcessor, FileProcessor, LaunchOutcome) {
             let mut left = FileProcessor::new();
@@ -316,6 +321,32 @@ mod tests {
                 known,
                 HashSet::from([folder_key(&a), "//depot/b".to_owned()])
             );
+        }
+
+        #[test]
+        fn the_folder_flag_marks_depot_paths_as_folders() {
+            let mut state = AppStateCtx::default();
+            let args: [OsString; 3] = ["--folder".into(), "//depot/a".into(), "//depot/b".into()];
+            apply_launch(
+                &mut state.file_1,
+                &mut state.file_2,
+                &mut state.known_folders,
+                cli::parse_launch(&args, |_| false),
+            );
+            assert_eq!(
+                state.known_folders,
+                HashSet::from(["//depot/a".to_owned(), "//depot/b".to_owned()])
+            );
+            assert!(state.resolve_folder_pair(false));
+
+            let mut unmarked = AppStateCtx::default();
+            apply_launch(
+                &mut unmarked.file_1,
+                &mut unmarked.file_2,
+                &mut unmarked.known_folders,
+                cli::parse_launch(&args[1..], |_| false),
+            );
+            assert!(!unmarked.resolve_folder_pair(false));
         }
     }
 }
