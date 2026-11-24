@@ -1,6 +1,9 @@
 use super::{ZApp, state::AppStateCtx};
 use eframe::egui;
-use std::{path::Path, sync::mpsc};
+use std::{
+    path::{Path, PathBuf},
+    sync::mpsc,
+};
 use zdiff::universal_path::UniversalPath;
 
 use crate::{
@@ -11,8 +14,21 @@ use crate::{
 
 impl ZApp {
     pub(super) fn open_file_picker(tx: mpsc::Sender<UniversalPath>, ctx: egui::Context) {
+        Self::spawn_picker(crate::picker::pick_file_or_folder, tx, ctx);
+    }
+
+    #[cfg(not(any(windows, target_os = "macos")))]
+    pub(super) fn open_folder_picker(tx: mpsc::Sender<UniversalPath>, ctx: egui::Context) {
+        Self::spawn_picker(crate::picker::pick_folder, tx, ctx);
+    }
+
+    fn spawn_picker(
+        pick: fn() -> Option<PathBuf>,
+        tx: mpsc::Sender<UniversalPath>,
+        ctx: egui::Context,
+    ) {
         std::thread::spawn(move || {
-            if let Some(path) = crate::picker::pick_file_or_folder() {
+            if let Some(path) = pick() {
                 if let Err(e) = tx.send(UniversalPath::from(path)) {
                     log::error!("Failed to send path: {e}");
                 }

@@ -193,11 +193,23 @@ mod tests {
 
     mod quick_diff {
         use super::*;
+        use zcommon::test_util::os_path;
 
-        const TEMP: &str = r"C:\Users\me\AppData\Local\Temp";
-        const TEMP_COPY: &str = r"C:\Users\me\AppData\Local\Temp\p4v\main.rs#3";
-        const WORKSPACE: &str = r"C:\ws";
-        const WORKSPACE_FILE: &str = r"C:\ws\src\main.rs";
+        fn temp() -> String {
+            os_path(r"C:\Users\me\AppData\Local\Temp")
+        }
+
+        fn temp_copy() -> String {
+            os_path(r"C:\Users\me\AppData\Local\Temp\p4v\main.rs#3")
+        }
+
+        fn workspace() -> String {
+            os_path(r"C:\ws")
+        }
+
+        fn workspace_file() -> String {
+            os_path(r"C:\ws\src\main.rs")
+        }
 
         /// A slot that diffs the open file's root-relative path under a depot root.
         fn depot_slot() -> QuickDiffPaths {
@@ -222,67 +234,67 @@ mod tests {
             file_1: &mut FileProcessor,
             file_2: &mut FileProcessor,
         ) -> Result<(), QuickDiffRefusal> {
-            apply_quick_diff(slot, file_1, file_2, Path::new(TEMP))
+            apply_quick_diff(slot, file_1, file_2, Path::new(&temp()))
         }
 
         #[test]
         fn neither_temp_takes_the_left_sides_path() {
-            let mut left = side(Some(WORKSPACE), WORKSPACE_FILE);
+            let mut left = side(Some(&workspace()), &workspace_file());
             let mut right = side(None, r"C:\other\lib.rs");
             assert_eq!(apply(&depot_slot(), &mut left, &mut right), Ok(()));
             assert_eq!(
                 right.get_full_path(),
                 UniversalPath::new("//depot/main/src/main.rs")
             );
-            assert_eq!(left.get_full_path(), UniversalPath::new(WORKSPACE_FILE));
+            assert_eq!(left.get_full_path(), UniversalPath::new(workspace_file()));
         }
 
         #[test]
         fn a_temp_left_side_takes_the_right_sides_path() {
-            let mut left = side(None, TEMP_COPY);
-            let mut right = side(Some(WORKSPACE), WORKSPACE_FILE);
+            let mut left = side(None, &temp_copy());
+            let mut right = side(Some(&workspace()), &workspace_file());
             assert_eq!(apply(&depot_slot(), &mut left, &mut right), Ok(()));
             assert_eq!(
                 right.get_full_path(),
                 UniversalPath::new("//depot/main/src/main.rs")
             );
-            assert_eq!(left.get_full_path(), UniversalPath::new(TEMP_COPY));
+            assert_eq!(left.get_full_path(), UniversalPath::new(temp_copy()));
         }
 
         #[test]
         fn a_temp_right_side_takes_the_left_sides_path() {
-            let mut left = side(Some(WORKSPACE), WORKSPACE_FILE);
-            let mut right = side(None, TEMP_COPY);
+            let mut left = side(Some(&workspace()), &workspace_file());
+            let mut right = side(None, &temp_copy());
             assert_eq!(apply(&depot_slot(), &mut left, &mut right), Ok(()));
             assert_eq!(
                 right.get_full_path(),
                 UniversalPath::new("//depot/main/src/main.rs")
             );
-            assert_eq!(left.get_full_path(), UniversalPath::new(WORKSPACE_FILE));
+            assert_eq!(left.get_full_path(), UniversalPath::new(workspace_file()));
         }
 
         #[test]
         fn both_temp_disables_every_slot_and_changes_nothing() {
-            let other_copy = r"C:\Users\me\AppData\Local\Temp\p4v\main.rs#4";
+            let other_copy = os_path(r"C:\Users\me\AppData\Local\Temp\p4v\main.rs#4");
             let slots = [
                 depot_slot(),
                 QuickDiffPaths {
                     target: ("//depot/main".into(), "src/main.rs".into()),
-                    source: Some((WORKSPACE.into(), WORKSPACE_FILE.into())),
+                    source: Some((workspace(), workspace_file())),
                     p4_profile: None,
                 },
             ];
             for slot in slots {
-                let mut left = side(None, TEMP_COPY);
-                let mut right = side(None, other_copy);
+                let mut left = side(None, &temp_copy());
+                let mut right = side(None, &other_copy);
                 assert_eq!(
                     apply(&slot, &mut left, &mut right),
                     Err(QuickDiffRefusal::BothTemp),
                     "{slot:?}"
                 );
-                assert_eq!(left.get_full_path(), UniversalPath::new(TEMP_COPY));
+                assert_eq!(left.get_full_path(), UniversalPath::new(temp_copy()));
                 assert_eq!(left.get_root(), None);
-                assert_eq!(right.get_full_path(), UniversalPath::new(other_copy));
+                assert_eq!(right.get_full_path(), UniversalPath::new(&other_copy));
                 assert_eq!(right.get_root(), None);
             }
         }
@@ -389,13 +401,13 @@ mod tests {
             #[test]
             fn a_local_source_changes_nothing_and_runs_no_p4() {
                 let p4 = FakeP4::new(|_: &[&str]| panic!("p4 must not run"));
-                let mut left = side(Some(WORKSPACE), WORKSPACE_FILE);
+                let mut left = side(Some(&workspace()), &workspace_file());
                 let mut right = side(None, TARGET);
                 assert_eq!(
                     diff_against_local_file(&mut left, &mut right, &p4),
-                    Err(LocalFileRefusal::LocalSource(WORKSPACE_FILE.into()))
+                    Err(LocalFileRefusal::LocalSource(workspace_file().into()))
                 );
-                assert_eq!(left.get_full_path(), UniversalPath::new(WORKSPACE_FILE));
+                assert_eq!(left.get_full_path(), UniversalPath::new(workspace_file()));
                 assert_eq!(right.get_full_path(), UniversalPath::new(TARGET));
             }
         }
@@ -521,15 +533,15 @@ mod tests {
         fn a_slot_source_is_applied_before_the_path_is_taken() {
             // The source replaces the temp left side, so it supplies the path.
             let slot = QuickDiffPaths {
-                source: Some((WORKSPACE.into(), r"C:\ws\src\lib.rs".into())),
+                source: Some((workspace(), os_path(r"C:\ws\src\lib.rs"))),
                 ..depot_slot()
             };
-            let mut left = side(None, TEMP_COPY);
+            let mut left = side(None, &temp_copy());
             let mut right = side(None, r"C:\other\main.rs");
             assert_eq!(apply(&slot, &mut left, &mut right), Ok(()));
             assert_eq!(
                 left.get_full_path(),
-                UniversalPath::new(r"C:\ws\src\lib.rs")
+                UniversalPath::new(os_path(r"C:\ws\src\lib.rs"))
             );
             assert_eq!(
                 right.get_full_path(),

@@ -9,7 +9,7 @@ use zcommon::kinds::FileKind;
 use zcommon_ui::common::{icon_button, section_heading, show_settings_window};
 use zdiff_folder::external_diff_tool::{
     DiffPair, DiffTool, DiffToolConfig, DiffToolMatch, DiffToolRule, ExeNotFound, find_on_path,
-    folder_labels, open_diff_tool, presets, preview_command, resolve_exe,
+    folder_labels, open_diff_tool, presets, preview_command, resolve_exe, wait_in_background,
 };
 
 pub fn resolve_tool_exe(exe_path: &Path) -> Result<PathBuf, ExeNotFound> {
@@ -35,11 +35,11 @@ fn write_test_files(dir: &Path) -> io::Result<(PathBuf, PathBuf)> {
 
 /// Fixed files, not a self-deleting temp dir: the tool opens them after the spawn returns.
 fn test_tool(tool: &DiffTool) -> Result<String, String> {
-    let exe = resolve_tool_exe(&tool.exe_path).map_err(|err| err.to_string())?;
+    let exe = resolve_tool_exe(tool.exe_to_launch()).map_err(|err| err.to_string())?;
     let (left, right) = write_test_files(&env::temp_dir().join("zdiff-folder-diff-tool-test"))
         .map_err(|err| format!("writing the test files failed: {err}"))?;
     let (left_name, right_name) = folder_labels("test.txt");
-    open_diff_tool(
+    let child = open_diff_tool(
         &exe,
         tool,
         &DiffPair {
@@ -50,6 +50,7 @@ fn test_tool(tool: &DiffTool) -> Result<String, String> {
         },
     )
     .map_err(|err| format!("{}: {err}", exe.display()))?;
+    wait_in_background(child);
     Ok(format!("launched {}", exe.display()))
 }
 

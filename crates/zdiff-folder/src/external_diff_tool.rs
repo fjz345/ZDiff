@@ -72,13 +72,28 @@ pub struct DiffTool {
     pub kinds: Vec<FileKind>,
 }
 
-const BUNDLED_EXE_NAME: &str = "zdiff-gui.exe";
+const BUNDLED_EXE_NAME: &str = if cfg!(windows) {
+    WINDOWS_BUNDLED_EXE_NAME
+} else {
+    "zdiff-gui"
+};
+const WINDOWS_BUNDLED_EXE_NAME: &str = "zdiff-gui.exe";
 
 impl DiffTool {
     pub fn is_bundled(&self) -> bool {
-        self.exe_path
-            .to_str()
-            .is_some_and(|exe| exe.eq_ignore_ascii_case(BUNDLED_EXE_NAME))
+        self.exe_path.to_str().is_some_and(|exe| {
+            [BUNDLED_EXE_NAME, WINDOWS_BUNDLED_EXE_NAME]
+                .iter()
+                .any(|name| exe.eq_ignore_ascii_case(name))
+        })
+    }
+
+    pub fn exe_to_launch(&self) -> &Path {
+        if self.is_bundled() {
+            Path::new(BUNDLED_EXE_NAME)
+        } else {
+            &self.exe_path
+        }
     }
 }
 
@@ -162,22 +177,34 @@ fn zdiff_gui_handles(kind: FileKind) -> bool {
     }
 }
 
+fn zdiff_gui_preset() -> DiffToolPreset {
+    DiffToolPreset {
+        name: "zdiff-gui",
+        install_paths: Vec::new(),
+        bare_name: BUNDLED_EXE_NAME,
+        template: r#""{left}" "{right}" -nl "{left_name}" -nr "{right_name}""#,
+        kinds: FileKind::ALL
+            .into_iter()
+            .filter(|&kind| zdiff_gui_handles(kind))
+            .collect(),
+    }
+}
+
 pub fn presets(local_app_data: Option<&Path>) -> Vec<DiffToolPreset> {
+    if cfg!(windows) {
+        windows_presets(local_app_data)
+    } else {
+        unix_presets(cfg!(target_os = "macos"))
+    }
+}
+
+pub(crate) fn windows_presets(local_app_data: Option<&Path>) -> Vec<DiffToolPreset> {
     let paths = |paths: &[&str]| paths.iter().map(PathBuf::from).collect::<Vec<_>>();
     let vs_code_user = local_app_data
         .map(|dir| dir.join(r"Programs\Microsoft VS Code\Code.exe"))
         .into_iter();
     vec![
-        DiffToolPreset {
-            name: "zdiff-gui",
-            install_paths: Vec::new(),
-            bare_name: BUNDLED_EXE_NAME,
-            template: r#""{left}" "{right}" -nl "{left_name}" -nr "{right_name}""#,
-            kinds: FileKind::ALL
-                .into_iter()
-                .filter(|&kind| zdiff_gui_handles(kind))
-                .collect(),
-        },
+        zdiff_gui_preset(),
         DiffToolPreset {
             name: "TortoiseMerge",
             install_paths: paths(&[r"C:\Program Files\TortoiseSVN\bin\TortoiseMerge.exe"]),
@@ -230,6 +257,64 @@ pub fn presets(local_app_data: Option<&Path>) -> Vec<DiffToolPreset> {
             kinds: vec![FileKind::Text],
         },
     ]
+}
+
+// Apps started from the macOS Finder get a PATH without /usr/local/bin, hence the install paths.
+fn unix_presets(macos: bool) -> Vec<DiffToolPreset> {
+    let macos_paths = |paths: &[&str]| match macos {
+        true => paths.iter().map(PathBuf::from).collect(),
+        false => Vec::new(),
+    };
+    let mut presets = vec![
+        zdiff_gui_preset(),
+        DiffToolPreset {
+            name: "Meld",
+            install_paths: Vec::new(),
+            bare_name: "meld",
+            template: r#"--label "{left_name}" --label "{right_name}" "{left}" "{right}""#,
+            kinds: vec![FileKind::Text],
+        },
+        DiffToolPreset {
+            name: "KDiff3",
+            install_paths: Vec::new(),
+            bare_name: "kdiff3",
+            template: r#"--L1 "{left_name}" --L2 "{right_name}" "{left}" "{right}""#,
+            kinds: vec![FileKind::Text],
+        },
+        DiffToolPreset {
+            name: "VS Code",
+            install_paths: macos_paths(&[
+                "/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code",
+            ]),
+            bare_name: "code",
+            template: r#"--diff "{left}" "{right}""#,
+            kinds: vec![FileKind::Text],
+        },
+        DiffToolPreset {
+            name: "Beyond Compare",
+            install_paths: macos_paths(&["/usr/local/bin/bcompare"]),
+            bare_name: "bcompare",
+            template: r#""{left}" "{right}" -lefttitle="{left_name}" -righttitle="{right_name}""#,
+            kinds: vec![FileKind::Text, FileKind::Image],
+        },
+        DiffToolPreset {
+            name: "p4merge",
+            install_paths: macos_paths(&["/Applications/p4merge.app/Contents/MacOS/p4merge"]),
+            bare_name: "p4merge",
+            template: r#"-nl "{left_name}" -nr "{right_name}" "{left}" "{right}""#,
+            kinds: vec![FileKind::Text],
+        },
+    ];
+    if macos {
+        presets.push(DiffToolPreset {
+            name: "FileMerge",
+            install_paths: Vec::new(),
+            bare_name: "opendiff",
+            template: r#""{left}" "{right}""#,
+            kinds: vec![FileKind::Text],
+        });
+    }
+    presets
 }
 
 impl DiffToolPreset {
@@ -492,6 +577,7 @@ pub enum TemplateError {
     MissingLeft,
     MissingRight,
     QuoteInValue(String),
+    UnclosedQuote,
 }
 
 impl fmt::Display for TemplateError {
@@ -502,16 +588,49 @@ impl fmt::Display for TemplateError {
             TemplateError::MissingLeft => write!(f, "missing {{left}}"),
             TemplateError::MissingRight => write!(f, "missing {{right}}"),
             TemplateError::QuoteInValue(value) => write!(f, "{value:?} contains a double quote"),
+            TemplateError::UnclosedQuote => write!(f, "'\"' without a closing '\"'"),
         }
     }
 }
 
 impl std::error::Error for TemplateError {}
 
-/// Single pass, so placeholder text inside a value (a file named `{right}.txt`) stays literal.
 pub fn expand_template(template: &str, pair: &DiffPair) -> Result<String, TemplateError> {
+    let mut found = [false; 2];
+    let expanded = substitute(template, pair, &mut found, true)?;
+    require_both_sides(found)?;
+    Ok(expanded)
+}
+
+/// Splits before substituting, so values may hold quotes and spaces.
+pub fn expand_template_args(template: &str, pair: &DiffPair) -> Result<Vec<String>, TemplateError> {
+    let mut found = [false; 2];
+    let args = split_args(template)?
+        .iter()
+        .map(|arg| substitute(arg, pair, &mut found, false))
+        .collect::<Result<Vec<_>, _>>()?;
+    require_both_sides(found)?;
+    Ok(args)
+}
+
+fn require_both_sides([has_left, has_right]: [bool; 2]) -> Result<(), TemplateError> {
+    if !has_left {
+        return Err(TemplateError::MissingLeft);
+    }
+    if !has_right {
+        return Err(TemplateError::MissingRight);
+    }
+    Ok(())
+}
+
+/// Single pass, so placeholder text inside a value (a file named `{right}.txt`) stays literal.
+fn substitute(
+    template: &str,
+    pair: &DiffPair,
+    [has_left, has_right]: &mut [bool; 2],
+    reject_quotes: bool,
+) -> Result<String, TemplateError> {
     let mut expanded = String::with_capacity(template.len() + pair.left.len() + pair.right.len());
-    let (mut has_left, mut has_right) = (false, false);
     let mut rest = template;
     while let Some(open) = rest.find('{') {
         expanded.push_str(&rest[..open]);
@@ -521,11 +640,11 @@ pub fn expand_template(template: &str, pair: &DiffPair) -> Result<String, Templa
             .ok_or(TemplateError::UnclosedPlaceholder)?;
         let value = match &after_open[..close] {
             "left" => {
-                has_left = true;
+                *has_left = true;
                 pair.left
             }
             "right" => {
-                has_right = true;
+                *has_right = true;
                 pair.right
             }
             "left_name" => pair.left_name,
@@ -533,32 +652,49 @@ pub fn expand_template(template: &str, pair: &DiffPair) -> Result<String, Templa
             unknown => return Err(TemplateError::UnknownPlaceholder(unknown.to_string())),
         };
         // Values go inside the template's quotes, so a quote would end them and start new arguments.
-        if value.contains('"') {
+        if reject_quotes && value.contains('"') {
             return Err(TemplateError::QuoteInValue(value.to_string()));
         }
         expanded.push_str(value);
         rest = &after_open[close + 1..];
     }
     expanded.push_str(rest);
-    if !has_left {
-        return Err(TemplateError::MissingLeft);
-    }
-    if !has_right {
-        return Err(TemplateError::MissingRight);
-    }
     Ok(expanded)
 }
 
 pub const SAMPLE_PAIR: DiffPair<'static> = DiffPair {
-    left: r"C:\Temp\Left Folder\sample.txt",
-    right: r"C:\Temp\Right Folder\sample.txt",
+    left: if cfg!(windows) {
+        r"C:\Temp\Left Folder\sample.txt"
+    } else {
+        "/tmp/Left Folder/sample.txt"
+    },
+    right: if cfg!(windows) {
+        r"C:\Temp\Right Folder\sample.txt"
+    } else {
+        "/tmp/Right Folder/sample.txt"
+    },
     left_name: "Folder 1: sub/sample.txt",
     right_name: "Folder 2: sub/sample.txt",
 };
 
 pub fn preview_command(tool: &DiffTool) -> Result<String, TemplateError> {
-    let args = expand_template(&tool.template, &SAMPLE_PAIR)?;
-    Ok(format!("\"{}\" {args}", tool.exe_path.display()))
+    if cfg!(windows) {
+        let args = expand_template(&tool.template, &SAMPLE_PAIR)?;
+        return Ok(format!("\"{}\" {args}", tool.exe_path.display()));
+    }
+    let args = expand_template_args(&tool.template, &SAMPLE_PAIR)?;
+    let quoted = |arg: String| {
+        if arg.contains(char::is_whitespace) {
+            format!("\"{arg}\"")
+        } else {
+            arg
+        }
+    };
+    Ok(std::iter::once(tool.exe_path.display().to_string())
+        .chain(args)
+        .map(quoted)
+        .collect::<Vec<_>>()
+        .join(" "))
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -624,6 +760,27 @@ pub fn find_on_path(name: &Path) -> Option<PathBuf> {
         .find(|candidate| candidate.is_file())
 }
 
+fn split_args(args: &str) -> Result<Vec<String>, TemplateError> {
+    let mut split = Vec::new();
+    let mut current: Option<String> = None;
+    let mut quoted = false;
+    for c in args.chars() {
+        match c {
+            '"' => {
+                quoted = !quoted;
+                current.get_or_insert_with(String::new);
+            }
+            c if c.is_whitespace() && !quoted => split.extend(current.take()),
+            c => current.get_or_insert_with(String::new).push(c),
+        }
+    }
+    if quoted {
+        return Err(TemplateError::UnclosedQuote);
+    }
+    split.extend(current);
+    Ok(split)
+}
+
 #[cfg(target_os = "windows")]
 pub fn open_diff_tool_windows(exe: &Path, tool: &DiffTool, pair: &DiffPair) -> io::Result<Child> {
     let args = expand_template(&tool.template, pair)
@@ -635,20 +792,47 @@ pub fn open_diff_tool_windows(exe: &Path, tool: &DiffTool, pair: &DiffPair) -> i
     log::info!("Opening diff tool {:?}", cmd);
     cmd.spawn()
 }
+
+#[cfg(not(target_os = "windows"))]
+fn open_diff_tool_unix(exe: &Path, tool: &DiffTool, pair: &DiffPair) -> io::Result<Child> {
+    let args = expand_template_args(&tool.template, pair)
+        .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?;
+    let mut cmd = Command::new(exe);
+    cmd.args(args);
+
+    log::info!("Opening diff tool {:?}", cmd);
+    cmd.spawn()
+}
+
+// Unix keeps an exited child as a zombie until someone waits on it.
+pub fn wait_in_background(mut child: Child) {
+    std::thread::spawn(move || {
+        if let Err(err) = child.wait() {
+            log::warn!("waiting for a launched process: {err}");
+        }
+    });
+}
+
 pub fn open_diff_tool(exe: &Path, tool: &DiffTool, pair: &DiffPair) -> io::Result<Child> {
     #[cfg(target_os = "windows")]
     return open_diff_tool_windows(exe, tool, pair);
 
     #[cfg(not(target_os = "windows"))]
-    Err(io::Error::from(io::ErrorKind::Unsupported))
+    open_diff_tool_unix(exe, tool, pair)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use zcommon::test_util::os_path;
 
     const LEFT: &str = r"C:\left\sub\a.txt";
     const RIGHT: &str = r"D:\right\sub\a.txt";
+    const ZDIFF_GUI_EXE: &str = if cfg!(windows) {
+        "zdiff-gui.exe"
+    } else {
+        "zdiff-gui"
+    };
 
     fn pair<'a>(left: &'a str, right: &'a str) -> DiffPair<'a> {
         DiffPair {
@@ -795,16 +979,17 @@ mod tests {
         assert!(DiffToolConfig::default().tools[0].is_bundled());
         assert!(tool("ZDiff-GUI.exe").is_bundled());
         assert!(DiffTool::from(LegacyDiffToolConfig::default_zdiff()).is_bundled());
-        assert!(!tool(r"C:\apps\zdiff-gui.exe").is_bundled());
-        assert!(!tool(r"bin\zdiff-gui.exe").is_bundled());
-        assert!(!tool("zdiff-gui").is_bundled());
+        assert!(!tool(&os_path(r"C:\apps\zdiff-gui.exe")).is_bundled());
+        assert!(!tool(&os_path(r"bin\zdiff-gui.exe")).is_bundled());
+        assert!(!tool(&os_path(r"C:\apps\zdiff-gui")).is_bundled());
+        assert_eq!(tool("zdiff-gui").is_bundled(), !cfg!(windows));
         assert!(!tool("TortoiseMerge.exe").is_bundled());
     }
 
     #[test]
     fn migrated_zdiff_config_expands_to_todays_command_line() {
         let tool = DiffTool::from(LegacyDiffToolConfig::default_zdiff());
-        assert_eq!(tool.exe_path, PathBuf::from("zdiff-gui.exe"));
+        assert_eq!(tool.exe_path, PathBuf::from(ZDIFF_GUI_EXE));
         assert_eq!(
             expand_template(&tool.template, &pair(LEFT, RIGHT)).unwrap(),
             r"C:\left\sub\a.txt D:\right\sub\a.txt"
@@ -944,6 +1129,62 @@ mod tests {
     }
 
     #[test]
+    fn unix_presets_cover_the_common_diff_tools_and_filemerge_on_macos() {
+        let names = |macos| {
+            unix_presets(macos)
+                .iter()
+                .map(|preset| preset.name)
+                .collect::<Vec<_>>()
+        };
+        let linux = [
+            "zdiff-gui",
+            "Meld",
+            "KDiff3",
+            "VS Code",
+            "Beyond Compare",
+            "p4merge",
+        ];
+        assert_eq!(names(false), linux);
+        assert_eq!(names(true), [&linux[..], &["FileMerge"]].concat());
+        assert!(
+            unix_presets(false)
+                .iter()
+                .all(|preset| preset.install_paths.is_empty())
+        );
+        assert_eq!(unix_presets(true)[0].bare_name, ZDIFF_GUI_EXE);
+    }
+
+    #[test]
+    fn unix_preset_args_hold_the_paths_and_labels_whole() {
+        let values = DiffPair {
+            left: "/home/me/My Files/a b.txt",
+            right: "/mnt/other dir/a b.txt",
+            left_name: "Folder 1: sub/a b.txt",
+            right_name: "Folder 2: sub/a b.txt",
+        };
+        for preset in unix_presets(true) {
+            let args = expand_template_args(preset.template, &values).unwrap();
+            let has_arg = |value: &str| args.iter().any(|arg| arg == value);
+            assert!(
+                has_arg(values.left) && has_arg(values.right),
+                "{}: {args:?}",
+                preset.name
+            );
+            for (label, placeholder) in [
+                (values.left_name, "{left_name}"),
+                (values.right_name, "{right_name}"),
+            ] {
+                assert_eq!(
+                    args.iter().any(|arg| arg.ends_with(label)),
+                    preset.template.contains(placeholder),
+                    "{}: {args:?}",
+                    preset.name
+                );
+            }
+        }
+    }
+
+    #[test]
     fn every_preset_template_validates_and_expands_for_a_sample_pair() {
         let values = pair(r"C:\My Files\a b.txt", r"D:\Other Dir\a b.txt");
         for preset in presets(Some(Path::new(r"C:\Users\me\AppData\Local"))) {
@@ -1003,21 +1244,23 @@ mod tests {
         assert_eq!(config, DiffToolConfig::from_tool(zdiff));
         assert_eq!(
             config.tool(&config.default_tool).unwrap().exe_path,
-            Path::new("zdiff-gui.exe")
+            Path::new(ZDIFF_GUI_EXE)
         );
     }
 
     #[test]
     fn preview_shows_the_exe_and_the_expanded_template() {
         let tool = DiffTool {
-            exe_path: PathBuf::from(r"C:\Tools\diff.exe"),
+            exe_path: PathBuf::from(os_path(r"C:\Tools\diff.exe")),
             template: r#""{left}" "{right}" -nl "{left_name}""#.to_string(),
             ..tool("diff")
         };
-        assert_eq!(
-            preview_command(&tool).unwrap(),
+        let expected = if cfg!(windows) {
             r#""C:\Tools\diff.exe" "C:\Temp\Left Folder\sample.txt" "C:\Temp\Right Folder\sample.txt" -nl "Folder 1: sub/sample.txt""#
-        );
+        } else {
+            r#"/Tools/diff.exe "/tmp/Left Folder/sample.txt" "/tmp/Right Folder/sample.txt" -nl "Folder 1: sub/sample.txt""#
+        };
+        assert_eq!(preview_command(&tool).unwrap(), expected);
     }
 
     #[test]
@@ -1108,6 +1351,101 @@ mod tests {
         );
     }
 
+    #[test]
+    fn split_args_groups_quoted_text_and_splits_on_whitespace() {
+        assert_eq!(
+            split_args("\"/home/me/My Files/a.txt\"   -nl \"Folder 1: sub/a b.txt\"\tplain ")
+                .unwrap(),
+            [
+                "/home/me/My Files/a.txt",
+                "-nl",
+                "Folder 1: sub/a b.txt",
+                "plain"
+            ]
+        );
+    }
+
+    #[test]
+    fn split_args_keeps_an_empty_quoted_arg_and_drops_blank_text() {
+        assert_eq!(split_args(r#"-a "" -b"#).unwrap(), ["-a", "", "-b"]);
+        assert_eq!(split_args(" \t ").unwrap(), Vec::<String>::new());
+    }
+
+    #[test]
+    fn split_args_joins_quoted_and_bare_text_of_one_arg() {
+        assert_eq!(
+            split_args(r#"-lefttitle="Folder 1: a.txt" x"y z"w"#).unwrap(),
+            ["-lefttitle=Folder 1: a.txt", "xy zw"]
+        );
+    }
+
+    #[test]
+    fn split_args_keeps_backslashes_literal() {
+        assert_eq!(split_args(r#""a\b" c\"#).unwrap(), [r"a\b", r"c\"]);
+    }
+
+    #[test]
+    fn template_args_keep_values_whole_even_with_quotes_and_spaces() {
+        let values = DiffPair {
+            left: r#"/a "b" c.txt"#,
+            right: "/d e.txt",
+            left_name: r#"Folder 1: x "y""#,
+            right_name: "Folder 2: z",
+        };
+        assert_eq!(
+            expand_template_args(
+                r#"{left} "{right}" -lefttitle="{left_name}" --label {right_name}"#,
+                &values
+            )
+            .unwrap(),
+            [
+                r#"/a "b" c.txt"#,
+                "/d e.txt",
+                r#"-lefttitle=Folder 1: x "y""#,
+                "--label",
+                "Folder 2: z"
+            ]
+        );
+    }
+
+    #[test]
+    fn template_args_report_template_errors() {
+        let values = pair(LEFT, RIGHT);
+        assert_eq!(
+            expand_template_args("{left}", &values),
+            Err(TemplateError::MissingRight)
+        );
+        assert_eq!(
+            expand_template_args("{left} {rihgt}", &values),
+            Err(TemplateError::UnknownPlaceholder("rihgt".to_string()))
+        );
+        assert_eq!(
+            expand_template_args(r#""{left} {right}"#, &values),
+            Err(TemplateError::UnclosedQuote)
+        );
+    }
+
+    #[test]
+    fn a_bundled_tool_launches_this_platforms_zdiff_gui() {
+        let with_exe = |exe: &str| DiffTool {
+            exe_path: PathBuf::from(exe),
+            ..tool("t")
+        };
+        for saved in [ZDIFF_GUI_EXE, "ZDiff-GUI.exe"] {
+            assert_eq!(with_exe(saved).exe_to_launch(), Path::new(ZDIFF_GUI_EXE));
+        }
+        let full_path = os_path(r"C:\apps\zdiff-gui.exe");
+        assert_eq!(with_exe(&full_path).exe_to_launch(), Path::new(&full_path));
+    }
+
+    #[test]
+    fn split_args_rejects_an_unclosed_quote() {
+        assert_eq!(
+            split_args(r#""/a b.txt" "/c d.txt"#),
+            Err(TemplateError::UnclosedQuote)
+        );
+    }
+
     mod exe_resolution {
         use super::*;
 
@@ -1117,22 +1455,22 @@ mod tests {
         fn resolve(exe: &str, files: &[&str], path_files: &[&str]) -> Result<PathBuf, ExeNotFound> {
             resolve_exe(
                 Path::new(exe),
-                Some(Path::new(APP_DIR)),
+                Some(Path::new(&os_path(APP_DIR))),
                 |path| files.iter().any(|file| Path::new(file) == path),
                 |name| {
                     path_files
                         .iter()
                         .any(|file| Path::new(file) == name)
-                        .then(|| Path::new(ON_PATH_DIR).join(name))
+                        .then(|| Path::new(&os_path(ON_PATH_DIR)).join(name))
                 },
             )
         }
 
         #[test]
         fn bare_name_resolves_next_to_the_app_first() {
-            let next_to_app = r"C:\apps\zdiff-folder\zdiff-gui.exe";
+            let next_to_app = os_path(r"C:\apps\zdiff-folder\zdiff-gui.exe");
             assert_eq!(
-                resolve("zdiff-gui.exe", &[next_to_app], &["zdiff-gui.exe"]),
+                resolve("zdiff-gui.exe", &[next_to_app.as_str()], &["zdiff-gui.exe"]),
                 Ok(PathBuf::from(next_to_app))
             );
         }
@@ -1141,7 +1479,7 @@ mod tests {
         fn bare_name_resolves_on_path_last() {
             assert_eq!(
                 resolve("zdiff-gui.exe", &[], &["zdiff-gui.exe"]),
-                Ok(PathBuf::from(r"C:\tools\zdiff-gui.exe"))
+                Ok(PathBuf::from(os_path(r"C:\tools\zdiff-gui.exe")))
             );
         }
 
@@ -1150,25 +1488,25 @@ mod tests {
             let resolve_other = |path_files: &[&str]| {
                 resolve_exe(
                     Path::new("TortoiseProc.exe"),
-                    Some(Path::new(APP_DIR)),
+                    Some(Path::new(&os_path(APP_DIR))),
                     |_| false,
                     |name| {
                         path_files
                             .contains(&name.to_str().unwrap())
-                            .then(|| Path::new(ON_PATH_DIR).join(name))
+                            .then(|| Path::new(&os_path(ON_PATH_DIR)).join(name))
                     },
                 )
             };
             assert_eq!(
                 resolve_other(&["TortoiseProc.exe"]),
-                Ok(PathBuf::from(r"C:\tools\TortoiseProc.exe"))
+                Ok(PathBuf::from(os_path(r"C:\tools\TortoiseProc.exe")))
             );
             assert_eq!(
                 resolve_other(&[]),
                 Err(ExeNotFound {
                     exe: PathBuf::from("TortoiseProc.exe"),
                     searched: vec![
-                        r"C:\apps\zdiff-folder\TortoiseProc.exe".to_string(),
+                        os_path(r"C:\apps\zdiff-folder\TortoiseProc.exe"),
                         "PATH".to_string(),
                     ],
                 })
@@ -1180,21 +1518,21 @@ mod tests {
             for exe in [
                 r"C:\Program Files\TortoiseSVN\bin\TortoiseProc.exe",
                 r"bin\zdiff-gui.exe",
-            ] {
-                assert_eq!(resolve(exe, &[], &[]), Ok(PathBuf::from(exe)));
+            ]
+            .map(os_path)
+            {
+                assert_eq!(resolve(&exe, &[], &[]), Ok(PathBuf::from(exe)));
             }
         }
 
         #[test]
         fn nothing_found_lists_the_places_searched() {
+            let next_to_app = os_path(r"C:\apps\zdiff-folder\zdiff-gui.exe");
             let err = resolve("zdiff-gui.exe", &[], &[]).unwrap_err();
-            assert_eq!(
-                err.searched,
-                [r"C:\apps\zdiff-folder\zdiff-gui.exe", "PATH"]
-            );
+            assert_eq!(err.searched, [next_to_app.clone(), "PATH".to_string()]);
             assert_eq!(
                 err.to_string(),
-                r"zdiff-gui.exe not found, searched: C:\apps\zdiff-folder\zdiff-gui.exe, PATH"
+                format!("zdiff-gui.exe not found, searched: {next_to_app}, PATH")
             );
         }
 

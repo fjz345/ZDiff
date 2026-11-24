@@ -276,6 +276,7 @@ impl AsRef<OsStr> for UniversalPath {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_util::os_path;
 
     #[test]
     fn test_parsing() {
@@ -290,23 +291,23 @@ mod tests {
 
     #[test]
     fn test_append_local_to_local() {
-        let mut base = UniversalPath::new(r"C:\User\Project");
-        let addition = UniversalPath::new(r"src\main.rs");
+        let mut base = UniversalPath::new(os_path(r"C:\User\Project"));
+        let addition = UniversalPath::new(os_path(r"src\main.rs"));
         base.append(addition);
         assert_eq!(
             base,
-            UniversalPath::Local(PathBuf::from(r"C:\User\Project\src\main.rs"))
+            UniversalPath::Local(PathBuf::from(os_path(r"C:\User\Project\src\main.rs")))
         );
     }
 
     #[test]
     fn test_append_depot_to_local() {
-        let mut base = UniversalPath::new(r"C:\User\Project");
+        let mut base = UniversalPath::new(os_path(r"C:\User\Project"));
         let addition = UniversalPath::new("//depot/src/main.rs");
         base.append(addition);
         assert_eq!(
             base,
-            UniversalPath::Local(PathBuf::from(r"C:\User\Project\depot\src\main.rs"))
+            UniversalPath::Local(PathBuf::from(os_path(r"C:\User\Project\depot\src\main.rs")))
         );
     }
 
@@ -506,8 +507,8 @@ mod tests {
     #[test]
     fn the_git_path_is_normalized_like_a_local_path() {
         assert_eq!(
-            UniversalPath::new(r"D:\repo\src\..\.\a.rs@git:main"),
-            git(r"D:\repo\a.rs", "main")
+            UniversalPath::new(os_path(r"D:\repo\src\..\.\a.rs@git:main")),
+            git(&os_path(r"D:\repo\a.rs"), "main")
         );
     }
 
@@ -576,9 +577,9 @@ mod tests {
 
     #[test]
     fn appending_to_a_git_path_keeps_its_revision() {
-        let mut base = UniversalPath::new(r"D:\repo@git:main");
-        base.append(UniversalPath::new(r"src\a.rs"));
-        assert_eq!(base, git(r"D:\repo\src\a.rs", "main"));
+        let mut base = UniversalPath::new(os_path(r"D:\repo@git:main"));
+        base.append(UniversalPath::new(os_path(r"src\a.rs")));
+        assert_eq!(base, git(&os_path(r"D:\repo\src\a.rs"), "main"));
     }
 
     #[test]

@@ -12,5 +12,7 @@ pub mod lru;
 pub mod path;
 pub mod presets;
 pub mod style;
+#[cfg(any(test, feature = "test-util"))]
+pub mod test_util;
 pub mod universal_path;
 pub mod vcs;

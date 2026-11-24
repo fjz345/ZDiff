@@ -17,6 +17,10 @@ fn main() {
 }
 
 fn copy_ffmpeg() {
+    // Other targets use the ffmpeg on PATH (zcommon::ffmpeg::find_ffmpeg).
+    if env::var("CARGO_CFG_TARGET_OS").unwrap() != "windows" {
+        return;
+    }
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
     let workspace_root = manifest_dir.parent().unwrap().parent().unwrap();
     let src_dir = workspace_root.join("ffmpeg");

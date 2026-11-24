@@ -22,7 +22,7 @@ Good reference & aim for this project: https://www.scootersoftware.com/
 | [**zdiff**](./crates/zdiff) | File-level diff | Library |
 | [**zdiff-gui**](./crates/zdiff-gui) | egui app for zdiff and zdiff-folder | Application |
 | [**zdiff-folder**](./crates/zdiff-folder) | Folder-level diff | Library |
-| [**xtask**](./xtask) | `cargo xtask fetch-ffmpeg` ([ffmpeg](./ffmpeg/README.md)), `cargo dist` (release build plus ffmpeg into `target/dist/ZDiff_<version>/`) | Tool |
+| [**xtask**](./xtask) | `cargo xtask fetch-ffmpeg` ([ffmpeg](./ffmpeg/README.md)), `cargo dist` (release build, LICENSE and, on Windows, ffmpeg into `target/dist/ZDiff_<version>/`) | Tool |
 
 # Build
 ```
@@ -31,6 +31,8 @@ cargo run -p zdiff-gui                          # file diff
 cargo run -p zdiff-gui -- <folder> <folder>     # folder diff
 ```
 `zdiff-gui.exe` is the one executable: two folders (or a lone folder) show the folder diff, files the file diff, and the sides can be changed between the two in the window. `--folder` only marks depot paths as folders. The audio and video viewers need ffmpeg (`cargo xtask fetch-ffmpeg`).
+
+Linux and macOS build the same way; the executable is `zdiff-gui`. On Linux it needs a Wayland or X11 session, and xdg-desktop-portal for the file dialogs. `cargo xtask fetch-ffmpeg` is Windows only: install ffmpeg with the package manager (`apt install ffmpeg`, `dnf install ffmpeg`, `brew install ffmpeg`) and zdiff-gui finds ffmpeg and ffprobe on PATH. macOS is untested.
 
 # Todo
 

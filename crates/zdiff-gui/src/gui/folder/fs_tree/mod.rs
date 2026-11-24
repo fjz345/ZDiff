@@ -21,6 +21,7 @@ use zdiff_folder::{
     comparison::{FileMeta, PairState},
     external_diff_tool::{
         CantDiff, DiffPair, DiffToolConfig, cant_diff, folder_labels, open_diff_tool,
+        wait_in_background,
     },
     filter::PathFilter,
     fs::{FileSystemModel, FsNode, FsNodeDepth, FsNodeId, TreeIter},

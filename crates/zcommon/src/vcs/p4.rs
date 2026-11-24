@@ -603,15 +603,23 @@ pub struct P4Command {
     file: Option<UniversalPath>,
 }
 
+const P4_EXE: &str = if cfg!(windows) { "p4.exe" } else { "p4" };
+const P4VC_EXE: &str = if cfg!(windows) { "p4vc.bat" } else { "p4vc" };
+
+fn p4_exe_path(p4path: Option<String>, is_gui: bool) -> String {
+    let exe_path = p4path.unwrap_or_else(|| P4_EXE.to_string());
+    match exe_path.strip_suffix(P4_EXE) {
+        Some(dir) if is_gui && (dir.is_empty() || dir.ends_with(std::path::is_separator)) => {
+            format!("{dir}{P4VC_EXE}")
+        }
+        _ => exe_path,
+    }
+}
+
 impl P4Command {
     pub fn new(is_gui: bool) -> Self {
-        let mut exe_path = env::var("P4PATH").unwrap_or_else(|_| "p4.exe".to_string());
-        if is_gui {
-            exe_path = exe_path.replace("p4.exe", "p4vc.bat")
-        }
-
         Self {
-            exe_path,
+            exe_path: p4_exe_path(env::var("P4PATH").ok(), is_gui),
             is_gui,
             file: None,
         }
@@ -823,6 +831,7 @@ impl<F: Fn(&[&str]) -> Result<String, String>> P4Runner for FakeP4<F> {
 
 #[cfg(test)]
 mod tests {
+    use crate::test_util::os_path;
     use crate::universal_path::DepotRev;
     use std::ffi::OsStr;
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -1213,18 +1222,38 @@ mod tests {
 
     #[test]
     fn depot_folder_of_a_local_folder_asks_for_its_tree_and_drops_the_wildcard() {
-        let ztag = "... depotFile //depot/main/src/...\n\
-                    ... clientFile //ws/src/...\n\
-                    ... path C:\\ws\\src\\...\n";
-        let p4 = FakeP4::new(|_: &[&str]| Ok(ztag.to_string()));
+        let ztag = format!(
+            "... depotFile //depot/main/src/...\n\
+             ... clientFile //ws/src/...\n\
+             ... path {}\n",
+            os_path(r"C:\ws\src\...")
+        );
+        let p4 = FakeP4::new(move |_: &[&str]| Ok(ztag.clone()));
         assert_eq!(
-            depot_folder_of_local(&p4, Path::new(r"C:\ws\src")),
+            depot_folder_of_local(&p4, Path::new(&os_path(r"C:\ws\src"))),
             Ok("//depot/main/src".to_string())
         );
         assert_eq!(
             p4.calls(),
-            vec![args(&["-ztag", "where", r"C:\ws\src\..."])]
+            vec![args(&["-ztag", "where", &os_path(r"C:\ws\src\...")])]
         );
+    }
+
+    #[test]
+    fn the_gui_runs_p4vc_from_where_p4_is() {
+        let dir = os_path(r"C:\Perforce\");
+        assert_eq!(p4_exe_path(None, false), P4_EXE);
+        assert_eq!(p4_exe_path(None, true), P4VC_EXE);
+        assert_eq!(
+            p4_exe_path(Some(format!("{dir}{P4_EXE}")), false),
+            format!("{dir}{P4_EXE}")
+        );
+        assert_eq!(
+            p4_exe_path(Some(format!("{dir}{P4_EXE}")), true),
+            format!("{dir}{P4VC_EXE}")
+        );
+        let wrapper = format!("{dir}my{P4_EXE}");
+        assert_eq!(p4_exe_path(Some(wrapper.clone()), true), wrapper);
     }
 
     #[test]

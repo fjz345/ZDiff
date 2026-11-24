@@ -27,7 +27,6 @@ const FFMPEG_EXTRACT: [(&str, &str); 3] = [
 const FFMPEG_NOTE: &str = "ffmpeg-SOURCE.txt";
 
 const DIST_PACKAGE: &str = "zdiff-gui";
-const DIST_EXE: &str = "zdiff-gui.exe";
 
 const USAGE: &str = "usage: cargo xtask <fetch-ffmpeg|check-features|dist>";
 
@@ -52,6 +51,7 @@ fn workspace_root() -> &'static Path {
 }
 
 fn fetch_ffmpeg() -> Result<(), String> {
+    fetch_ffmpeg_supported(env::consts::OS)?;
     let out_dir = workspace_root().join("ffmpeg");
     let download_dir = out_dir.join("download");
     if download_dir.exists() {
@@ -114,14 +114,32 @@ fn fetch_ffmpeg() -> Result<(), String> {
     Ok(())
 }
 
-fn dist() -> Result<(), String> {
-    let root = workspace_root();
-    let ffmpeg_dir = root.join("ffmpeg");
-    let ffmpeg_files: Vec<&str> = FFMPEG_EXTRACT
+fn fetch_ffmpeg_supported(os: &str) -> Result<(), String> {
+    if os == "windows" {
+        return Ok(());
+    }
+    Err(format!(
+        "fetch-ffmpeg downloads a Windows build. On {os}, install ffmpeg with the package manager \
+         (apt install ffmpeg, dnf install ffmpeg, brew install ffmpeg); zdiff-gui finds ffmpeg and \
+         ffprobe on PATH."
+    ))
+}
+
+fn dist_ffmpeg_files(os: &str) -> Vec<&'static str> {
+    if os != "windows" {
+        return Vec::new();
+    }
+    FFMPEG_EXTRACT
         .iter()
         .map(|(_, name)| *name)
         .chain([FFMPEG_NOTE])
-        .collect();
+        .collect()
+}
+
+fn dist() -> Result<(), String> {
+    let root = workspace_root();
+    let ffmpeg_dir = root.join("ffmpeg");
+    let ffmpeg_files = dist_ffmpeg_files(env::consts::OS);
     let missing: Vec<&str> = ffmpeg_files
         .iter()
         .copied()
@@ -158,7 +176,9 @@ fn dist() -> Result<(), String> {
     fs::create_dir_all(&out_dir).map_err(|e| format!("create {}: {e}", out_dir.display()))?;
 
     let mut files = vec![
-        root.join("target").join("release").join(DIST_EXE),
+        root.join("target")
+            .join("release")
+            .join(format!("{DIST_PACKAGE}{}", env::consts::EXE_SUFFIX)),
         root.join("LICENSE"),
     ];
     files.extend(ffmpeg_files.iter().map(|name| ffmpeg_dir.join(name)));
@@ -323,5 +343,30 @@ mod tests {
         assert_eq!(combos[1], ["--no-default-features"]);
         assert_eq!(combos[2], ["--no-default-features", "--features", "a"]);
         assert_eq!(combos[3], ["--no-default-features", "--features", "b"]);
+    }
+
+    #[test]
+    fn fetch_ffmpeg_is_windows_only() {
+        assert_eq!(fetch_ffmpeg_supported("windows"), Ok(()));
+        for os in ["linux", "macos"] {
+            let err = fetch_ffmpeg_supported(os).unwrap_err();
+            assert!(err.contains("apt install ffmpeg"), "{err}");
+            assert!(err.contains("brew install ffmpeg"), "{err}");
+        }
+    }
+
+    #[test]
+    fn dist_bundles_ffmpeg_only_on_windows() {
+        assert_eq!(
+            dist_ffmpeg_files("windows"),
+            [
+                "ffmpeg.exe",
+                "ffprobe.exe",
+                "ffmpeg-LICENSE.txt",
+                "ffmpeg-SOURCE.txt"
+            ]
+        );
+        assert!(dist_ffmpeg_files("linux").is_empty());
+        assert!(dist_ffmpeg_files("macos").is_empty());
     }
 }

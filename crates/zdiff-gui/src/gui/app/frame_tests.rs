@@ -206,7 +206,10 @@ fn repaint_delay_after_pointer_motion(
             vec![egui::Event::PointerMoved(at + step)],
         );
     }
-    for _ in 0..20 {
+    let frames_until_hover_tooltips_show = (ctx.style().interaction.tooltip_delay
+        / egui::RawInput::default().predicted_dt)
+        .ceil() as usize;
+    for _ in 0..frames_until_hover_tooltips_show + 20 {
         run_frame(ctx, app, SCREEN.x, Vec::new());
     }
     repaint_delay(&run_frame(ctx, app, SCREEN.x, Vec::new()).1)

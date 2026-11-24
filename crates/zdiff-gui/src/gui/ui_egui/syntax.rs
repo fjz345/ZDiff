@@ -331,6 +331,7 @@ fn color32(Rgba8([r, g, b, _]): Rgba8) -> Color32 {
 mod tests {
 
     use syntect::{highlighting::Highlighter as SyntectHighlighter, parsing::Scope};
+    use zcommon::test_util::os_path;
     use zdiff::universal_path::DepotRev;
 
     use super::*;
@@ -498,7 +499,7 @@ mod tests {
     }
 
     fn detect(path: &str, contents: &str) -> Option<&'static str> {
-        detect_language(&UniversalPath::from(path), contents)
+        detect_language(&UniversalPath::from(os_path(path)), contents)
     }
 
     #[test]

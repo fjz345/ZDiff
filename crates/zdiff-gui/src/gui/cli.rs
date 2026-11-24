@@ -272,7 +272,10 @@ where
                     value,
                 },
             )?;
-        } else if let Some((name, value)) = split_tortoise(&arg) {
+        } else if let Some((name, value)) = split_tortoise(&arg)
+            // Off Windows `/dir:x/file` is an absolute path, so only known switches count.
+            && (cfg!(windows) || tortoise_field(name).is_some())
+        {
             let Some(field) = tortoise_field(name) else {
                 warnings.push(format!("ignoring unknown flag `{arg}`"));
                 continue;
@@ -784,7 +787,8 @@ mod tests {
 
     #[test]
     fn unknown_flags_warn_and_are_ignored() {
-        for flag in ["-text", "--foo", "--foo=bar", "/foo:bar"] {
+        let flags = ["-text", "--foo", "--foo=bar"];
+        for flag in flags.into_iter().chain(cfg!(windows).then_some("/foo:bar")) {
             let launch = ok(&[flag, "a", "b"]);
             assert_eq!(
                 launch.request,
@@ -794,6 +798,17 @@ mod tests {
             assert_eq!(launch.warnings.len(), 1, "{flag}: {:?}", launch.warnings);
             assert!(launch.warnings[0].contains(flag), "{:?}", launch.warnings);
         }
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn an_unknown_slash_switch_is_an_absolute_path_off_windows() {
+        let launch = ok(&["/data:2024/a.txt", "/home/b.txt"]);
+        assert_eq!(
+            launch.request,
+            diff(side("/data:2024/a.txt", None), side("/home/b.txt", None))
+        );
+        assert!(launch.warnings.is_empty(), "{:?}", launch.warnings);
     }
 
     #[test]

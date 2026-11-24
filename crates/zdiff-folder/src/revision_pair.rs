@@ -131,10 +131,11 @@ fn write_file(file: &Path, bytes: Vec<u8>) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::external_diff_tool::{DiffPair, expand_template, presets};
+    use crate::external_diff_tool::{DiffPair, expand_template, windows_presets};
     use crate::vcs_source::{DepotContent, DepotRevisions};
     use std::collections::HashMap;
     use std::path::PathBuf;
+    use zcommon::test_util::os_path;
     use zcommon::vcs::{
         git::{GitError, GitErrorKind},
         p4::FakeP4,
@@ -157,15 +158,15 @@ mod tests {
 
     fn git_content(commit: Option<&str>) -> ContentSource {
         ContentSource::Git(GitContent {
-            model_root: PathBuf::from(r"D:\repo\src@git:origin/main"),
-            repo_root: PathBuf::from(r"D:\repo"),
+            model_root: PathBuf::from(os_path(r"D:\repo\src@git:origin/main")),
+            repo_root: PathBuf::from(os_path(r"D:\repo")),
             dir: "src".to_string(),
             commit: commit.map(String::from),
         })
     }
 
     fn tool(name: &str) -> DiffTool {
-        presets(None)
+        windows_presets(None)
             .into_iter()
             .find(|preset| preset.name == name)
             .unwrap()
@@ -183,6 +184,8 @@ mod tests {
     }
 
     fn open(tool: &DiffTool, left: &ContentSource, temp: &Path) -> io::Result<[String; 2]> {
+        let left_node = PathBuf::from(os_path(r"D:\repo\src@git:origin/main\sub\a.txt"));
+        let right_node = PathBuf::from(os_path(r"D:\wt\src\sub\a.txt"));
         tool_paths(
             &BlobGit,
             &blob_p4(),
@@ -190,11 +193,11 @@ mod tests {
             [
                 PairSource {
                     content: left,
-                    path: Path::new(r"D:\repo\src@git:origin/main\sub\a.txt"),
+                    path: &left_node,
                 },
                 PairSource {
                     content: &ContentSource::Disk,
-                    path: Path::new(r"D:\wt\src\sub\a.txt"),
+                    path: &right_node,
                 },
             ],
             "sub/a.txt",
@@ -212,7 +215,9 @@ mod tests {
         assert_eq!(
             command(&tool, &paths),
             format!(
-                r#""D:\repo\src\sub\a.txt@git:{COMMIT}" "D:\wt\src\sub\a.txt" -nl "Folder 1: a.txt" -nr "Folder 2: a.txt""#
+                r#""{}@git:{COMMIT}" "{}" -nl "Folder 1: a.txt" -nr "Folder 2: a.txt""#,
+                os_path(r"D:\repo\src\sub\a.txt"),
+                os_path(r"D:\wt\src\sub\a.txt")
             )
         );
         assert_eq!(fs::read_dir(temp.path()).unwrap().count(), 0);
@@ -224,7 +229,7 @@ mod tests {
 
         let paths = open(&tool("zdiff-gui"), &git_content(None), temp.path()).unwrap();
 
-        assert_eq!(paths[0], r"D:\repo\src\sub\a.txt@git:index");
+        assert_eq!(paths[0], os_path(r"D:\repo\src\sub\a.txt@git:index"));
     }
 
     #[test]
@@ -241,7 +246,7 @@ mod tests {
             fs::read_to_string(fetched).unwrap(),
             format!("blob {COMMIT}:src/sub/a.txt")
         );
-        assert_eq!(paths[1], r"D:\wt\src\sub\a.txt");
+        assert_eq!(paths[1], os_path(r"D:\wt\src\sub\a.txt"));
         assert!(command(&tool, &paths).contains(&format!(r#""{}""#, paths[0])));
     }
 
@@ -249,19 +254,17 @@ mod tests {
     fn the_two_sides_fetch_to_different_files() {
         let temp = tempfile::tempdir().unwrap();
         let content = git_content(Some(COMMIT));
-        let side = |path| PairSource {
+        let node = PathBuf::from(os_path(r"D:\repo\src@git:origin/main\a.txt"));
+        let side = || PairSource {
             content: &content,
-            path: Path::new(path),
+            path: &node,
         };
 
         let paths = tool_paths(
             &BlobGit,
             &blob_p4(),
             &tool("WinMerge"),
-            [
-                side(r"D:\repo\src@git:origin/main\a.txt"),
-                side(r"D:\repo\src@git:origin/main\a.txt"),
-            ],
+            [side(), side()],
             "a.txt",
             temp.path(),
         )
@@ -276,6 +279,8 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let inner = temp.path().join("inner");
         let content = git_content(Some(COMMIT));
+        let left_node = PathBuf::from(os_path(r"D:\repo\src@git:origin/main\a.txt"));
+        let right_node = PathBuf::from(os_path(r"D:\wt\src\a.txt"));
 
         for rel_path in [
             r"a\..\..\..\x.txt",
@@ -293,11 +298,11 @@ mod tests {
                 [
                     PairSource {
                         content: &content,
-                        path: Path::new(r"D:\repo\src@git:origin/main\a.txt"),
+                        path: &left_node,
                     },
                     PairSource {
                         content: &ContentSource::Disk,
-                        path: Path::new(r"D:\wt\src\a.txt"),
+                        path: &right_node,
                     },
                 ],
                 rel_path,
@@ -313,6 +318,8 @@ mod tests {
     fn a_node_outside_the_side_is_an_error_for_both_kinds_of_tool() {
         let temp = tempfile::tempdir().unwrap();
         let content = git_content(Some(COMMIT));
+        let left_node = PathBuf::from(os_path(r"D:\elsewhere\a.txt"));
+        let right_node = PathBuf::from(os_path(r"D:\wt\a.txt"));
 
         for name in ["zdiff-gui", "WinMerge"] {
             let result = tool_paths(
@@ -322,11 +329,11 @@ mod tests {
                 [
                     PairSource {
                         content: &content,
-                        path: Path::new(r"D:\elsewhere\a.txt"),
+                        path: &left_node,
                     },
                     PairSource {
                         content: &ContentSource::Disk,
-                        path: Path::new(r"D:\wt\a.txt"),
+                        path: &right_node,
                     },
                 ],
                 "a.txt",
@@ -465,9 +472,10 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let temp = root.path().join("opened");
         let content = git_content(Some(COMMIT));
+        let node = PathBuf::from(os_path(r"D:\repo\src@git:origin/main\a.txt"));
         let side = || PairSource {
             content: &content,
-            path: Path::new(r"D:\repo\src@git:origin/main\a.txt"),
+            path: &node,
         };
 
         let result = tool_paths(
@@ -488,7 +496,7 @@ mod tests {
         assert!(is_file_diff_tool(&tool("zdiff-gui")));
         let renamed = DiffTool {
             name: "my viewer".to_string(),
-            exe_path: PathBuf::from(r"C:\tools\ZDiff-GUI.exe"),
+            exe_path: PathBuf::from(os_path(r"C:\tools\ZDiff-GUI.exe")),
             ..tool("zdiff-gui")
         };
         assert!(is_file_diff_tool(&renamed));

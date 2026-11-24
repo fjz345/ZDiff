@@ -57,7 +57,7 @@ GUI for the zdiff and zdiff-folder crates: file diff, folder diff and 3-way merg
     - Video seeking: dragging the scrubber or the timeline shows low-res previews (about 320 px wide, decoded for the whole video in the background) at once, and the exact frames land when the drag pauses or ends. The frames around the cursor are decoded ahead into a cache (256 MB per side), so frame steps and going back and forth show at once.
     - Zooming out stops at fit: the whole image (or 1:1 for an image smaller than the view), the whole audio length
     - Double-clicking an image or audio mode button resets that mode's own settings (A/B interval, swipe divider, overlay opacity, spectrogram window and ranges)
-    - Audio and video need ffmpeg: `cargo xtask fetch-ffmpeg` (see [ffmpeg/README.md](../../ffmpeg/README.md))
+    - Audio and video need ffmpeg: `cargo xtask fetch-ffmpeg` on Windows (see [ffmpeg/README.md](../../ffmpeg/README.md)), the package manager's ffmpeg on PATH on Linux and macOS
     - PDB (MSF 7.00): diffed as a sorted text dump: header (version, machine, stripped, optionally GUID/age/timestamp), modules, public symbols, global symbols (procedures with signatures and sizes, data, typedefs, constants; no locals), and one line per class/struct/union/enum with its fields. The toolbar's PDB menu (persisted) has Public only (as stripped), so a full PDB compares clean against its stripped copy, Ignore addresses/RVAs and Ignore GUID/age/timestamp (on by default); a change reloads the dumps. Capped at 1,000,000 lines with a truncation marker that holds the count and a hash of the lines left out, so two dumps that differ only there still show a changed line. A PDB that doesn't parse is shown in Hex; Hex and Strings on a PDB show its real bytes. Dumps can't be reverted into or merged. The folder diff still compares PDBs by bytes, so a rebuild always differs there
 * 3-way merge view: picks, chunk editing, undo/redo, conflict navigation, save (Ctrl+S)
 * Style window: text, syntax, hex and image colors, presets, and the look of empty and collapsed rows
@@ -103,7 +103,7 @@ Two folders, or a folder and an empty side, show the folder diff. It is chosen f
     - Duplicate groups shown inline in the tree; Duplicates only, Flat, Show parent folders and Hash column toggles
     - Keep this, next/previous group, then Resolve recycles the non-keepers
 * External diff tools (Options > External Diff Tools, on a folder pair)
-    - Tools window with presets (zdiff-gui, TortoiseMerge, WinMerge, Beyond Compare, p4merge, VS Code, ...), argument templates, rules and a Test button
+    - Tools window with presets (zdiff-gui, TortoiseMerge, WinMerge, Beyond Compare, p4merge, VS Code, ...; on Linux and macOS Meld, KDiff3, VS Code, Beyond Compare, p4merge, and FileMerge on macOS), argument templates, rules and a Test button
     - Executables are found next to the app, at the build path or on PATH
     - Rows a tool can't diff are marked
 
@@ -129,7 +129,7 @@ zdiff-gui takes p4merge-style, git-style, GNU-style and Tortoise-style arguments
 
 No console window opens. Add `-log` anywhere in the arguments to write the log to the terminal zdiff-gui was started from, or to a new console window when there is none (from cmd or PowerShell the prompt returns right away and the log interleaves with it).
 
-A crash (panic) appends its message, source location and backtrace to `crash.log` next to the saved state (`%APPDATA%\ZDiff\data\crash.log` on Windows) before the process exits.
+A crash (panic) appends its message, source location and backtrace to `crash.log` next to the saved state (see [Configuration](#configuration)) before the process exits.
 
 A merge launch opens the merge view with the left file as theirs and the right file as yours. The process exits 0 only when the output was saved with no unresolved conflicts and not changed since; otherwise 1, including when the launch arguments are invalid. zdiff-gui is a GUI program, so cmd.exe and batch files don't wait for it or set `%ERRORLEVEL%`: a wrapper that reads the exit code starts it with `start "" /wait C:\Tools\zdiff-gui.exe ...`. p4, P4V, git and Tortoise wait for it.
 
@@ -183,6 +183,8 @@ Settings > External Programs (TortoiseSVN) or Settings > Diff Viewer / Merge Too
 ## Configuration
 
 zdiff-gui reads a `.env` file only from the folder of its executable (`target/<profile>/` for `cargo run`). The working directory and its parents are not searched. Real environment variables win over `.env` values. The log (`-log`) shows which file was loaded, or that none was found.
+
+`style.json`, `keymap.json` and `kinds.json` are in `%APPDATA%\ZDiff` on Windows and `$XDG_CONFIG_HOME/ZDiff` (default `~/.config/ZDiff`) on Linux and macOS. The saved app state and `crash.log` are in eframe's storage folder: `%APPDATA%\ZDiff\data` on Windows, `$XDG_DATA_HOME/zdiff` (default `~/.local/share/zdiff`) on Linux, `~/Library/Application Support/ZDiff` on macOS (untested).
 
 ## Known bugs
 * lost_focus not called correctly on paths when holding down mouse: https://github.com/emilk/egui/issues/2142

@@ -1,6 +1,16 @@
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
+pub fn pick_file_or_folder() -> Option<std::path::PathBuf> {
+    rfd::FileDialog::new().pick_file_or_folder()
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
 pub fn pick_file_or_folder() -> Option<std::path::PathBuf> {
     rfd::FileDialog::new().pick_file()
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
+pub fn pick_folder() -> Option<std::path::PathBuf> {
+    rfd::FileDialog::new().pick_folder()
 }
 
 #[cfg(windows)]

@@ -99,6 +99,17 @@ impl ZApp {
                             let ctx = ui.ctx().clone();
                             Self::open_file_picker(file_2.get_tx(), ctx);
                         }
+                        #[cfg(not(any(windows, target_os = "macos")))]
+                        {
+                            if ui.button("Open Left Folder...").clicked() {
+                                Self::open_folder_picker(file_1.get_tx(), ui.ctx().clone());
+                                ui.close();
+                            }
+                            if ui.button("Open Right Folder...").clicked() {
+                                Self::open_folder_picker(file_2.get_tx(), ui.ctx().clone());
+                                ui.close();
+                            }
+                        }
                         ui.add_enabled_ui(!folders, |ui| {
                             if menu_item(ui, "Open Merge...", keymap, FileAction::OpenMerge)
                                 .clicked()

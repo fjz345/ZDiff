@@ -1,4 +1,7 @@
-use std::path::{Path, PathBuf};
+use std::{
+    ffi::OsString,
+    path::{Path, PathBuf},
+};
 
 use eframe::egui;
 
@@ -31,11 +34,6 @@ pub fn row_menu(sides: [Option<Entry>; 2], clicked: Side) -> Option<RowMenu> {
         Side::Folder1 => sides[0],
         Side::Folder2 => sides[1],
     }?;
-    let open_in_explorer = if cfg!(windows) {
-        Item::Enabled
-    } else {
-        Item::Hidden
-    };
     let (set_as_root, set_as_folder) = match clicked_entry {
         Entry::File => (Item::Hidden, Item::Hidden),
         Entry::Folder if sides == [Some(Entry::Folder); 2] => (Item::Enabled, Item::Enabled),
@@ -47,7 +45,7 @@ pub fn row_menu(sides: [Option<Entry>; 2], clicked: Side) -> Option<RowMenu> {
     Some(RowMenu {
         set_as_root,
         set_as_folder,
-        open_in_explorer,
+        open_in_explorer: Item::Enabled,
         copy_path: Item::Enabled,
     })
 }
@@ -96,7 +94,7 @@ pub fn show_row_menu(
     item(ui, menu.set_as_folder, "Set as Right Folder", &|| {
         RowAction::SetRoot(Side::Folder2, path(clicked))
     });
-    item(ui, menu.open_in_explorer, "Open in Explorer", &|| {
+    item(ui, menu.open_in_explorer, FILE_MANAGER.label(), &|| {
         RowAction::OpenInExplorer(path(clicked))
     });
     item(ui, menu.copy_path, "Copy path", &|| {
@@ -112,41 +110,83 @@ pub fn apply_row_action(ctx: &egui::Context, action: RowAction, root_requests: &
         RowAction::SetRoots(paths) => *root_requests = paths.map(Some),
         RowAction::SetRoot(Side::Folder1, path) => root_requests[0] = Some(path),
         RowAction::SetRoot(Side::Folder2, path) => root_requests[1] = Some(path),
-        RowAction::OpenInExplorer(path) => open_in_explorer(&path),
+        RowAction::OpenInExplorer(path) => open_in_file_manager(&path),
         RowAction::CopyPath(path) => ctx.copy_text(path.to_string_lossy().into_owned()),
     }
 }
 
-#[cfg(windows)]
-fn open_in_explorer(path: &Path) {
-    use std::{ffi::OsString, os::windows::process::CommandExt};
-    // Explorer parses /select itself and needs the quotes inside the argument, so no Rust quoting.
-    let mut arg = OsString::from("/select,\"");
-    arg.push(path);
-    arg.push("\"");
-    // Explorer exits with 1 even when it worked, so only a failed spawn is an error.
-    if let Err(e) = std::process::Command::new("explorer.exe")
-        .raw_arg(arg)
-        .spawn()
-    {
-        log::error!("Open in Explorer failed for {}: {e}", path.display());
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FileManager {
+    Explorer,
+    Finder,
+    XdgOpen,
+}
+
+const FILE_MANAGER: FileManager = if cfg!(windows) {
+    FileManager::Explorer
+} else if cfg!(target_os = "macos") {
+    FileManager::Finder
+} else {
+    FileManager::XdgOpen
+};
+
+impl FileManager {
+    fn label(self) -> &'static str {
+        match self {
+            FileManager::Explorer => "Open in Explorer",
+            FileManager::Finder => "Show in Finder",
+            FileManager::XdgOpen => "Open in File Manager",
+        }
+    }
+
+    fn command(self, path: &Path, is_dir: bool) -> (&'static str, Vec<OsString>) {
+        match self {
+            FileManager::Explorer => {
+                let mut arg = OsString::from("/select,\"");
+                arg.push(path);
+                arg.push("\"");
+                ("explorer.exe", vec![arg])
+            }
+            FileManager::Finder => ("open", vec!["-R".into(), path.into()]),
+            FileManager::XdgOpen => {
+                let folder = if is_dir {
+                    path
+                } else {
+                    path.parent().unwrap_or(path)
+                };
+                ("xdg-open", vec![folder.into()])
+            }
+        }
     }
 }
 
-#[cfg(not(windows))]
-fn open_in_explorer(path: &Path) {
-    log::error!("Open in Explorer is Windows only: {}", path.display());
+fn open_in_file_manager(path: &Path) {
+    let (program, args) = FILE_MANAGER.command(path, path.is_dir());
+    let mut command = std::process::Command::new(program);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        // Explorer parses /select itself and needs the quotes inside the argument, so no Rust quoting.
+        for arg in &args {
+            command.raw_arg(arg);
+        }
+    }
+    #[cfg(not(windows))]
+    command.args(&args);
+    // Explorer exits with 1 even when it worked, so only a failed spawn is an error.
+    match command.spawn() {
+        Ok(child) => zdiff_folder::external_diff_tool::wait_in_background(child),
+        Err(e) => log::error!(
+            "{} failed for {}: {e}",
+            FILE_MANAGER.label(),
+            path.display()
+        ),
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    const EXPLORER: Item = if cfg!(windows) {
-        Item::Enabled
-    } else {
-        Item::Hidden
-    };
 
     #[test]
     fn a_folder_on_both_sides_offers_every_item_from_either_side() {
@@ -154,7 +194,7 @@ mod tests {
         let expected = || RowMenu {
             set_as_root: Item::Enabled,
             set_as_folder: Item::Enabled,
-            open_in_explorer: EXPLORER,
+            open_in_explorer: Item::Enabled,
             copy_path: Item::Enabled,
         };
         assert_eq!(row_menu(both, Side::Folder1), Some(expected()));
@@ -170,7 +210,7 @@ mod tests {
             let menu = row_menu(sides, clicked).unwrap();
             assert!(matches!(menu.set_as_root, Item::Disabled(_)));
             assert_eq!(menu.set_as_folder, Item::Enabled);
-            assert_eq!(menu.open_in_explorer, EXPLORER);
+            assert_eq!(menu.open_in_explorer, Item::Enabled);
             assert_eq!(menu.copy_path, Item::Enabled);
         }
     }
@@ -186,7 +226,7 @@ mod tests {
         let expected = || RowMenu {
             set_as_root: Item::Hidden,
             set_as_folder: Item::Hidden,
-            open_in_explorer: EXPLORER,
+            open_in_explorer: Item::Enabled,
             copy_path: Item::Enabled,
         };
         let both = [Some(Entry::File), Some(Entry::File)];
@@ -208,5 +248,43 @@ mod tests {
         assert_eq!(file.set_as_root, Item::Hidden);
         assert_eq!(file.set_as_folder, Item::Hidden);
         assert_eq!(file.copy_path, Item::Enabled);
+    }
+
+    #[test]
+    fn explorer_selects_the_item_with_the_quotes_inside_one_argument() {
+        for is_dir in [false, true] {
+            assert_eq!(
+                FileManager::Explorer.command(Path::new(r"C:\my ws\a b.txt"), is_dir),
+                (
+                    "explorer.exe",
+                    vec![OsString::from(r#"/select,"C:\my ws\a b.txt""#)]
+                )
+            );
+        }
+    }
+
+    #[test]
+    fn finder_reveals_the_item() {
+        for is_dir in [false, true] {
+            assert_eq!(
+                FileManager::Finder.command(Path::new("/my ws/a b"), is_dir),
+                (
+                    "open",
+                    vec![OsString::from("-R"), OsString::from("/my ws/a b")]
+                )
+            );
+        }
+    }
+
+    #[test]
+    fn xdg_open_opens_the_folder_of_a_file_or_the_folder_itself() {
+        assert_eq!(
+            FileManager::XdgOpen.command(Path::new("/my ws/src/a b.txt"), false),
+            ("xdg-open", vec![OsString::from("/my ws/src")])
+        );
+        assert_eq!(
+            FileManager::XdgOpen.command(Path::new("/my ws/src"), true),
+            ("xdg-open", vec![OsString::from("/my ws/src")])
+        );
     }
 }

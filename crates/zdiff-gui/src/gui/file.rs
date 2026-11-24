@@ -481,7 +481,7 @@ impl FileProcessor {
     pub fn is_root_valid(root: &UniversalPath, path: &UniversalPath) -> bool {
         match (root, path) {
             (
-                UniversalPath::Local(root_local),
+                UniversalPath::Local(root_local) | UniversalPath::Git(root_local, _),
                 UniversalPath::Local(path_local) | UniversalPath::Git(path_local, _),
             ) => {
                 let norm_root = Self::normalize_path(root_local);
@@ -663,29 +663,30 @@ mod tests {
     use super::*;
     use crate::viewer::ViewerKind;
     use std::path::PathBuf;
+    use zcommon::test_util::os_path;
     use zcommon::vcs::git::{GitError, GitErrorKind};
     use zcommon::vcs::p4::FakeP4;
     #[test]
     fn test_is_root_valid_local() {
-        let root = UniversalPath::Local(PathBuf::from(r"E:\Github\ZDiff\crates"));
+        let root = UniversalPath::Local(PathBuf::from(os_path(r"E:\Github\ZDiff\crates")));
 
         assert!(FileProcessor::is_root_valid(
             &root,
-            &UniversalPath::Local(PathBuf::from(
+            &UniversalPath::Local(PathBuf::from(os_path(
                 r"E:\Github\ZDiff\crates\zdiff-gui\src\main.rs",
-            ))
+            )))
         ));
 
         assert!(!FileProcessor::is_root_valid(
             &root,
-            &UniversalPath::Local(PathBuf::from(r"C:\Other\Project\src\main.rs"))
+            &UniversalPath::Local(PathBuf::from(os_path(r"C:\Other\Project\src\main.rs")))
         ));
 
         assert!(!FileProcessor::is_root_valid(
             &root,
-            &UniversalPath::Local(PathBuf::from(
+            &UniversalPath::Local(PathBuf::from(os_path(
                 r"E:\Github\ZDiff\crates\zdiff-gui\..\..\test\rust_files_diff_1\advanced_rust.rs",
-            ))
+            )))
         ));
     }
 
@@ -746,13 +747,37 @@ mod tests {
     #[test]
     fn a_root_that_does_not_hold_the_path_is_invalid() {
         let mut file = FileProcessor::new();
-        file.set_root(UniversalPath::Local(PathBuf::from(r"E:\root")));
+        file.set_root(UniversalPath::Local(PathBuf::from(os_path(r"E:\root"))));
 
-        file.restore_path(UniversalPath::Local(PathBuf::from(r"C:\other\a.txt")), None);
+        file.restore_path(
+            UniversalPath::Local(PathBuf::from(os_path(r"C:\other\a.txt"))),
+            None,
+        );
         assert!(!file.root_valid());
 
-        file.restore_path(UniversalPath::Local(PathBuf::from(r"E:\root\a.txt")), None);
+        file.restore_path(
+            UniversalPath::Local(PathBuf::from(os_path(r"E:\root\a.txt"))),
+            None,
+        );
         assert!(file.root_valid());
+    }
+
+    #[test]
+    fn a_git_root_holds_only_paths_under_it() {
+        let root = UniversalPath::new(os_path(r"C:\repo@git:dev"));
+        let git = |path: &str| UniversalPath::Git(os_path(path).into(), GitRev::Rev("main".into()));
+        let local = |path: &str| UniversalPath::Local(os_path(path).into());
+
+        assert!(FileProcessor::is_root_valid(&root, &git(r"C:\repo\a.rs")));
+        assert!(FileProcessor::is_root_valid(
+            &root,
+            &local(r"C:\repo\src\a.rs")
+        ));
+        assert!(!FileProcessor::is_root_valid(&root, &git(r"C:\other\a.rs")));
+        assert!(!FileProcessor::is_root_valid(
+            &root,
+            &local(r"C:\other\a.rs")
+        ));
     }
 
     #[test]
@@ -1141,9 +1166,10 @@ mod tests {
             (r"C:\repo", r"C:\repo\a.rs", r"C:\repo\a.rs"),
             (r"C:\repo@git:dev", r"C:\repo\a.rs", r"C:\repo\a.rs"),
         ] {
+            let (root, path, expected) = (os_path(root), os_path(path), os_path(expected));
             let mut file = FileProcessor::new();
-            file.set_root(UniversalPath::new(root));
-            file.set_path(UniversalPath::Git(path.into(), rev.clone()));
+            file.set_root(UniversalPath::new(&root));
+            file.set_path(UniversalPath::Git(path.clone().into(), rev.clone()));
             assert_eq!(
                 file.get_full_path(),
                 UniversalPath::Git(expected.into(), rev.clone()),

@@ -96,16 +96,19 @@ pub(super) fn on_row_item_clicked(
                     right_name: &right_name,
                 },
             );
-            if let Err(err) = result {
-                // The spawn error doesn't name the program.
-                let error = format!(
-                    "diffing failed: {} ({}): {err}",
-                    diff_tool.name,
-                    exe.display()
-                );
-                log::error!("{error}");
-                message.error = Some(error);
-            };
+            match result {
+                Ok(child) => wait_in_background(child),
+                Err(err) => {
+                    // The spawn error doesn't name the program.
+                    let error = format!(
+                        "diffing failed: {} ({}): {err}",
+                        diff_tool.name,
+                        exe.display()
+                    );
+                    log::error!("{error}");
+                    message.error = Some(error);
+                }
+            }
             (message != ToolMessage::default()).then_some(message)
         }
     }

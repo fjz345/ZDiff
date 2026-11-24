@@ -611,6 +611,7 @@ pub fn conflict_count(viewers: Option<Viewers>, text: usize, hex: usize) -> usiz
 mod tests {
     use super::*;
     use zcommon::ffmpeg::resolve_ffmpeg;
+    use zcommon::test_util::os_path;
     use zdiff::universal_path::DepotRev;
 
     #[test]
@@ -1036,7 +1037,7 @@ mod tests {
     #[test]
     fn path_extension_comes_from_the_file_name_of_local_and_depot_paths() {
         assert_eq!(
-            path_extension(&UniversalPath::from(r"C:\dir.d\Image.PNG")),
+            path_extension(&UniversalPath::from(os_path(r"C:\dir.d\Image.PNG"))),
             Some("png".into())
         );
         assert_eq!(
@@ -1047,11 +1048,11 @@ mod tests {
             Some("png".into())
         );
         assert_eq!(
-            path_extension(&UniversalPath::from(r"C:\dir.d\Makefile")),
+            path_extension(&UniversalPath::from(os_path(r"C:\dir.d\Makefile"))),
             None
         );
         assert_eq!(
-            path_extension(&UniversalPath::from(r"C:\dir\.gitignore")),
+            path_extension(&UniversalPath::from(os_path(r"C:\dir\.gitignore"))),
             None
         );
         assert_eq!(
